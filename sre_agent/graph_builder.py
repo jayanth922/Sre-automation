@@ -186,30 +186,40 @@ async def _investigation_swarm(state: AgentState, config: Optional[Dict[str, Any
                 "thought_traces": traces,
             }
 
-    # Execute agents in parallel using asyncio.gather
-    logger.info("🔄 Executing agents in parallel (Infra + Code)...")
+    # Execute agents sequentially to stay within free-tier API rate limits
+    logger.info("🔄 Executing agents sequentially (Infra + Code)...")
     
-    # Prepare tasks for parallel execution
-    tasks = [
-        run_agent("kubernetes_agent", kubernetes_agent),
-        run_agent("metrics_agent", metrics_agent),
-        run_agent("logs_agent", logs_agent),
+    agent_list = [
+        ("kubernetes_agent", kubernetes_agent),
+        ("metrics_agent", metrics_agent),
+        ("logs_agent", logs_agent),
     ]
     
     # Add GitHub agent if available
     if github_agent:
-        tasks.append(run_agent("github_agent", github_agent))
+        agent_list.append(("github_agent", github_agent))
         logger.info("🔄 Including GitHub agent for code change correlation")
     else:
         logger.warning("⚠️ GitHub agent not available - code change correlation disabled")
     
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
+    results = []
+    for name, instance in agent_list:
+        try:
+            res = await run_agent(name, instance)
+            results.append(res)
+        except Exception as e:
+            logger.error(f"Agent {name} raised exception: {e}")
+            results.append((name, Exception(str(e))))
+    
     # Collect results
     agent_results = state.get("agent_results", {})
     all_traces = state.get("thought_traces", {})
 
-    for agent_name, result in results:
+    for name_result in results:
+        if not isinstance(name_result, tuple):
+            continue
+            
+        agent_name, result = name_result
         if isinstance(result, Exception):
             logger.error(f"Agent {agent_name} raised exception: {result}")
             agent_results[agent_name] = f"Error: {str(result)}"

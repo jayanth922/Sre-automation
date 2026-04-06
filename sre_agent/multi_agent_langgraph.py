@@ -147,8 +147,8 @@ async def create_multi_agent_system(
     """Create multi-agent system with MCP tools."""
     logger.info(f"Creating multi-agent system with provider: {provider}")
 
-    if provider not in ["groq", "ollama"]:
-        raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama'.")
+    if provider not in ["groq", "ollama", "gemini"]:
+        raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'.")
 
     # Create MCP client and get tools with retry logic
     mcp_tools = []
@@ -158,11 +158,25 @@ async def create_multi_agent_system(
     while retry_count < max_retries:
         try:
             client = create_mcp_client()
-            # Add timeout for MCP tool loading to prevent hanging
-            all_mcp_tools = await asyncio.wait_for(
-                client.get_tools(),
-                timeout=SREConstants.timeouts.mcp_tools_timeout_seconds,
-            )
+            
+            # Use get_tools() but handle potential ExceptionGroups from failing servers
+            try:
+                # Add timeout for MCP tool loading to prevent hanging
+                all_mcp_tools = await asyncio.wait_for(
+                    client.get_tools(),
+                    timeout=SREConstants.timeouts.mcp_tools_timeout_seconds,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                # If we have an ExceptionGroup or multiple errors, log and potentially partial results
+                logger.warning(f"MCP tool loading encountered issues: {e}")
+                # Some versions of the client might still return partial tools or we might need to retry
+                if retry_count < max_retries - 1:
+                    raise e # Trigger retry
+                all_mcp_tools = [] # Fallback to empty on last retry
+                # may need the client to remain connected to be invoked.
+                # However, for infra tools that are dispatched to the edge, 
+                # this client is only used for discovery.
+                pass
 
             # Wrap MCP tools with retry logic for resilience
             from .mcp_tool_wrapper import wrap_all_tools_with_retry

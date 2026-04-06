@@ -29,3 +29,16 @@ DATA ACCURACY REQUIREMENTS:
 - Preserve "No data available" statements rather than substituting estimates
 
 Keep the response professional and focused.{auto_approve_instruction}
+
+IMPORTANT: Your response MUST be valid JSON with the following structure:
+{
+  "summary": "High-level summary of the incident",
+  "root_cause": "The specific root cause identified (or 'Under Investigation')",
+  "evidence": [
+    "List of key evidence (logs, metrics, events) supporting the conclusion",
+    "Evidence item 2"
+  ],
+  "remediation_plan": "Specific, actionable steps to fix the issue",
+  "next_steps": "What needs to happen next (e.g., 'Monitor for recurrence', 'Run further tests')"
+}
+Do not include any text outside the JSON block. Ensure the JSON is valid.

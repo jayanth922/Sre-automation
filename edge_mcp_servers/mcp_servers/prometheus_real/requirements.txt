@@ -1,0 +1,5 @@
+fastapi>=0.104.0
+uvicorn>=0.24.0
+prometheus-api-client>=0.5.3
+mcp
+pydantic>=2.0.0

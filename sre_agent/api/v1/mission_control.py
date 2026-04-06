@@ -9,25 +9,10 @@ from sqlalchemy import desc, select
 from langgraph.types import Command
 
 from backend import crud, database, models
-from backend.auth import decode_access_token
 from backend.rbac import require_admin
+from sre_agent.api.v1.auth_deps import get_current_user_and_org
 from sre_agent.models import AgentAuditLog
 # agent_graph will be imported lazily to avoid circular dependency
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
-
-async def get_current_user_and_org(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(database.get_db)):
-    payload = decode_access_token(token)
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = await crud.get_user_by_email(db, email=payload.get("sub"))
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
 
 router = APIRouter(
     prefix="/incidents",

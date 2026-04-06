@@ -1,0 +1,3 @@
+mcp
+PyYAML>=6.0
+fastembed>=0.7.0

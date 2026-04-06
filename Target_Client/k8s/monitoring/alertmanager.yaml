@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: demo-app
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+    
+    route:
+      group_by: ["alertname", "service"]
+      group_wait:      10s
+      group_interval:  30s
+      repeat_interval: 10m
+      receiver: sre-platform-webhook
+    
+      routes:
+        - match:
+            severity: critical
+          receiver: sre-platform-webhook
+          group_wait: 5s
+          repeat_interval: 5m
+    
+        - match:
+            severity: warning
+          receiver: sre-platform-webhook
+          repeat_interval: 15m
+    
+    receivers:
+      - name: sre-platform-webhook
+        webhook_configs:
+          - url: "http://host.docker.internal:8080/api/v1/alerts/webhook"
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /tmp/cluster_token
+            send_resolved: true
+            max_alerts: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: demo-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          ports:
+            - containerPort: 9093
+          env:
+            - name: CLUSTER_TOKEN
+              value: "cl_your_token_here"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo -n "$$CLUSTER_TOKEN" > /tmp/cluster_token
+              exec /bin/alertmanager --config.file=/etc/alertmanager/alertmanager.yml --storage.path=/alertmanager
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: demo-app
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - port: 9093
+      targetPort: 9093
+  type: LoadBalancer

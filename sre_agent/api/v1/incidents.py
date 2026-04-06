@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import List
 import uuid
 
@@ -50,7 +51,23 @@ async def trigger_incident(
     # 1. Create Incident Record
     incident = await crud.create_incident(db, payload, cluster_id)
 
-    # 2. Trigger Background Agent
+    # 2. Create a shadow Job record so the Dashboard "Incident Command Center" can see it
+    # This bridges the gap between the LangGraph-based Incident flow and the Job-based UI.
+    from backend.models import JobType, JobStatus
+    shadow_job = await crud.create_job(
+        db=db,
+        cluster_id=cluster_id,
+        job=schemas.JobCreate(
+            job_type=JobType.INVESTIGATION,
+            payload=json.dumps({
+                "incident_id": str(incident.id),
+                "alert": payload.title,
+                "severity": payload.severity.value if hasattr(payload.severity, 'value') else str(payload.severity)
+            })
+        )
+    )
+
+    # 3. Trigger Background Agent
     # We delay the import to avoid top-level circular dependency if any
     try:
         from sre_agent.agent_runtime import run_graph_background_saas
@@ -59,7 +76,8 @@ async def trigger_incident(
             run_graph_background_saas, 
             incident_id=incident.id, 
             cluster_id=cluster.id,
-            alert_name=payload.title
+            alert_name=payload.title,
+            job_id=shadow_job.id  # Pass the job ID to the background task
         )
     except ImportError as e:
         logger.error(

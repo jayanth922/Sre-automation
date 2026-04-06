@@ -55,6 +55,12 @@ class ModelConfig(BaseModel):
         description="Ollama model to use",
     )
 
+    # Gemini settings
+    gemini_model: str = Field(
+        default="gemini-3.1-flash-lite-preview",
+        description="Default Gemini model ID",
+    )
+
 
 class TimeoutConfig(BaseModel):
     """Timeout configuration constants."""
@@ -264,7 +270,7 @@ class SREConstants:
         """Get model configuration for a specific provider.
 
         Args:
-            provider: LLM provider (only "groq" is supported)
+            provider: LLM provider
             **kwargs: Additional configuration overrides
 
         Returns:
@@ -277,8 +283,14 @@ class SREConstants:
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
         
+        if provider == "gemini":
+            return {
+                "model_id": kwargs.get("model_id", cls.model.gemini_model),
+                "temperature": kwargs.get("temperature", cls.model.default_temperature),
+            }
+        
         if provider != "groq":
-            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama'.")
+            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'.")
 
         return {
             "model_id": kwargs.get("model_id", cls.model.groq_model_id),

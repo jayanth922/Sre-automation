@@ -123,6 +123,7 @@ services:
     environment:
       - SECRET_KEY=${SECRET_KEY:-sre_platform_dev_key_change_in_production}
       - AGENT_MODE=api
+      - CLUSTER_TOKEN=${CLUSTER_TOKEN:-}
 
       # LLM (runs on platform, not customer edge)
       - LLM_PROVIDER=${LLM_PROVIDER:-groq}
@@ -134,17 +135,17 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
+      - PROMETHEUS_URL=http://host.docker.internal:9090
 
       # Memory MCP (only MCP server on platform side)
       - MCP_MEMORY_URI=http://mcp-memory:3000/sse
 
-      # Customer-side MCP servers are NOT accessible from here.
-      # Tool calls are dispatched via the job queue to edge relays.
-      - MCP_K8S_URI=
-      - MCP_LOGS_URI=
-      - MCP_METRICS_URI=
-      - MCP_RUNBOOKS_URI=
-      - MCP_GITHUB_URI=
+      # MCP servers (run on platform, connect directly to customer infra URLs)
+      - MCP_K8S_URI=http://mcp-k8s:3000/sse
+      - MCP_LOGS_URI=http://mcp-loki:3000/sse
+      - MCP_METRICS_URI=http://mcp-prometheus:3000/sse
+      - MCP_RUNBOOKS_URI=http://mcp-notion:3000/sse
+      - MCP_GITHUB_URI=http://mcp-github:3000/sse
 
       # Python
       - PYTHONPATH=/app
@@ -170,6 +171,84 @@ services:
     restart: unless-stopped
 
   # ============================================
+  # MCP Tool Servers (connect directly to customer infra)
+  # Customer provides URLs when registering a cluster.
+  # ============================================
+
+  mcp-k8s:
+    build:
+      context: ../mcp_servers/k8s_real
+      dockerfile: Dockerfile
+    container_name: sre-mcp-k8s
+    environment:
+      - HOST=0.0.0.0
+      - K8S_API_SERVER=${K8S_API_SERVER:-}
+      - K8S_TOKEN=${K8S_TOKEN:-}
+    networks:
+      sre-network:
+        aliases:
+          - mcp-k8s
+    restart: unless-stopped
+
+  mcp-prometheus:
+    build:
+      context: ../mcp_servers/prometheus_real
+      dockerfile: Dockerfile
+    container_name: sre-mcp-prometheus
+    environment:
+      - HOST=0.0.0.0
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-}
+    networks:
+      sre-network:
+        aliases:
+          - mcp-prometheus
+    restart: unless-stopped
+
+  mcp-loki:
+    build:
+      context: ../mcp_servers/loki_real
+      dockerfile: Dockerfile
+    container_name: sre-mcp-loki
+    environment:
+      - HOST=0.0.0.0
+      - LOKI_URL=${LOKI_URL:-}
+    networks:
+      sre-network:
+        aliases:
+          - mcp-loki
+    restart: unless-stopped
+
+  mcp-github:
+    build:
+      context: ../mcp_servers/github_real
+      dockerfile: Dockerfile
+    container_name: sre-mcp-github
+    environment:
+      - HOST=0.0.0.0
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPO=${GITHUB_REPO:-}
+    networks:
+      sre-network:
+        aliases:
+          - mcp-github
+    restart: unless-stopped
+
+  mcp-notion:
+    build:
+      context: ../mcp_servers/notion_real
+      dockerfile: Dockerfile
+    container_name: sre-mcp-notion
+    environment:
+      - HOST=0.0.0.0
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
+    networks:
+      sre-network:
+        aliases:
+          - mcp-notion
+    restart: unless-stopped
+
+  # ============================================
   # Dashboard (Next.js UI)
   # ============================================
 
@@ -179,7 +258,7 @@ services:
       dockerfile: ../platform/Dockerfile.dashboard
     container_name: sre-dashboard
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - API_URL=http://sre-agent-api:8080
     depends_on:

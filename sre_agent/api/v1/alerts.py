@@ -32,11 +32,13 @@ async def _get_cluster_from_token(
 ) -> models.Cluster:
     """Authenticate via cluster token sent by Alertmanager's http_config."""
     if not authorization or not authorization.startswith("Bearer "):
+        logger.warning("Webhook rejected: Missing or invalid Authorization header")
         raise HTTPException(status_code=403, detail="Missing or invalid cluster token")
 
     token = authorization.split(" ", 1)[1]
     cluster = await crud.get_cluster_by_token(db, token)
     if not cluster:
+        logger.warning(f"Webhook rejected: Invalid cluster token provided (ends in ...{token[-4:]})")
         raise HTTPException(status_code=403, detail="Invalid cluster token")
     return cluster
 
@@ -148,6 +150,17 @@ async def receive_alertmanager_webhook(
         )
         job = await crud.create_job(db, cluster.id, job_data)
         logger.info(f"Queued job {job.id} for incident {incident.id}")
+
+        # 🚀 START: SaaS-side background investigation
+        from sre_agent.agent_runtime import run_graph_background_saas
+        background_tasks.add_task(
+            run_graph_background_saas,
+            incident_id=incident.id,
+            cluster_id=cluster.id,
+            alert_name=alert["alertname"],
+            job_id=job.id
+        )
+        logger.info(f"Launched background investigation for incident {incident.id}")
 
     return {
         "received": len(alerts),

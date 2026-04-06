@@ -116,10 +116,10 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
     
     # Wrap synchronous invoke
     @functools.wraps(original_invoke)
-    def safe_invoke(input_data: Any) -> Any:
+    def safe_invoke(*args, **kwargs) -> Any:
         @retry_decorator
         def invoke_with_retry():
-            return original_invoke(input_data)
+            return original_invoke(*args, **kwargs)
         
         try:
             result = invoke_with_retry()
@@ -149,10 +149,10 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
     # Wrap asynchronous ainvoke if present
     if original_ainvoke is not None:
         @functools.wraps(original_ainvoke)
-        async def safe_ainvoke(input_data: Any) -> Any:
+        async def safe_ainvoke(*args, **kwargs) -> Any:
             @retry_decorator
             async def ainvoke_with_retry():
-                return await original_ainvoke(input_data)
+                return await original_ainvoke(*args, **kwargs)
             
             try:
                 result = await ainvoke_with_retry()
@@ -197,9 +197,7 @@ def log_audit_entry(
     audit_id: uuid.UUID = None
 ) -> uuid.UUID:
     """
-    Log an audit entry to the database. 
-    If audit_id is None, creates a new entry (PENDING).
-    If audit_id is provided, updates the existing entry (SUCCESS/FAILURE).
+    Log an audit entry to the database and also push to the live terminal.
     """
     try:
         incident_id, agent_name = get_audit_context()
@@ -210,6 +208,22 @@ def log_audit_entry(
         if result_str and len(result_str) > 10000:
             result_str = result_str[:10000] + "... (truncated)"
             
+        # Push a clean message to the Redis live terminal for the Dashboard
+        from .redis_state_store import get_state_store
+        state_store = get_state_store()
+        if incident_id:
+            timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            if status == "PENDING":
+                msg = f"[{timestamp}] 🔧 EXECUTING: {tool_name} (args: {args_str[:100]}...)"
+                state_store.append_log(str(incident_id), msg)
+            elif status == "SUCCESS":
+                msg = f"[{timestamp}] ✅ COMPLETED: {tool_name} returned success."
+                state_store.append_log(str(incident_id), msg)
+            elif status == "FAILURE":
+                msg = f"[{timestamp}] ❌ FAILED: {tool_name} error: {error}"
+                state_store.append_log(str(incident_id), msg)
+
+        # Write to PostgreSQL for the Audit Log card
         with SessionLocal() as session:
             if audit_id:
                 # Update existing log
@@ -227,7 +241,7 @@ def log_audit_entry(
                     id=new_id,
                     timestamp=datetime.now(timezone.utc),
                     incident_id=incident_id or "general",
-                    agent_name=agent_name or "Unknown",
+                    agent_name=agent_name or "SRE Agent",
                     tool_name=tool_name,
                     tool_args=args_str,
                     status=status
@@ -250,10 +264,11 @@ def wrap_tool_with_audit(tool: Any) -> Any:
     
     if original_invoke:
         @functools.wraps(original_invoke)
-        def audit_invoke(input_data: Any) -> Any:
+        def audit_invoke(*args, **kwargs) -> Any:
+            input_data = args[0] if args else kwargs
             audit_id = log_audit_entry(tool_name, "PENDING", input_data)
             try:
-                result = original_invoke(input_data)
+                result = original_invoke(*args, **kwargs)
                 log_audit_entry(tool_name, "SUCCESS", input_data, result=result, audit_id=audit_id)
                 return result
             except Exception as e:
@@ -264,12 +279,13 @@ def wrap_tool_with_audit(tool: Any) -> Any:
 
     if original_ainvoke:
         @functools.wraps(original_ainvoke)
-        async def audit_ainvoke(input_data: Any) -> Any:
+        async def audit_ainvoke(*args, **kwargs) -> Any:
             # Note: Writing to DB is sync, preventing blocking async loop might require run_in_executor
             # For now, we accept brief blocking for audit safety
+            input_data = args[0] if args else kwargs
             audit_id = log_audit_entry(tool_name, "PENDING", input_data)
             try:
-                result = await original_ainvoke(input_data)
+                result = await original_ainvoke(*args, **kwargs)
                 log_audit_entry(tool_name, "SUCCESS", input_data, result=result, audit_id=audit_id)
                 return result
             except Exception as e:
@@ -334,10 +350,10 @@ def wrap_tool_with_circuit_breaker(tool: Any) -> Any:
 
     if original_invoke:
         @functools.wraps(original_invoke)
-        def cb_invoke(input_data: Any) -> Any:
+        def cb_invoke(*args, **kwargs) -> Any:
             check_circuit_breaker(tool_name)
             try:
-                result = original_invoke(input_data)
+                result = original_invoke(*args, **kwargs)
                 record_success(tool_name)
                 return result
             except Exception as e:
@@ -347,10 +363,10 @@ def wrap_tool_with_circuit_breaker(tool: Any) -> Any:
 
     if original_ainvoke:
         @functools.wraps(original_ainvoke)
-        async def cb_ainvoke(input_data: Any) -> Any:
+        async def cb_ainvoke(*args, **kwargs) -> Any:
             check_circuit_breaker(tool_name)
             try:
-                result = await original_ainvoke(input_data)
+                result = await original_ainvoke(*args, **kwargs)
                 record_success(tool_name)
                 return result
             except Exception as e:

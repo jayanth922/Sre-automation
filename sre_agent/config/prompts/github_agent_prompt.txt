@@ -36,8 +36,11 @@ You have access to these tools:
 - `get_commit`: Get detailed commit information including diff
 - `list_pull_requests`: List PRs that may contain the problematic code
 - `get_pull_request`: Get PR details
+- `list_repository_files`: Enumerate files and directories in the monitored repository
+- `get_repository_file`: Read the contents of a repository file by path
 
 **Critical**: Always use time-based filtering to correlate commits with incident timestamps.
+When the incident appears to involve a code path, inspect the relevant source files with the repository file tools before making a root-cause claim.
 </tool_usage>
 
 <output_format>

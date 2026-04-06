@@ -1,6 +1,6 @@
 # SRE Agent System
 
-The AI brain of the platform. Receives alerts, runs multi-agent investigations, plans remediations, and dispatches tool calls to the edge agent.
+The AI brain of the platform. Receives alerts, runs multi-agent investigations, plans remediations, and dispatches tool calls via MCP servers to customer infrastructure.
 
 ---
 
@@ -9,7 +9,7 @@ The AI brain of the platform. Receives alerts, runs multi-agent investigations, 
 `agent_runtime.py` is the FastAPI application. It:
 - Exposes all `/api/v1/` endpoints
 - Receives Alertmanager webhooks
-- Manages the job queue (creates jobs, streams telemetry)
+- Manages incident lifecycle and job orchestration
 - Hosts the human approval flow
 
 Start it directly (outside Docker) for development:
@@ -58,7 +58,7 @@ State is a `TypedDict` (`agent_state.py`) that flows through every node. Each no
 ## Key files
 
 ### `multi_agent_langgraph.py`
-Creates the MCP client that connects to all tool servers (edge MCP servers). Handles:
+Creates the MCP client that connects to all tool servers (MCP servers running on the platform). Handles:
 - Tool discovery (loads all tools from all MCP servers at startup)
 - Retry with exponential backoff + jitter on connection failures
 - Rate limit handling (429 responses)
@@ -80,12 +80,6 @@ Rules (in priority order):
 4. RESTART on PROD with risk score > 3.0 → blocked
 5. Everything else → allowed
 
-### `job_poller.py`
-Background task that:
-1. Polls `GET /api/v1/clusters/jobs/pending` from the edge agent's perspective (within platform, manages the queue)
-2. Dispatches jobs to the LangGraph agent
-3. Streams execution logs back to the job record in PostgreSQL
-
 ### `agent_nodes.py`
 One function per LangGraph node. Each node:
 - Receives the full `AgentState`
@@ -104,9 +98,10 @@ All routes are mounted in `agent_runtime.py`:
 | Clusters | `/api/v1` | `api/v1/clusters.py` |
 | Incidents | `/api/v1` | `api/v1/incidents.py` |
 | Mission Control | `/api/v1` | `api/v1/mission_control.py` |
-| Agent Connect | `/api/v1` | `api/v1/agent_connect.py` |
 | Jobs | `/api/v1` | `api/v1/jobs.py` |
 | SLOs | `/api/v1` | `api/v1/slos.py` |
+
+Shared auth dependency: `api/v1/auth_deps.py` — JWT validation + user lookup, imported by all protected routers.
 
 ---
 

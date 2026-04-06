@@ -49,7 +49,7 @@ class OrgCreate(BaseModel):
 class OrgResponse(BaseModel):
     id: uuid.UUID
     name: str
-    created_at: str
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -60,12 +60,29 @@ class OrgResponse(BaseModel):
 
 class ClusterCreate(BaseModel):
     name: str
+    # Customer infrastructure endpoints (platform calls these directly)
+    prometheus_url: Optional[str] = None
+    loki_url: Optional[str] = None
+    k8s_api_server: Optional[str] = None
+    k8s_token: Optional[str] = None
+    github_token: Optional[str] = None
+    github_repo: Optional[str] = None
+    notion_api_key: Optional[str] = None
+    notion_database_id: Optional[str] = None
 
 class ClusterResponse(BaseModel):
     id: uuid.UUID
     name: str
     status: ClusterStatus
     last_heartbeat: Optional[datetime]
+<<<<<<< HEAD
+    created_at: datetime
+=======
+    prometheus_url: Optional[str] = None
+    loki_url: Optional[str] = None
+    k8s_api_server: Optional[str] = None
+    github_repo: Optional[str] = None
+>>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 
     class Config:
         from_attributes = True
@@ -87,8 +104,8 @@ class IncidentResponse(BaseModel):
     severity: IncidentSeverity
     status: IncidentStatus
     summary: Optional[str] = None
-    created_at: str
-    resolved_at: Optional[str] = None
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

@@ -1,0 +1,113 @@
+version: '3.8'
+
+# =============================================================================
+# Customer Edge Stack — Lightweight relay + MCP tool servers
+#
+# Connects to the Target Client's observability stack (Prometheus, Loki)
+# running in Kubernetes via localhost port mappings.
+#
+# Usage:
+#   1. Ensure Target_Client K8s deployments are running
+#   2. Create .env with CLUSTER_TOKEN  (from SaaS dashboard)
+#   3. docker compose up -d --build
+# =============================================================================
+
+services:
+  # ============================================
+  # MCP Tool Servers (read from YOUR infra)
+  # ============================================
+
+  # ============================================
+  # MCP Tool Servers (read from YOUR infra)
+  # ============================================
+
+  mcp-k8s:
+    build:
+      context: ./mcp_servers/k8s_real
+      dockerfile: Dockerfile
+    container_name: mcp-k8s
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    environment:
+      - HOST=0.0.0.0
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4000:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+  mcp-prometheus:
+    build:
+      context: ./mcp_servers/prometheus_real
+      dockerfile: Dockerfile
+    container_name: mcp-prometheus
+    environment:
+      # Reaches the host-exposed Prometheus endpoint from Docker Desktop
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://host.docker.internal:9090}
+      - HOST=0.0.0.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4001:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+  mcp-loki:
+    build:
+      context: ./mcp_servers/loki_real
+      dockerfile: Dockerfile
+    container_name: mcp-loki
+    environment:
+      # Reaches the host-exposed Loki endpoint from Docker Desktop
+      - LOKI_URL=${LOKI_URL:-http://host.docker.internal:3100}
+      - HOST=0.0.0.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4002:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+  mcp-github:
+    build:
+      context: ./mcp_servers/github_real
+      dockerfile: Dockerfile
+    container_name: mcp-github
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - HOST=0.0.0.0
+    ports:
+      - "4003:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+  mcp-runbooks:
+    build:
+      context: ./mcp_servers/runbooks_local
+      dockerfile: Dockerfile
+    container_name: mcp-runbooks
+    environment:
+      - RUNBOOKS_DIR=/app/runbooks
+      - HOST=0.0.0.0
+    volumes:
+      - ./mcp_servers/runbooks_local/runbooks:/app/runbooks:ro
+    ports:
+      - "4004:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+networks:
+  edge-network:
+    driver: bridge
+    name: sre-edge-network
+  demo-net:
+    external: true
+    name: sre-demo-net    # Created by Target Client's K8s stack

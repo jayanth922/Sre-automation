@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Terminal, Shield, Check, X, AlertOctagon, Play, Loader2 } from "lucide-react"
+import { Terminal, Shield, Check, X, Play, Loader2 } from "lucide-react"
 import Cookies from "js-cookie"
 
 interface Job {

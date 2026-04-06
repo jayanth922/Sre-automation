@@ -5,25 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import schemas, crud, models, database
-from backend.auth import decode_access_token
 from backend.rbac import require_admin
-from fastapi.security import OAuth2PasswordBearer
-from backend.routers.auth import login_for_access_token # reuse if necessary, but typically standard flow
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
-
-async def get_current_user_and_org(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(database.get_db)):
-    payload = decode_access_token(token)
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = await crud.get_user_by_email(db, email=payload.get("sub"))
-    if user is None:
-         raise HTTPException(status_code=401, detail="User not found")
-    return user
+from sre_agent.api.v1.auth_deps import get_current_user_and_org
 
 router = APIRouter(
     prefix="/clusters",
@@ -96,6 +79,9 @@ async def get_cluster_lock(
     db: AsyncSession = Depends(database.get_db)
 ):
     """Check if cluster is locked."""
+    cluster = await crud.get_cluster_by_id(db, cluster_id)
+    if not cluster or cluster.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Cluster not found")
     from sre_agent.redis_state_store import get_state_store
     storage = get_state_store()
     is_locked = storage.is_cluster_locked(str(cluster_id))

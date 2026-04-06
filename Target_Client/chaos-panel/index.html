@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chaos Control Panel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: #111827;
+            --bg-input: #1f2937;
+            --border: #374151;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --accent-red: #ef4444;
+            --accent-orange: #f59e0b;
+            --accent-green: #10b981;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-cyan: #06b6d4;
+            --glow-red: rgba(239, 68, 68, 0.3);
+            --glow-green: rgba(16, 185, 129, 0.3);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a1f2e 0%, #0f172a 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header h1 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-red), var(--accent-orange));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header .status {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+        }
+
+        .status-dot.green { background: var(--accent-green); box-shadow: 0 0 8px var(--glow-green); }
+        .status-dot.red { background: var(--accent-red); box-shadow: 0 0 8px var(--glow-red); }
+
+        .main {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 1.5rem;
+            padding: 1.5rem 2rem;
+            max-height: calc(100vh - 64px);
+        }
+
+        .controls-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            overflow-y: auto;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+        }
+
+        .card h2 {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+        }
+
+        .control-row {
+            margin-bottom: 1.25rem;
+        }
+
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .control-label span { font-size: 0.85rem; font-weight: 500; }
+
+        .control-label .value {
+            font-family: 'Inter', monospace;
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: var(--accent-cyan);
+            min-width: 50px;
+            text-align: right;
+        }
+
+        .control-desc {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.4rem;
+            line-height: 1.4;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            background: var(--bg-input);
+            border-radius: 3px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            background: var(--accent-cyan);
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
+            transition: transform 0.15s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        .slider-danger::-webkit-slider-thumb { background: var(--accent-red); box-shadow: 0 0 10px var(--glow-red); }
+        .slider-warning::-webkit-slider-thumb { background: var(--accent-orange); box-shadow: 0 0 10px rgba(245, 158, 11, 0.5); }
+        .slider-info::-webkit-slider-thumb { background: var(--accent-blue); box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); }
+
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+        }
+
+        .toggle {
+            position: relative;
+            width: 52px; height: 28px;
+            cursor: pointer;
+        }
+
+        .toggle input { opacity: 0; width: 0; height: 0; }
+
+        .toggle-slider {
+            position: absolute;
+            inset: 0;
+            background: var(--bg-input);
+            border-radius: 14px;
+            transition: background 0.3s;
+        }
+
+        .toggle-slider:before {
+            content: "";
+            position: absolute;
+            width: 22px; height: 22px;
+            left: 3px; bottom: 3px;
+            background: var(--text-primary);
+            border-radius: 50%;
+            transition: transform 0.3s;
+        }
+
+        .toggle input:checked + .toggle-slider {
+            background: var(--accent-red);
+            box-shadow: 0 0 16px var(--glow-red);
+        }
+
+        .toggle input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 0.75rem;
+            border: none;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .btn-burst {
+            background: linear-gradient(135deg, var(--accent-red), var(--accent-orange));
+            color: white;
+        }
+
+        .btn-burst:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px var(--glow-red);
+        }
+
+        .btn-burst:active { transform: scale(0.98); }
+
+        .graphs-panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            overflow-y: auto;
+        }
+
+        .graph-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem;
+        }
+
+        .graph-card h3 {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+        }
+
+        .graph-card canvas { width: 100% !important; height: 180px !important; }
+
+        .alerts-bar {
+            grid-column: 1 / -1;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .alert-box {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
+            padding: 0.85rem 1.25rem;
+            border-radius: 8px;
+            min-width: 220px;
+            flex: 1;
+        }
+        
+        .alert-box.healthy { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.4); color: var(--accent-green); flex-direction: row; align-items: center; justify-content: flex-start; }
+        .alert-box.pending { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.4); color: var(--accent-orange); flex-direction: row; align-items: center; justify-content: flex-start; }
+        .alert-box.critical { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); color: #fca5a5; }
+        
+        .alert-header { display: flex; align-items: center; gap: 10px; font-size: 0.95rem; font-weight: 700; color: white; letter-spacing: 0.03em; }
+        .alert-detail { font-size: 0.8rem; padding-left: 18px; color: #fca5a5; opacity: 0.9; }
+        
+        .pulse-red { animation: pulseRed 1.5s infinite; }
+        @keyframes pulseRed { 0% { box-shadow: 0 0 0 0 var(--glow-red); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+
+        .current-values {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .current-value {
+            text-align: center;
+            padding: 0.5rem;
+            background: var(--bg-input);
+            border-radius: 8px;
+        }
+
+        .current-value .label { font-size: 0.65rem; color: var(--text-secondary); }
+        .current-value .val { font-size: 1.1rem; font-weight: 700; color: var(--accent-cyan); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>CHAOS CONTROL PANEL</h1>
+        <div class="status">
+            <span><span class="status-dot green" id="statusDot"></span><span id="statusText">Connected</span></span>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="controls-panel">
+            <!-- Checkout Service Controls -->
+            <div class="card">
+                <h2>Checkout Service</h2>
+                <div class="control-row">
+                    <div class="control-desc">Probability of checkout payment failures (500 errors)</div>
+                    <div class="control-label">
+                        <span>Error Rate</span>
+                        <span class="value" id="errorRateVal">15%</span>
+                    </div>
+                    <input type="range" class="slider-danger" id="errorRate" min="0" max="100" value="15"
+                           oninput="updateSlider('errorRate', this.value, '%')">
+                </div>
+                <div class="control-row">
+                    <div class="control-desc">Probability of artificially delayed responses (1.5-3.5s)</div>
+                    <div class="control-label">
+                        <span>Slow Rate</span>
+                        <span class="value" id="slowRateVal">20%</span>
+                    </div>
+                    <input type="range" class="slider-warning" id="slowRate" min="0" max="100" value="20"
+                           oninput="updateSlider('slowRate', this.value, '%')">
+                </div>
+                <div class="toggle-container">
+                    <div>
+                        <span style="font-size:0.85rem;font-weight:500;">Chaos Mode</span>
+                        <div class="control-desc" style="margin-top:4px;">Extreme failure: 50% DB errors on every checkout</div>
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" id="chaosMode" onchange="toggleChaos()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Inventory Service Controls -->
+            <div class="card">
+                <h2>Inventory Service</h2>
+                <div class="control-row">
+                    <div class="control-desc">Probability of slow DB queries (0.8-2.5s delay)</div>
+                    <div class="control-label">
+                        <span>Slow Query Rate</span>
+                        <span class="value" id="slowQueryRateVal">25%</span>
+                    </div>
+                    <input type="range" class="slider-warning" id="slowQueryRate" min="0" max="100" value="25"
+                           oninput="updateSlider('slowQueryRate', this.value, '%')">
+                </div>
+            </div>
+
+            <!-- Load Generator Controls -->
+            <div class="card">
+                <h2>Load Generator</h2>
+                <div class="control-row">
+                    <div class="control-desc">Steady-state requests per second to the API gateway</div>
+                    <div class="control-label">
+                        <span>Load RPS</span>
+                        <span class="value" id="rpsVal">5</span>
+                    </div>
+                    <input type="range" class="slider-info" id="rps" min="1" max="50" value="5"
+                           oninput="updateSlider('rps', this.value, '')">
+                </div>
+                <div class="control-row">
+                    <div class="control-desc">Requests per second during burst periods</div>
+                    <div class="control-label">
+                        <span>Burst RPS</span>
+                        <span class="value" id="burstRpsVal">20</span>
+                    </div>
+                    <input type="range" class="slider-danger" id="burstRps" min="1" max="100" value="20"
+                           oninput="updateSlider('burstRps', this.value, '')">
+                </div>
+                <button class="btn btn-burst" id="burstBtn" onclick="triggerBurst()">
+                    TRIGGER BURST NOW
+                </button>
+            </div>
+        </div>
+
+        <div class="graphs-panel">
+            <!-- Alerts Bar -->
+            <div class="card alerts-bar" id="alertsContainer">
+                <h2 style="width:100%">Prometheus Alerts</h2>
+                <span class="alert-badge inactive">Loading...</span>
+            </div>
+
+            <!-- Graphs -->
+            <div class="graph-card">
+                <h3>HTTP Error Rate (errors/sec)</h3>
+                <canvas id="errorChart"></canvas>
+            </div>
+            <div class="graph-card">
+                <h3>Request Latency p95 (seconds)</h3>
+                <canvas id="latencyChart"></canvas>
+            </div>
+            <div class="graph-card">
+                <h3>Requests / second</h3>
+                <canvas id="throughputChart"></canvas>
+            </div>
+            <div class="graph-card">
+                <h3>Payment Failures / second</h3>
+                <canvas id="paymentChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ── Service URLs (inside K8s, use service DNS names) ────────────────
+        const CHECKOUT_URL = 'http://localhost:8001';
+        const INVENTORY_URL = 'http://localhost:8002';
+        const LOADGEN_URL = 'http://localhost:8003';
+        const PROMETHEUS_URL = 'http://localhost:9090';
+
+        // ── Slider display update ──────────────────────────────────────────
+        function updateSlider(id, val, suffix) {
+            document.getElementById(id + 'Val').textContent = val + suffix;
+        }
+
+        // ── Debounced config push ──────────────────────────────────────────
+        let pushTimers = {};
+
+        function debouncePush(service, configFn, delay = 300) {
+            clearTimeout(pushTimers[service]);
+            pushTimers[service] = setTimeout(() => configFn(), delay);
+        }
+
+        // Attach change listeners to sliders
+        document.getElementById('errorRate').addEventListener('input', () => {
+            debouncePush('checkout', pushCheckoutConfig);
+        });
+        document.getElementById('slowRate').addEventListener('input', () => {
+            debouncePush('checkout', pushCheckoutConfig);
+        });
+        document.getElementById('slowQueryRate').addEventListener('input', () => {
+            debouncePush('inventory', pushInventoryConfig);
+        });
+        document.getElementById('rps').addEventListener('input', () => {
+            debouncePush('loadgen', pushLoadGenConfig);
+        });
+        document.getElementById('burstRps').addEventListener('input', () => {
+            debouncePush('loadgen', pushLoadGenConfig);
+        });
+
+        async function pushCheckoutConfig() {
+            try {
+                await fetch(`${CHECKOUT_URL}/admin/config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        error_rate: parseInt(document.getElementById('errorRate').value) / 100,
+                        slow_rate: parseInt(document.getElementById('slowRate').value) / 100,
+                    })
+                });
+            } catch (e) { console.error('Checkout config push failed:', e); }
+        }
+
+        async function pushInventoryConfig() {
+            try {
+                await fetch(`${INVENTORY_URL}/admin/config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        slow_query_rate: parseInt(document.getElementById('slowQueryRate').value) / 100,
+                    })
+                });
+            } catch (e) { console.error('Inventory config push failed:', e); }
+        }
+
+        async function pushLoadGenConfig() {
+            try {
+                await fetch(`${LOADGEN_URL}/admin/config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        rps: parseFloat(document.getElementById('rps').value),
+                        burst_rps: parseFloat(document.getElementById('burstRps').value),
+                    })
+                });
+            } catch (e) { console.error('LoadGen config push failed:', e); }
+        }
+
+        async function toggleChaos() {
+            try {
+                await fetch(`${CHECKOUT_URL}/admin/config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chaos_mode: document.getElementById('chaosMode').checked,
+                    })
+                });
+            } catch (e) { console.error('Chaos toggle failed:', e); }
+        }
+
+        async function triggerBurst() {
+            const btn = document.getElementById('burstBtn');
+            btn.textContent = 'BURST TRIGGERED!';
+            btn.style.opacity = '0.7';
+            try {
+                await fetch(`${LOADGEN_URL}/admin/trigger-burst`, { method: 'POST' });
+            } catch (e) { console.error('Burst trigger failed:', e); }
+            setTimeout(() => { btn.textContent = 'TRIGGER BURST NOW'; btn.style.opacity = '1'; }, 2000);
+        }
+
+        // ── Chart.js setup ─────────────────────────────────────────────────
+        // ── Chart.js setup ─────────────────────────────────────────────────
+        function getTimelineLabels() {
+            const labels = [];
+            for (let i = 29; i >= 0; i--) { labels.push(i % 5 === 0 ? `-${i*2}s` : ''); }
+            labels[29] = 'Now';
+            return labels;
+        }
+
+        const chartOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 1000, easing: 'linear' },
+            scales: {
+                x: { 
+                    display: true, 
+                    grid: { display: false },
+                    ticks: { color: '#6b7280', font: { size: 11, family: 'Inter', weight: '500' }, maxRotation: 0 }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(55, 65, 81, 0.3)', borderDash: [5, 5] },
+                    ticks: { color: '#d1d5db', font: { size: 14, family: 'Inter', weight: '600' }, padding: 8 }
+                }
+            },
+            plugins: { legend: { display: false } },
+            elements: { point: { radius: 0 }, line: { tension: 0.3, borderWidth: 2 } }
+        };
+
+        function createChart(canvasId, color) {
+            return new Chart(document.getElementById(canvasId), {
+                type: 'line',
+                data: {
+                    labels: getTimelineLabels(),
+                    datasets: [{
+                        data: Array(30).fill(0),
+                        borderColor: color,
+                        backgroundColor: color.replace('1)', '0.15)'),
+                        fill: true,
+                    }]
+                },
+                options: { ...chartOptions }
+            });
+        }
+
+        const errorChart = createChart('errorChart', 'rgba(239, 68, 68, 1)');
+        const latencyChart = createChart('latencyChart', 'rgba(245, 158, 11, 1)');
+        const throughputChart = createChart('throughputChart', 'rgba(59, 130, 246, 1)');
+        const paymentChart = createChart('paymentChart', 'rgba(139, 92, 246, 1)');
+
+        function pushData(chart, value) {
+            chart.data.datasets[0].data.push(value);
+            chart.data.datasets[0].data.shift();
+            // Do not alter labels to maintain the static timeline window
+            chart.update('none');
+        }
+
+        // ── Prometheus queries ─────────────────────────────────────────────
+        async function queryProm(query) {
+            try {
+                const resp = await fetch(`${PROMETHEUS_URL}/api/v1/query?query=${encodeURIComponent(query)}`);
+                const data = await resp.json();
+                if (data.data?.result?.length > 0) {
+                    return parseFloat(data.data.result[0].value[1]) || 0;
+                }
+                return 0;
+            } catch (e) { return 0; }
+        }
+
+        async function updateGraphs() {
+            const [errors, latency, throughput, payments] = await Promise.all([
+                queryProm('sum(irate(http_errors_total[30s]))'),
+                queryProm('histogram_quantile(0.95, sum(irate(http_request_duration_seconds_bucket[30s])) by (le))'),
+                queryProm('sum(irate(http_requests_total[30s]))'),
+                queryProm('sum(irate(payment_failures_total[30s]))'),
+            ]);
+            pushData(errorChart, errors);
+            pushData(latencyChart, latency);
+            pushData(throughputChart, throughput);
+            pushData(paymentChart, payments);
+        }
+
+        // ── Alerts polling ─────────────────────────────────────────────────
+        async function updateAlerts() {
+            try {
+                const resp = await fetch(`${PROMETHEUS_URL}/api/v1/alerts`);
+                const data = await resp.json();
+                const container = document.getElementById('alertsContainer');
+                const alerts = data.data?.alerts || [];
+
+                let html = '<h2 style="width:100%">Active Incident Alerts</h2>';
+                
+                if (alerts.length === 0) {
+                    html += `<div class="alert-box healthy">
+                        <span class="status-dot green"></span>
+                        <span style="font-weight:600">System Healthy — No anomalous behavior detected</span>
+                    </div>`;
+                } else {
+                    // Group alerts by name
+                    const grouped = {};
+                    let hasFiring = false;
+                    
+                    alerts.forEach(a => {
+                        if (a.state === 'firing') {
+                            hasFiring = true;
+                            if (!grouped[a.labels.alertname]) grouped[a.labels.alertname] = 0;
+                            grouped[a.labels.alertname]++;
+                        }
+                    });
+
+                    if (!hasFiring) {
+                        html += `<div class="alert-box pending">
+                            <span class="status-dot orange" style="background:#f59e0b;box-shadow:0 0 8px rgba(245,158,11,0.5)"></span>
+                            <span style="font-weight:600">Alerts in "Pending" State (Awaiting confirmation threshold...)</span>
+                        </div>`;
+                    } else {
+                        Object.keys(grouped).forEach(name => {
+                            const count = grouped[name];
+                            html += `<div class="alert-box critical">
+                                <div class="alert-header">
+                                    <span class="status-dot red pulse-red"></span>
+                                    <span>${name}</span>
+                                </div>
+                                <div class="alert-detail">${count} pod(s) reporting this issue</div>
+                            </div>`;
+                        });
+                    }
+                }
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Alert fetch failed:', e);
+            }
+        }
+
+        // ── Poll current config from services ─────────────────────────────
+        async function syncConfig() {
+            try {
+                const [checkout, inventory, loadgen] = await Promise.all([
+                    fetch(`${CHECKOUT_URL}/admin/config`).then(r => r.json()),
+                    fetch(`${INVENTORY_URL}/admin/config`).then(r => r.json()),
+                    fetch(`${LOADGEN_URL}/admin/config`).then(r => r.json()),
+                ]);
+                document.getElementById('errorRate').value = Math.round(checkout.error_rate * 100);
+                document.getElementById('errorRateVal').textContent = Math.round(checkout.error_rate * 100) + '%';
+                document.getElementById('slowRate').value = Math.round(checkout.slow_rate * 100);
+                document.getElementById('slowRateVal').textContent = Math.round(checkout.slow_rate * 100) + '%';
+                document.getElementById('chaosMode').checked = checkout.chaos_mode;
+                document.getElementById('slowQueryRate').value = Math.round(inventory.slow_query_rate * 100);
+                document.getElementById('slowQueryRateVal').textContent = Math.round(inventory.slow_query_rate * 100) + '%';
+                document.getElementById('rps').value = loadgen.rps;
+                document.getElementById('rpsVal').textContent = loadgen.rps;
+                document.getElementById('burstRps').value = loadgen.burst_rps;
+                document.getElementById('burstRpsVal').textContent = loadgen.burst_rps;
+
+                document.getElementById('statusDot').className = 'status-dot green';
+                document.getElementById('statusText').textContent = 'Connected';
+            } catch (e) {
+                document.getElementById('statusDot').className = 'status-dot red';
+                document.getElementById('statusText').textContent = 'Disconnected';
+            }
+        }
+
+        // ── Start polling ──────────────────────────────────────────────────
+        syncConfig();
+        updateAlerts();
+        setInterval(updateGraphs, 1000);
+        setInterval(updateAlerts, 5000);
+        setInterval(syncConfig, 10000);
+    </script>
+</body>
+</html>

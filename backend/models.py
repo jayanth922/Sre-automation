@@ -38,6 +38,7 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 class JobType(str, Enum):
+    TOOL_CALL = "tool_call"
     INVESTIGATION = "investigation"
     REMEDIATION = "remediation"
 
@@ -94,10 +95,20 @@ class Cluster(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)
-    token: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)  # Agent authentication token
-    status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.OFFLINE)
+    token: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.ONLINE)
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Customer infrastructure connectivity
+    prometheus_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    loki_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    k8s_api_server: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    k8s_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # service account token
+    github_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    github_repo: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. org/repo
+    notion_api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    notion_database_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="clusters")

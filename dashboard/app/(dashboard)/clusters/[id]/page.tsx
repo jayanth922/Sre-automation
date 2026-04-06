@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge"
 import { MetricSparklines } from "@/components/dashboard/MetricSparklines"
 import { IncidentCommandCenter } from "@/components/dashboard/IncidentCommandCenter"
 import { AuditLogTable } from "@/components/dashboard/AuditLogTable"
+import { AgentStatus } from "@/components/dashboard/AgentStatus"
+import { SLOOverview } from "@/components/dashboard/SLOOverview"
 
 interface Job {
     id: string
@@ -51,7 +53,7 @@ export default function ClusterDetailsPage() {
     const fetchMetrics = async () => {
         try {
             const token = getToken()
-            const res = await fetch("/metrics/snapshot", {
+            const res = await fetch(`/metrics/snapshot?cluster_id=${clusterId}`, {
                 headers: { "Authorization": `Bearer ${token}` }
             })
             if (res.ok) {
@@ -63,12 +65,11 @@ export default function ClusterDetailsPage() {
                         cpu: data.cpu ?? 0,
                         mem: data.mem ?? 0
                     }]
-                    // Keep a sliding window of 20 data points
-                    return next.length > 20 ? next.slice(-20) : next
+                    return next.length > 30 ? next.slice(-30) : next
                 })
             }
         } catch (error) {
-            // Prometheus may not be configured — silently skip
+            console.error("Failed to fetch metrics")
         }
     }
 
@@ -252,9 +253,21 @@ export default function ClusterDetailsPage() {
                 </div>
             </header>
 
+            {/* 1.1 Agent Status Bar */}
+            <AgentStatus clusterId={clusterId} />
+
             {/* 2. Vital Signs (Top Pane) */}
             <section>
                 <MetricSparklines data={sparklineData} />
+            </section>
+
+            {/* 2.1 SLO Overview */}
+            <section>
+                <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-500">Service Level Objectives</h2>
+                    <div className="h-px flex-1 bg-zinc-800"></div>
+                </div>
+                <SLOOverview clusterId={clusterId} />
             </section>
 
             {/* 3. Command Center (Middle Pane) */}

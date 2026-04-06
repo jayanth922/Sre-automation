@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
+import json
 import logging
 import os
 from dotenv import load_dotenv
@@ -23,10 +24,11 @@ from .logging_config import configure_logging
 from .multi_agent_langgraph import create_multi_agent_system
 
 # SaaS API Imports
-from sre_agent.api.v1 import clusters, agent_connect, incidents
+from sre_agent.api.v1 import clusters, incidents
 from backend import crud, database, models
 from backend.routers import auth as auth_router
-from backend.models import IncidentStatus
+from backend.models import IncidentStatus, JobStatus
+from sqlalchemy import func
 import uuid
 
 # Configure logging based on DEBUG environment variable
@@ -69,7 +71,6 @@ app.add_middleware(
 
 # Mount SaaS API Routers
 app.include_router(clusters.router, prefix="/api/v1")
-app.include_router(agent_connect.router, prefix="/api/v1")
 app.include_router(incidents.router, prefix="/api/v1")
 app.include_router(auth_router.router)
 
@@ -88,6 +89,10 @@ app.include_router(slos_router.router, prefix="/api/v1")
 # Alert Webhook Router (receives Alertmanager webhooks)
 from sre_agent.api.v1 import alerts as alerts_router
 app.include_router(alerts_router.router, prefix="/api/v1")
+
+# Metrics Router (Golden Signals)
+from sre_agent.api.v1 import metrics as metrics_router
+app.include_router(metrics_router.router, prefix="/metrics")
 
 
 # Simple request/response models
@@ -123,7 +128,7 @@ async def initialize_agent():
         provider = os.getenv("LLM_PROVIDER", "groq").lower()
 
         # Validate provider
-        if provider not in ["groq", "ollama"]:
+        if provider not in ["groq", "ollama", "gemini"]:
             logger.warning(f"Invalid provider '{provider}', defaulting to 'groq'")
             provider = "groq"
 
@@ -173,22 +178,17 @@ async def get_mcp_client():
 async def startup_event():
     """Initialize agent on startup."""
     agent_mode = os.getenv("AGENT_MODE", "standalone").lower()
-    logger.info(f"Startup: AGENT_MODE={agent_mode}")
+    cluster_token = os.getenv("CLUSTER_TOKEN", "")
+    
+    logger.info(f"Startup: AGENT_MODE={agent_mode}, HAS_TOKEN={bool(cluster_token)}")
 
-    if agent_mode != "api":
-        # Only initialize the AI graph if we are NOT just a dumb API
+    # Always initialize the AI graph if we are managing a cluster
+    if agent_mode != "api" or cluster_token:
+        logger.info("🧠 Initializing SRE Agent Graph for automated investigations...")
         await initialize_agent()
     else:
-        logger.info("Running in API Mode (Control Plane). Agent Graph initialization skipped.")
+        logger.info("ℹ️ Running in Control Plane mode without local AI brain.")
     
-    # Start job poller if CLUSTER_TOKEN is set
-    cluster_token = os.getenv("CLUSTER_TOKEN", "")
-    if cluster_token:
-        from .job_poller import start_job_poller
-        logger.info("🔄 Starting job poller (CLUSTER_TOKEN detected)")
-        start_job_poller()
-    else:
-        logger.info("ℹ️ Job poller disabled (no CLUSTER_TOKEN)")
 
 
 @app.post("/invocations", response_model=InvocationResponse)
@@ -312,72 +312,7 @@ async def ping():
     return {"status": "healthy"}
 
 
-@app.get("/metrics/snapshot")
-async def get_metrics_snapshot():
-    """
-    Get current metrics snapshot for dashboard telemetry.
 
-    Returns all four Golden Signals from Prometheus:
-    - Latency (P95 request duration)
-    - Error Rate (5xx error percentage)
-    - CPU Saturation
-    - Memory Usage
-
-    Returns 503 when Prometheus is unreachable (no synthetic data).
-    """
-    prometheus_url = os.getenv("PROMETHEUS_URL", "")
-    if not prometheus_url:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "prometheus_not_configured",
-                "message": "PROMETHEUS_URL not set. Connect a cluster with monitoring to see live metrics.",
-            },
-        )
-    import httpx
-
-    queries = {
-        "latency": 'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) * 1000',
-        "errors": 'sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) * 100',
-        "cpu": "avg(rate(container_cpu_usage_seconds_total[5m])) * 100",
-        "mem": 'sum(container_memory_usage_bytes) / (1024*1024*1024)',
-    }
-
-    try:
-        results = {}
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for signal, query in queries.items():
-                try:
-                    response = await client.get(
-                        f"{prometheus_url}/api/v1/query",
-                        params={"query": query},
-                    )
-                    data = response.json()
-                    value = 0.0
-                    if data.get("status") == "success" and data.get("data", {}).get("result"):
-                        raw = data["data"]["result"][0].get("value", [None, 0])[1]
-                        value = float(raw) if raw else 0.0
-                    results[signal] = round(value, 2)
-                except Exception:
-                    results[signal] = 0.0
-
-        return {
-            "latency": results["latency"],
-            "errors": results["errors"],
-            "cpu": min(100.0, max(0.0, results["cpu"])),
-            "mem": max(0.0, results["mem"]),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "prometheus",
-        }
-    except Exception as e:
-        logger.warning(f"Prometheus unreachable for metrics snapshot: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "prometheus_unavailable",
-                "message": "Metrics snapshot unavailable; Prometheus did not respond.",
-            },
-        )
 
 
 @app.get("/agent/state")
@@ -684,7 +619,8 @@ async def run_graph_background(
 async def run_graph_background_saas(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
-    alert_name: str
+    alert_name: str,
+    job_id: Optional[uuid.UUID] = None
 ):
     """
     SaaS-aware background execution.
@@ -694,17 +630,34 @@ async def run_graph_background_saas(
     session_id = str(incident_id)
     global agent_graph, tools
     
-    logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id}")
+    logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id} (Job: {job_id})")
     
-    # Update Incident Status to INVESTIGATING
+    # Update Incident Status to INVESTIGATING and Job to RUNNING
     async with database.AsyncSessionLocal() as db:
-        stmt = (
+        # Update Incident
+        stmt_inc = (
             models.Incident.__table__
             .update()
             .where(models.Incident.id == incident_id)
             .values(status=IncidentStatus.INVESTIGATING)
         )
-        await db.execute(stmt)
+        await db.execute(stmt_inc)
+
+        # Update Job if provided
+        if job_id:
+            from backend.models import JobStatus
+            stmt_job = (
+                models.Job.__table__
+                .update()
+                .where(models.Job.id == job_id)
+                .values(
+                    status=JobStatus.RUNNING,
+                    started_at=datetime.now(timezone.utc),
+                    logs=f"[{datetime.now(timezone.utc).isoformat()}] Agent investigation started.\n"
+                )
+            )
+            await db.execute(stmt_job)
+
         await db.commit()
 
     try:
@@ -741,7 +694,8 @@ async def run_graph_background_saas(
             "current_node": "start",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Investigation started for Incident {incident_id}")
+        start_log = f"[{datetime.now(timezone.utc).isoformat()}] Investigation started for Incident {incident_id}"
+        state_store.append_log(session_id, start_log)
         
         from .callbacks import RedisLogCallbackHandler
         callback_handler = RedisLogCallbackHandler(session_id)
@@ -755,27 +709,73 @@ async def run_graph_background_saas(
             for node_name, node_output in event.items():
                 logger.info(f"SaaS Background processing node: {node_name}")
                 
-                # Log entry
-                state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Step completed: {node_name}")
+                # Format a clean log line for the UI
+                timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                log_line = f"[{timestamp}] 🤖 AGENT_{node_name.upper()}: Step execution started."
+                
+                if node_name == "investigation_swarm":
+                    log_line = f"[{timestamp}] 🔍 INVESTIGATION: Querying K8s, Metrics, and Logs in parallel..."
+                elif node_name == "reflector":
+                    log_line = f"[{timestamp}] 🧠 REFLECTOR: Correlating findings and forming hypothesis..."
+                elif node_name == "policy_gate":
+                    log_line = f"[{timestamp}] 🛡️ POLICY: Checking remediation safety rules..."
+                
+                # Push to Redis for potential low-latency UI needs
+                state_store.append_log(session_id, log_line)
+
+                # CRITICAL: Sync directly to the Job record in Postgres for the Dashboard Terminal
+                if job_id:
+                    try:
+                        async with database.AsyncSessionLocal() as db:
+                            from sqlalchemy import select, update, func
+                            # Use func.concat to append logs atomically in the DB
+                            await db.execute(
+                                update(models.Job)
+                                .where(models.Job.id == job_id)
+                                .values(
+                                    logs=func.concat(func.coalesce(models.Job.logs, ""), log_line + "\n"),
+                                    status=JobStatus.RUNNING
+                                )
+                            )
+                            await db.commit()
+                    except Exception as le:
+                        logger.warning(f"Failed to sync thought log to job: {le}")
                 
                 # Merge state
                 current_execution_state = {**current_execution_state, **node_output}
-                
-                # Update Redis
-                state_store.set(session_id, {
-                    "status": "RUNNING",
-                    "current_node": node_name,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "state": current_execution_state
-                }, ttl=3600)
 
-        # Completion
+        # Completion: Build the rich result object for the Dashboard cards
         final_response = current_execution_state.get("final_response", "Investigation completed.")
-        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ✅ Investigation Complete")
         
-        # Update Incident in Postgres
+        # Extract plan if it exists and convert to serializable format
+        raw_plan = current_execution_state.get("remediation_plan")
+        remediation_plan_serializable = []
+        
+        if raw_plan:
+            # Handle Pydantic model (preferred)
+            if hasattr(raw_plan, "model_dump"):
+                remediation_plan_serializable = [raw_plan.model_dump()]
+            elif hasattr(raw_plan, "dict"):
+                remediation_plan_serializable = [raw_plan.dict()]
+            # Handle list of actions (legacy or string)
+            elif isinstance(raw_plan, list):
+                remediation_plan_serializable = raw_plan
+            elif isinstance(raw_plan, str):
+                remediation_plan_serializable = [raw_plan]
+
+        # Extract verification result
+        raw_verification = current_execution_state.get("verification_result")
+        verification_serializable = None
+        if raw_verification:
+            if hasattr(raw_verification, "model_dump"):
+                verification_serializable = raw_verification.model_dump()
+            elif hasattr(raw_verification, "dict"):
+                verification_serializable = raw_verification.dict()
+
+        # Update Incident and Job in Postgres with RICH DATA
         async with database.AsyncSessionLocal() as db:
-            stmt = (
+            # Update Incident
+            await db.execute(
                 models.Incident.__table__
                 .update()
                 .where(models.Incident.id == incident_id)
@@ -785,18 +785,39 @@ async def run_graph_background_saas(
                     resolved_at=datetime.now(timezone.utc)
                 )
             )
-            await db.execute(stmt)
+
+            # Update Job with structured results for the Dashboard "Action Deck"
+            if job_id:
+                from backend.models import JobStatus
+                await db.execute(
+                    models.Job.__table__
+                    .update()
+                    .where(models.Job.id == job_id)
+                    .values(
+                        status=JobStatus.COMPLETED,
+                        completed_at=datetime.now(timezone.utc),
+                        result=json.dumps({
+                            "summary": final_response,
+                            "hypothesis": final_response.split(".")[0] if final_response else "Issue identified.",
+                            "plan": remediation_plan_serializable,
+                            "actions": remediation_plan_serializable,
+                            "verification": verification_serializable
+                        })
+                    )
+                )
+
             await db.commit()
             
         logger.info(f"SaaS Background execution completed for incident: {incident_id}")
 
     except Exception as e:
         logger.error(f"SaaS Background execution failed: {e}")
-        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}")
+        error_log = f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}"
+        state_store.append_log(session_id, error_log)
         
-        # Update Incident Status to OPEN (investigation failed)
+        # Update Incident Status to OPEN (investigation failed) and Job to FAILED
         async with database.AsyncSessionLocal() as db:
-             stmt = (
+             stmt_inc = (
                 models.Incident.__table__
                 .update()
                 .where(models.Incident.id == incident_id)
@@ -805,7 +826,21 @@ async def run_graph_background_saas(
                     status=IncidentStatus.OPEN
                 )
             )
-             await db.execute(stmt)
+             await db.execute(stmt_inc)
+
+             if job_id:
+                 from backend.models import JobStatus
+                 await db.execute(
+                     models.Job.__table__
+                     .update()
+                     .where(models.Job.id == job_id)
+                     .values(
+                         status=JobStatus.FAILED,
+                         completed_at=datetime.now(timezone.utc),
+                         result=json.dumps({"error": str(e)})
+                     )
+                 )
+
              await db.commit()
 
 @app.post("/webhook/alert", status_code=202)

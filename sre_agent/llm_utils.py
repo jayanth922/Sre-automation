@@ -55,9 +55,11 @@ def create_llm_with_error_handling(provider: str = "groq", **kwargs):
         logger.info(f"Creating LLM with provider: {provider}")
     elif provider == "ollama":
         logger.info(f"Creating LLM with provider: {provider}")
+    elif provider == "gemini":
+        logger.info(f"Creating LLM with provider: {provider}")
     else:
         raise ValueError(
-            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama'."
+            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'."
         )
 
     try:
@@ -69,6 +71,9 @@ def create_llm_with_error_handling(provider: str = "groq", **kwargs):
         elif provider == "ollama":
             logger.info(f"Creating Ollama LLM - Model: {config['model_id']} at {config['base_url']}")
             return _create_ollama_llm(config)
+        elif provider == "gemini":
+            logger.info(f"Creating Gemini LLM - Model: {config['model_id']}")
+            return _create_gemini_llm(config)
 
     except Exception as e:
         error_msg = _get_helpful_error_message(provider, e)
@@ -101,6 +106,26 @@ def _create_groq_llm(config: Dict[str, Any]):
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
     )
+
+
+def _create_gemini_llm(config: Dict[str, Any]):
+    """Create Gemini LLM instance."""
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        import os
+        
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise LLMAuthenticationError("GOOGLE_API_KEY not found in environment")
+            
+        return ChatGoogleGenerativeAI(
+            model=config["model_id"],
+            google_api_key=api_key,
+            temperature=config["temperature"],
+            convert_system_message_to_human=True,
+        )
+    except ImportError:
+        raise LLMProviderError("langchain-google-genai not installed. Run 'pip install langchain-google-genai'")
 
 
 def _is_auth_error(error: Exception) -> bool:
@@ -140,49 +165,45 @@ def _get_helpful_error_message(provider: str, error: Exception) -> str:
     """Generate helpful error message based on provider and error type."""
     base_error = str(error)
 
-    if _is_auth_error(error):
-        return (
-            f"Groq authentication failed: {base_error}\n"
-            "Solutions:\n"
-            "  1. Set GROQ_API_KEY environment variable\n"
-            "  2. Check if your API key is valid and active\n"
-            "  3. Try: export GROQ_API_KEY='your-key-here'"
-        )
-    elif _is_access_error(error):
-        return (
-            f"Groq access error: {base_error}\n"
-            "Solutions:\n"
-            "  1. Verify model name exists for your account\n"
-            "  2. Check rate limits / quotas in Groq console\n"
-            "  3. Try a lighter model (e.g., llama-3.1-8b-instant)"
-        )
-    else:
-        return (
-            "  2. Verify model name and parameters\n"
-            "  3. Try again"
-        )
+    if provider == "groq":
+        if _is_auth_error(error):
+            return (
+                f"Groq authentication failed: {base_error}\n"
+                "Solutions:\n"
+                "  1. Set GROQ_API_KEY environment variable\n"
+                "  2. Check if your API key is valid and active"
+            )
+        elif _is_access_error(error):
+            return (
+                f"Groq access error: {base_error}\n"
+                "Solutions:\n"
+                "  1. Verify model name exists for your account\n"
+                "  2. Check rate limits / quotas in Groq console"
+            )
     
+    if provider == "gemini":
+        if _is_auth_error(error):
+            return (
+                f"Gemini authentication failed: {base_error}\n"
+                "Solutions:\n"
+                "  1. Set GOOGLE_API_KEY environment variable\n"
+                "  2. Check if your API key is valid in Google AI Studio"
+            )
+
     if provider == "ollama":
         if "connection refused" in base_error.lower():
             return (
                 f"Ollama connection failed: {base_error}\n"
                 "Solutions:\n"
-                "  1. Ensure Ollama container is running (docker-compose up -d ollama)\n"
-                "  2. Check OLLAMA_BASE_URL (http://ollama:11434 from inside docker)\n"
-            )
-        elif "not found" in base_error.lower():
-             return (
-                f"Ollama model not found: {base_error}\n"
-                "Solutions:\n"
-                "  1. Run scripts/init_ollama.sh to pull the model\n"
+                "  1. Ensure Ollama container is running\n"
+                "  2. Check OLLAMA_BASE_URL (default: http://ollama:11434)"
             )
 
     return (
         f"{provider} provider error: {base_error}\n"
         "Solutions:\n"
-        "  1. Check service status and your network\n"
-        "  2. Verify model name and parameters\n"
-        "  3. Try again"
+        "  1. Check your network and API key\n"
+        "  2. Verify the model name in your .env or constants.py"
     )
 
 
@@ -190,14 +211,14 @@ def validate_provider_access(provider: str = "groq", **kwargs) -> bool:
     """Validate if the specified provider is accessible.
 
     Args:
-        provider: LLM provider to validate (only "groq" is supported)
+        provider: LLM provider to validate
         **kwargs: Additional configuration
 
     Returns:
         True if provider is accessible, False otherwise
     """
-    if provider not in ["groq", "ollama"]:
-        logger.warning(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama'.")
+    if provider not in ["groq", "ollama", "gemini"]:
+        logger.warning(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'.")
         return False
 
     try:
@@ -215,8 +236,13 @@ def get_recommended_provider() -> str:
     """Get recommended provider based on availability.
 
     Returns:
-        Recommended provider name (always "groq")
+        Recommended provider name
     """
+    # Prefer Gemini for cloud execution if available (higher limits than Groq free)
+    if validate_provider_access("gemini"):
+        logger.info("Recommended provider: gemini")
+        return "gemini"
+
     # Prefer Ollama for local execution if available
     if validate_provider_access("ollama"):
         logger.info("Recommended provider: ollama")
