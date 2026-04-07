@@ -24,7 +24,6 @@ async def seed_default_user():
         else:
             print(f"User {email} already exists.")
 
-<<<<<<< HEAD
         # Seed Default Cluster if requested
         seed_cluster_token = os.getenv("SEED_CLUSTER_TOKEN")
         seed_cluster_name = os.getenv("SEED_CLUSTER_NAME", "SRE Demo Cluster")
@@ -55,12 +54,6 @@ async def seed_default_user():
                     from datetime import datetime, timezone
                     existing_cluster.last_heartbeat = datetime.now(timezone.utc)
                 await db.commit()
-=======
-        print(f"Creating default user: {email}")
-        new_user = UserCreate(email=email, password=password, org_name=org_name)
-        await create_user(db, new_user)
-        print("User created successfully.")
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 
 if __name__ == "__main__":
     asyncio.run(seed_default_user())

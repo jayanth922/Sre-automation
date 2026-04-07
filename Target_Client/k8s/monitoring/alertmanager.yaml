@@ -60,7 +60,7 @@ spec:
             - containerPort: 9093
           env:
             - name: CLUSTER_TOKEN
-              value: "cl_your_token_here"
+              value: "cl_58f71c23a54e4b5ab1d10c8defccfc6d"
           volumeMounts:
             - name: config
               mountPath: /etc/alertmanager

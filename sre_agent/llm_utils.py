@@ -35,11 +35,11 @@ class LLMAccessError(LLMProviderError):
     pass
 
 
-def create_llm_with_error_handling(provider: str = "groq", **kwargs):
+def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
     """Create LLM instance with proper error handling and helpful error messages.
 
     Args:
-        provider: LLM provider (only "groq" is supported)
+        provider: LLM provider (only "ollama" is supported)
         **kwargs: Additional configuration overrides
 
     Returns:
@@ -94,8 +94,7 @@ def _create_ollama_llm(config: Dict[str, Any]):
         model=config["model_id"],
         base_url=config.get("base_url", "http://localhost:11434"),
         temperature=config["temperature"],
-        # Explicitly set context window to 32k to avoid truncation of logs/diffs
-        num_ctx=32768, 
+        num_ctx=config.get("num_ctx", 32768),
     )
 
 
@@ -207,7 +206,7 @@ def _get_helpful_error_message(provider: str, error: Exception) -> str:
     )
 
 
-def validate_provider_access(provider: str = "groq", **kwargs) -> bool:
+def validate_provider_access(provider: str = "ollama", **kwargs) -> bool:
     """Validate if the specified provider is accessible.
 
     Args:
@@ -238,11 +237,6 @@ def get_recommended_provider() -> str:
     Returns:
         Recommended provider name
     """
-    # Prefer Gemini for cloud execution if available (higher limits than Groq free)
-    if validate_provider_access("gemini"):
-        logger.info("Recommended provider: gemini")
-        return "gemini"
-
     # Prefer Ollama for local execution if available
     if validate_provider_access("ollama"):
         logger.info("Recommended provider: ollama")
@@ -251,6 +245,10 @@ def get_recommended_provider() -> str:
     if validate_provider_access("groq"):
         logger.info("Recommended provider: groq")
         return "groq"
+
+    if validate_provider_access("gemini"):
+        logger.info("Recommended provider: gemini")
+        return "gemini"
 
     logger.warning("No providers accessible. Defaulting to ollama.")
     return "ollama"

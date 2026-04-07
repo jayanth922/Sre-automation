@@ -5,8 +5,10 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete
 
 from backend import schemas, crud, models, database
+from backend.rbac import require_admin
 from sre_agent.api.v1.clusters import get_current_user_and_org
 
 logger = logging.getLogger(__name__)
@@ -86,3 +88,37 @@ async def trigger_incident(
         )
 
     return incident
+
+
+@router.delete("/incidents", status_code=200)
+async def clear_cluster_incidents(
+    cluster_id: uuid.UUID,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db)
+):
+    """Delete all incidents for a cluster. Admin only."""
+    require_admin(user)
+
+    cluster = await crud.get_cluster_by_id(db, cluster_id)
+    if not cluster or cluster.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    incidents = await crud.get_incidents_for_cluster(db, cluster_id)
+    incident_ids = [str(incident.id) for incident in incidents]
+
+    if not incident_ids:
+        return {"deleted": 0}
+
+    await db.execute(delete(models.Job).where(models.Job.cluster_id == cluster_id))
+    await db.execute(delete(models.Incident).where(models.Incident.id.in_(incident_ids)))
+    await db.commit()
+
+    from sre_agent.redis_state_store import get_state_store
+    store = get_state_store()
+    for incident_id in incident_ids:
+        try:
+            store.delete(incident_id)
+        except Exception:
+            pass
+
+    return {"deleted": len(incident_ids)}

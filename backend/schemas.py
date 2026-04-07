@@ -75,14 +75,11 @@ class ClusterResponse(BaseModel):
     name: str
     status: ClusterStatus
     last_heartbeat: Optional[datetime]
-<<<<<<< HEAD
     created_at: datetime
-=======
     prometheus_url: Optional[str] = None
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 
     class Config:
         from_attributes = True

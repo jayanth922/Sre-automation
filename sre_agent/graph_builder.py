@@ -23,7 +23,6 @@ from .agent_state import (
     ReflectorAnalysis,
     RemediationAction,
     RemediationPlan,
-    VerificationResult,
 )
 from .constants import SREConstants
 from .llm_utils import create_llm_with_error_handling
@@ -56,9 +55,6 @@ def _route_supervisor(state: AgentState) -> str:
         "investigation_swarm": "investigation_swarm",
         "reflector": "reflector",
         "planner": "planner",
-        "policy_gate": "policy_gate",
-        "executor": "executor",
-        "verifier": "verifier",
         "aggregate": "aggregate",
         "FINISH": "aggregate",
     }
@@ -86,7 +82,7 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
 
     # Get llm_provider from existing metadata or use default
     existing_metadata = state.get("metadata", {})
-    llm_provider = existing_metadata.get("llm_provider", "groq")
+    llm_provider = existing_metadata.get("llm_provider", "ollama")
 
     return {
         "current_query": current_query,
@@ -597,8 +593,8 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
 
         return {
             "remediation_plan": plan,
-            "next": "policy_gate",
-            "ooda_phase": "ACT",
+            "next": "aggregate",
+            "ooda_phase": "COMPLETE",
             "approval_status": "PENDING" if plan.requires_approval else "APPROVED",
             "metadata": {
                 **state.get("metadata", {}),
@@ -627,8 +623,8 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
         )
         return {
             "remediation_plan": fallback_plan,
-            "next": "policy_gate",
-            "ooda_phase": "ACT",
+            "next": "aggregate",
+            "ooda_phase": "COMPLETE",
             "approval_status": "PENDING",
             "metadata": {
                 **state.get("metadata", {}),
@@ -638,21 +634,6 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
-async def _verifier_node(state: AgentState) -> Dict[str, Any]:
-    """
-    VerifierNode: Implements closed-loop verification after remediation.
-    Re-queries metrics from Prometheus and determines if issue is resolved.
-    Implements the VERIFY phase of OODA loop.
-    """
-    logger.info("✅ VerifierNode: Verifying remediation effectiveness")
-
-    remediation_plan = state.get("remediation_plan")
-    alert_context = state.get("alert_context")
-    execution_results = state.get("execution_results", {})
-    metadata = state.get("metadata", {})
-
-    if not remediation_plan:
-        logger.warning("No remediation plan available for verification")
         return {
             "next": "aggregate",
             "ooda_phase": "COMPLETE",
@@ -715,13 +696,10 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
     else:
         promql_query = original_metric
     
-    logger.info(f"📊 VerifierNode: Constructed PromQL query: {promql_query}")
 
     thought = f"Verifying remediation. Extracted metric: {original_metric}, threshold: {threshold}. Querying Prometheus..."
-    logger.info(f"💭 VerifierNode THOUGHT: {thought}")
 
     traces = state.get("thought_traces", {})
-    traces["verifier"] = [thought]
 
     # Get tools from metadata to access Prometheus MCP tools
     tools = metadata.get("tools", [])
@@ -736,19 +714,7 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
             break
 
     if not get_metric_tool:
-        logger.error("❌ VerifierNode: get_metric tool not found. Cannot verify remediation.")
         return {
-            "verification_result": VerificationResult(
-                status="FAILED",
-                original_metric=original_metric,
-                original_value=0.0,
-                current_value=0.0,
-                threshold=threshold,
-                improvement_percentage=0.0,
-                golden_signals_status={},
-                verification_timestamp=datetime.now(timezone.utc).isoformat(),
-                next_steps=["Prometheus MCP server not available"],
-            ),
             "next": "aggregate",
             "ooda_phase": "COMPLETE",
             "thought_traces": traces,
@@ -762,7 +728,6 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
         if alert_time:
             query_args["time"] = alert_time
 
-        logger.info(f"🔍 VerifierNode: Querying original metric value at alert time: {promql_query}")
         if hasattr(get_metric_tool, "ainvoke"):
             original_result = await get_metric_tool.ainvoke(query_args)
         else:
@@ -798,18 +763,14 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
                     if values and isinstance(values[-1], list) and len(values[-1]) >= 2:
                         original_value = float(values[-1][1])
 
-        logger.info(f"📊 VerifierNode: Original metric value: {original_value}")
 
     except Exception as e:
-        logger.error(f"❌ VerifierNode: Failed to query original metric: {e}")
         original_value = 0.0
 
     # Get configurable wait time (default 60 seconds)
     wait_seconds = int(os.getenv("VERIFICATION_WAIT_SECONDS", "60"))
     
     thought_wait = f"Waiting {wait_seconds} seconds for remediation to take effect, then re-querying metric..."
-    logger.info(f"💭 VerifierNode THOUGHT: {thought_wait}")
-    traces["verifier"].append(thought_wait)
 
     # Wait for remediation to take effect
     await asyncio.sleep(wait_seconds)
@@ -817,7 +778,6 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
     # Re-query current metric value
     current_value = 0.0
     try:
-        logger.info(f"🔍 VerifierNode: Re-querying current metric value: {promql_query}")
         if hasattr(get_metric_tool, "ainvoke"):
             current_result = await get_metric_tool.ainvoke({"query": promql_query})
         else:
@@ -848,10 +808,8 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
                     if values and isinstance(values[-1], list) and len(values[-1]) >= 2:
                         current_value = float(values[-1][1])
 
-        logger.info(f"📊 VerifierNode: Current metric value: {current_value}")
 
     except Exception as e:
-        logger.error(f"❌ VerifierNode: Failed to query current metric: {e}")
         current_value = original_value  # Fallback to original if query fails
 
     # Calculate improvement
@@ -863,10 +821,8 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
     # Determine status based on threshold comparison
     if current_value < threshold:
         status = "RESOLVED"
-        logger.info(f"✅ VerifierNode: Issue RESOLVED - current value {current_value} < threshold {threshold}")
     else:
         status = "FAILED"
-        logger.warning(f"❌ VerifierNode: Issue NOT RESOLVED - current value {current_value} >= threshold {threshold}")
 
     # Query Golden Signals from Prometheus
     golden_signals = {}
@@ -926,7 +882,6 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
                 "saturation": "normal" if status == "RESOLVED" else "high",
             }
     except Exception as e:
-        logger.warning(f"⚠️ VerifierNode: Failed to query Golden Signals: {e}")
         # Fallback Golden Signals
         golden_signals = {
             "latency": "normal" if status == "RESOLVED" else "degraded",
@@ -947,10 +902,8 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
         next_steps=[] if status == "RESOLVED" else ["Monitor for 10 minutes", "Consider additional remediation"],
     )
 
-    logger.info(f"✅ VerifierNode: Verification complete - Status: {status}, Improvement: {improvement:.1f}%")
 
     return {
-        "verification_result": verification,
         "next": "aggregate",
         "ooda_phase": "COMPLETE",
         "thought_traces": traces,
@@ -959,7 +912,7 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
 
 def build_multi_agent_graph(
     tools: List[BaseTool],
-    llm_provider: str = "groq",
+    llm_provider: str = "ollama",
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
     **llm_kwargs,
@@ -972,7 +925,6 @@ def build_multi_agent_graph(
     - ORIENT: ReflectorNode (analysis and hypothesis)
     - DECIDE: PlannerNode (remediation plan)
     - ACT: PolicyGateNode -> ExecutorNode
-    - VERIFY: VerifierNode (closed-loop verification)
     
     Args:
         tools: List of all available tools
@@ -1067,7 +1019,6 @@ def build_multi_agent_graph(
     workflow.add_node("investigation_swarm", investigation_swarm_with_agents)
     workflow.add_node("reflector", _reflector_node)
     workflow.add_node("planner", _planner_node)
-    workflow.add_node("verifier", _verifier_node)
     
     # Legacy agent nodes (for backward compatibility and direct invocation)
     workflow.add_node("kubernetes_agent", kubernetes_agent)
@@ -1095,9 +1046,6 @@ def build_multi_agent_graph(
             "investigation_swarm": "investigation_swarm",
             "reflector": "reflector",
             "planner": "planner",
-            "policy_gate": "policy_gate",
-            "executor": "executor",
-            "verifier": "verifier",
             "aggregate": "aggregate",
             # Legacy routing for backward compatibility
             "kubernetes_agent": "kubernetes_agent",
@@ -1108,443 +1056,6 @@ def build_multi_agent_graph(
     )
 
     # Policy Gate Node (Phase C Implementation)
-    async def _policy_gate_node(state: AgentState) -> Dict[str, Any]:
-        """
-        PolicyGateNode: Evaluates each action against deterministic safety rules.
-        
-        Implements the safety gate before execution. Blocks dangerous actions
-        in production environments based on policy rules.
-        """
-        logger.info("🔒 PolicyGateNode: Evaluating remediation actions against policy")
-
-        remediation_plan = state.get("remediation_plan")
-        approval_status = state.get("approval_status", "PENDING")
-        alert_context = state.get("alert_context")
-
-        if not remediation_plan:
-            logger.warning("No remediation plan available")
-            return {"next": "aggregate", "ooda_phase": "COMPLETE"}
-
-        # Get environment from alert context
-        environment = get_environment_from_context(alert_context)
-        logger.info(f"🔒 PolicyGateNode: Environment detected: {environment}")
-
-        # Calculate risk score
-        risk_score = calculate_risk_score(remediation_plan)
-        logger.info(f"🔒 PolicyGateNode: Risk score: {risk_score}")
-
-        # Evaluate each action
-        blocked_actions = []
-        allowed_actions = []
-
-        thought = f"Evaluating {len(remediation_plan.actions)} actions against policy rules for {environment} environment..."
-        logger.info(f"💭 PolicyGateNode THOUGHT: {thought}")
-
-        traces = state.get("thought_traces", {})
-        traces["policy_gate"] = [thought]
-
-        for action in remediation_plan.actions:
-            is_allowed, reason = evaluate_action(action, environment, risk_score)
-            if is_allowed:
-                allowed_actions.append(action)
-                logger.info(f"✅ PolicyGateNode: Action '{action.action_type}' on '{action.target}' ALLOWED - {reason}")
-            else:
-                blocked_actions.append((action, reason))
-                logger.warning(f"🚫 PolicyGateNode: Action '{action.action_type}' on '{action.target}' BLOCKED - {reason}")
-
-        # If any actions are blocked, require approval
-        if blocked_actions:
-            logger.warning(f"🚫 PolicyGateNode: {len(blocked_actions)} action(s) blocked by policy")
-            blocked_reasons = [f"{action.action_type} on {action.target}: {reason}" for action, reason in blocked_actions]
-            
-            return {
-                "approval_status": "PENDING",
-                "next": "aggregate",  # Pause graph, wait for approval
-                "ooda_phase": "ACT",
-                "metadata": {
-                    **state.get("metadata", {}),
-                    "blocked_actions": blocked_reasons,
-                    "policy_evaluation": {
-                        "environment": environment,
-                        "risk_score": risk_score,
-                        "blocked_count": len(blocked_actions),
-                        "allowed_count": len(allowed_actions),
-                    },
-                },
-                "thought_traces": traces,
-            }
-
-        # If plan requires approval (from planner) and not yet approved
-        if remediation_plan.requires_approval and approval_status != "APPROVED":
-            logger.info("⏸️ PolicyGateNode: Plan requires approval (from planner)")
-            return {
-                "approval_status": "PENDING",
-                "next": "aggregate",  # Pause graph, wait for approval
-                "ooda_phase": "ACT",
-                "metadata": {
-                    **state.get("metadata", {}),
-                    "policy_evaluation": {
-                        "environment": environment,
-                        "risk_score": risk_score,
-                        "all_actions_allowed": True,
-                    },
-                },
-                "thought_traces": traces,
-            }
-
-        # All actions allowed and approved - proceed to execution
-        logger.info("✅ PolicyGateNode: All actions allowed, proceeding to execution")
-        return {
-            "approval_status": "APPROVED",
-            "next": "executor",
-            "ooda_phase": "ACT",
-            "metadata": {
-                **state.get("metadata", {}),
-                "policy_evaluation": {
-                    "environment": environment,
-                    "risk_score": risk_score,
-                    "all_actions_allowed": True,
-                },
-            },
-            "thought_traces": traces,
-        }
-    
-    # Executor Node (Phase C Implementation)
-    async def _executor_node(state: AgentState) -> Dict[str, Any]:
-        """
-        ExecutorNode: Executes remediation actions via MCP tools.
-        
-        Only executes if approval_status == APPROVED.
-        Iterates through remediation_plan.actions and calls corresponding MCP tools.
-        """
-        logger.info("⚙️ ExecutorNode: Starting remediation execution")
-
-        remediation_plan = state.get("remediation_plan")
-        approval_status = state.get("approval_status")
-        metadata = state.get("metadata", {})
-        
-        # ------------------------------------------------------------------
-        # SAFETY CHECK: Break Glass Protocol
-        # ------------------------------------------------------------------
-        from .redis_state_store import get_state_store
-        
-        cluster_id_str = metadata.get("cluster_id")
-        storage = get_state_store()
-        
-        if cluster_id_str and storage.is_cluster_locked(cluster_id_str):
-            logger.critical(f"⛔ CLUSTER LOCKED: Break Glass Protocol Active for {cluster_id_str}")
-            return {
-                "execution_status": "ABORTED",
-                "execution_results": {
-                    "error": "Emergency Stop Active (Break Glass)",
-                    "status": "ABORTED"
-                },
-                "next": "aggregate",
-                "ooda_phase": "COMPLETE",
-            }
-
-        # Safety check: Only execute if approved
-        if approval_status != "APPROVED":
-            logger.warning("❌ ExecutorNode: Plan not approved, skipping execution")
-            return {
-                "execution_status": "FAILED",
-                "execution_results": {
-                    "error": "Plan not approved",
-                    "approval_status": approval_status,
-                },
-                "next": "aggregate",
-                "ooda_phase": "COMPLETE",
-            }
-
-        if not remediation_plan:
-            logger.warning("No remediation plan available")
-            return {"next": "aggregate", "ooda_phase": "COMPLETE"}
-
-        # Get tools from metadata (passed from graph builder)
-        tools = metadata.get("tools", [])
-        if not tools:
-            logger.error("❌ ExecutorNode: No tools available in metadata")
-            return {
-                "execution_status": "FAILED",
-                "execution_results": {
-                    "error": "Tools not available - cannot execute remediation actions",
-                    "plan_id": remediation_plan.plan_id,
-                },
-                "next": "aggregate",
-                "ooda_phase": "COMPLETE",
-            }
-
-        # Execute each action
-        executed_actions = []
-        failed_actions = []
-
-        thought = f"Executing {len(remediation_plan.actions)} remediation actions. Each action will be executed via MCP tools..."
-        logger.info(f"💭 ExecutorNode THOUGHT: {thought}")
-
-        traces = state.get("thought_traces", {})
-        traces["executor"] = [thought]
-        
-        # Imports for Audit Logging
-        try:
-            from backend import crud, database
-            import uuid
-        except ImportError:
-            logger.warning("Could not import backend for audit logging")
-            crud = None
-
-        for i, action in enumerate(remediation_plan.actions, 1):
-            logger.info(f"⚙️ ExecutorNode: Executing action {i}/{len(remediation_plan.actions)}: {action.action_type} on {action.target}")
-
-            action_thought = f"Executing {action.action_type} on {action.target}. Parameters: {action.parameters}"
-            logger.info(f"💭 ExecutorNode THOUGHT: {action_thought}")
-            traces["executor"].append(action_thought)
-
-            try:
-                # Map action types to MCP tool names
-                tool_name = _map_action_to_tool(action.action_type, action.target)
-
-                # Find the tool
-                tool = None
-                for t in tools:
-                    tool_base_name = getattr(t, "name", "").split("___")[-1] if "___" in getattr(t, "name", "") else getattr(t, "name", "")
-                    if tool_base_name == tool_name:
-                        tool = t
-                        break
-
-                if not tool:
-                    logger.warning(f"Tool '{tool_name}' not found, skipping action")
-                    failed_actions.append({
-                        "action": action,
-                        "error": f"Tool '{tool_name}' not found",
-                    })
-                    continue
-
-                # Prepare tool arguments
-                tool_args = _prepare_tool_args(action, state)
-
-                # Execute tool
-                logger.info(f"🔧 ExecutorNode: Calling tool '{tool_name}' with args: {tool_args}")
-                if hasattr(tool, "ainvoke"):
-                    result = await tool.ainvoke(tool_args)
-                elif hasattr(tool, "invoke"):
-                    result = tool.invoke(tool_args)
-                else:
-                    # Try calling directly
-                    result = await tool(**tool_args) if asyncio.iscoroutinefunction(tool) else tool(**tool_args)
-
-                result_str = str(result)[:200] if result else "Success"
-                logger.info(f"✅ ExecutorNode: Action {i} executed successfully")
-
-                if action.action_type.lower() == "revert_commit":
-                    try:
-                        import json
-                        raw = result
-                        if hasattr(raw, "content") and isinstance(getattr(raw, "content", None), str):
-                            raw = raw.content
-                        elif hasattr(raw, "text"):
-                            raw = raw.text
-                        parsed = result if isinstance(result, dict) else None
-                        if parsed is None and isinstance(raw, str) and raw.strip().startswith("{"):
-                            try:
-                                parsed = json.loads(raw)
-                            except json.JSONDecodeError:
-                                pass
-                        if parsed and "pr_url" in parsed:
-                            logger.info(f"📎 ExecutorNode: Revert PR created: {parsed.get('pr_url')}")
-                        pr_number = parsed.get("pr_number") if isinstance(parsed, dict) else None
-                        if pr_number is not None:
-                            comment_tool = None
-                            for t in tools:
-                                base = getattr(t, "name", "").split("___")[-1] if "___" in getattr(t, "name", "") else getattr(t, "name", "")
-                                if base == "comment_on_pr":
-                                    comment_tool = t
-                                    break
-                            if comment_tool:
-                                reasoning = action.parameters.get("reasoning") or remediation_plan.hypothesis or "Revert requested by SRE Agent (bad commit remediation)."
-                                comment_args = {"pr_number": pr_number, "comment": reasoning}
-                                if hasattr(comment_tool, "ainvoke"):
-                                    await comment_tool.ainvoke(comment_args)
-                                elif hasattr(comment_tool, "invoke"):
-                                    comment_tool.invoke(comment_args)
-                                logger.info(f"💬 ExecutorNode: Added comment to PR #{pr_number} with agent reasoning")
-                    except Exception as comment_err:
-                        logger.warning(f"ExecutorNode: Could not add comment on PR: {comment_err}")
-                
-                # --------------------------------------------------------------
-                # AUDIT LOG (Success)
-                # --------------------------------------------------------------
-                if crud and cluster_id_str:
-                    try:
-                        async with database.AsyncSessionLocal() as db:
-                            await crud.create_audit_event(
-                                db=db,
-                                cluster_id=uuid.UUID(cluster_id_str),
-                                action_type=action.action_type,
-                                resource_target=action.target,
-                                outcome="SUCCESS",
-                                details=result_str
-                            )
-                    except Exception as audit_err:
-                        logger.error(f"Failed to create audit log: {audit_err}")
-
-                # [Existing Revert PR Logic skipped for brevity, keeping original flow logic if needed or assuming merged]
-                # For this diff, I am focusing on the requested features, assuming simple tool execution.
-                # If complex logic (revert commit PR commenting) was important, I should preserve it.
-                # I will preserve the PR commenting logic logic by copying it back or simplifying.
-                # Given the "Enterprise Hardening" context, I will assume the provided replacement is sufficient for the immediate task, but to be safe I will omit the PR commenting logic in this replacement strictly, or try to keep it?
-                # The user asked to "Inject" the logic. 
-                # I will include the text logic roughly.
-                
-                executed_actions.append({
-                    "action": action,
-                    "result": result_str,
-                })
-
-            except Exception as e:
-                logger.error(f"❌ ExecutorNode: Action {i} failed: {e}")
-                failed_actions.append({
-                    "action": action,
-                    "error": str(e),
-                })
-                
-                # --------------------------------------------------------------
-                # AUDIT LOG (Failure)
-                # --------------------------------------------------------------
-                if crud and cluster_id_str:
-                    try:
-                        async with database.AsyncSessionLocal() as db:
-                            await crud.create_audit_event(
-                                db=db,
-                                cluster_id=uuid.UUID(cluster_id_str),
-                                action_type=action.action_type,
-                                resource_target=action.target,
-                                outcome="FAILED",
-                                details=str(e)
-                            )
-                    except Exception as audit_err:
-                        logger.error(f"Failed to create audit log: {audit_err}")
-
-        # Prepare execution results
-        execution_results = {
-            "plan_id": remediation_plan.plan_id,
-            "total_actions": len(remediation_plan.actions),
-            "executed_count": len(executed_actions),
-            "failed_count": len(failed_actions),
-            "executed_actions": executed_actions,
-            "failed_actions": failed_actions,
-            "status": "COMPLETED" if len(failed_actions) == 0 else "PARTIAL",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        if len(failed_actions) > 0:
-            logger.warning(f"⚠️ ExecutorNode: {len(failed_actions)} action(s) failed")
-            execution_status = "PARTIAL"
-        else:
-            logger.info(f"✅ ExecutorNode: All {len(executed_actions)} actions executed successfully")
-            execution_status = "COMPLETED"
-
-        return {
-            "execution_status": execution_status,
-            "execution_results": execution_results,
-            "next": "verifier",
-            "ooda_phase": "VERIFY",
-            "thought_traces": traces,
-        }
-
-
-    def _map_action_to_tool(action_type: str, target: str) -> str:
-        """
-        Map remediation action type to MCP tool name.
-
-        Args:
-            action_type: Type of action (restart, scale, rollback, etc.)
-            target: Target resource (pod name, deployment name, etc.)
-
-        Returns:
-            Tool name (base name without domain prefix)
-        """
-        action_lower = action_type.lower()
-
-        # Map action types to tool names
-        if action_lower == "restart":
-            # Restart could be delete pod (K8s will recreate) or restart deployment
-            if "pod" in target.lower():
-                return "delete_pod"  # K8s will auto-recreate
-            else:
-                return "restart_deployment"
-        elif action_lower == "scale":
-            return "scale_deployment"
-        elif action_lower == "rollback":
-            return "rollback_deployment"
-        elif action_lower == "delete":
-            if "pod" in target.lower():
-                return "delete_pod"
-            else:
-                return "delete_resource"
-        elif action_lower == "patch" or action_lower == "config_change":
-            return "patch_resource"
-        elif action_lower == "revert_commit":
-            return "create_revert_pr"
-        else:
-            # Default: try to find a matching tool
-            logger.warning(f"Unknown action type '{action_type}', defaulting to generic tool")
-            return "execute_action"
-
-
-    def _prepare_tool_args(action: RemediationAction, state: AgentState) -> Dict[str, Any]:
-        """
-        Prepare tool arguments from remediation action.
-
-        Args:
-            action: Remediation action
-            state: Current agent state
-
-        Returns:
-            Dictionary of tool arguments
-        """
-        alert_context = state.get("alert_context")
-        labels = alert_context.labels if alert_context and hasattr(alert_context, "labels") else {}
-
-        # Extract namespace and resource name from target or labels
-        namespace = labels.get("namespace") or action.parameters.get("namespace") or "default"
-        resource_name = action.target
-
-        # Base arguments
-        args = {
-            "namespace": namespace,
-        }
-
-        # Add action-specific arguments
-        if action.action_type.lower() == "restart":
-            if "pod" in action.target.lower():
-                args["pod_name"] = resource_name
-            else:
-                args["deployment_name"] = resource_name
-        elif action.action_type.lower() == "scale":
-            args["deployment_name"] = resource_name
-            args["replicas"] = action.parameters.get("replicas", action.parameters.get("replica_count", 1))
-        elif action.action_type.lower() == "rollback":
-            args["deployment_name"] = resource_name
-            args["revision"] = action.parameters.get("revision")
-        elif action.action_type.lower() == "delete":
-            if "pod" in action.target.lower():
-                args["pod_name"] = resource_name
-            else:
-                args["resource_name"] = resource_name
-                args["resource_type"] = action.parameters.get("resource_type", "deployment")
-        elif action.action_type.lower() == "revert_commit":
-            # target = commit SHA, pr_title from parameters
-            args["commit_sha"] = action.target
-            args["pr_title"] = action.parameters.get("pr_title") or f"Revert commit {action.target[:7]}"
-
-        # Merge any additional parameters
-        if isinstance(action.parameters, dict):
-            args.update({k: v for k, v in action.parameters.items() if k not in args})
-
-        return args
-    
-    workflow.add_node("policy_gate", _policy_gate_node)
-    workflow.add_node("executor", _executor_node)
 
     # OODA Loop flow
     workflow.add_edge("investigation_swarm", "reflector")
@@ -1564,18 +1075,8 @@ def build_multi_agent_graph(
         },
     )
     
-    # Planner -> Policy Gate -> Executor -> Verifier
-    workflow.add_edge("planner", "policy_gate")
-    workflow.add_conditional_edges(
-        "policy_gate",
-        lambda state: state.get("next", "aggregate"),
-        {
-            "executor": "executor",
-            "aggregate": "aggregate",
-        },
-    )
-    workflow.add_edge("executor", "verifier")
-    workflow.add_edge("verifier", "aggregate")
+    # Planner -> Aggregate
+    workflow.add_edge("planner", "aggregate")
 
     # Legacy edges from agents back to supervisor (for backward compatibility)
     workflow.add_edge("kubernetes_agent", "supervisor")
@@ -1603,12 +1104,10 @@ def build_multi_agent_graph(
             # Save to file
             with open(graph_output_path, "w") as f:
                 f.write("# SRE Agent Architecture (OODA Loop)\n\n")
-                f.write("## OODA Loop Flow:\n")
+                f.write("## OOD Flow:\n")
                 f.write("- **OBSERVE**: investigation_swarm (parallel agents)\n")
                 f.write("- **ORIENT**: reflector (analysis & hypothesis)\n")
-                f.write("- **DECIDE**: planner (remediation plan)\n")
-                f.write("- **ACT**: policy_gate -> executor (execution)\n")
-                f.write("- **VERIFY**: verifier (closed-loop verification)\n\n")
+                f.write("- **DECIDE**: planner (remediation plan)\n\n")
                 f.write("```mermaid\n")
                 f.write(mermaid_diagram)
                 f.write("\n```\n")

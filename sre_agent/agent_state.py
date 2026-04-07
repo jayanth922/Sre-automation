@@ -125,29 +125,6 @@ class RemediationPlan(BaseModel):
     )
 
 
-class VerificationResult(BaseModel):
-    """Result from VerifierNode after remediation execution."""
-
-    status: Literal["RESOLVED", "PARTIAL", "ESCALATED", "FAILED"] = Field(
-        ..., description="Verification status"
-    )
-    original_metric: str = Field(..., description="Original metric that triggered alert")
-    original_value: float = Field(..., description="Original metric value")
-    current_value: float = Field(..., description="Current metric value after remediation")
-    threshold: float = Field(..., description="Alert threshold")
-    improvement_percentage: float = Field(
-        ..., description="Percentage improvement (can be negative)"
-    )
-    golden_signals_status: Dict[str, str] = Field(
-        default_factory=dict,
-        description="Status of Golden Signals (latency, traffic, errors, saturation)",
-    )
-    verification_timestamp: str = Field(..., description="When verification occurred")
-    next_steps: List[str] = Field(
-        default_factory=list, description="Recommended next steps if not resolved"
-    )
-
-
 class AgentState(TypedDict):
     """State shared across all agents in the multi-agent system.
 
@@ -160,7 +137,7 @@ class AgentState(TypedDict):
 
     # OODA Loop State Tracking
     ooda_phase: Literal[
-        "OBSERVE", "ORIENT", "DECIDE", "ACT", "VERIFY", "COMPLETE"
+        "OBSERVE", "ORIENT", "DECIDE", "COMPLETE"
     ]  # Current OODA phase
 
     # Alert Context (from webhook ingestion)
@@ -178,10 +155,6 @@ class AgentState(TypedDict):
     # Execution Phase (ACT)
     execution_status: Optional[Literal["PENDING", "APPROVED", "EXECUTING", "COMPLETED", "FAILED"]]
     approval_status: Optional[Literal["PENDING", "APPROVED", "REJECTED"]]
-    execution_results: Optional[Dict[str, Any]]  # Results from ExecutorNode
-
-    # Verification Phase (VERIFY)
-    verification_result: Optional[VerificationResult]  # VerifierNode results
 
     # Legacy fields (maintained for backward compatibility)
     next: Literal[
@@ -189,9 +162,6 @@ class AgentState(TypedDict):
         "investigation_swarm",
         "reflector",
         "planner",
-        "policy_gate",
-        "executor",
-        "verifier",
         "aggregate",
         "FINISH",
     ]  # Next node in graph

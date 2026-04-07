@@ -17,14 +17,8 @@ dependencies = [
     "langchain-core>=0.3.72",
     "langchain-groq>=0.1.0",
     "langchain-ollama>=0.0.1",
-<<<<<<< HEAD
-    "langchain-google-genai>=2.0.0",
-    "langchain-community",
-=======
-    "langchain-openai>=0.0.8",
     "langchain-community>=0.0.27",
     "langchain-mcp-adapters>=0.1.9",
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
     "langsmith[otel]",
     "mcp>=0.1.0",
 

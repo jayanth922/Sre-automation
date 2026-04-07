@@ -1,0 +1,35 @@
+flowchart TD
+  S[sre_agent] --> RT[Runtime and Graph]
+  S --> AG[Specialized Agents]
+  S --> API[API v1 Routers]
+  S --> SAF[Safety and Governance]
+  S --> PERS[Persistence and Memory]
+  S --> CFG[Config and Prompt Layer]
+
+  RT --> AR[agent_runtime.py]
+  RT --> GB[graph_builder.py]
+  RT --> ML[multi_agent_langgraph.py]
+
+  AG --> AN[agent_nodes.py]
+  AG --> SV[supervisor.py]
+
+  API --> CL[clusters.py]
+  API --> IN[incidents.py]
+  API --> AL[alerts.py]
+  API --> MC[mission_control.py]
+  API --> JB[jobs.py]
+  API --> SL[slos.py]
+  API --> MT[metrics.py]
+
+  SAF --> PE[policy_engine.py]
+  SAF --> MW[mcp_tool_wrapper.py]
+  SAF --> AC[audit_context.py]
+
+  PERS --> RS[redis_state_store.py]
+  PERS --> MS[memory_store.py]
+  PERS --> MD[models.py]
+
+  CFG --> ST[agent_state.py]
+  CFG --> LL[llm_utils.py]
+  CFG --> PL[prompt_loader.py]
+  CFG --> YC[config/agent_config.yaml]

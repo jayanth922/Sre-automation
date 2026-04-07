@@ -77,7 +77,6 @@ def _get_mcp_server_uris() -> dict[str, str]:
         "metrics": os.getenv("MCP_METRICS_URI"),
         "runbooks": os.getenv("MCP_RUNBOOKS_URI"),
         "github": os.getenv("MCP_GITHUB_URI"),
-        "memory": os.getenv("MCP_MEMORY_URI"),  # Optional memory server
     }
     
     # Filter out None values
@@ -86,7 +85,7 @@ def _get_mcp_server_uris() -> dict[str, str]:
     if not mcp_uris:
         raise ValueError(
             "No MCP server URIs configured. Set at least one of: "
-            "MCP_K8S_URI, MCP_LOGS_URI, MCP_METRICS_URI, MCP_RUNBOOKS_URI, MCP_GITHUB_URI, MCP_MEMORY_URI"
+            "MCP_K8S_URI, MCP_LOGS_URI, MCP_METRICS_URI, MCP_RUNBOOKS_URI, MCP_GITHUB_URI"
         )
     
     logger.info(f"Configured MCP servers: {list(mcp_uris.keys())}")
@@ -138,7 +137,7 @@ def create_mcp_client() -> MultiServerMCPClient:
 
 
 async def create_multi_agent_system(
-    provider: str = "groq",
+    provider: str = "ollama",
     checkpointer=None,
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",

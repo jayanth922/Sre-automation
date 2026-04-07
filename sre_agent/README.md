@@ -110,7 +110,7 @@ Shared auth dependency: `api/v1/auth_deps.py` — JWT validation + user lookup, 
 Configured via `LLM_PROVIDER` env var:
 
 - `groq` — uses Groq API (fast, cloud-hosted). Requires `GROQ_API_KEY`.
-- `ollama` — uses local Ollama. Requires `OLLAMA_BASE_URL`. Default model: `llama3.2`.
+- `ollama` — uses local Ollama. Requires `OLLAMA_BASE_URL`. Default model: `gemma3:1b` with a 32k context window.
 
 `llm_utils.py` initialises the correct provider and returns a LangChain-compatible LLM object.
 

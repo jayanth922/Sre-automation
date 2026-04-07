@@ -29,7 +29,7 @@ def _load_agent_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _create_llm(provider: str = "groq", **kwargs):
+def _create_llm(provider: str = "ollama", **kwargs):
     """Create LLM instance with improved error handling."""
     return create_llm_with_error_handling(provider, **kwargs)
 
@@ -86,7 +86,7 @@ class BaseAgentNode:
         name: str,
         description: str,
         tools: List[BaseTool],
-        llm_provider: str = "groq",
+        llm_provider: str = "ollama",
         agent_metadata: AgentMetadata = None,
         **llm_kwargs,
     ):

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -60,7 +61,7 @@ async def run_graph_background_saas(
         await initialize_agent()
         
         from langchain_core.messages import HumanMessage
-        llm_provider = os.getenv("LLM_PROVIDER", "groq")
+        llm_provider = os.getenv("LLM_PROVIDER", "ollama")
         
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
@@ -104,8 +105,6 @@ async def run_graph_background_saas(
                     log_line = f"[{timestamp}] 🔍 INVESTIGATION: Querying K8s, Metrics, and Logs in parallel..."
                 elif node_name == "reflector":
                     log_line = f"[{timestamp}] 🧠 REFLECTOR: Correlating findings and forming hypothesis..."
-                elif node_name == "policy_gate":
-                    log_line = f"[{timestamp}] 🛡️ POLICY: Checking remediation safety rules..."
                 
                 state_store.append_log(session_id, log_line)
 

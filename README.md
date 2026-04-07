@@ -16,11 +16,8 @@ When an alert fires in a customer's infrastructure, the platform:
 4. **Acts** — a policy gate checks safety rules; a human approves if the action is risky; the executor runs the fix
 5. **Verifies** — confirms the issue is resolved and closes the incident
 
-<<<<<<< HEAD
 All tool execution (querying the customer's infra) happens by connecting directly to the Model Context Protocol (MCP) servers deployed alongside the customer infrastructure. All AI reasoning happens on the SaaS platform. No customer data leaves their environment unintentionally.
-=======
 Customers register a cluster and provide their infrastructure endpoints (Prometheus, Loki, K8s API, GitHub repo). MCP tool servers on the platform connect directly to these endpoints — no agent to install, no infrastructure to manage on the customer side.
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 
 ---
 
@@ -40,9 +37,9 @@ Customers register a cluster and provide their infrastructure endpoints (Prometh
 │  │               Verify ──► Incident Closed                │ │
 │  └─────────────────────────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────────────────────────┐ │
-│  │  MCP Tool Servers (connect to customer infra via URLs)  │ │
+│  │  MCP Tool Servers (edge stack via host ports)           │ │
 │  │   mcp-k8s · mcp-prometheus · mcp-loki                   │ │
-│  │   mcp-github · mcp-notion · mcp-memory                  │ │
+│  │   mcp-github · mcp-runbooks                             │ │
 │  └─────────────────────────────────────────────────────────┘ │
 │  ┌─────────────┐  ┌─────────┐  ┌────────┐  ┌──────────┐    │
 │  │  PostgreSQL │  │  Redis  │  │ Qdrant │  │  Ollama  │    │
@@ -52,7 +49,6 @@ Customers register a cluster and provide their infrastructure endpoints (Prometh
 │  │  Cluster overview · Incidents · Approvals · Audit       │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
-<<<<<<< HEAD
               ▲  Tool execution (HTTP/SSE)       ▼
               ▲  Tool results                    ▼
 ┌──────────────────────────────────────────────────────────────┐
@@ -67,9 +63,7 @@ Customers register a cluster and provide their infrastructure endpoints (Prometh
 │  Standalone MCP servers that expose infra data securely.     │
 └──────────────────────────────────────────────────────────────┘
               ▲  Alertmanager webhook  ▼
-=======
               ▲  Direct API calls (customer-provided URLs)  ▼
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 ┌──────────────────────────────────────────────────────────────┐
 │              Customer Infrastructure (existing)              │
 │   K8s Cluster · Prometheus · Loki · Alertmanager · GitHub    │
@@ -80,15 +74,12 @@ Customers register a cluster and provide their infrastructure endpoints (Prometh
 
 | Decision | Rationale |
 |---|---|
-<<<<<<< HEAD
 | Tool execution on customer edge | Customer data never leaves their network |
 | AI reasoning on SaaS platform | Customers don't need GPUs |
 | Direct HTTP/SSE to MCP Servers | Radically simplifies deployment; no complex async job queues |
-=======
 | Direct-connect architecture | No agent to install on customer side; simple URL-based integration |
 | MCP tool servers on platform | Standardized tool protocol; each tool server is independently scalable |
 | AI reasoning on SaaS platform | Customers don't need GPUs or LLM infrastructure |
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 | Human approval gate | High-risk PROD actions require explicit sign-off |
 | Immutable audit trail | SOC2 compliance; every action logged |
 | Cluster-scoped infra URLs | Each cluster stores its own Prometheus, Loki, K8s, GitHub endpoints |
@@ -125,8 +116,7 @@ CMPE295A_Multi_Agent_SRE_Assistant/
 │       ├── jobs.py           # Job queue management
 │       └── slos.py           # SLO tracking + error budget
 │
-<<<<<<< HEAD
-├── edge_mcp_servers/           # Shipped to customers
+├── edge_mcp_servers/         # Customer-side MCP stack used by the SaaS platform
 │   ├── docker-compose.yaml   # Active edge stack (5 MCP servers, Docker Compose only)
 │   └── mcp_servers/
 │       ├── k8s_real/         # kubectl-equivalent queries
@@ -134,20 +124,11 @@ CMPE295A_Multi_Agent_SRE_Assistant/
 │       ├── loki_real/        # LogQL execution
 │       ├── github_real/      # GitHub API (commits, PRs, issues)
 │       └── runbooks_local/   # Local Markdown runbook lookup
-=======
-├── mcp_servers/              # MCP tool servers (run on platform)
-│   ├── k8s_real/             # Kubernetes API queries
-│   ├── prometheus_real/      # PromQL execution
-│   ├── loki_real/            # LogQL execution
-│   ├── github_real/          # GitHub API (commits, PRs, issues)
-│   └── notion_real/          # Runbook lookup
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 │
 ├── platform/                 # SaaS infrastructure orchestration
-│   ├── docker-compose.yaml   # Full stack: Postgres, Redis, Qdrant, Ollama, API, MCP servers, Dashboard
+│   ├── docker-compose.yaml   # Full stack: Postgres, Redis, Qdrant, Ollama, API, Dashboard
 │   ├── Dockerfile            # SRE Agent API image
 │   ├── Dockerfile.dashboard  # Next.js dashboard image
-│   ├── mcp_memory/           # Memory MCP server (Qdrant-backed incident knowledge base)
 │   ├── start.sh
 │   └── stop.sh
 │
@@ -184,11 +165,8 @@ Alert received  (Alertmanager webhook  ──►  /api/v1/alerts/webhook)
                                   human approves or rejects
          │
          ▼  ACT
-<<<<<<< HEAD
    [EXECUTOR]   executes tool calls via MCP connection
-=======
    [EXECUTOR]   dispatches tool calls via MCP servers
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
          │
          ▼  VERIFY
    Metrics return to normal?  →  incident RESOLVED
@@ -243,7 +221,7 @@ cd platform
 docker compose up -d --build
 ```
 
-API is up at `http://localhost:8080`. Dashboard at `http://localhost:3001`.
+API is up at `http://localhost:8080`. Dashboard at `http://localhost:3002`.
 
 Seed the database (creates admin user + sample org):
 
@@ -251,7 +229,6 @@ Seed the database (creates admin user + sample org):
 python -m backend.seed
 ```
 
-<<<<<<< HEAD
 ### 2. Deploy the edge MCP servers (customer side)
 
 ```bash
@@ -261,11 +238,9 @@ docker compose up -d --build
 ```
 
 Get a `CLUSTER_TOKEN` from the dashboard after creating a cluster, or via the API:
-=======
 ### 3. Register a cluster
 
 Create a cluster with your customer's infrastructure endpoints:
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/clusters \
@@ -313,8 +288,9 @@ Watch the investigation in the dashboard under Incidents.
 | `SECRET_KEY` | JWT signing key (`openssl rand -hex 32`) |
 | `LLM_PROVIDER` | `groq` or `ollama` |
 | `GROQ_API_KEY` | Groq API key (if using Groq) |
-<<<<<<< HEAD
 | `OLLAMA_BASE_URL` | Ollama endpoint (if using Ollama) |
+| `OLLAMA_MODEL` | Ollama model ID, defaults to `gemma3:1b` |
+| `OLLAMA_NUM_CTX` | Ollama context window size, defaults to `32768` |
 | `SEED_ADMIN_EMAIL` | Admin user created on first run |
 | `SEED_ADMIN_PASSWORD` | Admin password |
 
@@ -322,26 +298,21 @@ Watch the investigation in the dashboard under Incidents.
 
 | Variable | Description |
 |---|---|
-=======
 | `POSTGRES_USER` | PostgreSQL username |
 | `POSTGRES_PASSWORD` | PostgreSQL password |
 | `POSTGRES_DB` | PostgreSQL database name |
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 | `PROMETHEUS_URL` | Customer's Prometheus endpoint |
 | `LOKI_URL` | Customer's Loki endpoint |
 | `GITHUB_TOKEN` | GitHub personal access token |
 | `GITHUB_REPO` | `org/repo` of the monitored codebase |
-<<<<<<< HEAD
 | `RUNBOOKS_DIR` | Local Markdown runbooks directory mounted into the edge runbooks server |
-=======
 | `NOTION_API_KEY` | Notion integration token (optional) |
 | `NOTION_DATABASE_ID` | Notion DB ID for runbooks (optional) |
 | `K8S_API_SERVER` | Kubernetes API server URL (optional) |
 | `K8S_TOKEN` | Kubernetes service account token (optional) |
 | `DEBUG` | Enable debug logging (`true` / `false`) |
 
-Infrastructure services (PostgreSQL, Redis, Qdrant, Ollama) are configured in `platform/docker-compose.yaml` with sensible defaults.
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
+Infrastructure services (PostgreSQL, Redis, Qdrant, Ollama) are configured in `platform/docker-compose.yaml` with sensible defaults. The platform connects to the edge MCP stack over host ports `4000`-`4004`.
 
 ---
 
@@ -385,15 +356,12 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted.
 | `GET` | `/api/v1/clusters/{id}/slos` | List SLOs |
 | `GET` | `/api/v1/clusters/{id}/slos/{slo_id}/status` | Error budget remaining |
 
-<<<<<<< HEAD
 ### Edge integrations (authenticated by CLUSTER_TOKEN where applicable)
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/v1/agent/heartbeat` | Liveness signal (30 req/min) |
 | `POST` | `/api/v1/agent/telemetry` | Forward metrics/logs (60 req/min) |
 
-=======
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4
 ---
 
 ## Tech stack
@@ -416,8 +384,5 @@ All endpoints require `Authorization: Bearer <jwt>` unless noted.
 
 ## Demo app
 
-<<<<<<< HEAD
 `Target_Client/` (separate folder) simulates a customer's infrastructure with three intentionally flaky microservices. Alertmanager fires webhooks to the SaaS platform automatically. See `Target_Client/` for setup.
-=======
 `SRE_Demo_App/` (separate repo) simulates a customer's infrastructure with three intentionally flaky microservices (api-gateway, checkout-service, inventory-service), a load generator, and a full observability stack (Prometheus, Loki, Alertmanager, Grafana). Alertmanager fires webhooks to the SaaS platform automatically. See `SRE_Demo_App/README.md` for setup.
->>>>>>> 20866c40483e5d5ecf89a630f48645d64fc1b7b4

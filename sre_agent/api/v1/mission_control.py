@@ -1,14 +1,17 @@
 import asyncio
+import json
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import desc, select
+from sqlalchemy.exc import ProgrammingError
 from langgraph.types import Command
 
-from backend import crud, database, models
+from backend import crud, database, models, schemas
 from backend.rbac import require_admin
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
 from sre_agent.models import AgentAuditLog
@@ -40,15 +43,22 @@ async def get_incident_audit_logs(
     Get audit logs for a specific incident.
     """
     # Fetch Audit Logs (Tools)
-    stmt = select(AgentAuditLog).filter(
-        AgentAuditLog.incident_id == incident_id
-    ).order_by(desc(AgentAuditLog.timestamp))
-    result = await db.execute(stmt)
-    audit_logs = result.scalars().all()
+    audit_logs = []
+    try:
+        stmt = select(AgentAuditLog).filter(
+            AgentAuditLog.incident_id == incident_id
+        ).order_by(desc(AgentAuditLog.timestamp))
+        result = await db.execute(stmt)
+        audit_logs = result.scalars().all()
+    except ProgrammingError:
+        audit_logs = []
 
     # Fetch Redis Logs (Thoughts/Steps)
-    from sre_agent.agent_runtime import state_store
-    redis_logs = state_store.get_logs(incident_id)
+    try:
+        from sre_agent.agent_runtime import state_store
+        redis_logs = state_store.get_logs(incident_id)
+    except Exception:
+        redis_logs = []
 
     # Convert Redis strings to structured objects
     structured_redis_logs = []
@@ -112,6 +122,70 @@ async def get_incident_audit_logs(
     combined_logs.sort(key=get_sort_key, reverse=True)
 
     return combined_logs
+
+
+@router.post("/{incident_id}/message")
+async def send_incident_message(
+    incident_id: str,
+    payload: Dict[str, Any],
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+):
+    """
+    Post a follow-up message for an incident and queue a new investigation turn.
+    """
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    incident_uuid = uuid.UUID(incident_id)
+    incident = await db.execute(
+        select(models.Incident).filter(models.Incident.id == incident_uuid)
+    )
+    incident_obj = incident.scalars().first()
+    if not incident_obj:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
+    if not cluster or cluster.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    from sre_agent.redis_state_store import get_state_store
+    state_store = get_state_store()
+    state_store.append_log(
+        incident_id,
+        f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
+    )
+
+    follow_up_job = await crud.create_job(
+        db,
+        cluster.id,
+        schemas.JobCreate(
+            job_type=models.JobType.INVESTIGATION,
+            payload=json.dumps({
+                "incident_id": incident_id,
+                "alert": message,
+                "triggered_by": "dashboard_chat",
+                "follow_up": True,
+            }),
+        ),
+    )
+
+    from sre_agent.agent_runtime import run_graph_background_saas
+    asyncio.create_task(
+        run_graph_background_saas(
+            incident_id=incident_uuid,
+            cluster_id=cluster.id,
+            alert_name=message,
+            job_id=follow_up_job.id,
+        )
+    )
+
+    return {
+        "status": "QUEUED",
+        "incident_id": incident_id,
+        "job_id": str(follow_up_job.id),
+    }
 
 @router.get("/{incident_id}/status")
 async def get_incident_status(

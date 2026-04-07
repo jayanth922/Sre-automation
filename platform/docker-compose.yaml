@@ -5,7 +5,7 @@ version: '3.8'
 #
 # All Dockerfiles for this stack live in platform/.
 # All AI reasoning (LLM, LangGraph, OODA loop) happens here.
-# Tool calls are dispatched to customer edge relays via the job queue.
+# Tool calls are dispatched directly to the edge MCP stack on host ports.
 #
 # Usage:  cd platform && docker compose up -d --build
 # =============================================================================
@@ -88,27 +88,6 @@ services:
   #   restart: unless-stopped
 
   # ============================================
-  # Memory MCP Server (incident knowledge base)
-  # ============================================
-
-  mcp-memory:
-    build:
-      context: ./mcp_memory
-      dockerfile: Dockerfile
-    container_name: sre-mcp-memory
-    hostname: mcp-memory
-    environment:
-      - QDRANT_URL=http://qdrant:6333
-      - HOST=0.0.0.0
-    networks:
-      sre-network:
-        aliases:
-          - mcp-memory
-    depends_on:
-      - qdrant
-    restart: unless-stopped
-
-  # ============================================
   # SRE Agent API (Control Plane + AI Brain)
   # ============================================
 
@@ -118,18 +97,27 @@ services:
       dockerfile: platform/Dockerfile
     container_name: sre-agent-api
     hostname: sre-agent-api
+    command: >
+      sh -c "uv run alembic upgrade head && uv run python backend/seed.py && exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080"
     ports:
       - "8080:8080"
     environment:
       - SECRET_KEY=${SECRET_KEY:-sre_platform_dev_key_change_in_production}
       - AGENT_MODE=api
       - CLUSTER_TOKEN=${CLUSTER_TOKEN:-}
+      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-admin@example.com}
+      - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:-admin}
+      - SEED_ADMIN_ORG=${SEED_ADMIN_ORG:-SRE Admin Org}
+      - SEED_CLUSTER_TOKEN=${SEED_CLUSTER_TOKEN:-}
+      - SEED_CLUSTER_NAME=${SEED_CLUSTER_NAME:-SRE Demo Cluster}
+      - SEED_CLUSTER_STATUS=${SEED_CLUSTER_STATUS:-offline}
 
       # LLM (runs on platform, not customer edge)
-      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3.2
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:1b}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-32768}
 
       # Infrastructure
       - REDIS_URL=redis://redis:6379/0
@@ -137,15 +125,12 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
       - PROMETHEUS_URL=http://host.docker.internal:9090
 
-      # Memory MCP (only MCP server on platform side)
-      - MCP_MEMORY_URI=http://mcp-memory:3000/sse
-
-      # MCP servers (run on platform, connect directly to customer infra URLs)
-      - MCP_K8S_URI=http://mcp-k8s:3000/sse
-      - MCP_LOGS_URI=http://mcp-loki:3000/sse
-      - MCP_METRICS_URI=http://mcp-prometheus:3000/sse
-      - MCP_RUNBOOKS_URI=http://mcp-notion:3000/sse
-      - MCP_GITHUB_URI=http://mcp-github:3000/sse
+      # MCP servers live in edge_mcp_servers/ and are reached over host ports
+      - MCP_K8S_URI=${MCP_K8S_URI:-http://host.docker.internal:4000/sse}
+      - MCP_METRICS_URI=${MCP_METRICS_URI:-http://host.docker.internal:4001/sse}
+      - MCP_LOGS_URI=${MCP_LOGS_URI:-http://host.docker.internal:4002/sse}
+      - MCP_GITHUB_URI=${MCP_GITHUB_URI:-http://host.docker.internal:4003/sse}
+      - MCP_RUNBOOKS_URI=${MCP_RUNBOOKS_URI:-http://host.docker.internal:4004/sse}
 
       # Python
       - PYTHONPATH=/app
@@ -164,88 +149,6 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-      # ollama:                    # Commented out — using Groq instead
-      #   condition: service_started
-      mcp-memory:
-        condition: service_started
-    restart: unless-stopped
-
-  # ============================================
-  # MCP Tool Servers (connect directly to customer infra)
-  # Customer provides URLs when registering a cluster.
-  # ============================================
-
-  mcp-k8s:
-    build:
-      context: ../mcp_servers/k8s_real
-      dockerfile: Dockerfile
-    container_name: sre-mcp-k8s
-    environment:
-      - HOST=0.0.0.0
-      - K8S_API_SERVER=${K8S_API_SERVER:-}
-      - K8S_TOKEN=${K8S_TOKEN:-}
-    networks:
-      sre-network:
-        aliases:
-          - mcp-k8s
-    restart: unless-stopped
-
-  mcp-prometheus:
-    build:
-      context: ../mcp_servers/prometheus_real
-      dockerfile: Dockerfile
-    container_name: sre-mcp-prometheus
-    environment:
-      - HOST=0.0.0.0
-      - PROMETHEUS_URL=${PROMETHEUS_URL:-}
-    networks:
-      sre-network:
-        aliases:
-          - mcp-prometheus
-    restart: unless-stopped
-
-  mcp-loki:
-    build:
-      context: ../mcp_servers/loki_real
-      dockerfile: Dockerfile
-    container_name: sre-mcp-loki
-    environment:
-      - HOST=0.0.0.0
-      - LOKI_URL=${LOKI_URL:-}
-    networks:
-      sre-network:
-        aliases:
-          - mcp-loki
-    restart: unless-stopped
-
-  mcp-github:
-    build:
-      context: ../mcp_servers/github_real
-      dockerfile: Dockerfile
-    container_name: sre-mcp-github
-    environment:
-      - HOST=0.0.0.0
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GITHUB_REPO=${GITHUB_REPO:-}
-    networks:
-      sre-network:
-        aliases:
-          - mcp-github
-    restart: unless-stopped
-
-  mcp-notion:
-    build:
-      context: ../mcp_servers/notion_real
-      dockerfile: Dockerfile
-    container_name: sre-mcp-notion
-    environment:
-      - HOST=0.0.0.0
-      - NOTION_API_KEY=${NOTION_API_KEY:-}
-      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
-    networks:
-      sre-network:
-        aliases:
-          - mcp-notion
     restart: unless-stopped
 
   # ============================================
@@ -258,7 +161,7 @@ services:
       dockerfile: ../platform/Dockerfile.dashboard
     container_name: sre-dashboard
     ports:
-      - "3001:3000"
+      - "3002:3000"
     environment:
       - API_URL=http://sre-agent-api:8080
     depends_on:

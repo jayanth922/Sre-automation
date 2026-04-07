@@ -124,13 +124,13 @@ async def initialize_agent():
     try:
         logger.info("Initializing SRE Agent system...")
 
-        # Get provider from environment variable with groq as default
-        provider = os.getenv("LLM_PROVIDER", "groq").lower()
+        # Get provider from environment variable with ollama as default
+        provider = os.getenv("LLM_PROVIDER", "ollama").lower()
 
         # Validate provider
         if provider not in ["groq", "ollama", "gemini"]:
-            logger.warning(f"Invalid provider '{provider}', defaulting to 'groq'")
-            provider = "groq"
+            logger.warning(f"Invalid provider '{provider}', defaulting to 'ollama'")
+            provider = "ollama"
 
         logger.info(f"Environment LLM_PROVIDER: {os.getenv('LLM_PROVIDER', 'NOT_SET')}")
         logger.info(f"Using LLM provider: {provider}")
@@ -463,14 +463,14 @@ async def approve_remediation(session_id: str):
 
     # Update approval status
     current_state["approval_status"] = "APPROVED"
-    current_state["next"] = "executor"  # Resume at executor node
+    current_state["next"] = "aggregate"  # Resume at aggregate node
 
     logger.info(f"✅ Approval granted for session {session_id}, resuming execution")
 
     # Remove from Redis
     state_store.delete(session_id)
 
-    # Resume graph execution from executor node
+    # Resume graph execution from aggregate node
     from fastapi import BackgroundTasks
     # We can't easily spawn a background task from here without passing BackgroundTasks object
     # For now, we'll keep approval synchronous-ish but the graph execution helps
@@ -574,20 +574,6 @@ async def run_graph_background(
                     # Store partial state in case of pause
                     "state": current_execution_state
                 }
-                
-                # Check for Policy Gate Pause
-                if node_name == "policy_gate":
-                    approval_status = node_output.get("approval_status")
-                    if approval_status == "PENDING":
-                        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ⏸️ PAUSED: Approval Required")
-                        update_data["status"] = "WAITING_APPROVAL"
-                        update_data["approval_required"] = True
-                        update_data["remediation_plan"] = current_execution_state.get("remediation_plan")
-                        
-                        # Store with 1 hour TTL
-                        state_store.set(session_id, update_data, ttl=3600)
-                        logger.info(f"Background execution paused for approval: {session_id}")
-                        return
 
                 state_store.set(session_id, update_data, ttl=3600)
 
@@ -675,7 +661,7 @@ async def run_graph_background_saas(
             "agent_results": {},
             "current_query": f"Investigate alert: {alert_name}",
             "metadata": {
-                "llm_provider": os.getenv("LLM_PROVIDER", "groq"),
+                "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
                 "tools": tools,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
@@ -717,8 +703,6 @@ async def run_graph_background_saas(
                     log_line = f"[{timestamp}] 🔍 INVESTIGATION: Querying K8s, Metrics, and Logs in parallel..."
                 elif node_name == "reflector":
                     log_line = f"[{timestamp}] 🧠 REFLECTOR: Correlating findings and forming hypothesis..."
-                elif node_name == "policy_gate":
-                    log_line = f"[{timestamp}] 🛡️ POLICY: Checking remediation safety rules..."
                 
                 # Push to Redis for potential low-latency UI needs
                 state_store.append_log(session_id, log_line)
@@ -911,7 +895,7 @@ async def webhook_alert(
             incident_id_str = f"incident-{enriched_context.alert_name}-{session_id}"
             
             from .agent_state import AgentState, AlertContext
-            llm_provider = os.getenv("LLM_PROVIDER", "groq")
+            llm_provider = os.getenv("LLM_PROVIDER", "ollama")
             
             initial_state: AgentState = {
                 "messages": [HumanMessage(content=f"Alert: {enriched_context.alert_name}")],
@@ -1003,7 +987,7 @@ async def webhook_alert(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
+async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
     """
     Programmatic interface to invoke SRE agent.
 
@@ -1044,7 +1028,7 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
         raise
 
 
-def invoke_sre_agent(prompt: str, provider: str = "groq") -> str:
+def invoke_sre_agent(prompt: str, provider: str = "ollama") -> str:
     """
     Synchronous wrapper for invoke_sre_agent_async.
 
@@ -1066,8 +1050,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SRE Agent Runtime")
     parser.add_argument(
         "--provider",
-        default=os.getenv("LLM_PROVIDER", "groq"),
-        help="LLM provider to use (default: groq, only groq is supported)",
+        default=os.getenv("LLM_PROVIDER", "ollama"),
+        help="LLM provider to use (default: ollama)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")

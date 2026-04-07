@@ -198,7 +198,7 @@ class SupervisorAgent:
 
     def __init__(
         self,
-        llm_provider: str = "groq",
+        llm_provider: str = "ollama",
         **llm_kwargs,
     ):
         self.llm_provider = llm_provider
@@ -370,6 +370,32 @@ User's query: {current_query}
         """Aggregate responses from multiple agents into a final response."""
         agent_results = state.get("agent_results", {})
         metadata = state.get("metadata", {})
+        reflector_analysis = state.get("reflector_analysis")
+        remediation_plan = state.get("remediation_plan")
+
+        if remediation_plan and reflector_analysis:
+            # Format the output from the OODA workflow
+            final_response = f"## 🔍 Incident Investigation Summary\n\n"
+            final_response += f"**Hypothesis:** {reflector_analysis.hypothesis}\n"
+            final_response += f"**Confidence:** {reflector_analysis.confidence:.0%}\n\n"
+            final_response += f"### 🧠 Reasoning\n{reflector_analysis.reasoning}\n\n"
+            
+            final_response += f"## 📋 Recommended Remediation Plan\n\n"
+            if remediation_plan.source_runbook_url:
+                final_response += f"*(Sourced from Runbook: {remediation_plan.source_runbook_url})*\n\n"
+                
+            for i, action in enumerate(remediation_plan.actions, 1):
+                final_response += f"### Action {i}: {action.action_type.title()} `{action.target}`\n"
+                final_response += f"- **Safety Check:** {action.safety_check}\n"
+                if hasattr(action, "parameters") and getattr(action, "parameters"):
+                    final_response += f"- **Parameters:** {action.parameters}\n"
+                final_response += "\n"
+                
+            final_response += f"**Risk Level:** {remediation_plan.risk_level.title()}\n"
+            final_response += f"**Estimated Duration:** {remediation_plan.estimated_duration}\n"
+            final_response += f"\n*This is a suggested remediation. Automatic execution is disabled.*"
+            
+            return {"final_response": final_response, "next": "FINISH"}
 
         # Check if this is a plan approval request
         if metadata.get("plan_pending_approval"):

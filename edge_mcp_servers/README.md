@@ -50,13 +50,13 @@ docker compose up -d --build
 
 ## Connecting the SaaS Platform
 
-Once the MCP servers are running, map their exposed ports to the `.env` file of the SaaS Platform (`sre_agent/`):
+Once the MCP servers are running, point the SaaS Platform at their exposed host ports:
 
 ```env
-MCP_K8S_URI=http://localhost:3000/sse
-MCP_METRICS_URI=http://localhost:3001/sse
-MCP_LOGS_URI=http://localhost:3002/sse
-MCP_GITHUB_URI=http://localhost:3003/sse
+MCP_K8S_URI=http://localhost:4000/sse
+MCP_METRICS_URI=http://localhost:4001/sse
+MCP_LOGS_URI=http://localhost:4002/sse
+MCP_GITHUB_URI=http://localhost:4003/sse
 MCP_RUNBOOKS_URI=http://localhost:4004/sse
 ```
 

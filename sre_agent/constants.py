@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import logging
 
 from pydantic import BaseModel, Field
@@ -47,12 +48,18 @@ class ModelConfig(BaseModel):
 
     # Ollama settings
     ollama_base_url: str = Field(
-        default="http://ollama:11434",
+        default=os.getenv("OLLAMA_BASE_URL", "http://ollama:11434"),
         description="Base URL for Ollama service",
     )
     ollama_model: str = Field(
-        default="llama3.2",
+        default=os.getenv("OLLAMA_MODEL", "gemma3:1b"),
         description="Ollama model to use",
+    )
+    ollama_num_ctx: int = Field(
+        default=int(os.getenv("OLLAMA_NUM_CTX", "32768")),
+        ge=1,
+        le=131072,
+        description="Ollama context window size",
     )
 
     # Gemini settings
@@ -281,6 +288,7 @@ class SREConstants:
                 "model_id": kwargs.get("model_id", cls.model.ollama_model),
                 "base_url": kwargs.get("base_url", cls.model.ollama_base_url),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
+                "num_ctx": kwargs.get("num_ctx", cls.model.ollama_num_ctx),
             }
         
         if provider == "gemini":

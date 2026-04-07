@@ -1,0 +1,7 @@
+flowchart LR
+  S0[Initial State\nmessages, current_query, metadata] --> S1[Observe\ninvestigation_findings, agent_results]
+  S1 --> S2[Orient\nreflector_analysis, investigation_count]
+  S2 --> S3[Decide\nremediation_plan, approval_status]
+  S3 --> S4[Act\nexecution_status, execution_results]
+  S4 --> S5[Verify\nverification_result]
+  S5 --> S6[Complete\nfinal_response, persisted records]
