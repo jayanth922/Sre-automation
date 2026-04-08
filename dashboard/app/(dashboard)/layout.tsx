@@ -14,6 +14,17 @@ export default function DashboardLayout({
     const pathname = usePathname()
     const { user, logout } = useAuth()
 
+    if (pathname.startsWith("/clusters/")) {
+        return <>{children}</>
+    }
+
+    const pageTitle = (() => {
+        if (pathname === "/") return "Overview"
+        if (pathname.startsWith("/clusters/")) return "Cluster Dashboard"
+        if (pathname.startsWith("/settings")) return "Settings"
+        return pathname.split("/").filter(Boolean).pop() || "Dashboard"
+    })()
+
     const navItems = [
         { name: "Overview", href: "/", icon: LayoutDashboard },
         { name: "Clusters", href: "/", icon: Server }, // For now same as home
@@ -59,7 +70,7 @@ export default function DashboardLayout({
                 <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-4">
                     <div className="flex justify-between items-center">
                         <h2 className="text-lg font-semibold capitalize">
-                            {pathname === "/" ? "Overview" : pathname.split("/").pop()}
+                            {pageTitle}
                         </h2>
                         <div className="flex items-center gap-4">
                             <span className="text-sm text-gray-500">{user?.email || "Unknown"}</span>

@@ -657,7 +657,7 @@ async def run_graph_background_saas(
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
             "ooda_phase": "OBSERVE",
-            "next": "investigation_swarm",
+            "next": "supervisor",
             "agent_results": {},
             "current_query": f"Investigate alert: {alert_name}",
             "metadata": {
@@ -901,7 +901,7 @@ async def webhook_alert(
                 "messages": [HumanMessage(content=f"Alert: {enriched_context.alert_name}")],
                 "ooda_phase": "OBSERVE",
                 "alert_context": enriched_context,
-                "next": "investigation_swarm",
+                "next": "supervisor",
                 "agent_results": {},
                 "current_query": f"Investigate alert: {enriched_context.alert_name}",
                 "metadata": {

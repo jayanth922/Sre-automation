@@ -98,6 +98,7 @@ export default function ClusterDetailsPage() {
     const [incidentPage, setIncidentPage] = useState(0)
     const [clearingIncidents, setClearingIncidents] = useState(false)
     const [conversationRefreshNonce, setConversationRefreshNonce] = useState(0)
+    const [dashboardError, setDashboardError] = useState<string | null>(null)
 
     const selectedIncident = incidents.find((incident: Incident) => incident.id === selectedIncidentId) || null
     const hasIncidents = incidents.length > 0
@@ -114,6 +115,7 @@ export default function ClusterDetailsPage() {
             setLoading(true)
         }
         setRefreshing(true)
+        setDashboardError(null)
 
         try {
             const [clustersResponse, incidentsResponse] = await Promise.all([
@@ -127,9 +129,12 @@ export default function ClusterDetailsPage() {
             setCluster(foundCluster)
             setIncidents(fetchedIncidents)
         } catch (error) {
-            console.error("Failed to load cluster dashboard", error)
-            setCluster(null)
-            setIncidents([])
+            console.warn("Failed to load cluster dashboard", error)
+            setDashboardError(error instanceof Error ? error.message : "Failed to load cluster dashboard")
+            if (initial) {
+                setCluster(null)
+                setIncidents([])
+            }
         } finally {
             setRefreshing(false)
             setLoading(false)
@@ -162,13 +167,6 @@ export default function ClusterDetailsPage() {
 
     useEffect(() => {
         void loadDashboard(true)
-        const interval = setInterval(() => {
-            void loadDashboard()
-        }, 10000)
-
-        return () => {
-            clearInterval(interval)
-        }
     }, [loadDashboard])
 
     useEffect(() => {
@@ -331,7 +329,7 @@ export default function ClusterDetailsPage() {
                                         {clusterModeLabel}
                                     </span>
                                     <span className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1 text-zinc-300">
-                                        Live polling 10s
+                                        Auto-refresh active
                                     </span>
                                 </div>
                             </div>
@@ -350,6 +348,11 @@ export default function ClusterDetailsPage() {
                             {clusterInfoDialog}
                         </div>
                     </div>
+                    {dashboardError && (
+                        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                            Dashboard data is temporarily unavailable: {dashboardError}. The last loaded data stays on screen.
+                        </div>
+                    )}
                 </header>
 
                 <main className={hasIncidents ? "grid min-h-0 flex-1 gap-5 lg:grid-cols-[minmax(320px,380px)_minmax(0,1fr)]" : "flex min-h-0 flex-1"}>

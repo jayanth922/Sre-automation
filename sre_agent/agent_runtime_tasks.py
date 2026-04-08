@@ -105,6 +105,10 @@ async def run_graph_background_saas(
                     log_line = f"[{timestamp}] 🔍 INVESTIGATION: Querying K8s, Metrics, and Logs in parallel..."
                 elif node_name == "reflector":
                     log_line = f"[{timestamp}] 🧠 REFLECTOR: Correlating findings and forming hypothesis..."
+                elif node_name == "supervisor":
+                    log_line = f"[{timestamp}] 🧭 SUPERVISOR: Reviewing evidence and choosing the next specialist..."
+                elif node_name == "aggregate":
+                    log_line = f"[{timestamp}] 🧭 SUPERVISOR: Synthesizing specialist findings into the final summary..."
                 
                 state_store.append_log(session_id, log_line)
 

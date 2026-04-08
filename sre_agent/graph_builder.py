@@ -152,7 +152,7 @@ async def _investigation_swarm(state: AgentState, config: Optional[Dict[str, Any
     # Execute agents in parallel
     async def run_agent(agent_name: str, agent_instance):
         logger.info(f"🤖 {agent_name}: Starting investigation")
-        thought = f"Alert indicates potential issue. Investigating {agent_name} domain for evidence. Checking Golden Signals..."
+        thought = f"Hey team, I'm digging into the {agent_name.replace('_agent', '').capitalize()} data around this alert. I'll check the Golden Signals and let you know what I find."
         logger.info(f"💭 {agent_name} THOUGHT: {thought}")
 
         # Add thought to traces
@@ -349,7 +349,7 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     Return your analysis in JSON format matching ReflectorAnalysis schema.
     """
 
-    thought = "Analyzing findings from parallel agents. Looking for discrepancies between infrastructure state and code changes. Formulating hypothesis based on Golden Signals..."
+    thought = "Alright, looking at the data collected by the Swarm. I'm going to cross-reference our infrastructure metrics with recent code changes to piece together a solid hypothesis..."
     logger.info(f"💭 ReflectorNode THOUGHT: {thought}")
 
     traces = state.get("thought_traces", {})
@@ -566,7 +566,7 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     Return plan in JSON format matching RemediationPlan schema.
     """
 
-    thought = f"Formulating remediation plan for hypothesis: {reflector_analysis.hypothesis}. Considering safety, rollback, and verification requirements..."
+    thought = f"Based on the Reflector's hypothesis ({reflector_analysis.hypothesis}), I'm drafting a remediation plan. I'll check our Runbooks and past incident memory to see if we've solved this before, and I'll make sure we have a safe rollback strategy..."
     logger.info(f"💭 PlannerNode THOUGHT: {thought}")
 
     traces = state.get("thought_traces", {})
@@ -697,7 +697,7 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
         promql_query = original_metric
     
 
-    thought = f"Verifying remediation. Extracted metric: {original_metric}, threshold: {threshold}. Querying Prometheus..."
+    thought = f"Okay, the Remediation Plan is executed. I'm extracting the {original_metric} metric and waiting {wait_seconds} seconds to verify if the threshold ({threshold}) drops back to normal..."
 
     traces = state.get("thought_traces", {})
 
@@ -770,7 +770,7 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     # Get configurable wait time (default 60 seconds)
     wait_seconds = int(os.getenv("VERIFICATION_WAIT_SECONDS", "60"))
     
-    thought_wait = f"Waiting {wait_seconds} seconds for remediation to take effect, then re-querying metric..."
+    thought_wait = f"Give me {wait_seconds} seconds while the remediation fully propagates..."
 
     # Wait for remediation to take effect
     await asyncio.sleep(wait_seconds)
@@ -1032,11 +1032,8 @@ def build_multi_agent_graph(
     # Set entry point
     workflow.set_entry_point("prepare")
 
-    # Route from prepare: use supervisor for planning (if enabled) or go directly to swarm
-    if os.getenv("ENABLE_SUPERVISOR_ROUTING", "false").lower() in ("true", "1", "yes"):
-        workflow.add_edge("prepare", "supervisor")
-    else:
-        workflow.add_edge("prepare", "investigation_swarm")
+    # Always route through the supervisor so the transcript includes explicit reasoning.
+    workflow.add_edge("prepare", "supervisor")
 
     # Add conditional edges from supervisor
     workflow.add_conditional_edges(

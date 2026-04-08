@@ -230,6 +230,24 @@ class BaseAgentNode:
                                             tool_name = tc.get("name", "unknown")
                                             tool_args = tc.get("args", {})
                                             tool_id = tc.get("id", "unknown")
+                                            
+                                            # Intercept actual agent reasoning/tool usage for the transcript
+                                            traces = state.get("thought_traces", {})
+                                            if self.name not in traces:
+                                                traces[self.name] = []
+                                            
+                                            reasoning = ""
+                                            if hasattr(msg, "content") and isinstance(msg.content, str) and msg.content.strip():
+                                                reasoning = msg.content.strip() + "\n"
+                                                
+                                            actual_thought = f"{reasoning} *(Action: Invoking `{tool_name}` to gather context)*"
+                                            
+                                            # Avoid duplicate reasoning lines on multi-tool outputs
+                                            if actual_thought not in traces[self.name]:
+                                                traces[self.name].append(actual_thought)
+                                            
+                                            state["thought_traces"] = traces
+                                            
                                             logger.info(
                                                 f"{self.name} - Tool call: {tool_name} (id: {tool_id})"
                                             )

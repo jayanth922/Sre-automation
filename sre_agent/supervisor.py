@@ -286,6 +286,7 @@ User's query: {current_query}
     async def route(self, state: AgentState) -> Dict[str, Any]:
         """Determine which agent should handle the query next."""
         agents_invoked = state.get("agents_invoked", [])
+        existing_traces = dict(state.get("thought_traces", {}))
 
         # Check if we have an existing plan
         existing_plan = state.get("metadata", {}).get("investigation_plan")
@@ -300,8 +301,18 @@ User's query: {current_query}
             if not plan.auto_execute and not auto_approve:
                 # Complex plan - present to user for approval
                 plan_text = self._format_plan_markdown(plan)
+                supervisor_thought = (
+                    "I've drafted a coordinated investigation plan for the team. I'll pause here to get your approval before we proceed."
+                )
                 return {
                     "next": "FINISH",
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            supervisor_thought,
+                        ],
+                    },
                     "metadata": {
                         **state.get("metadata", {}),
                         "investigation_plan": plan.model_dump(),
@@ -316,8 +327,18 @@ User's query: {current_query}
                     plan.agents_sequence[0] if plan.agents_sequence else "FINISH"
                 )
                 plan_text = self._format_plan_markdown(plan)
+                supervisor_thought = (
+                    f"Alright team, let's execute the plan. I'm going to bring in {next_agent.replace('_', ' ')} first to start pulling evidence."
+                )
                 return {
                     "next": next_agent,
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            supervisor_thought,
+                        ],
+                    },
                     "metadata": {
                         **state.get("metadata", {}),
                         "investigation_plan": plan.model_dump(),
@@ -340,8 +361,18 @@ User's query: {current_query}
 
             if next_step >= len(plan.agents_sequence):
                 # Plan complete
+                supervisor_thought = (
+                    "Okay, the team has finished gathering intel. I'm going to take all these findings and synthesize the final summary."
+                )
                 return {
                     "next": "FINISH",
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            supervisor_thought,
+                        ],
+                    },
                     "metadata": {
                         **state.get("metadata", {}),
                         "routing_reasoning": "Investigation plan completed. Presenting results.",
@@ -356,9 +387,19 @@ User's query: {current_query}
                     if next_step < len(plan.steps)
                     else f"Execute {next_agent}"
                 )
+                supervisor_thought = (
+                    f"Good work so far, but we need more data. {next_agent.replace('_', ' ').capitalize()}, can you take over?"
+                )
 
                 return {
                     "next": next_agent,
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            supervisor_thought,
+                        ],
+                    },
                     "metadata": {
                         **state.get("metadata", {}),
                         "routing_reasoning": f"Executing plan step {next_step + 1}: {step_description}",
@@ -372,6 +413,7 @@ User's query: {current_query}
         metadata = state.get("metadata", {})
         reflector_analysis = state.get("reflector_analysis")
         remediation_plan = state.get("remediation_plan")
+        existing_traces = dict(state.get("thought_traces", {}))
 
         if remediation_plan and reflector_analysis:
             # Format the output from the OODA workflow
@@ -394,8 +436,23 @@ User's query: {current_query}
             final_response += f"**Risk Level:** {remediation_plan.risk_level.title()}\n"
             final_response += f"**Estimated Duration:** {remediation_plan.estimated_duration}\n"
             final_response += f"\n*This is a suggested remediation. Automatic execution is disabled.*"
+
+            supervisor_summary = (
+                f"I confirmed the likely root cause as {reflector_analysis.hypothesis} and "
+                f"assembled the remediation plan with {len(remediation_plan.actions)} action(s)."
+            )
             
-            return {"final_response": final_response, "next": "FINISH"}
+            return {
+                "final_response": final_response,
+                "next": "FINISH",
+                "thought_traces": {
+                    **existing_traces,
+                    "supervisor": [
+                        *existing_traces.get("supervisor", []),
+                        supervisor_summary,
+                    ],
+                },
+            }
 
         # Check if this is a plan approval request
         if metadata.get("plan_pending_approval"):
@@ -524,6 +581,11 @@ You can:
 
             final_response = response.content
 
+        supervisor_summary = (
+            "I merged the specialist replies into one conclusion and am handing the "
+            "result back to the user as the final investigation summary."
+        )
+
         # Store successful resolution in memory (if verification passed)
         try:
             verification_result = state.get("verification_result")
@@ -619,4 +681,14 @@ Improvement: {improvement:.1f}%
         except Exception as e:
             logger.warning(f"⚠️ Failed to store incident in memory: {e}")
 
-        return {"final_response": final_response, "next": "FINISH"}
+            return {
+                "final_response": final_response,
+                "next": "FINISH",
+                "thought_traces": {
+                    **existing_traces,
+                    "supervisor": [
+                        *existing_traces.get("supervisor", []),
+                        supervisor_summary,
+                    ],
+                },
+            }

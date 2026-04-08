@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -32,6 +33,98 @@ def get_agent_graph():
     if agent_graph is None:
         raise HTTPException(status_code=503, detail="Agent system not initialized")
     return agent_graph
+
+
+_INVESTIGATION_KEYWORDS = (
+    "alert",
+    "incident",
+    "error",
+    "errors",
+    "latency",
+    "slow",
+    "timeout",
+    "timeouts",
+    "crash",
+    "fail",
+    "failure",
+    "cpu",
+    "memory",
+    "log",
+    "logs",
+    "metric",
+    "metrics",
+    "prometheus",
+    "loki",
+    "k8s",
+    "kubernetes",
+    "deploy",
+    "deployment",
+    "rollback",
+    "restart",
+    "scale",
+    "investigate",
+    "root cause",
+    "why",
+    "trace",
+    "p95",
+)
+
+
+def _is_chat_only_message(message: str) -> bool:
+    normalized = re.sub(r"\s+", " ", message.strip().lower())
+    if not normalized:
+        return True
+
+    if normalized in {"hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay"}:
+        return True
+
+    if normalized.startswith(("hi ", "hello ", "hey ")):
+        return True
+
+    if normalized in {
+        "what is this cluster",
+        "what's this cluster",
+        "what is this",
+        "what's this",
+        "what is happening",
+        "what is happening here",
+        "tell me about this cluster",
+        "tell me what this is",
+        "who are you",
+        "what are you",
+        "explain this",
+    }:
+        return True
+
+    if any(keyword in normalized for keyword in _INVESTIGATION_KEYWORDS):
+        return False
+
+    # Short, open-ended messages are treated as conversational unless they
+    # clearly mention operational investigation terms.
+    return len(normalized.split()) <= 6
+
+
+def _build_chat_reply(message: str, incident: models.Incident, cluster: models.Cluster) -> str:
+    normalized = re.sub(r"\s+", " ", message.strip().lower())
+
+    if normalized in {"hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay"}:
+        return (
+            f"I'm tracking [{cluster.name}] {incident.title}. Ask about logs, metrics, the suspected cause, "
+            f"or the remediation plan, and I’ll answer in this thread."
+        )
+
+    if "cluster" in normalized or "what is this" in normalized or "what is happening" in normalized:
+        status = incident.status.replace("_", " ").title()
+        summary = incident.summary or incident.description or "No summary is available yet."
+        return (
+            f"This is the {cluster.name} incident thread for [{cluster.name}] {incident.title}. "
+            f"Current incident status: {status}. {summary}"
+        )
+
+    return (
+        f"I’m here to help with [{cluster.name}] {incident.title}. Ask me about the incident, logs, metrics, "
+        f"or remediation steps."
+    )
 
 @router.get("/{incident_id}/logs")
 async def get_incident_audit_logs(
@@ -149,6 +242,26 @@ async def send_incident_message(
     cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
     if not cluster or cluster.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="Incident not found")
+
+    if _is_chat_only_message(message):
+        assistant_reply = _build_chat_reply(message, incident_obj, cluster)
+
+        from sre_agent.redis_state_store import get_state_store
+        state_store = get_state_store()
+        state_store.append_log(
+            incident_id,
+            f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
+        )
+        state_store.append_log(
+            incident_id,
+            f"[{datetime.now(timezone.utc).isoformat()}] ASSISTANT: {assistant_reply}"
+        )
+
+        return {
+            "status": "RESPONDED",
+            "incident_id": incident_id,
+            "response": assistant_reply,
+        }
 
     from sre_agent.redis_state_store import get_state_store
     state_store = get_state_store()
