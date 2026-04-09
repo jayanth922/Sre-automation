@@ -11,7 +11,9 @@ Next.js 14 frontend for the SRE platform. Provides real-time visibility into clu
 | `/login` | Email + password login |
 | `/register` | New account creation |
 | `/` (dashboard) | Cluster overview — status, heartbeat, open incidents |
-| `/clusters/[id]` | Cluster detail — incidents, SLOs, live agent status |
+| `/clusters/[id]` | Legacy redirect to that cluster's incidents table |
+| `/clusters/[id]/incidents` | Incident table for a cluster |
+| `/clusters/[id]/incidents/[incidentId]` | Incident dashboard — chat, live status flags, and incident details |
 | `/clusters/[id]/audit` | Full audit trail for all actions on this cluster |
 
 ---

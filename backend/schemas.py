@@ -39,6 +39,26 @@ class UserResponse(UserBase):
     class Config:
         from_attributes = True
 
+
+class UserProfileResponse(BaseModel):
+    id: uuid.UUID
+    email: EmailStr
+    full_name: Optional[str] = None
+    display_name: str
+    role: UserRole
+    org_id: uuid.UUID
+    organization_name: str
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PasswordResetRequest(BaseModel):
+    current_password: str
+    new_password: str
+
 # ----------------------------------------------------------------------
 # Organization Schemas
 # ----------------------------------------------------------------------

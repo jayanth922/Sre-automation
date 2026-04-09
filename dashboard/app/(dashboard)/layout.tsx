@@ -1,10 +1,7 @@
 "use client"
 
-import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Server, Settings, LogOut } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { useAuth } from "@/lib/auth-context"
+import { UserAccountMenu } from "@/components/dashboard/UserAccountMenu"
 
 export default function DashboardLayout({
     children,
@@ -12,76 +9,32 @@ export default function DashboardLayout({
     children: React.ReactNode
 }) {
     const pathname = usePathname()
-    const { user, logout } = useAuth()
-
-    if (pathname.startsWith("/clusters/")) {
-        return <>{children}</>
-    }
+    const isIncidentDashboard = pathname.includes("/incidents/") && pathname.split("/").filter(Boolean).length === 4
 
     const pageTitle = (() => {
-        if (pathname === "/") return "Overview"
-        if (pathname.startsWith("/clusters/")) return "Cluster Dashboard"
-        if (pathname.startsWith("/settings")) return "Settings"
+        if (pathname === "/") return "Clusters"
+        if (pathname.includes("/incidents/") && pathname.split("/").filter(Boolean).length === 4) return "Incident Dashboard"
+        if (pathname.endsWith("/incidents")) return "Incidents"
+        if (pathname.includes("/audit")) return "Audit Trail"
         return pathname.split("/").filter(Boolean).pop() || "Dashboard"
     })()
 
-    const navItems = [
-        { name: "Overview", href: "/", icon: LayoutDashboard },
-        { name: "Clusters", href: "/", icon: Server }, // For now same as home
-        { name: "Settings", href: "/settings", icon: Settings },
-    ]
-
     return (
-        <div className="flex h-screen bg-gray-100 dark:bg-gray-900">
-            {/* Sidebar */}
-            <div className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
-                <div className="p-6">
-                    <h1 className="text-xl font-bold text-gray-800 dark:text-white">SRE Platform</h1>
-                </div>
-                <nav className="flex-1 px-4 space-y-2">
-                    {navItems.map((item) => {
-                        const Icon = item.icon
-                        const isActive = pathname === item.href
-                        return (
-                            <Link
-                                key={item.name}
-                                href={item.href}
-                                className={`flex items-center gap-3 px-4 py-2 rounded-md text-sm font-medium transition-colors ${isActive
-                                        ? "bg-primary text-primary-foreground"
-                                        : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                                    }`}
-                            >
-                                <Icon size={18} />
-                                {item.name}
-                            </Link>
-                        )
-                    })}
-                </nav>
-                <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-                    <Button variant="ghost" className="w-full justify-start gap-3" onClick={logout}>
-                        <LogOut size={18} />
-                        Logout
-                    </Button>
-                </div>
-            </div>
-
-            {/* Main Content */}
-            <div className="flex-1 overflow-auto">
-                <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-4">
-                    <div className="flex justify-between items-center">
-                        <h2 className="text-lg font-semibold capitalize">
+        <div className="flex h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.10),_transparent_28%),linear-gradient(180deg,_#090b14_0%,_#05070f_100%)] text-zinc-50">
+            <header className="sticky top-0 z-30 border-b border-zinc-800/70 bg-zinc-950/80 backdrop-blur">
+                <div className="flex w-full items-center justify-between gap-4 px-4 py-4 md:px-6">
+                    <div className="min-w-0">
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-zinc-500">SRE platform</p>
+                        <h2 className="truncate text-xl font-semibold tracking-tight text-white md:text-2xl">
                             {pageTitle}
                         </h2>
-                        <div className="flex items-center gap-4">
-                            <span className="text-sm text-gray-500">{user?.email || "Unknown"}</span>
-                            {/* <Avatar /> can go here */}
-                        </div>
                     </div>
-                </header>
-                <main className="p-6">
-                    {children}
-                </main>
-            </div>
+                    <UserAccountMenu />
+                </div>
+            </header>
+            <main className={`flex w-full flex-1 min-h-0 flex-col ${isIncidentDashboard ? "overflow-hidden px-4 py-4 md:px-6" : "overflow-auto overscroll-none px-4 py-6 md:px-6"}`}>
+                {children}
+            </main>
         </div>
     )
 }

@@ -39,8 +39,6 @@ services:
     image: postgres:15-alpine
     container_name: sre-postgres
     hostname: postgres
-    ports:
-      - "5432:5432"
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-sre_user}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sre_password}

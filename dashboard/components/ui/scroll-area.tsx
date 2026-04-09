@@ -11,7 +11,7 @@ const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
     ({ className, orientation = "vertical", ...props }, ref) => (
         <div
             ref={ref}
-            className={cn("relative overflow-auto", className)}
+            className={cn("overlay-scrollbar relative overflow-auto", className)}
             {...props}
         />
     )

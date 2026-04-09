@@ -123,7 +123,7 @@ export default function DashboardHome() {
     }
 
     return (
-        <div className="space-y-6">
+        <div className="flex w-full min-w-0 flex-1 flex-col gap-6">
             <div className="flex justify-between items-center">
                 <h1 className="text-3xl font-bold tracking-tight">Clusters</h1>
 
@@ -236,8 +236,8 @@ export default function DashboardHome() {
                                 </div>
                             </CardContent>
                             <CardFooter className="flex gap-2">
-                                <Link href={`/clusters/${cluster.id}`} className="flex-1">
-                                    <Button variant="outline" className="w-full">View Details</Button>
+                                <Link href={`/clusters/${cluster.id}/incidents`} className="flex-1">
+                                    <Button variant="outline" className="w-full">View Incidents</Button>
                                 </Link>
                                 <Button variant="ghost" size="icon" className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => handleDeleteCluster(cluster.id, cluster.name)}>
                                     <Trash2 className="h-4 w-4" />

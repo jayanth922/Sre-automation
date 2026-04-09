@@ -22,6 +22,11 @@ async def get_org_by_name(db: AsyncSession, name: str):
     result = await db.execute(select(models.Organization).filter(models.Organization.name == name))
     return result.scalars().first()
 
+
+async def get_org_by_id(db: AsyncSession, org_id: uuid.UUID):
+    result = await db.execute(select(models.Organization).filter(models.Organization.id == org_id))
+    return result.scalars().first()
+
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
     # Check if org already exists — reuse if found, otherwise create new
     db_org = await get_org_by_name(db, user.org_name)
