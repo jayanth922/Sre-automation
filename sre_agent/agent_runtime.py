@@ -798,6 +798,24 @@ async def run_graph_background_saas(
         logger.error(f"SaaS Background execution failed: {e}")
         error_log = f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}"
         state_store.append_log(session_id, error_log)
+
+        async with database.AsyncSessionLocal() as db:
+            try:
+                await crud.create_incident_timeline_event(
+                    db,
+                    incident_id,
+                    event_type="system_event",
+                    speaker_role="system",
+                    title="System",
+                    content=f"Investigation failed: {str(e)}",
+                    payload={
+                        "source": "runtime",
+                        "job_id": str(job_id) if job_id else None,
+                        "error": str(e),
+                    },
+                )
+            except Exception as timeline_error:
+                logger.warning(f"Failed to persist incident failure event: {timeline_error}")
         
         # Update Incident Status to OPEN (investigation failed) and Job to FAILED
         async with database.AsyncSessionLocal() as db:

@@ -6,6 +6,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.database import AsyncSessionLocal
+from backend import auth
 from backend.crud import create_user, get_user_by_email, create_cluster, get_clusters_for_org
 from backend.schemas import UserCreate, ClusterCreate
 
@@ -23,6 +24,10 @@ async def seed_default_user():
             print("User created successfully.")
         else:
             print(f"User {email} already exists.")
+            if not auth.verify_password(password, user.hashed_password):
+                user.hashed_password = auth.get_password_hash(password)
+                await db.commit()
+                print("Default admin password refreshed from seed configuration.")
 
         # Seed Default Cluster if requested
         seed_cluster_token = os.getenv("SEED_CLUSTER_TOKEN")

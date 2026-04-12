@@ -162,6 +162,10 @@ class AgentState(TypedDict):
         "investigation_swarm",
         "reflector",
         "planner",
+        "metrics_agent",
+        "logs_agent",
+        "github_agent",
+        "runbooks_agent",
         "aggregate",
         "FINISH",
     ]  # Next node in graph
@@ -171,6 +175,17 @@ class AgentState(TypedDict):
 
     # Current query being processed
     current_query: Optional[str]
+
+    # Phase 2 investigation routing state
+    investigation_plan: Optional[Dict[str, Any]]
+    specialist_queue: Optional[List[str]]
+    current_specialist: Optional[str]
+    investigation_complete: Optional[bool]
+
+    # Phase 3 human checkpoint state
+    pending_human_messages: Optional[List[Dict[str, Any]]]
+    human_interrupt_pending: Optional[bool]
+    last_processed_human_event_id: Optional[str]
 
     # Metadata about the conversation
     metadata: Dict[str, Any]

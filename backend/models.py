@@ -158,9 +158,39 @@ class Incident(Base):
 
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="incidents")
+    timeline_events: Mapped[List["IncidentTimelineEvent"]] = relationship(
+        back_populates="incident",
+        cascade="all, delete-orphan",
+        order_by="IncidentTimelineEvent.sequence",
+    )
 
     def __repr__(self):
         return f"<Incident(title='{self.title}', severity='{self.severity}')>"
+
+
+class IncidentTimelineEvent(Base):
+    __tablename__ = "incident_timeline_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    incident_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("incidents.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    speaker_role: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[Optional[str]] = mapped_column(Text)
+    pending_supervisor: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    handled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    incident: Mapped["Incident"] = relationship(back_populates="timeline_events")
+
+    def __repr__(self):
+        return (
+            f"<IncidentTimelineEvent(incident='{self.incident_id}', sequence='{self.sequence}', "
+            f"event_type='{self.event_type}', speaker_role='{self.speaker_role}')>"
+        )
 
 
 class AuditLog(Base):

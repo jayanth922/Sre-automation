@@ -14,6 +14,12 @@ from langgraph.prebuilt import create_react_agent
 from .agent_state import AgentState
 from .audit_context import set_audit_context, clear_audit_context
 from .constants import AgentMetadata
+from .incident_timeline import (
+    build_specialist_finding_content,
+    emit_timeline_event,
+    internal_agent_name,
+    visible_specialist_role,
+)
 from .llm_utils import create_llm_with_error_handling
 from .prompt_loader import prompt_loader
 
@@ -160,6 +166,8 @@ class BaseAgentNode:
         try:
             # Get the last user message
             messages = state["messages"]
+            agent_type = self._get_agent_type()
+            agent_key = internal_agent_name(agent_type)
 
             # Create a focused query for this agent
             agent_prompt = (
@@ -233,8 +241,8 @@ class BaseAgentNode:
                                             
                                             # Intercept actual agent reasoning/tool usage for the transcript
                                             traces = state.get("thought_traces", {})
-                                            if self.name not in traces:
-                                                traces[self.name] = []
+                                            if agent_key not in traces:
+                                                traces[agent_key] = []
                                             
                                             reasoning = ""
                                             if hasattr(msg, "content") and isinstance(msg.content, str) and msg.content.strip():
@@ -243,8 +251,8 @@ class BaseAgentNode:
                                             actual_thought = f"{reasoning} *(Action: Invoking `{tool_name}` to gather context)*"
                                             
                                             # Avoid duplicate reasoning lines on multi-tool outputs
-                                            if actual_thought not in traces[self.name]:
-                                                traces[self.name].append(actual_thought)
+                                            if actual_thought not in traces[agent_key]:
+                                                traces[agent_key].append(actual_thought)
                                             
                                             state["thought_traces"] = traces
                                             
@@ -316,16 +324,34 @@ class BaseAgentNode:
                 logger.info(f"{self.name} - Full response: {str(agent_response)}")
 
             # Update state with streaming info
+            agent_type = self._get_agent_type()
+            specialist_agent_name = agent_key
+            speaker_role = visible_specialist_role(specialist_agent_name)
+            if speaker_role != "system":
+                finding_content, finding_payload = build_specialist_finding_content(
+                    specialist_agent_name,
+                    state.get("current_query", ""),
+                    agent_response,
+                )
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="finding",
+                    speaker_role=speaker_role,
+                    title=self.name,
+                    content=finding_content,
+                    payload=finding_payload,
+                )
+
             return {
                 "agent_results": {
                     **state.get("agent_results", {}),
-                    self.name: agent_response,
+                    agent_key: agent_response,
                 },
-                "agents_invoked": state.get("agents_invoked", []) + [self.name],
+                "agents_invoked": state.get("agents_invoked", []) + [agent_key],
                 "messages": messages + all_messages,
                 "metadata": {
                     **state.get("metadata", {}),
-                    f"{self.name.replace(' ', '_')}_trace": all_messages,
+                    f"{agent_key}_trace": all_messages,
                 },
             }
 
@@ -334,9 +360,9 @@ class BaseAgentNode:
             return {
                 "agent_results": {
                     **state.get("agent_results", {}),
-                    self.name: f"Error: {str(e)}",
+                    agent_key: f"Error: {str(e)}",
                 },
-                "agents_invoked": state.get("agents_invoked", []) + [self.name],
+                "agents_invoked": state.get("agents_invoked", []) + [agent_key],
             }
         finally:
             clear_audit_context()

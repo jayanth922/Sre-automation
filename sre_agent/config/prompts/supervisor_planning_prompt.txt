@@ -19,7 +19,7 @@ MANDATORY: Your response MUST be ONLY valid JSON that matches this exact structu
 
 {
   "steps": ["Step 1 description", "Step 2 description", "Step 3 description"],
-  "agents_sequence": ["kubernetes_agent", "logs_agent"],
+  "agents_sequence": ["metrics_agent", "logs_agent"],
   "complexity": "simple",
   "auto_execute": true,
   "reasoning": "Brief explanation of the investigation approach"
@@ -29,7 +29,7 @@ MANDATORY: Your response MUST be ONLY valid JSON that matches this exact structu
 <field_specifications>
 Required field specifications:
 - steps: Array of 3-5 strings describing investigation steps
-- agents_sequence: Array of agent names from: kubernetes_agent, logs_agent, metrics_agent, runbooks_agent
+- agents_sequence: Array of agent names from: metrics_agent, logs_agent, github_agent, runbooks_agent
 - complexity: Must be exactly "simple" or "complex" 
 - auto_execute: Must be boolean true or false
 - reasoning: Single string with brief explanation

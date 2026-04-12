@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional, List
+from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
 from pydantic import BaseModel, EmailStr
 
@@ -126,6 +126,34 @@ class IncidentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class IncidentTimelineEventResponse(BaseModel):
+    id: uuid.UUID
+    incident_id: uuid.UUID
+    sequence: int
+    event_type: str
+    speaker_role: str
+    title: Optional[str] = None
+    content: str
+    payload: Optional[Dict[str, Any]] = None
+    pending_supervisor: bool = False
+    handled_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class IncidentTranscriptResponse(BaseModel):
+    incident: IncidentResponse
+    conversation_mode: Literal["investigation", "assistant"]
+    summary: Optional[str] = None
+    events: List[IncidentTimelineEventResponse]
+
+
+class IncidentMessageRequest(BaseModel):
+    message: str
 
 # ----------------------------------------------------------------------
 # SLO Schemas

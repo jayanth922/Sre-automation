@@ -238,6 +238,13 @@ class SREOutputFormatter:
 
     def format_plan_approval(self, plan: Dict[str, Any], query: str) -> str:
         """Format plan approval request in clean markdown."""
+        step_text_by_agent = {
+            "metrics_agent": "Check the metrics around the alert window and confirm the scope of the impact.",
+            "logs_agent": "Review logs for matching error patterns, timeouts, or repeated failures.",
+            "github_agent": "Correlate the incident with recent deployments, commits, or pull requests.",
+            "runbooks_agent": "Check the safest runbook path and confirm the next operational step.",
+        }
+
         output = []
 
         # Header
@@ -247,14 +254,22 @@ class SREOutputFormatter:
         output.append(f"**Complexity:** {plan.get('complexity', 'unknown').title()}")
         output.append("")
 
-        # Plan Steps
-        steps = plan.get("steps", [])
-        if steps:
-            output.append("## Investigation Steps")
+        # Selected Specialists and Investigation Steps
+        agents_sequence = plan.get("agents_sequence", [])
+        agent_labels = [agent.replace("_", " ").title() for agent in agents_sequence]
+
+        output.append("## Investigation Steps")
+        output.append("")
+        if agent_labels:
+            output.append(f"**Selected Specialists:** {', '.join(agent_labels)}")
             output.append("")
-            for i, step in enumerate(steps, 1):
-                output.append(f"{i}. {step}")
-            output.append("")
+            for i, agent_name in enumerate(agents_sequence, 1):
+                output.append(
+                    f"{i}. {step_text_by_agent.get(agent_name, 'Review the incident evidence and report back clearly.') }"
+                )
+        else:
+            output.append("1. Review the incident evidence and report back clearly.")
+        output.append("")
 
         # Plan Details
         reasoning = plan.get("reasoning", "Standard investigation approach")
@@ -267,7 +282,7 @@ class SREOutputFormatter:
         output.append("")
 
         # Actions
-        output.append("## Available Actions")
+        output.append("## Next Action")
         output.append("")
         output.append("- Type `proceed` or `yes` to execute the plan")
         output.append("- Type `modify` to suggest changes")

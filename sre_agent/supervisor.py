@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -13,6 +14,19 @@ from pydantic import BaseModel, Field, field_validator
 
 from .agent_state import AgentState
 from .constants import SREConstants
+from .incident_timeline import (
+    build_supervisor_decision_content,
+    build_supervisor_direct_answer_content,
+    build_supervisor_plan_content,
+    build_supervisor_revised_plan_content,
+    build_supervisor_summary_content,
+    emit_timeline_event,
+    filter_visible_specialists,
+    load_pending_human_events,
+    infer_visible_specialist_queue,
+    mark_human_event_handled,
+    visible_specialist_label,
+)
 from .llm_utils import create_llm_with_error_handling
 from .output_formatter import create_formatter
 from .prompt_loader import prompt_loader
@@ -112,7 +126,7 @@ class InvestigationPlan(BaseModel):
         return v
 
     agents_sequence: List[str] = Field(
-        description="Sequence of agents to invoke (kubernetes_agent, logs_agent, metrics_agent, runbooks_agent)"
+        description="Sequence of agents to invoke (metrics_agent, logs_agent, github_agent, runbooks_agent)"
     )
     complexity: Literal["simple", "complex"] = Field(
         description="Whether this plan is simple (auto-execute) or complex (needs approval)"
@@ -129,7 +143,7 @@ class RouteDecision(BaseModel):
     """Decision made by supervisor for routing."""
 
     next: Literal[
-        "kubernetes_agent", "logs_agent", "metrics_agent", "runbooks_agent", "FINISH"
+        "logs_agent", "metrics_agent", "github_agent", "runbooks_agent", "FINISH"
     ] = Field(description="The next agent to route to, or FINISH if done")
     reasoning: str = Field(
         description="Brief explanation of why this routing decision was made"
@@ -187,10 +201,110 @@ def _read_planning_prompt() -> str:
     return """Create a simple, focused investigation plan with 2-3 steps maximum.
 Create the plan in JSON format with these fields:
 - steps: List of 3-5 investigation steps
-- agents_sequence: List of agents to invoke (kubernetes_agent, logs_agent, metrics_agent, runbooks_agent)
+- agents_sequence: List of agents to invoke (metrics_agent, logs_agent, github_agent, runbooks_agent)
 - complexity: "simple" or "complex"
 - auto_execute: true or false
 - reasoning: Brief explanation of the investigation approach"""
+
+
+def _active_visible_specialist_queue(state: AgentState) -> List[str]:
+    metadata = state.get("metadata", {})
+    explicit_queue = metadata.get("specialist_queue")
+    if isinstance(explicit_queue, list) and explicit_queue:
+        return filter_visible_specialists(explicit_queue)
+
+    plan = metadata.get("investigation_plan") or {}
+    planned_agents = plan.get("agents_sequence", []) if isinstance(plan, dict) else []
+    current_query = state.get("current_query", "")
+    return infer_visible_specialist_queue(current_query, planned_agents)
+
+
+def _assistant_mode_enabled(state: AgentState) -> bool:
+    metadata = state.get("metadata", {})
+    return bool(metadata.get("conversation_mode") == "assistant" or metadata.get("post_investigation_follow_up"))
+
+
+def _follow_up_specialist_for_question(question: str) -> Optional[str]:
+    normalized = " ".join(question.lower().split())
+    if any(marker in normalized for marker in ("metric", "metrics", "prometheus", "latency", "throughput", "availability")):
+        return "metrics_agent"
+    if any(marker in normalized for marker in ("log", "logs", "error", "exception", "trace", "stack trace", "loki")):
+        return "logs_agent"
+    if any(marker in normalized for marker in ("github", "code", "commit", "pull request", "pr", "deploy", "release", "rollback", "what changed", "recent change", "change caused")):
+        return "github_agent"
+    if any(marker in normalized for marker in ("runbook", "runbooks", "playbook", "procedure", "next step", "remediation")):
+        return "runbooks_agent"
+    return None
+
+
+def _is_casual_follow_up(question: str) -> bool:
+    normalized = " ".join(question.lower().split())
+    return normalized in {"hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay"}
+
+
+def _friendly_follow_up_reply(question: str) -> str:
+    normalized = " ".join(question.lower().split())
+    if normalized in {"hi", "hello", "hey", "yo"}:
+        return "I’m still here. Ask about the incident summary, the evidence, or the next steps."
+    if normalized in {"thanks", "thank you"}:
+        return "Glad to help. If you want, I can also break down the evidence or next steps."
+    if normalized in {"ok", "okay"}:
+        return "Understood. Ask a follow-up anytime if you want me to dig deeper."
+    return "I’m here if you want to dig deeper into the completed incident."
+
+
+def _summarize_for_direct_follow_up(summary_text: str) -> str:
+    if not summary_text:
+        return "The incident is closed, but I do not have the summary context available in this thread."
+
+    summary_lines = []
+    for raw_line in summary_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        cleaned = re.sub(r"^[\-*]\s*", "", line)
+        if cleaned:
+            summary_lines.append(cleaned)
+
+    if not summary_lines:
+        compact_summary = re.sub(r"\s+", " ", summary_text.strip())
+        return f"Based on the completed investigation, {compact_summary}"
+
+    excerpt = " ".join(summary_lines[:2])
+    return f"Based on the completed investigation, {excerpt}"
+
+
+def _classify_human_interrupt(message: str, current_queue: List[str]) -> Dict[str, Any]:
+    normalized = " ".join(message.lower().split())
+    reroute_markers = ("change", "modify", "instead", "focus", "prioritize", "pause", "stop", "skip")
+
+    if any(marker in normalized for marker in reroute_markers):
+        revised_queue = list(current_queue)
+        preferred_agents: List[str] = []
+        if any(marker in normalized for marker in ("logs", "log")):
+            preferred_agents.append("logs_agent")
+        if any(marker in normalized for marker in ("metric", "metrics", "prometheus")):
+            preferred_agents.append("metrics_agent")
+        if "github" in normalized or "code" in normalized:
+            preferred_agents.append("github_agent")
+        if "runbook" in normalized or "runbooks" in normalized or "doc" in normalized:
+            preferred_agents.append("runbooks_agent")
+
+        for agent_name in preferred_agents:
+            if agent_name in revised_queue:
+                revised_queue.remove(agent_name)
+            revised_queue.insert(0, agent_name)
+
+        return {
+            "mode": "revised_plan",
+            "revised_queue": filter_visible_specialists(revised_queue),
+            "reason": "Human checkpoint asked for a reprioritized investigation path.",
+        }
+
+    return {
+        "mode": "direct_answer",
+        "basis": "Human checkpoint review can proceed without altering the specialist queue.",
+    }
 
 
 class SupervisorAgent:
@@ -262,24 +376,32 @@ User's query: {current_query}
 
     def _format_plan_markdown(self, plan: InvestigationPlan) -> str:
         """Format investigation plan as properly formatted markdown."""
-        plan_text = "## 🔍 Investigation Plan\n\n"
+        step_text_by_agent = {
+            "metrics_agent": "Check the metrics around the alert window and confirm the scope of the impact.",
+            "logs_agent": "Review logs for matching error patterns, timeouts, or repeated failures.",
+            "github_agent": "Correlate the incident with recent deployments, commits, or pull requests.",
+            "runbooks_agent": "Check the safest runbook path and confirm the next operational step.",
+        }
 
-        # Add steps with proper numbering and formatting
-        for i, step in enumerate(plan.steps, 1):
-            plan_text += f"**{i}.** {step}\n\n"
+        plan_text = "## Investigation Plan\n\n"
+        plan_text += "**Objective:** Investigate the incident with the selected specialists.\n"
 
-        # Add metadata
-        plan_text += f"**📊 Complexity:** {plan.complexity.title()}\n"
-        plan_text += f"**🤖 Auto-execute:** {'Yes' if plan.auto_execute else 'No'}\n"
-        if plan.reasoning:
-            plan_text += f"**💭 Reasoning:** {plan.reasoning}\n"
-
-        # Add agents involved
         if plan.agents_sequence:
             agents_list = ", ".join(
                 [agent.replace("_", " ").title() for agent in plan.agents_sequence]
             )
-            plan_text += f"**👥 Agents involved:** {agents_list}\n"
+            plan_text += f"**Selected specialists:** {agents_list}\n\n"
+            plan_text += "**Investigation steps:**\n"
+            for i, agent_name in enumerate(plan.agents_sequence, 1):
+                plan_text += f"{i}. {step_text_by_agent.get(agent_name, 'Review the incident evidence and report back clearly.')}\n"
+        else:
+            plan_text += "**Selected specialists:** None yet\n\n"
+            plan_text += "**Investigation steps:**\n1. Review the incident evidence and report back clearly.\n"
+
+        plan_text += f"\n**Complexity:** {plan.complexity.title()}\n"
+        plan_text += f"**Auto-execute:** {'Yes' if plan.auto_execute else 'No'}\n"
+        if plan.reasoning:
+            plan_text += f"**Reasoning:** {plan.reasoning}\n"
 
         return plan_text
 
@@ -287,13 +409,205 @@ User's query: {current_query}
         """Determine which agent should handle the query next."""
         agents_invoked = state.get("agents_invoked", [])
         existing_traces = dict(state.get("thought_traces", {}))
+        metadata = dict(state.get("metadata", {}))
+        incident_id = state.get("incident_id") or metadata.get("incident_id")
+
+        if _assistant_mode_enabled(state):
+            current_query = state.get("current_query", "") or "Follow-up question"
+            final_response_context = (
+                state.get("final_response")
+                or metadata.get("final_response")
+                or metadata.get("incident_summary")
+                or ""
+            )
+
+            if _is_casual_follow_up(current_query):
+                friendly_reply = _friendly_follow_up_reply(current_query)
+                return {
+                    "next": "FINISH",
+                    "final_response": friendly_reply,
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            "I kept the reply conversational in the same incident thread.",
+                        ],
+                    },
+                    "metadata": {
+                        **metadata,
+                        "conversation_mode": "assistant",
+                        "post_investigation_follow_up": True,
+                        "follow_up_mode": "direct",
+                        "final_response": friendly_reply,
+                        "follow_up_question": current_query,
+                        "follow_up_basis": "A brief conversational follow-up after the incident summary.",
+                    },
+                }
+
+            if metadata.get("follow_up_mode") == "specialist" and agents_invoked:
+                return {
+                    "next": "FINISH",
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            "The specialist answered the follow-up in the same incident thread.",
+                        ],
+                    },
+                    "metadata": {
+                        **metadata,
+                        "conversation_mode": "assistant",
+                        "post_investigation_follow_up": True,
+                        "final_response": final_response_context,
+                    },
+                }
+
+            selected_specialist = _follow_up_specialist_for_question(current_query)
+            if selected_specialist:
+                decision_content, decision_payload = build_supervisor_decision_content(
+                    selected_specialist,
+                    "Delegating the follow-up to the most relevant specialist.",
+                    [],
+                )
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="decision",
+                    speaker_role="supervisor",
+                    title="Supervisor",
+                    content=decision_content,
+                    payload={
+                        **decision_payload,
+                        "source": "post_investigation_follow_up",
+                        "question": current_query,
+                    },
+                )
+                return {
+                    "next": selected_specialist,
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            f"I’m handing this follow-up to {visible_specialist_label(selected_specialist)}.",
+                        ],
+                    },
+                    "metadata": {
+                        **metadata,
+                        "conversation_mode": "assistant",
+                        "post_investigation_follow_up": True,
+                        "follow_up_mode": "specialist",
+                        "follow_up_specialist": selected_specialist,
+                        "current_specialist": selected_specialist,
+                        "final_response": final_response_context,
+                    },
+                }
+
+            direct_answer = _summarize_for_direct_follow_up(final_response_context)
+            return {
+                "next": "FINISH",
+                "final_response": direct_answer,
+                "thought_traces": {
+                    **existing_traces,
+                    "supervisor": [
+                        *existing_traces.get("supervisor", []),
+                        "I answered the follow-up directly from the completed incident context.",
+                    ],
+                },
+                "metadata": {
+                    **metadata,
+                    "conversation_mode": "assistant",
+                    "post_investigation_follow_up": True,
+                    "follow_up_mode": "direct",
+                    "final_response": direct_answer,
+                    "follow_up_question": current_query,
+                    "follow_up_basis": "The completed incident summary already covers this follow-up.",
+                },
+            }
+
+        pending_events = await load_pending_human_events(incident_id, limit=3)
+        if pending_events:
+            pending_messages = [
+                {
+                    "id": str(event.id),
+                    "sequence": event.sequence,
+                    "content": event.content,
+                    "title": event.title,
+                    "created_at": event.created_at.isoformat() if event.created_at else None,
+                }
+                for event in pending_events
+            ]
+            metadata = {
+                **metadata,
+                "pending_human_messages": pending_messages,
+                "human_interrupt_pending": True,
+                "last_processed_human_event_id": str(pending_events[0].id),
+            }
+
+            current_queue = _active_visible_specialist_queue({**state, "metadata": metadata})
+            human_interrupt = _classify_human_interrupt(pending_events[0].content or "", current_queue)
+
+            if human_interrupt["mode"] == "revised_plan":
+                revised_queue = human_interrupt["revised_queue"]
+                metadata = {
+                    **metadata,
+                    "specialist_queue": revised_queue,
+                    "current_specialist": revised_queue[0] if revised_queue else None,
+                }
+                content, payload = build_supervisor_revised_plan_content(
+                    pending_events[0].content or "",
+                    revised_queue,
+                    human_interrupt["reason"],
+                )
+            else:
+                content, payload = build_supervisor_direct_answer_content(
+                    pending_events[0].content or "",
+                    "I have the message and will incorporate it at the next safe checkpoint.",
+                    human_interrupt["basis"],
+                )
+
+            emitted_event = await emit_timeline_event(
+                incident_id,
+                event_type="decision",
+                speaker_role="supervisor",
+                title="Supervisor",
+                content=content,
+                payload={
+                    **payload,
+                    "source": "human_checkpoint",
+                    "pending_event_id": str(pending_events[0].id),
+                },
+            )
+            if emitted_event is not None:
+                await mark_human_event_handled(incident_id, str(pending_events[0].id))
+                metadata = {
+                    **metadata,
+                    "pending_human_messages": pending_messages[1:],
+                    "human_interrupt_pending": len(pending_messages) > 1,
+                }
 
         # Check if we have an existing plan
-        existing_plan = state.get("metadata", {}).get("investigation_plan")
+        existing_plan = metadata.get("investigation_plan")
 
         if not existing_plan:
             # First time - create investigation plan
             plan = await self.create_investigation_plan(state)
+            plan_dict = plan.model_dump()
+            visible_queue = _active_visible_specialist_queue({**state, "metadata": {**metadata, "investigation_plan": plan_dict}})
+            if not visible_queue:
+                visible_queue = ["metrics_agent", "logs_agent"]
+
+            plan_content, plan_payload = build_supervisor_plan_content(
+                state.get("current_query", "Incident investigation"),
+                plan_dict,
+                visible_queue,
+            )
+            await emit_timeline_event(
+                incident_id,
+                event_type="plan",
+                speaker_role="supervisor",
+                title="Supervisor",
+                content=plan_content,
+                payload=plan_payload,
+            )
 
             # Check if we should auto-approve the plan (defaults to False if not set)
             auto_approve = state.get("auto_approve_plan", False)
@@ -314,8 +628,9 @@ User's query: {current_query}
                         ],
                     },
                     "metadata": {
-                        **state.get("metadata", {}),
-                        "investigation_plan": plan.model_dump(),
+                        **metadata,
+                        "investigation_plan": plan_dict,
+                        "specialist_queue": visible_queue,
                         "routing_reasoning": f"Created investigation plan. Complexity: {plan.complexity}",
                         "plan_pending_approval": True,
                         "plan_text": plan_text,
@@ -323,12 +638,24 @@ User's query: {current_query}
                 }
             else:
                 # Simple plan - start execution
-                next_agent = (
-                    plan.agents_sequence[0] if plan.agents_sequence else "FINISH"
-                )
+                next_agent = visible_queue[0] if visible_queue else "FINISH"
                 plan_text = self._format_plan_markdown(plan)
                 supervisor_thought = (
-                    f"Alright team, let's execute the plan. I'm going to bring in {next_agent.replace('_', ' ')} first to start pulling evidence."
+                    f"Alright team, let's execute the plan. I'm going to bring in {visible_specialist_label(next_agent)} first to start pulling evidence."
+                )
+
+                decision_content, decision_payload = build_supervisor_decision_content(
+                    next_agent,
+                    f"Executing plan step 1: {plan.steps[0] if plan.steps else 'Start'}",
+                    visible_queue[1:],
+                )
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="decision",
+                    speaker_role="supervisor",
+                    title="Supervisor",
+                    content=decision_content,
+                    payload=decision_payload,
                 )
                 return {
                     "next": next_agent,
@@ -340,29 +667,47 @@ User's query: {current_query}
                         ],
                     },
                     "metadata": {
-                        **state.get("metadata", {}),
-                        "investigation_plan": plan.model_dump(),
+                        **metadata,
+                        "investigation_plan": plan_dict,
+                        "specialist_queue": visible_queue,
                         "routing_reasoning": f"Executing plan step 1: {plan.steps[0] if plan.steps else 'Start'}",
                         "plan_step": 0,
                         "plan_text": plan_text,
                         "show_plan": True,
+                        "current_specialist": next_agent,
                     },
                 }
         else:
             # Continue executing existing plan
             plan = InvestigationPlan(**existing_plan)
-            current_step = state.get("metadata", {}).get("plan_step", 0)
+            visible_queue = _active_visible_specialist_queue({**state, "metadata": metadata})
+            if not visible_queue:
+                visible_queue = ["metrics_agent", "logs_agent"]
 
-            # Check if plan is complete
-            if current_step >= len(plan.agents_sequence) or not agents_invoked:
-                next_step = current_step
-            else:
-                next_step = current_step + 1
+            next_agent = None
+            for candidate in visible_queue:
+                if candidate not in agents_invoked:
+                    next_agent = candidate
+                    break
 
-            if next_step >= len(plan.agents_sequence):
+            if not next_agent:
                 # Plan complete
                 supervisor_thought = (
                     "Okay, the team has finished gathering intel. I'm going to take all these findings and synthesize the final summary."
+                )
+
+                decision_content, decision_payload = build_supervisor_decision_content(
+                    "aggregate",
+                    "Visible specialists have reported back; consolidate the investigation.",
+                    [],
+                )
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="decision",
+                    speaker_role="supervisor",
+                    title="Supervisor",
+                    content=decision_content,
+                    payload=decision_payload,
                 )
                 return {
                     "next": "FINISH",
@@ -374,21 +719,32 @@ User's query: {current_query}
                         ],
                     },
                     "metadata": {
-                        **state.get("metadata", {}),
+                        **metadata,
                         "routing_reasoning": "Investigation plan completed. Presenting results.",
-                        "plan_step": next_step,
+                        "plan_step": len(agents_invoked),
+                        "specialist_queue": visible_queue,
                     },
                 }
             else:
                 # Continue with next agent in plan
-                next_agent = plan.agents_sequence[next_step]
-                step_description = (
-                    plan.steps[next_step]
-                    if next_step < len(plan.steps)
-                    else f"Execute {next_agent}"
-                )
+                step_description = plan.steps[len(agents_invoked)] if len(agents_invoked) < len(plan.steps) else f"Execute {next_agent}"
                 supervisor_thought = (
-                    f"Good work so far, but we need more data. {next_agent.replace('_', ' ').capitalize()}, can you take over?"
+                    f"Good work so far, but we need more data. {visible_specialist_label(next_agent)}, can you take over?"
+                )
+
+                remaining_agents = [agent for agent in visible_queue if agent != next_agent and agent not in agents_invoked]
+                decision_content, decision_payload = build_supervisor_decision_content(
+                    next_agent,
+                    f"Executing plan step {len(agents_invoked) + 1}: {step_description}",
+                    remaining_agents,
+                )
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="decision",
+                    speaker_role="supervisor",
+                    title="Supervisor",
+                    content=decision_content,
+                    payload=decision_payload,
                 )
 
                 return {
@@ -401,9 +757,11 @@ User's query: {current_query}
                         ],
                     },
                     "metadata": {
-                        **state.get("metadata", {}),
-                        "routing_reasoning": f"Executing plan step {next_step + 1}: {step_description}",
-                        "plan_step": next_step,
+                        **metadata,
+                        "routing_reasoning": f"Executing plan step {len(agents_invoked) + 1}: {step_description}",
+                        "plan_step": len(agents_invoked),
+                        "specialist_queue": visible_queue,
+                        "current_specialist": next_agent,
                     },
                 }
 
@@ -414,6 +772,73 @@ User's query: {current_query}
         reflector_analysis = state.get("reflector_analysis")
         remediation_plan = state.get("remediation_plan")
         existing_traces = dict(state.get("thought_traces", {}))
+        incident_id = state.get("incident_id") or metadata.get("incident_id")
+        current_query = state.get("current_query", "") or "Follow-up question"
+        alert_context = state.get("alert_context")
+
+        if _assistant_mode_enabled(state):
+            follow_up_mode = metadata.get("follow_up_mode")
+
+            if follow_up_mode == "specialist" and agent_results:
+                specialist_response = next(iter(agent_results.values())) or "Follow-up complete."
+                return {
+                    "final_response": specialist_response,
+                    "next": "FINISH",
+                    "thought_traces": {
+                        **existing_traces,
+                        "supervisor": [
+                            *existing_traces.get("supervisor", []),
+                            "A specialist answered the follow-up in the same incident thread.",
+                        ],
+                    },
+                    "metadata": {
+                        **metadata,
+                        "conversation_mode": "assistant",
+                        "post_investigation_follow_up": True,
+                        "final_response": specialist_response,
+                    },
+                }
+
+            follow_up_response = state.get("final_response") or metadata.get("final_response")
+            if not follow_up_response and agent_results:
+                follow_up_response = next(iter(agent_results.values()))
+            follow_up_response = follow_up_response or "Follow-up complete."
+
+            assistant_content, assistant_payload = build_supervisor_direct_answer_content(
+                current_query,
+                follow_up_response,
+                metadata.get("follow_up_basis") or "The completed incident summary already covers this follow-up.",
+            )
+            await emit_timeline_event(
+                incident_id,
+                event_type="assistant_message",
+                speaker_role="supervisor",
+                title="Supervisor",
+                content=assistant_content,
+                payload={
+                    **assistant_payload,
+                    "source": "post_investigation_follow_up",
+                    "question": current_query,
+                },
+            )
+
+            return {
+                "final_response": follow_up_response,
+                "next": "FINISH",
+                "thought_traces": {
+                    **existing_traces,
+                    "supervisor": [
+                        *existing_traces.get("supervisor", []),
+                        "I kept the follow-up in the same incident thread without reopening the investigation.",
+                    ],
+                },
+                "metadata": {
+                    **metadata,
+                    "conversation_mode": "assistant",
+                    "post_investigation_follow_up": True,
+                    "final_response": follow_up_response,
+                },
+            }
 
         if remediation_plan and reflector_analysis:
             # Format the output from the OODA workflow
@@ -441,9 +866,32 @@ User's query: {current_query}
                 f"I confirmed the likely root cause as {reflector_analysis.hypothesis} and "
                 f"assembled the remediation plan with {len(remediation_plan.actions)} action(s)."
             )
+
+            summary_content, summary_payload = build_supervisor_summary_content(final_response, agent_results)
+            await emit_timeline_event(
+                incident_id,
+                event_type="summary",
+                speaker_role="supervisor",
+                title="Supervisor",
+                content=summary_content,
+                payload={
+                    **summary_payload,
+                    "hypothesis": reflector_analysis.hypothesis,
+                    "confidence": getattr(reflector_analysis, "confidence", None),
+                    "remediation_actions": [
+                        {
+                            "action_type": action.action_type,
+                            "target": action.target,
+                        }
+                        for action in remediation_plan.actions
+                    ],
+                    "conversation_mode": "assistant",
+                    "lifecycle": "post_investigation_ready",
+                },
+            )
             
             return {
-                "final_response": final_response,
+                "final_response": summary_content,
                 "next": "FINISH",
                 "thought_traces": {
                     **existing_traces,
@@ -451,6 +899,14 @@ User's query: {current_query}
                         *existing_traces.get("supervisor", []),
                         supervisor_summary,
                     ],
+                },
+                "metadata": {
+                    **metadata,
+                    "pending_human_messages": [],
+                    "human_interrupt_pending": False,
+                    "conversation_mode": "assistant",
+                    "post_investigation_follow_up": False,
+                    "final_response": summary_content,
                 },
             }
 
@@ -586,6 +1042,21 @@ You can:
             "result back to the user as the final investigation summary."
         )
 
+        summary_content, summary_payload = build_supervisor_summary_content(
+            final_response,
+            agent_results,
+            query=state.get("current_query", ""),
+            alert_context=alert_context,
+        )
+        await emit_timeline_event(
+            incident_id,
+            event_type="summary",
+            speaker_role="supervisor",
+            title="Supervisor",
+            content=summary_content,
+            payload=summary_payload,
+        )
+
         # Store successful resolution in memory (if verification passed)
         try:
             verification_result = state.get("verification_result")
@@ -682,7 +1153,7 @@ Improvement: {improvement:.1f}%
             logger.warning(f"⚠️ Failed to store incident in memory: {e}")
 
             return {
-                "final_response": final_response,
+                "final_response": summary_content,
                 "next": "FINISH",
                 "thought_traces": {
                     **existing_traces,

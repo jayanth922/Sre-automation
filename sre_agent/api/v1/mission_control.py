@@ -10,6 +10,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import desc, select
 from sqlalchemy.exc import ProgrammingError
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from backend import crud, database, models, schemas
@@ -126,6 +127,109 @@ def _build_chat_reply(message: str, incident: models.Incident, cluster: models.C
         f"or remediation steps."
     )
 
+
+def _incident_is_active(incident: models.Incident) -> bool:
+    return incident.status in {models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING}
+
+
+def _incident_is_closed_for_follow_up(incident: models.Incident) -> bool:
+    return incident.status == models.IncidentStatus.RESOLVED or bool(incident.summary)
+
+
+async def _run_post_summary_follow_up(
+    incident_id: uuid.UUID,
+    message: str,
+    user: models.User,
+) -> None:
+    graph = get_agent_graph()
+    config = {"configurable": {"thread_id": str(incident_id)}}
+    current_state = await graph.aget_state(config)
+    base_values = dict(current_state.values or {}) if current_state and current_state.values else {}
+    base_metadata = dict(base_values.get("metadata", {}))
+
+    follow_up_state = {
+        **base_values,
+        "messages": [HumanMessage(content=message)],
+        "current_query": message,
+        "agent_results": {},
+        "agents_invoked": [],
+        "current_specialist": None,
+        "metadata": {
+            **base_metadata,
+            "incident_id": str(incident_id),
+            "conversation_mode": "assistant",
+            "post_investigation_follow_up": True,
+            "final_response": base_values.get("final_response") or base_metadata.get("final_response") or base_metadata.get("incident_summary"),
+        },
+        "incident_id": str(incident_id),
+        "session_id": str(incident_id),
+        "user_id": str(user.id),
+        "final_response": None,
+    }
+
+    await graph.ainvoke(follow_up_state, config)
+
+
+def _timeline_event_to_response(event: models.IncidentTimelineEvent) -> schemas.IncidentTimelineEventResponse:
+    payload: Optional[Dict[str, Any]] = None
+    if event.payload_json:
+        try:
+            parsed_payload = json.loads(event.payload_json)
+            if isinstance(parsed_payload, dict):
+                payload = parsed_payload
+            else:
+                payload = {"value": parsed_payload}
+        except Exception:
+            payload = {"raw": event.payload_json}
+
+    return schemas.IncidentTimelineEventResponse(
+        id=event.id,
+        incident_id=event.incident_id,
+        sequence=event.sequence,
+        event_type=event.event_type,
+        speaker_role=event.speaker_role,
+        title=event.title,
+        content=event.content,
+        payload=payload,
+        pending_supervisor=event.pending_supervisor,
+        handled_at=event.handled_at,
+        created_at=event.created_at,
+    )
+
+
+@router.get("/{incident_id}/transcript", response_model=schemas.IncidentTranscriptResponse)
+async def get_incident_transcript(
+    incident_id: str,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+):
+    """Get the canonical incident transcript timeline."""
+    incident_uuid = uuid.UUID(incident_id)
+    incident = await db.execute(
+        select(models.Incident).filter(models.Incident.id == incident_uuid)
+    )
+    incident_obj = incident.scalars().first()
+    if not incident_obj:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
+    if not cluster or cluster.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    events = await crud.get_incident_timeline_events(db, incident_uuid)
+    conversation_mode = (
+        "assistant"
+        if incident_obj.status == models.IncidentStatus.RESOLVED or incident_obj.summary
+        else "investigation"
+    )
+
+    return schemas.IncidentTranscriptResponse(
+        incident=incident_obj,
+        conversation_mode=conversation_mode,
+        summary=incident_obj.summary,
+        events=[_timeline_event_to_response(event) for event in events],
+    )
+
 @router.get("/{incident_id}/logs")
 async def get_incident_audit_logs(
     incident_id: str,
@@ -220,14 +324,14 @@ async def get_incident_audit_logs(
 @router.post("/{incident_id}/message")
 async def send_incident_message(
     incident_id: str,
-    payload: Dict[str, Any],
+    payload: schemas.IncidentMessageRequest,
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db),
 ):
     """
     Post a follow-up message for an incident and queue a new investigation turn.
     """
-    message = str(payload.get("message", "")).strip()
+    message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
@@ -243,8 +347,100 @@ async def send_incident_message(
     if not cluster or cluster.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="Incident not found")
 
+    if _incident_is_closed_for_follow_up(incident_obj):
+        await crud.create_incident_timeline_event(
+            db,
+            incident_uuid,
+            event_type="human_message",
+            speaker_role="user",
+            title="You",
+            content=message,
+            payload={"source": "dashboard_chat", "mode": "post_summary_follow_up"},
+        )
+
+        from sre_agent.redis_state_store import get_state_store
+        state_store = get_state_store()
+        state_store.append_log(
+            incident_id,
+            f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
+        )
+
+        asyncio.create_task(_run_post_summary_follow_up(incident_uuid, message, user))
+
+        return {
+            "status": "FOLLOW_UP_QUEUED",
+            "incident_id": incident_id,
+            "conversation_mode": "assistant",
+        }
+
+    if _incident_is_active(incident_obj) and not _is_chat_only_message(message):
+        queued_event = await crud.create_incident_timeline_event(
+            db,
+            incident_uuid,
+            event_type="human_message",
+            speaker_role="user",
+            title="You",
+            content=message,
+            payload={
+                "source": "dashboard_chat",
+                "mode": "pending_supervisor",
+            },
+            pending_supervisor=True,
+        )
+
+        await crud.create_incident_timeline_event(
+            db,
+            incident_uuid,
+            event_type="system_event",
+            speaker_role="system",
+            title="System",
+            content="Human input queued for the next supervisor checkpoint.",
+            payload={
+                "source": "dashboard_chat",
+                "mode": "queued_for_supervisor",
+                "pending_event_id": str(queued_event.id),
+            },
+        )
+
+        from sre_agent.redis_state_store import get_state_store
+        state_store = get_state_store()
+        state_store.append_log(
+            incident_id,
+            f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
+        )
+        state_store.append_log(
+            incident_id,
+            f"[{datetime.now(timezone.utc).isoformat()}] SYSTEM: queued for supervisor checkpoint"
+        )
+
+        return {
+            "status": "PENDING_SUPERVISOR",
+            "incident_id": incident_id,
+            "message": "Queued for the next safe supervisor checkpoint.",
+        }
+
     if _is_chat_only_message(message):
+        await crud.create_incident_timeline_event(
+            db,
+            incident_uuid,
+            event_type="human_message",
+            speaker_role="user",
+            title="You",
+            content=message,
+            payload={"source": "dashboard_chat", "mode": "incoming"},
+        )
+
         assistant_reply = _build_chat_reply(message, incident_obj, cluster)
+
+        await crud.create_incident_timeline_event(
+            db,
+            incident_uuid,
+            event_type="assistant_message",
+            speaker_role="supervisor",
+            title="Supervisor",
+            content=assistant_reply,
+            payload={"source": "dashboard_chat", "mode": "direct_reply"},
+        )
 
         from sre_agent.redis_state_store import get_state_store
         state_store = get_state_store()
@@ -262,6 +458,16 @@ async def send_incident_message(
             "incident_id": incident_id,
             "response": assistant_reply,
         }
+
+    await crud.create_incident_timeline_event(
+        db,
+        incident_uuid,
+        event_type="human_message",
+        speaker_role="user",
+        title="You",
+        content=message,
+        payload={"source": "dashboard_chat", "mode": "incoming"},
+    )
 
     from sre_agent.redis_state_store import get_state_store
     state_store = get_state_store()
@@ -282,6 +488,21 @@ async def send_incident_message(
                 "follow_up": True,
             }),
         ),
+    )
+
+    await crud.create_incident_timeline_event(
+        db,
+        incident_uuid,
+        event_type="system_event",
+        speaker_role="system",
+        title="System",
+        content="Follow-up queued for investigation.",
+        payload={
+            "source": "dashboard_chat",
+            "mode": "queued_investigation",
+            "job_id": str(follow_up_job.id),
+            "cluster_id": str(cluster.id),
+        },
     )
 
     from sre_agent.agent_runtime import run_graph_background_saas

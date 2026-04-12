@@ -31,6 +31,25 @@ interface LogEntry {
     error_message: string | null
 }
 
+interface TranscriptEvent {
+    id: string
+    incident_id: string
+    sequence: number
+    event_type: string
+    speaker_role: string
+    title: string | null
+    content: string
+    payload: Record<string, unknown> | null
+    created_at: string
+}
+
+interface IncidentTranscriptResponse {
+    incident: Incident
+    conversation_mode: "investigation" | "assistant"
+    summary: string | null
+    events: TranscriptEvent[]
+}
+
 interface IncidentStatusResponse {
     status?: string
     next?: unknown[]
@@ -43,12 +62,16 @@ interface IncidentStatusResponse {
 
 interface ChatEntry {
     id: string
-    role: "user" | "assistant"
+    role: "user" | "assistant" | "system"
     timestamp: string
+    sequence?: number | null
     title: string
     content: string
     accent: string
-    kind?: "message" | "summary"
+    kind?: "message" | "summary" | "system"
+    speakerRole: string
+    eventType: string
+    payload?: Record<string, unknown> | null
 }
 
 interface IncidentCommandCenterProps {
@@ -69,6 +92,101 @@ function formatTimeLabel(timestamp: string) {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
+function speakerLabel(role: string) {
+    switch (role) {
+        case "user":
+            return "You"
+        case "supervisor":
+            return "Supervisor"
+        case "prometheus_specialist":
+            return "Prometheus Specialist"
+        case "loki_specialist":
+            return "Loki Specialist"
+        case "github_specialist":
+            return "GitHub Specialist"
+        case "runbooks_specialist":
+            return "Runbooks Specialist"
+        case "system":
+            return "System"
+        default:
+            return role.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())
+    }
+}
+
+function eventKindLabel(eventType: string, payload: Record<string, unknown> | null) {
+    if (eventType === "assistant_message" && payload?.mode === "post_summary_follow_up") {
+        return "follow-up answer"
+    }
+
+    switch (eventType) {
+        case "summary":
+            return "final summary"
+        case "assistant_message":
+            return "assistant reply"
+        case "system_event":
+            return "system event"
+        case "human_message":
+            return "human message"
+        default:
+            return eventType.replace(/_/g, " ")
+    }
+}
+
+function accentClassForSpeaker(role: string, eventType: string) {
+    if (role === "user") {
+        return "border-cyan-500/30 bg-cyan-500/10"
+    }
+
+    if (eventType === "summary") {
+        return "border-emerald-500/25 bg-emerald-500/8"
+    }
+
+    if (role === "system") {
+        return "border-zinc-800 bg-zinc-950/90"
+    }
+
+    if (role === "supervisor") {
+        return "border-cyan-500/20 bg-cyan-500/8"
+    }
+
+    if (role === "prometheus_specialist") {
+        return "border-sky-500/20 bg-sky-500/8"
+    }
+
+    if (role === "loki_specialist") {
+        return "border-amber-500/20 bg-amber-500/8"
+    }
+
+    if (role === "github_specialist") {
+        return "border-orange-500/20 bg-orange-500/8"
+    }
+
+    if (role === "runbooks_specialist") {
+        return "border-emerald-500/20 bg-emerald-500/8"
+    }
+
+    return "border-zinc-800 bg-zinc-950/90"
+}
+
+function mapTranscriptEvent(event: TranscriptEvent): ChatEntry {
+    const role = event.speaker_role || "system"
+    const kind = event.event_type === "summary" ? "summary" : role === "system" ? "system" : "message"
+
+    return {
+        id: event.id,
+        role: role === "user" ? "user" : role === "system" ? "system" : "assistant",
+        timestamp: event.created_at,
+        sequence: event.sequence,
+        title: event.title || speakerLabel(role),
+        content: event.content,
+        accent: accentClassForSpeaker(role, event.event_type),
+        kind,
+        speakerRole: role,
+        eventType: event.event_type,
+        payload: event.payload,
+    }
+}
+
 function normalizeLogEntry(entry: LogEntry): ChatEntry | null {
     const rawContent = (entry.result || entry.tool_args || "").trim()
     if (!rawContent) return null
@@ -86,29 +204,50 @@ function normalizeLogEntry(entry: LogEntry): ChatEntry | null {
         id: entry.id,
         role: isUser ? "user" : "assistant",
         timestamp: entry.timestamp || new Date().toISOString(),
+        sequence: null,
         title: isUser ? "You" : "SRE Agent",
         content,
         accent: isUser ? "border-cyan-500/30 bg-cyan-500/10" : "border-zinc-800 bg-zinc-950/90",
         kind: "message",
+        speakerRole: isUser ? "user" : "assistant",
+        eventType: isUser ? "human_message" : "assistant_message",
+        payload: null,
     }
 }
 
 function sortChronologically(entries: ChatEntry[]) {
-    return [...entries].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    return [...entries].sort((a, b) => {
+        const leftSequence = a.sequence ?? null
+        const rightSequence = b.sequence ?? null
+
+        if (leftSequence !== null && rightSequence !== null && leftSequence !== rightSequence) {
+            return leftSequence - rightSequence
+        }
+
+        const leftTime = new Date(a.timestamp).getTime()
+        const rightTime = new Date(b.timestamp).getTime()
+        if (leftTime !== rightTime) {
+            return leftTime - rightTime
+        }
+
+        return a.id.localeCompare(b.id)
+    })
 }
 
 function renderMessageContent(content: string) {
     return <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-100">{content}</p>
 }
 
-function renderTranscriptEntry(entry: ChatEntry) {
+function renderTranscriptEntry(entry: ChatEntry, hasSummary: boolean) {
     const isUser = entry.role === "user"
+    const isSystem = entry.role === "system"
     const isSummary = entry.kind === "summary"
+    const displayTitle = entry.kind === "summary" ? "Supervisor" : entry.title
 
     return (
         <div key={entry.id} className={`flex items-start gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
             {!isUser && (
-                <div className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${isSummary ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200" : "border-cyan-500/20 bg-cyan-500/10 text-cyan-300"}`}>
+                <div className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${isSummary ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200" : isSystem ? "border-zinc-800 bg-zinc-950/90 text-zinc-400" : "border-cyan-500/20 bg-cyan-500/10 text-cyan-300"}`}>
                     {isSummary ? <Sparkles className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
                 </div>
             )}
@@ -116,11 +255,11 @@ function renderTranscriptEntry(entry: ChatEntry) {
             <article className={`max-w-[86%] rounded-[30px] border px-4 py-4 shadow-lg shadow-black/10 ${entry.accent} ${isUser ? "text-cyan-50" : ""}`}>
                 <div className="mb-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.24em] text-zinc-500">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className={`rounded-full border px-2.5 py-1 font-medium ${isUser ? "border-cyan-500/30 bg-cyan-500/15 text-cyan-100" : isSummary ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200" : "border-zinc-800 bg-zinc-950/90 text-zinc-300"}`}>
-                            {isUser ? "Human interruption" : isSummary ? "Supervisor" : entry.title}
+                        <span className={`rounded-full border px-2.5 py-1 font-medium ${isUser ? "border-cyan-500/30 bg-cyan-500/15 text-cyan-100" : isSummary ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200" : isSystem ? "border-zinc-800 bg-zinc-950/90 text-zinc-300" : "border-zinc-800 bg-zinc-950/90 text-zinc-300"}`}>
+                            {isUser ? "Human message" : displayTitle}
                         </span>
                         <span className="truncate rounded-full border border-zinc-800 bg-zinc-950/70 px-2.5 py-1 text-zinc-400">
-                            {isUser ? "guiding the investigation" : isSummary ? "final summary" : "agent report"}
+                            {isUser ? (hasSummary ? "continuing the thread" : "guiding the investigation") : eventKindLabel(entry.eventType, entry.payload || null)}
                         </span>
                     </div>
                     <span>{formatTimeLabel(entry.timestamp)}</span>
@@ -142,6 +281,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
     const [sending, setSending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [summary, setSummary] = useState<string | null>(null)
+    const [conversationMode, setConversationMode] = useState<"investigation" | "assistant">("investigation")
     const [entries, setEntries] = useState<ChatEntry[]>([])
     const [draft, setDraft] = useState("")
     const [pendingTurn, setPendingTurn] = useState(false)
@@ -149,45 +289,58 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
     const endRef = useRef<HTMLDivElement | null>(null)
     const transcriptSignatureRef = useRef<string>("")
     const hasSummary = Boolean(summary)
-    const shouldPoll = (Boolean(incident) && !hasSummary) || pendingTurn || graphActive
+    const shouldPoll = Boolean(incident) && (pendingTurn || graphActive || conversationMode === "assistant" || !hasSummary)
 
     const refreshConversation = async (selectedIncident: Incident) => {
-        const [logsResult, statusResult] = await Promise.all([
+        const [transcriptResult, logsResult, statusResult] = await Promise.all([
+            api.get(`/incidents/${selectedIncident.id}/transcript`).catch((fetchError) => ({ error: fetchError })),
             api.get(`/incidents/${selectedIncident.id}/logs`).catch((fetchError) => ({ error: fetchError })),
             api.get(`/incidents/${selectedIncident.id}/status`).catch((fetchError) => ({ error: fetchError })),
         ])
 
-        const rawLogEntries = "data" in logsResult ? (logsResult.data as LogEntry[]) : []
-        const logEntries = rawLogEntries.map(normalizeLogEntry).filter((entry): entry is ChatEntry => Boolean(entry))
+        const transcriptData = "data" in transcriptResult ? (transcriptResult.data as IncidentTranscriptResponse) : null
+        const canonicalEntries = transcriptData?.events.map(mapTranscriptEvent) || []
+        const fallbackLogEntries = canonicalEntries.length > 0
+            ? []
+            : ("data" in logsResult ? (logsResult.data as LogEntry[]).map(normalizeLogEntry).filter((entry): entry is ChatEntry => Boolean(entry)) : [])
 
         const statusData = "data" in statusResult ? (statusResult.data as IncidentStatusResponse) : null
         const nextStatus = statusData?.status || selectedIncident.status.toUpperCase()
-        const nextSummary = statusData?.values?.final_response || selectedIncident.summary || null
+        const nextSummary = transcriptData?.summary || statusData?.values?.final_response || selectedIncident.summary || null
+        const nextConversationMode = transcriptData?.conversation_mode || (nextSummary ? "assistant" : "investigation")
         const graphIsActive = Array.isArray(statusData?.next) && statusData.next.length > 0
 
         const transcriptEntries: ChatEntry[] = []
-        if (nextSummary) {
+        if (nextSummary && !canonicalEntries.some((entry) => entry.eventType === "summary")) {
             transcriptEntries.push({
                 id: `summary-${selectedIncident.id}`,
                 role: "assistant",
                 timestamp: selectedIncident.resolved_at || new Date().toISOString(),
+                sequence: null,
                 title: "Supervisor",
                 content: nextSummary,
                 accent: "border-cyan-500/20 bg-cyan-500/8",
                 kind: "summary",
+                speakerRole: "supervisor",
+                eventType: "summary",
             })
         }
 
-        const combinedEntries = sortChronologically([...logEntries, ...transcriptEntries])
+        const primaryEntries = canonicalEntries.length > 0 ? canonicalEntries : fallbackLogEntries
+        const combinedEntries = sortChronologically([...primaryEntries, ...transcriptEntries])
         const transcriptSignature = JSON.stringify({
             transcript: combinedEntries.map((entry) => ({
                 id: entry.id,
                 title: entry.title,
                 content: entry.content,
                 role: entry.role,
+                sequence: entry.sequence,
+                speakerRole: entry.speakerRole,
+                eventType: entry.eventType,
             })),
             status: nextStatus,
             summary: nextSummary,
+            conversationMode: nextConversationMode,
         })
 
         if (transcriptSignature === transcriptSignatureRef.current) {
@@ -197,6 +350,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
 
         transcriptSignatureRef.current = transcriptSignature
         setSummary(nextSummary)
+        setConversationMode(nextConversationMode)
         setGraphActive(graphIsActive)
         setPendingTurn((currentPendingTurn) => {
             if (graphIsActive) return true
@@ -205,7 +359,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
         })
         setEntries(combinedEntries)
 
-        if (!("data" in logsResult)) {
+        if (!("data" in transcriptResult) && !("data" in logsResult)) {
             setError("Transcript temporarily unavailable. The agent status is still loaded.")
         } else {
             setError(null)
@@ -221,7 +375,6 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
         setSending(true)
         setError(null)
         setPendingTurn(true)
-        setSummary(null)
 
         try {
             await api.post(`/incidents/${incident.id}/message`, { message })
@@ -233,10 +386,13 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
                         id: `draft-${Date.now()}`,
                         role: "user",
                         timestamp: new Date().toISOString(),
+                            sequence: null,
                         title: "You",
                         content: message,
                         accent: "border-cyan-500/30 bg-cyan-500/10",
                         kind: "message",
+                        speakerRole: "user",
+                        eventType: "human_message",
                     },
                 ]),
             )
@@ -254,6 +410,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
         if (!selectedId) {
             setEntries([])
             setSummary(null)
+            setConversationMode("investigation")
             setError(null)
             setPendingTurn(false)
             setGraphActive(false)
@@ -342,10 +499,10 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
                                 No transcript yet. The next speaker turn will appear here automatically.
                             </div>
                         ) : (
-                            entries.map((entry) => renderTranscriptEntry(entry))
+                            entries.map((entry) => renderTranscriptEntry(entry, hasSummary))
                         )}
 
-                        {pendingTurn && !hasSummary && (
+                        {pendingTurn && (conversationMode === "assistant" || !hasSummary) && (
                             <div className="flex items-start justify-start gap-3">
                                 <div className="mb-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-500/10 text-cyan-300">
                                     <Bot className="h-4 w-4" />
@@ -379,7 +536,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
                                     void handleSend()
                                 }
                             }}
-                            placeholder={`Ask the agent about ${incident.title.toLowerCase()}...`}
+                            placeholder={summary ? `Ask a follow-up about ${incident.title.toLowerCase()}...` : `Ask the agent about ${incident.title.toLowerCase()}...`}
                             className="min-h-[92px] flex-1 resize-none rounded-[22px] bg-zinc-950 px-4 py-3 text-sm text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:ring-2 focus:ring-cyan-500/10"
                         />
                         <Button

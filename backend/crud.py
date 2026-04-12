@@ -1,7 +1,9 @@
+import json
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 from backend import models, schemas, auth
 import uuid
 
@@ -136,6 +138,99 @@ async def create_incident(db: AsyncSession, incident: schemas.IncidentCreate, cl
     await db.commit()
     await db.refresh(db_incident)
     return db_incident
+
+
+def _serialize_timeline_payload(payload: Any) -> Optional[str]:
+    if payload is None:
+        return None
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, default=str)
+
+
+async def _get_next_timeline_sequence(db: AsyncSession, incident_id: uuid.UUID) -> int:
+    result = await db.execute(
+        select(func.coalesce(func.max(models.IncidentTimelineEvent.sequence), 0)).where(
+            models.IncidentTimelineEvent.incident_id == incident_id
+        )
+    )
+    return int(result.scalar_one()) + 1
+
+
+async def create_incident_timeline_event(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    event_type: str,
+    speaker_role: str,
+    content: str,
+    title: Optional[str] = None,
+    payload: Optional[Any] = None,
+    pending_supervisor: bool = False,
+    handled_at: Optional[datetime] = None,
+) -> models.IncidentTimelineEvent:
+    sequence = await _get_next_timeline_sequence(db, incident_id)
+    db_event = models.IncidentTimelineEvent(
+        incident_id=incident_id,
+        sequence=sequence,
+        event_type=event_type,
+        speaker_role=speaker_role,
+        title=title,
+        content=content,
+        payload_json=_serialize_timeline_payload(payload),
+        pending_supervisor=pending_supervisor,
+        handled_at=handled_at,
+    )
+    db.add(db_event)
+
+    if event_type == "summary":
+        incident = await db.get(models.Incident, incident_id)
+        if incident is not None:
+            incident.summary = content
+
+    await db.commit()
+    await db.refresh(db_event)
+    return db_event
+
+
+async def get_incident_timeline_events(db: AsyncSession, incident_id: uuid.UUID) -> List[models.IncidentTimelineEvent]:
+    result = await db.execute(
+        select(models.IncidentTimelineEvent)
+        .filter(models.IncidentTimelineEvent.incident_id == incident_id)
+        .order_by(models.IncidentTimelineEvent.sequence.asc(), models.IncidentTimelineEvent.created_at.asc())
+    )
+    return result.scalars().all()
+
+
+async def get_pending_human_timeline_events(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    limit: int = 1,
+) -> List[models.IncidentTimelineEvent]:
+    result = await db.execute(
+        select(models.IncidentTimelineEvent)
+        .filter(
+            models.IncidentTimelineEvent.incident_id == incident_id,
+            models.IncidentTimelineEvent.event_type == "human_message",
+            models.IncidentTimelineEvent.pending_supervisor.is_(True),
+        )
+        .order_by(models.IncidentTimelineEvent.sequence.asc())
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+
+async def mark_incident_timeline_event_handled(
+    db: AsyncSession,
+    event_id: uuid.UUID,
+    handled_at: Optional[datetime] = None,
+) -> None:
+    event = await db.get(models.IncidentTimelineEvent, event_id)
+    if event is None:
+        return
+
+    event.pending_supervisor = False
+    event.handled_at = handled_at or datetime.now(timezone.utc)
+    await db.commit()
 
 async def get_incidents_for_cluster(db: AsyncSession, cluster_id: uuid.UUID):
     result = await db.execute(select(models.Incident).filter(models.Incident.cluster_id == cluster_id).order_by(models.Incident.created_at.desc()))

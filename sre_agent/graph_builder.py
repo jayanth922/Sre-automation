@@ -12,7 +12,6 @@ from langgraph.graph import END, StateGraph
 
 from .agent_nodes import (
     create_github_agent,
-    create_kubernetes_agent,
     create_logs_agent,
     create_metrics_agent,
     create_runbooks_agent,
@@ -44,22 +43,21 @@ logger = logging.getLogger(__name__)
 
 
 def _route_supervisor(state: AgentState) -> str:
-    """Route from supervisor to the appropriate node based on OODA phase."""
-    ooda_phase = state.get("ooda_phase", "OBSERVE")
-    next_node = state.get("next", "investigation_swarm")
+    """Route from supervisor to the next visible specialist or summary node."""
+    next_node = state.get("next", "metrics_agent")
 
-    logger.info(f"Supervisor routing: OODA phase={ooda_phase}, next={next_node}")
+    logger.info(f"Supervisor routing: next={next_node}")
 
-    # Map next to actual node names
     node_map = {
-        "investigation_swarm": "investigation_swarm",
-        "reflector": "reflector",
-        "planner": "planner",
+        "metrics_agent": "metrics_agent",
+        "logs_agent": "logs_agent",
+        "github_agent": "github_agent",
+        "runbooks_agent": "runbooks_agent",
         "aggregate": "aggregate",
         "FINISH": "aggregate",
     }
 
-    return node_map.get(next_node, "investigation_swarm")
+    return node_map.get(next_node, "aggregate")
 
 
 async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
@@ -94,7 +92,7 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
             **existing_metadata,
             "llm_provider": llm_provider,
         },
-        "next": "investigation_swarm",
+        "next": "supervisor",
         "thought_traces": {},
         "investigation_count": 0,
     }
@@ -947,12 +945,6 @@ def build_multi_agent_graph(
     )
 
     # Create agent nodes with filtered tools and metadata from constants
-    kubernetes_agent = create_kubernetes_agent(
-        tools,
-        agent_metadata=SREConstants.agents.agents["kubernetes"],
-        llm_provider=llm_provider,
-        **llm_kwargs,
-    )
     logs_agent = create_logs_agent(
         tools,
         agent_metadata=SREConstants.agents.agents["logs"],
@@ -979,53 +971,16 @@ def build_multi_agent_graph(
     )
 
     # Store agents and tools in a way that nodes can access them
-    # We'll pass them via metadata
-    async def investigation_swarm_with_agents(state: AgentState, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Wrapper that provides agents to investigation swarm."""
-        # Store agents and tools in metadata for access
-        state_with_agents = {
-            **state,
-            "metadata": {
-                **state.get("metadata", {}),
-                "kubernetes_agent": kubernetes_agent,
-                "metrics_agent": metrics_agent,
-                "logs_agent": logs_agent,
-                "github_agent": github_agent,
-                "tools": tools,  # Pass tools for executor node
-                "llm_provider": llm_provider,
-            },
-        }
-        if config:
-            result = await _investigation_swarm(state_with_agents, config=config)
-        else:
-            result = await _investigation_swarm(state_with_agents)
-        # Preserve metadata with agents and tools for future nodes
-        result["metadata"] = {
-            **result.get("metadata", {}),
-            "kubernetes_agent": kubernetes_agent,
-            "metrics_agent": metrics_agent,
-            "logs_agent": logs_agent,
-            "github_agent": github_agent,
-            "tools": tools,  # Preserve tools for executor
-            "llm_provider": llm_provider,
-        }
-        return result
-
     # Add nodes to the graph
     workflow.add_node("prepare", _prepare_initial_state)
     workflow.add_node("supervisor", supervisor.route)
-    
-    # OODA Loop nodes
-    workflow.add_node("investigation_swarm", investigation_swarm_with_agents)
-    workflow.add_node("reflector", _reflector_node)
-    workflow.add_node("planner", _planner_node)
-    
-    # Legacy agent nodes (for backward compatibility and direct invocation)
-    workflow.add_node("kubernetes_agent", kubernetes_agent)
+
+    # Visible specialist nodes
     workflow.add_node("logs_agent", logs_agent)
     workflow.add_node("metrics_agent", metrics_agent)
+    workflow.add_node("github_agent", github_agent)
     workflow.add_node("runbooks_agent", runbooks_agent)
-    
+
     # Aggregation node
     workflow.add_node("aggregate", supervisor.aggregate_responses)
 
@@ -1040,45 +995,18 @@ def build_multi_agent_graph(
         "supervisor",
         _route_supervisor,
         {
-            "investigation_swarm": "investigation_swarm",
-            "reflector": "reflector",
-            "planner": "planner",
-            "aggregate": "aggregate",
-            # Legacy routing for backward compatibility
-            "kubernetes_agent": "kubernetes_agent",
-            "logs_agent": "logs_agent",
             "metrics_agent": "metrics_agent",
+            "logs_agent": "logs_agent",
+            "github_agent": "github_agent",
             "runbooks_agent": "runbooks_agent",
+            "aggregate": "aggregate",
         },
     )
 
-    # Policy Gate Node (Phase C Implementation)
-
-    # OODA Loop flow
-    workflow.add_edge("investigation_swarm", "reflector")
-    
-    # Reflector can loop back to investigation or proceed to planner
-    def _route_reflector(state: AgentState) -> str:
-        """Route from reflector based on analysis."""
-        next_node = state.get("next", "planner")
-        return next_node
-    
-    workflow.add_conditional_edges(
-        "reflector",
-        _route_reflector,
-        {
-            "investigation_swarm": "investigation_swarm",
-            "planner": "planner",
-        },
-    )
-    
-    # Planner -> Aggregate
-    workflow.add_edge("planner", "aggregate")
-
-    # Legacy edges from agents back to supervisor (for backward compatibility)
-    workflow.add_edge("kubernetes_agent", "supervisor")
+    # Specialist nodes always hand control back to the supervisor.
     workflow.add_edge("logs_agent", "supervisor")
     workflow.add_edge("metrics_agent", "supervisor")
+    workflow.add_edge("github_agent", "supervisor")
     workflow.add_edge("runbooks_agent", "supervisor")
 
     # Add edge from aggregate to END
