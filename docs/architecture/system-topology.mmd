@@ -1,0 +1,42 @@
+graph TB
+    subgraph Target["Target_Client"]
+        LG["load-generator"]
+        GW["api-gateway"]
+        CK["checkout-service"]
+        INV["inventory-service"]
+        CP["chaos-panel"]
+        LG -->|traffic| GW
+        GW -->|routes| CK
+        GW -->|routes| INV
+        CP -->|controls| LG
+    end
+
+    subgraph Edge["edge_mcp_servers"]
+        K8S["Kubernetes MCP"]
+        PR["Prometheus MCP"]
+        LK["Loki MCP"]
+        GH["GitHub MCP"]
+        RB["Runbooks MCP"]
+    end
+
+    subgraph Platform["platform + backend + sre_agent"]
+        UI["dashboard"]
+        API["sre_agent runtime"]
+        DB[("PostgreSQL")]
+        REDIS[("Redis")]
+        QDRANT[("Qdrant")]
+        UI -->|requests| API
+        API -->|persists| DB
+        API -->|state| REDIS
+        API -->|memory| QDRANT
+    end
+
+    K8S -->|evidence| API
+    PR -->|metrics| API
+    LK -->|logs| API
+    GH -->|commits| API
+    RB -->|runbooks| API
+
+    style Target fill:#e1f5ff
+    style Edge fill:#fff3e0
+    style Platform fill:#f3e5f5

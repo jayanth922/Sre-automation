@@ -1,0 +1,32 @@
+graph TB
+    subgraph Dashboard["dashboard/"]
+        D1["app/..."]
+        Auth["(auth)/<br/>login<br/>register"]
+        DashL["(dashboard)/<br/>layout + chrome<br/>account menu"]
+        DashR["clusters/{id}/<br/>incidents"]
+        Comp["components/<br/>shadcn primitives<br/>feature components"]
+        Lib["lib/<br/>auth-context<br/>api helper"]
+    end
+
+    subgraph Middleware["Routing & Auth"]
+        MW["middleware.ts<br/>check token cookie<br/>redirect anon users"]
+        Config["next.config.ts<br/>rewrite /api → backend<br/>rewrite /auth → backend"]
+    end
+
+    Browser["Browser<br/>localhost:3000"]
+    Backend["Backend API<br/>localhost:8080"]
+
+    Browser --> Auth
+    Auth --> MW
+    MW -->|valid token| DashL
+    MW -->|no token| Auth
+    DashL --> DashR
+    DashL --> Comp
+    Comp --> Lib
+    Lib --> Config
+    Config --> Backend
+
+    style Dashboard fill:#e3f2fd
+    style Middleware fill:#fff3e0
+    style Browser fill:#f3e5f5
+    style Backend fill:#fce4ec

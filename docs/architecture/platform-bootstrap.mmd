@@ -1,0 +1,44 @@
+flowchart TD
+    Start["Start: ./main_start.sh"] --> Env["1. Load .env<br/>or use .env.example<br/>as template"]
+    
+    Env --> TC["2. Start Target_Client<br/>docker compose up<br/>Target_Client/docker-compose.yaml"]
+    TC --> TCUP["Target_Client Ready<br/>gateway 8000<br/>services 8001-8002<br/>Prometheus/Loki"]
+    
+    TCUP --> Platform["3. Start Platform Stack<br/>docker compose up<br/>platform/docker-compose.yaml"]
+    
+    Platform --> PG["PostgreSQL<br/>migrations<br/>seed admin"]
+    Platform --> Cache["Redis<br/>Agent state"]
+    Platform --> Vec["Qdrant<br/>Memory store"]
+    Platform --> Backend["Backend API<br/>FastAPI<br/>8080"]
+    Platform --> Dashboard["Dashboard<br/>Next.js<br/>3002"]
+    
+    PG --> Ready1["Platform Ready"]
+    Cache --> Ready1
+    Vec --> Ready1
+    Backend --> Ready1
+    Dashboard --> Ready1
+    
+    Ready1 --> Edge["4. Start Edge MCP<br/>edge_mcp_servers/start.sh<br/>or compose up"]
+    
+    Edge --> K8S["Kubernetes MCP<br/>4000"]
+    Edge --> PR["Prometheus MCP<br/>4001"]
+    Edge --> LK["Loki MCP<br/>4002"]
+    Edge --> GH["GitHub MCP<br/>4003"]
+    Edge --> RB["Runbooks MCP<br/>4004"]
+    
+    K8S --> EdgeReady["Edge Ready"]
+    PR --> EdgeReady
+    LK --> EdgeReady
+    GH --> EdgeReady
+    RB --> EdgeReady
+    
+    EdgeReady --> Complete["All Systems Running<br/>Dashboard: 3002<br/>API: 8080<br/>Target: 8000<br/>MCP: 4000-4004"]
+    
+    Complete --> UI["Open Dashboard<br/>Login with admin<br/>Create or select cluster<br/>Send investigation query"]
+
+    style Start fill:#e3f2fd
+    style TC fill:#e1f5ff
+    style Platform fill:#f3e5f5
+    style Edge fill:#fff3e0
+    style Complete fill:#e8f5e9
+    style UI fill:#f3e5f5

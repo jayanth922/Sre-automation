@@ -1,0 +1,14 @@
+sequenceDiagram
+    autonumber
+    actor Operator as Operator
+    participant Browser as Dashboard
+    participant Auth as Backend /auth
+    participant Store as PostgreSQL
+
+    Operator->>Browser: Open login page and submit credentials
+    Browser->>Auth: POST /auth/token
+    Auth->>Store: Load user and verify password hash
+    Store-->>Auth: User record and org context
+    Auth-->>Browser: JWT access token + profile payload
+    Browser->>Browser: Persist token in cookie and localStorage
+    Browser-->>Operator: Redirect into protected dashboard routes

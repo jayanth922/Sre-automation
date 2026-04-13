@@ -1,0 +1,37 @@
+flowchart TD
+    Agent["LangGraph Agent Runtime<br/>multi_agent_langgraph.py"]
+    
+    MP["mcp_tool_wrapper.py<br/>MCP Tool Bridge"]
+    
+    subgraph MCPServers["MCP Tool Servers"]
+        K8S["Kubernetes MCP<br/>cluster state<br/>pod details<br/>events"]
+        PR["Prometheus MCP<br/>golden signals<br/>time series<br/>alert status"]
+        LK["Loki MCP<br/>log search<br/>error traces<br/>log context"]
+        GH["GitHub MCP<br/>commits<br/>pull requests<br/>code changes"]
+        RB["Runbooks MCP<br/>search playbooks<br/>retrieve guides"]
+    end
+    
+    Specialists["Specialist Agents<br/>kubernetes_node<br/>metrics_node<br/>logs_node<br/>github_node<br/>runbooks_node"]
+    
+    Supervisor["Supervisor Node<br/>Aggregate Evidence<br/>Route Decision<br/>Plan Next Step"]
+    
+    State["Incident Timeline<br/>PostgreSQL"]
+    
+    Agent --> MP
+    MP -->|HTTP calls| MCPServers
+    MP -->|Tool results| Specialists
+    K8S --> Specialists
+    PR --> Specialists
+    LK --> Specialists
+    GH --> Specialists
+    RB --> Specialists
+    Specialists --> Supervisor
+    Supervisor --> State
+    State --> Agent
+
+    style Agent fill:#f3e5f5
+    style MP fill:#fff3e0
+    style MCPServers fill:#e1f5ff
+    style Specialists fill:#fff3e0
+    style Supervisor fill:#f3e5f5
+    style State fill:#fce4ec

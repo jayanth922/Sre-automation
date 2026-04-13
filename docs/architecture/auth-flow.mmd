@@ -1,0 +1,30 @@
+flowchart TD
+    Start["User visits localhost:3000"] --> Check{"Token exists<br/>in cookie?"}
+    Check -->|No| Redirect1["Redirect to /login"]
+    Check -->|Yes| Validate{"Token valid<br/>& not expired?"}
+    Validate -->|No| Redirect1
+    Redirect1 --> LoginPage["Login Page<br/>renders form"]
+    LoginPage --> IsRegister{"Register or<br/>Login?"}
+    IsRegister -->|Register| Register["POST /auth/register<br/>Create org & user"]
+    IsRegister -->|Login| Login["POST /auth/token<br/>Verify credentials"]
+    Register --> Token["JWT token returned<br/>+ org metadata"]
+    Login --> Token
+    Token --> Store["Store in localStorage<br/>& httpOnly cookie"]
+    Store --> AuthContext["AuthProvider<br/>decodes JWT<br/>sets user context"]
+    Validate -->|Yes| Auth["Authenticated<br/>context restored"]
+    Auth --> Protected["Access Protected Routes<br/>/clusters, /incidents"]
+    Protected --> API["api() helper<br/>includes Bearer token<br/>in requests"]
+    API --> Backend["Backend validates<br/>token & org_id"]
+    Backend --> Response["Return data<br/>scoped to org"]
+    Response --> UI["Dashboard displays<br/>cluster & incident data"]
+    UI --> Logout["User clicks Logout"]
+    Logout --> Clear["Clear token<br/>from storage & cookie"]
+    Clear --> Redirect2["Redirect to /login"]
+    Redirect2 --> LoginPage
+
+    style Start fill:#e3f2fd
+    style LoginPage fill:#fff3e0
+    style Token fill:#e8f5e9
+    style AuthContext fill:#f3e5f5
+    style Protected fill:#e3f2fd
+    style Logout fill:#ffebee

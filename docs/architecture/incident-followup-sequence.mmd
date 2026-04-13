@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    actor Operator as Operator
+    participant Dashboard as Incident Workspace
+    participant API as sre_agent API v1
+    participant Graph as LangGraph Runtime
+    participant Tools as MCP Tool Servers
+    participant Store as Backend DB / Redis
+
+    Operator->>Dashboard: Send follow-up message
+    Dashboard->>API: POST /api/v1/incidents/{id}/message
+    API->>Store: Persist message and queue investigation turn
+    API->>Graph: Trigger new incident investigation turn
+    Graph->>Tools: Gather logs, metrics, runbooks, GitHub evidence
+    Tools-->>Graph: Evidence payloads
+    Graph->>Store: Write timeline events and updated summary
+    Graph-->>API: Return structured investigation result
+    API-->>Dashboard: Updated transcript and incident status

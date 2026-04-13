@@ -1,0 +1,41 @@
+flowchart TD
+    subgraph JobLifecycle["Job Lifecycle"]
+        Create["1. Job Created<br/>type: edge_task<br/>or agent_task<br/>status: queued"]
+        Queue["2. Job enqueued<br/>to job_queue<br/>cluster_id scoped"]
+        Poll["3. Worker polls<br/>job_queue<br/>status: processing"]
+        Execute["4. Task executed<br/>edge or agent<br/>logs events"]
+        Result["5. Result persisted<br/>status: completed<br/>or failed"]
+        Clean["6. Job removed<br/>from queue"]
+    end
+
+    subgraph JobSources["Job Creation Sources"]
+        Agent["Agent Runtime<br/>POST /invocations<br/>creates incident jobs"]
+        User["Dashboard User<br/>Manual trigger<br/>remediation jobs"]
+        Schedule["Scheduler<br/>Periodic sync<br/>health check jobs"]
+    end
+
+    subgraph JobTypes["Job Types"]
+        EdgeJob["Edge Job<br/>apply Kubernetes patch<br/>restart pod<br/>toggle chaos"]
+        AgentJob["Agent Job<br/>run investigation<br/>check SLO<br/>generate report"]
+    end
+
+    subgraph Storage["State Storage"]
+        DB["PostgreSQL<br/>job_id, status<br/>created_at<br/>result"]
+        Redis["Redis Queue<br/>job_id in queue<br/>priority ordering"]
+    end
+
+    JobSources --> Create
+    Create --> Queue
+    Queue --> Redis
+    Redis --> Poll
+    Poll --> Execute
+    JobTypes --> Execute
+    Execute --> Result
+    Result --> DB
+    Result --> Clean
+    Clean --> Redis
+
+    style JobSources fill:#e1f5ff
+    style JobLifecycle fill:#f3e5f5
+    style JobTypes fill:#fff3e0
+    style Storage fill:#fce4ec

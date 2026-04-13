@@ -1,0 +1,29 @@
+graph TD
+    A["POST /invocations<br/>User Prompt or Alert"] --> B["Initialize Graph State<br/>Incident Context & Tools"]
+    B --> C["Route to Specialist Agents"]
+    C --> D["Kubernetes Specialist<br/>Cluster State"]
+    C --> E["Metrics Specialist<br/>Golden Signals"]
+    C --> F["Logs Specialist<br/>Error Traces"]
+    C --> G["Runbooks Specialist<br/>Operational Playbooks"]
+    C --> H["GitHub Specialist<br/>Code History"]
+    D --> I["Supervisor<br/>Aggregate Evidence"]
+    E --> I
+    F --> I
+    G --> I
+    H --> I
+    I --> J{More Evidence<br/>Needed?}
+    J -->|Yes| C
+    J -->|No| K["Generate Summary<br/>Executive Brief"]
+    K --> L["Persist Timeline Events<br/>PostgreSQL"]
+    L --> M["Store Follow-up State<br/>Redis"]
+    M --> N["Return Response<br/>to Dashboard"]
+    N --> O["Dashboard Updates<br/>Incident Panel"]
+
+    style A fill:#e3f2fd
+    style B fill:#f3e5f5
+    style C fill:#fff3e0
+    style I fill:#f3e5f5
+    style K fill:#e8f5e9
+    style L fill:#fce4ec
+    style M fill:#fce4ec
+    style N fill:#e3f2fd

@@ -1,0 +1,49 @@
+graph TB
+    subgraph TargetServices["Target_Client Services"]
+        LG["load-generator"]
+        GW["api-gateway :8000"]
+        CK["checkout-service :8001"]
+        INV["inventory-service :8002"]
+        CP["chaos-panel :8888"]
+    end
+
+    subgraph Observability["Observability Stack"]
+        Prom["Prometheus :9090<br/>scrapes /metrics"]
+        Grafana["Grafana :3001<br/>visualizes"]
+        AM["Alertmanager :9093<br/>routes alerts"]
+        Loki["Loki :3100<br/>aggregates logs"]
+    end
+
+    subgraph Kubernetes["Kubernetes"]
+        NS["Namespace: demo-app"]
+        Deploy["Deployments<br/>svc pods<br/>annotations"]
+    end
+
+    LG -->|traffic| GW
+    GW -->|requests| CK
+    GW -->|requests| INV
+    CP -->|controls| LG
+
+    GW -->|metrics endpoint| Prom
+    CK -->|metrics endpoint| Prom
+    INV -->|metrics endpoint| Prom
+
+    GW -->|logs| Loki
+    CK -->|logs| Loki
+    INV -->|logs| Loki
+
+    Prom --> AM
+    AM -->|alerts| Dashboard["sre_agent runtime<br/>receives webhooks"]
+
+    Prom --> Grafana
+    Loki --> Grafana
+
+    Deploy --> NS
+    GW -.->|runs in| Deploy
+    CK -.->|runs in| Deploy
+    INV -.->|runs in| Deploy
+
+    style TargetServices fill:#e1f5ff
+    style Observability fill:#fff3e0
+    style Kubernetes fill:#f3e5f5
+    style Dashboard fill:#fce4ec

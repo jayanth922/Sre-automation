@@ -1,0 +1,40 @@
+graph TB
+    subgraph Org["Organization Management"]
+        ORGANIZATION["ORGANIZATION<br/>org_id (PK)<br/>name<br/>created_at"]
+        USER["USER<br/>user_id (PK)<br/>email<br/>role<br/>org_id (FK)"]
+    end
+
+    subgraph Cluster["Cluster & Infrastructure"]
+        CLUSTER["CLUSTER<br/>cluster_id (PK)<br/>name<br/>api_endpoint<br/>token<br/>org_id (FK)"]
+        JOB["JOB<br/>job_id (PK)<br/>cluster_id (FK)<br/>job_type<br/>status<br/>created_at"]
+        SLO["SLO<br/>slo_id (PK)<br/>cluster_id (FK)<br/>service<br/>error_budget"]
+    end
+
+    subgraph Incident["Incident & Timeline"]
+        INCIDENT["INCIDENT<br/>incident_id (PK)<br/>cluster_id (FK)<br/>title<br/>status"]
+        TIMELINE["INCIDENT_TIMELINE_EVENT<br/>event_id (PK)<br/>incident_id (FK)<br/>event_type<br/>content<br/>pending_supervisor<br/>timestamp"]
+    end
+
+    subgraph Audit["Audit & Compliance"]
+        AUDITLOG["AUDITLOG<br/>log_id (PK)<br/>user_id (FK)<br/>action<br/>timestamp"]
+        AUDITEVENT["AUDITEVENT<br/>event_id (PK)<br/>log_id (FK)<br/>event_details"]
+    end
+
+    ORGANIZATION -->|owns| CLUSTER
+    ORGANIZATION -->|contains| USER
+    USER -->|creates| AUDITLOG
+    CLUSTER -->|has| INCIDENT
+    CLUSTER -->|queues| JOB
+    CLUSTER -->|defines| SLO
+    INCIDENT -->|generates| TIMELINE
+    AUDITLOG -->|records| AUDITEVENT
+
+    style ORGANIZATION fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    style USER fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    style CLUSTER fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style JOB fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style SLO fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style INCIDENT fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style TIMELINE fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style AUDITLOG fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    style AUDITEVENT fill:#fce4ec,stroke:#c2185b,stroke-width:2px

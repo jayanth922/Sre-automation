@@ -1,0 +1,13 @@
+sequenceDiagram
+    autonumber
+    participant Runtime as sre_agent Runtime
+    participant Wrapper as MCP Tool Wrapper
+    participant Server as Edge MCP Server
+    participant Source as Observability / Runbook / GitHub Source
+
+    Runtime->>Wrapper: Request specialist tool call
+    Wrapper->>Server: Invoke MCP tool with context
+    Server->>Source: Fetch live evidence
+    Source-->>Server: Logs, metrics, alerts, runbooks, code context
+    Server-->>Wrapper: Structured MCP response
+    Wrapper-->>Runtime: Tool result for LangGraph step

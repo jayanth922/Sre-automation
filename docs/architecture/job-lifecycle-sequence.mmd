@@ -1,0 +1,15 @@
+sequenceDiagram
+    autonumber
+    participant Client as API Route or Agent
+    participant Queue as Job Table / Redis State
+    participant Worker as Job Consumer
+    participant Store as Backend DB
+    participant UI as Dashboard
+
+    Client->>Queue: Enqueue job request
+    Queue-->>Client: Job id and queued state
+    Worker->>Queue: Claim pending job
+    Worker->>Store: Load job payload and update status
+    Worker->>Worker: Execute the requested workflow
+    Worker->>Store: Persist completed result and timestamps
+    Worker-->>UI: New job state visible through API polling

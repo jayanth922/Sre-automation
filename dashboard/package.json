@@ -6,7 +6,8 @@
     "dev": "next dev -p 3000 -H 0.0.0.0",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "generate-diagrams": "mmdc -i ../docs/architecture/system-topology.mmd -o ../docs/architecture/images/system-topology.svg -t dark && mmdc -i ../docs/architecture/agent-runtime-flow.mmd -o ../docs/architecture/images/agent-runtime-flow.svg -t dark && mmdc -i ../docs/architecture/backend-data-model.mmd -o ../docs/architecture/images/backend-data-model.svg -t dark"
   },
   "dependencies": {
     "axios": "^1.13.5",
@@ -23,6 +24,7 @@
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^10.9.1",
     "@tailwindcss/postcss": "^4",
     "@types/js-cookie": "^3.0.6",
     "@types/jwt-decode": "^2.2.1",

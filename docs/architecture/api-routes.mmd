@@ -1,0 +1,49 @@
+graph TB
+    subgraph Routes["API v1 Routes"]
+        CL["clusters.py<br/>GET /clusters<br/>GET /clusters/{id}<br/>POST /clusters"]
+        INC["incidents.py<br/>GET /incidents<br/>POST /incidents/{id}/message<br/>GET /incidents/{id}"]
+        TL["incidents.py<br/>GET /incidents/{id}/timeline<br/>GET /incidents/{id}/logs"]
+        JOB["jobs.py<br/>GET /jobs<br/>POST /jobs<br/>GET /jobs/{id}"]
+        MET["metrics.py<br/>GET /metrics<br/>GET /metrics/health"]
+        SLO["slos.py<br/>GET /slos<br/>POST /slos<br/>GET /slos/{id}"]
+        ALERT["alerts.py<br/>POST /alerts/webhook<br/>GET /alerts"]
+        MC["mission_control.py<br/>GET /audit<br/>GET /approval"]
+    end
+
+    subgraph Auth["Auth Dependencies"]
+        AD["get_current_user<br/>get_org_context<br/>verify_token"]
+    end
+
+    subgraph Models["Backend Models<br/>& Schemas"]
+        OM["Organization<br/>User<br/>Cluster"]
+        IM["Incident<br/>IncidentTimelineEvent<br/>Job"]
+        HM["AuditLog<br/>AuditEvent<br/>SLO"]
+    end
+
+    Dashboard["Dashboard<br/>via Next.js rewrites"]
+
+    CL --> AD
+    INC --> AD
+    TL --> AD
+    JOB --> AD
+    MET --> AD
+    SLO --> AD
+    ALERT --> AD
+    MC --> AD
+
+    CL --> OM
+    INC --> IM
+    TL --> IM
+    JOB --> IM
+    SLO --> HM
+    MC --> HM
+
+    Dashboard --> CL
+    Dashboard --> INC
+    Dashboard --> TL
+    Dashboard --> MC
+
+    style Routes fill:#f3e5f5
+    style Auth fill:#fff3e0
+    style Models fill:#e3f2fd
+    style Dashboard fill:#e8f5e9

@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    participant Operator as Operator
+    participant Script as start.sh / main_start.sh
+    participant Compose as Docker Compose
+    participant Backend as sre-agent-api
+    participant DB as PostgreSQL
+    participant Cache as Redis
+    participant Dashboard as Next.js Dashboard
+
+    Operator->>Script: Start the platform stack
+    Script->>Compose: Load env and launch services
+    Compose->>DB: Start database service
+    Compose->>Cache: Start cache service
+    Compose->>Backend: Start API and run migrations/seed
+    Backend->>DB: Initialize schema and seed data
+    Compose->>Dashboard: Start UI container
+    Dashboard-->>Operator: Ready on the published port
