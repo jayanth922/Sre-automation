@@ -71,38 +71,22 @@ fi
 
 # ── Build & Inject Docker images ───────────────────────────────────────────
 if ! $NO_BUILD; then
-    step "Building & Injecting Docker images (this ensures latest code is used)"
+    step "Building Docker images (Docker Desktop shares daemon — no injection needed)"
 
-    declare -A IMAGES=(
-        ["demo-api-gateway"]="$ROOT/services/api-gateway"
-        ["demo-checkout-service"]="$ROOT/services/checkout-service"
-        ["demo-inventory-service"]="$ROOT/services/inventory-service"
-        ["demo-load-generator"]="$ROOT/load-generator"
-        ["demo-chaos-panel"]="$ROOT/chaos-panel"
-    )
+    # Parallel arrays — bash 3.2 compatible, handles spaces in paths
+    NAMES=("demo-api-gateway" "demo-checkout-service" "demo-inventory-service" "demo-load-generator" "demo-chaos-panel")
+    PATHS=("$ROOT/services/api-gateway" "$ROOT/services/checkout-service" "$ROOT/services/inventory-service" "$ROOT/load-generator" "$ROOT/chaos-panel")
 
-    for name in "${!IMAGES[@]}"; do
-        path="${IMAGES[$name]}"
-        echo -ne "  ${GRAY}Processing ${name}...${NC}"
-
-        # 1. Build the image locally
+    i=0
+    while [ $i -lt ${#NAMES[@]} ]; do
+        name="${NAMES[$i]}"
+        path="${PATHS[$i]}"
+        echo -ne "  ${GRAY}Building ${name}...${NC}"
         docker build -t "${name}:latest" "$path" > /dev/null 2>&1
-        
-        # 2. Save it to a tar archive
-        docker save "${name}:latest" -o "${ROOT}/${name}.tar"
-        
-        # 3. Copy into the K8s node container
-        docker cp "${ROOT}/${name}.tar" desktop-control-plane:/${name}.tar
-        
-        # 4. Import the tar into Kubernetes internal engine (using // to bypass GitBash translation)
-        docker exec desktop-control-plane ctr -n k8s.io images import //${name}.tar > /dev/null 2>&1
-        
-        # Cleanup tar
-        rm -f "${ROOT}/${name}.tar"
-
-        echo -e " ${GREEN}built & injected!${NC}"
+        echo -e " ${GREEN}done!${NC}"
+        i=$((i + 1))
     done
-    ok "All 5 images successfully injected into Kubernetes"
+    ok "All 5 images built (Docker Desktop kubeadm uses them directly via imagePullPolicy=Never)"
 else
     warn "Skipping image builds and injection (--no-build flag)"
 fi

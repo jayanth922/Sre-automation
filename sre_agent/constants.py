@@ -20,8 +20,8 @@ class ModelConfig(BaseModel):
 
     # Groq model IDs
     groq_model_id: str = Field(
-        default="llama-3.1-8b-instant",
-        description="Default Groq model ID",
+        default=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        description="Default Groq model ID (override with GROQ_MODEL env var)",
     )
 
     # Model parameters

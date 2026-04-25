@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Disable Turbopack — use stable webpack bundler in dev
+  // (Turbopack has a stale-module-graph bug with newly added files)
+  experimental: {
+    turbo: {
+      enabled: false,
+    },
+  },
   // Use rewrites to proxy API requests to the backend
   async rewrites() {
     return [

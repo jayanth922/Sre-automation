@@ -128,7 +128,12 @@ async def run_graph_background_saas(
                     except Exception as le:
                         logger.warning(f"Failed to sync thought log to job: {le}")
                 
-                current_execution_state = {**current_execution_state, **node_output}
+                # Guard against None node_output from failed/empty graph nodes
+                if node_output is not None and isinstance(node_output, dict):
+                    current_execution_state = {**current_execution_state, **node_output}
+
+        # Extract the final response written by the aggregate node
+        final_response = current_execution_state.get("final_response") or "Investigation completed."
 
         # Extract plan if it exists and convert to serializable format
         raw_plan = current_execution_state.get("remediation_plan")

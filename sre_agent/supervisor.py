@@ -1152,14 +1152,21 @@ Improvement: {improvement:.1f}%
         except Exception as e:
             logger.warning(f"⚠️ Failed to store incident in memory: {e}")
 
-            return {
+        # Always return the final response (was incorrectly inside except block)
+        return {
+            "final_response": summary_content,
+            "next": "FINISH",
+            "thought_traces": {
+                **existing_traces,
+                "supervisor": [
+                    *existing_traces.get("supervisor", []),
+                    supervisor_summary,
+                ],
+            },
+            "metadata": {
+                **metadata,
+                "conversation_mode": "assistant",
+                "post_investigation_follow_up": False,
                 "final_response": summary_content,
-                "next": "FINISH",
-                "thought_traces": {
-                    **existing_traces,
-                    "supervisor": [
-                        *existing_traces.get("supervisor", []),
-                        supervisor_summary,
-                    ],
-                },
-            }
+            },
+        }

@@ -561,8 +561,11 @@ async def run_graph_background(
                 log_entry = f"[{datetime.now(timezone.utc).isoformat()}] Step completed: {node_name}"
                 state_store.append_log(session_id, log_entry)
                 
-                # Merge state
-                current_execution_state = {**current_execution_state, **node_output}
+                # Merge state — guard against None node_output (failed nodes)
+                if node_output is not None and isinstance(node_output, dict):
+                    current_execution_state = {**current_execution_state, **node_output}
+                elif node_output is not None:
+                    import logging; logging.getLogger(__name__).warning(f"Node returned non-dict: {type(node_output)} — skipping")
                 
                 # Update Redis State (only structural state, not logs)
                 update_data = {
@@ -725,8 +728,9 @@ async def run_graph_background_saas(
                     except Exception as le:
                         logger.warning(f"Failed to sync thought log to job: {le}")
                 
-                # Merge state
-                current_execution_state = {**current_execution_state, **node_output}
+                # Merge state — guard against None node_output (failed nodes)
+                if node_output is not None and isinstance(node_output, dict):
+                    current_execution_state = {**current_execution_state, **node_output}
 
         # Completion: Build the rich result object for the Dashboard cards
         final_response = current_execution_state.get("final_response", "Investigation completed.")
