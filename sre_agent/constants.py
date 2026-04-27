@@ -64,7 +64,7 @@ class ModelConfig(BaseModel):
 
     # Gemini settings
     gemini_model: str = Field(
-        default="gemini-3.1-flash-lite-preview",
+        default=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
         description="Default Gemini model ID",
     )
 

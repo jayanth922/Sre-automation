@@ -27,7 +27,7 @@ from .incident_timeline import (
     mark_human_event_handled,
     visible_specialist_label,
 )
-from .llm_utils import create_llm_with_error_handling
+from .llm_utils import create_llm_with_error_handling, create_llm_with_fallback
 from .output_formatter import create_formatter
 from .prompt_loader import prompt_loader
 
@@ -329,8 +329,8 @@ class SupervisorAgent:
         logger.info("Memory system disabled")
 
     def _create_llm(self, **kwargs):
-        """Create LLM instance with improved error handling."""
-        return create_llm_with_error_handling(self.llm_provider, **kwargs)
+        """Create LLM instance with automatic provider fallback."""
+        return create_llm_with_fallback(self.llm_provider, **kwargs)
 
     async def create_investigation_plan(self, state: AgentState) -> InvestigationPlan:
         """Create an investigation plan for the user's query."""

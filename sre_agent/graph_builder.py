@@ -24,7 +24,7 @@ from .agent_state import (
     RemediationPlan,
 )
 from .constants import SREConstants
-from .llm_utils import create_llm_with_error_handling
+from .llm_utils import create_llm_with_error_handling, create_llm_with_fallback
 from .policy_engine import (
     calculate_risk_score,
     evaluate_action,
@@ -310,8 +310,8 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     # Create LLM for reflection
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
-    llm_provider = metadata.get("llm_provider") or "groq"
-    llm = create_llm_with_error_handling(llm_provider)
+    llm_provider = metadata.get("llm_provider") or "gemini"
+    llm = create_llm_with_fallback(llm_provider)
 
     # Reflection prompt
     reflection_prompt = f"""
@@ -530,8 +530,8 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     # Create LLM for planning
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
-    llm_provider = metadata.get("llm_provider") or "groq"
-    llm = create_llm_with_error_handling(llm_provider)
+    llm_provider = metadata.get("llm_provider") or "gemini"
+    llm = create_llm_with_fallback(llm_provider)
 
     planning_prompt = f"""
     You are the PlannerNode in an SRE autonomic system. Generate a structured

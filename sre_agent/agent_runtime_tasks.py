@@ -160,6 +160,24 @@ async def run_graph_background_saas(
             elif hasattr(raw_verification, "dict"):
                 verification_serializable = raw_verification.dict()
 
+        # Store completed investigation in Qdrant so future incidents can learn from it
+        try:
+            from .memory_store import get_memory_store
+            memory = get_memory_store()
+            if memory.is_available():
+                memory.store_incident(
+                    incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
+                    incident_id=str(incident_id),
+                    metadata={
+                        "alert_name": alert_name,
+                        "cluster_id": str(cluster_id),
+                        "resolution": final_response,
+                        "resolved_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+        except Exception as me:
+            logger.warning(f"Failed to store incident in memory: {me}")
+
         async with database.AsyncSessionLocal() as db:
             await db.execute(
                 models.Incident.__table__

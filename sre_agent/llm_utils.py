@@ -231,6 +231,52 @@ def validate_provider_access(provider: str = "ollama", **kwargs) -> bool:
         return False
 
 
+def create_llm_with_fallback(primary_provider: str = "gemini", **kwargs):
+    """Create LLM with automatic fallback chain: gemini → groq → ollama.
+
+    If the primary provider fails (quota exhausted, auth error, etc.),
+    automatically tries the next provider in the chain.
+
+    Args:
+        primary_provider: The preferred provider to try first
+        **kwargs: Additional configuration overrides
+
+    Returns:
+        LLM instance from the first successful provider
+
+    Raises:
+        LLMProviderError: If all providers fail
+    """
+    fallback_chain = ["gemini", "groq", "ollama"]
+
+    # Put the primary provider first, then the rest in order
+    ordered = [primary_provider] + [p for p in fallback_chain if p != primary_provider]
+
+    last_error = None
+    for provider in ordered:
+        try:
+            llm = create_llm_with_error_handling(provider, **kwargs)
+            if provider != primary_provider:
+                logger.warning(f"Fell back to provider '{provider}' (primary '{primary_provider}' failed)")
+            else:
+                logger.info(f"Using provider '{provider}'")
+            return llm
+        except (LLMAuthenticationError, LLMAccessError) as e:
+            logger.warning(f"Provider '{provider}' unavailable ({type(e).__name__}), trying next...")
+            last_error = e
+        except LLMProviderError as e:
+            logger.warning(f"Provider '{provider}' failed ({e}), trying next...")
+            last_error = e
+        except Exception as e:
+            logger.warning(f"Provider '{provider}' unexpected error ({e}), trying next...")
+            last_error = e
+
+    raise LLMProviderError(
+        f"All LLM providers exhausted. Last error: {last_error}\n"
+        "Check your API keys: GOOGLE_API_KEY, GROQ_API_KEY, and OLLAMA_BASE_URL."
+    )
+
+
 def get_recommended_provider() -> str:
     """Get recommended provider based on availability.
 

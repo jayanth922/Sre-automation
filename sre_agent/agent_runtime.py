@@ -94,6 +94,10 @@ app.include_router(alerts_router.router, prefix="/api/v1")
 from sre_agent.api.v1 import metrics as metrics_router
 app.include_router(metrics_router.router, prefix="/metrics")
 
+# Analytics Router (Trend dashboard)
+from sre_agent.api.v1 import analytics as analytics_router
+app.include_router(analytics_router.router, prefix="/api/v1")
+
 
 # Simple request/response models
 class InvocationRequest(BaseModel):

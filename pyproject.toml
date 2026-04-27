@@ -44,6 +44,11 @@ dependencies = [
     # Infrastructure
     "redis>=5.0.3",
     "python-dotenv>=1.0.1",
+
+    # LLM providers (optional but must be listed for import to succeed)
+    "langchain-google-genai>=2.0.0",
+    "qdrant-client>=1.9.0",
+    "fastembed>=0.3.0",
 ]
 
 [project.optional-dependencies]

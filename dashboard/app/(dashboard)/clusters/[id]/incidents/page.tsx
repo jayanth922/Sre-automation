@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, ChevronRight, Loader2, RefreshCw, Server, TriangleAlert } from "lucide-react"
+import { ArrowLeft, ChevronRight, Loader2, RefreshCw, Server, TrendingUp, TriangleAlert } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -128,6 +128,14 @@ export default function ClusterIncidentsPage() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                        variant="outline"
+                        onClick={() => router.push(`/clusters/${clusterId}/analytics`)}
+                        className="gap-2 border-zinc-800 bg-zinc-950/60 text-zinc-200 hover:bg-zinc-900"
+                    >
+                        <TrendingUp className="h-4 w-4" />
+                        Analytics
+                    </Button>
                     <Button
                         variant="outline"
                         onClick={() => void loadIncidents()}

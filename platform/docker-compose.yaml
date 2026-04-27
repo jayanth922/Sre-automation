@@ -90,6 +90,7 @@ services:
   # ============================================
 
   sre-agent-api:
+    platform: linux/amd64
     build:
       context: ../
       dockerfile: platform/Dockerfile
@@ -111,7 +112,10 @@ services:
       - SEED_CLUSTER_STATUS=${SEED_CLUSTER_STATUS:-offline}
 
       # LLM (runs on platform, not customer edge)
-      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      # Primary: gemini → fallback: groq → fallback: ollama
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
@@ -137,6 +141,11 @@ services:
       - PYTHONUNBUFFERED=1
       - DEBUG=${DEBUG:-false}
 
+      # LangSmith tracing (optional — leave blank to disable)
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-sre-agent}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+
     networks:
       sre-network:
         aliases:
@@ -155,6 +164,7 @@ services:
   # ============================================
 
   dashboard:
+    platform: linux/amd64
     build:
       context: ../dashboard
       dockerfile: ../platform/Dockerfile.dashboard
