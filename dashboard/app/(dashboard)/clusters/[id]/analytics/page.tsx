@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertTriangle } from "lucide-react"
+import { ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertTriangle, Sparkles, RefreshCw } from "lucide-react"
 import {
     BarChart, Bar, LineChart, Line,
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
@@ -62,6 +62,19 @@ export default function AnalyticsPage() {
     const [data, setData] = useState<AnalyticsData | null>(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
+
+    // Recommendations state
+    const [recs, setRecs] = useState<string | null>(null)
+    const [recsLoading, setRecsLoading] = useState(false)
+    const [recsFetched, setRecsFetched] = useState(false)
+
+    const fetchRecommendations = () => {
+        setRecsLoading(true)
+        api.get(`/clusters/${clusterId}/recommendations`)
+            .then((res) => setRecs((res.data as any).recommendations))
+            .catch(() => setRecs("Failed to generate recommendations. Please try again."))
+            .finally(() => { setRecsLoading(false); setRecsFetched(true) })
+    }
 
     useEffect(() => {
         api.get(`/clusters/${clusterId}/analytics`)
@@ -247,6 +260,67 @@ export default function AnalyticsPage() {
                                     <span className="ml-2 shrink-0 rounded-full bg-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
                                         {alert.count}x
                                     </span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            {/* AI Recommendations */}
+            <Card className="border-zinc-800 bg-zinc-900/60">
+                <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <Sparkles className="h-4 w-4 text-violet-400" />
+                            <CardTitle className="text-sm font-medium text-zinc-300">
+                                AI Reliability Recommendations
+                            </CardTitle>
+                        </div>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={fetchRecommendations}
+                            disabled={recsLoading}
+                            className="gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white text-xs"
+                        >
+                            {recsLoading
+                                ? <><RefreshCw className="h-3 w-3 animate-spin" /> Generating…</>
+                                : recsFetched
+                                    ? <><RefreshCw className="h-3 w-3" /> Regenerate</>
+                                    : <><Sparkles className="h-3 w-3 text-violet-400" /> Generate</>}
+                        </Button>
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    {!recsFetched && !recsLoading && (
+                        <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+                            <div className="rounded-full border border-violet-500/20 bg-violet-500/10 p-3">
+                                <Sparkles className="h-5 w-5 text-violet-400" />
+                            </div>
+                            <p className="text-sm text-zinc-400">
+                                Click <span className="text-violet-300 font-medium">Generate</span> to get AI-powered recommendations based on this cluster&apos;s incident history.
+                            </p>
+                        </div>
+                    )}
+                    {recsLoading && (
+                        <div className="flex items-center gap-3 py-8 justify-center text-zinc-400 text-sm">
+                            <RefreshCw className="h-4 w-4 animate-spin text-violet-400" />
+                            Analyzing incident patterns…
+                        </div>
+                    )}
+                    {recs && !recsLoading && (
+                        <div className="space-y-2 pt-1">
+                            {recs.split("\n").filter(l => l.trim()).map((line, i) => (
+                                <div key={i} className="flex gap-3 rounded-lg border border-zinc-800 bg-zinc-900/80 px-4 py-3">
+                                    <span className="mt-0.5 shrink-0 text-violet-400 text-xs font-bold">{String(i + 1).padStart(2, "0")}</span>
+                                    <p className="text-sm text-zinc-300 leading-relaxed"
+                                        dangerouslySetInnerHTML={{
+                                            __html: line
+                                                .replace(/\*\*(.+?)\*\*/g, '<span class="font-semibold text-violet-300">$1</span>')
+                                                .replace(/^[-•]\s*/, "")
+                                        }}
+                                    />
                                 </div>
                             ))}
                         </div>

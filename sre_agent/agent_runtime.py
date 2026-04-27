@@ -98,6 +98,14 @@ app.include_router(metrics_router.router, prefix="/metrics")
 from sre_agent.api.v1 import analytics as analytics_router
 app.include_router(analytics_router.router, prefix="/api/v1")
 
+# General Chat Router
+from sre_agent.api.v1 import chat as chat_router
+app.include_router(chat_router.router, prefix="/api/v1")
+
+# Recommendations Router
+from sre_agent.api.v1 import recommendations as recommendations_router
+app.include_router(recommendations_router.router, prefix="/api/v1")
+
 
 # Simple request/response models
 class InvocationRequest(BaseModel):
@@ -178,13 +186,34 @@ async def get_mcp_client():
     return mcp_client_global
 
 
+async def _heartbeat_loop():
+    """Keep all clusters marked online with a fresh heartbeat every 60 seconds."""
+    from sqlalchemy import update
+    while True:
+        try:
+            async with database.AsyncSessionLocal() as db:
+                await db.execute(
+                    update(models.Cluster).values(
+                        status=models.ClusterStatus.ONLINE,
+                        last_heartbeat=datetime.now(timezone.utc),
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Heartbeat update failed: {e}")
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
     agent_mode = os.getenv("AGENT_MODE", "standalone").lower()
     cluster_token = os.getenv("CLUSTER_TOKEN", "")
-    
+
     logger.info(f"Startup: AGENT_MODE={agent_mode}, HAS_TOKEN={bool(cluster_token)}")
+
+    # Keep cluster status fresh in the dashboard
+    asyncio.create_task(_heartbeat_loop())
 
     # Always initialize the AI graph if we are managing a cluster
     if agent_mode != "api" or cluster_token:

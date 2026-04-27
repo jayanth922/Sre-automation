@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { Plus, Server, Trash2, Loader2, Check, Copy } from "lucide-react"
+import { Plus, Server, Trash2, Loader2, Check, Copy, Bot, SendHorizonal, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -121,6 +121,37 @@ export default function DashboardHome() {
             default: return "bg-red-500 hover:bg-red-600"
         }
     }
+
+    // ── Chat state ──────────────────────────────────────────────────────────
+    interface ChatMessage { role: "user" | "agent"; text: string }
+    const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+        { role: "agent", text: "Hi! Ask me anything about your infrastructure — cluster health, recent incidents, metrics, or best practices." }
+    ])
+    const [chatInput, setChatInput] = useState("")
+    const [chatLoading, setChatLoading] = useState(false)
+    const chatBottomRef = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        chatBottomRef.current?.scrollIntoView({ behavior: "smooth" })
+    }, [chatMessages])
+
+    const sendChat = async () => {
+        const msg = chatInput.trim()
+        if (!msg || chatLoading) return
+        setChatInput("")
+        setChatMessages(prev => [...prev, { role: "user", text: msg }])
+        setChatLoading(true)
+        try {
+            const res = await api.post("/chat", { message: msg })
+            const reply = (res.data as any).reply ?? "No response."
+            setChatMessages(prev => [...prev, { role: "agent", text: reply }])
+        } catch {
+            setChatMessages(prev => [...prev, { role: "agent", text: "Failed to reach the agent. Please try again." }])
+        } finally {
+            setChatLoading(false)
+        }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     return (
         <div className="flex w-full min-w-0 flex-1 flex-col gap-6">
@@ -253,6 +284,72 @@ export default function DashboardHome() {
                     )}
                 </div>
             )}
+
+            {/* ── SRE Agent Chat ─────────────────────────────────────────── */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 shadow-2xl shadow-black/20">
+                <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-3">
+                    <Bot className="h-4 w-4 text-cyan-400" />
+                    <span className="text-sm font-medium text-zinc-200">SRE Agent</span>
+                    <span className="ml-auto text-xs text-zinc-500">Ask about your infrastructure</span>
+                </div>
+
+                {/* Messages */}
+                <div className="flex flex-col gap-3 overflow-y-auto px-5 py-4" style={{ maxHeight: "340px" }}>
+                    {chatMessages.map((m, i) => (
+                        <div key={i} className={`flex gap-3 ${m.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
+                            <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${m.role === "user" ? "bg-violet-600" : "bg-cyan-900/60 border border-cyan-700/40"}`}>
+                                {m.role === "user"
+                                    ? <User className="h-3.5 w-3.5 text-white" />
+                                    : <Bot className="h-3.5 w-3.5 text-cyan-400" />}
+                            </div>
+                            <div className={`max-w-[78%] rounded-xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+                                m.role === "user"
+                                    ? "bg-violet-600/20 text-violet-100 border border-violet-500/20"
+                                    : "bg-zinc-900 text-zinc-200 border border-zinc-800"
+                            }`}>
+                                {m.text}
+                            </div>
+                        </div>
+                    ))}
+                    {chatLoading && (
+                        <div className="flex gap-3">
+                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-cyan-900/60 border border-cyan-700/40">
+                                <Bot className="h-3.5 w-3.5 text-cyan-400" />
+                            </div>
+                            <div className="flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5">
+                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:0ms]" />
+                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:150ms]" />
+                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:300ms]" />
+                            </div>
+                        </div>
+                    )}
+                    <div ref={chatBottomRef} />
+                </div>
+
+                {/* Input */}
+                <div className="border-t border-zinc-800 px-4 py-3">
+                    <div className="flex gap-2">
+                        <input
+                            type="text"
+                            value={chatInput}
+                            onChange={e => setChatInput(e.target.value)}
+                            onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendChat()}
+                            placeholder="Ask about cluster health, incidents, metrics…"
+                            disabled={chatLoading}
+                            className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm text-zinc-200 placeholder-zinc-500 outline-none focus:border-cyan-600 focus:ring-1 focus:ring-cyan-600/30 disabled:opacity-50"
+                        />
+                        <Button
+                            onClick={sendChat}
+                            disabled={chatLoading || !chatInput.trim()}
+                            size="sm"
+                            className="gap-1.5 bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-40"
+                        >
+                            <SendHorizonal className="h-4 w-4" />
+                        </Button>
+                    </div>
+                </div>
+            </div>
+            {/* ─────────────────────────────────────────────────────────────── */}
         </div>
     )
 }
