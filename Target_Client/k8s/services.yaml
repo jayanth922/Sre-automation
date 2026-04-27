@@ -24,6 +24,13 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
           env:
             - name: CHECKOUT_SERVICE_URL
               value: "http://checkout-service:8001"
@@ -68,6 +75,13 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8001
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
           env:
             - name: ERROR_RATE
               value: "0.15"
@@ -117,6 +131,13 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8002
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
           env:
             - name: SLOW_QUERY_RATE
               value: "0.25"

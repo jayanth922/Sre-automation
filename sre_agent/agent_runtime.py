@@ -69,6 +69,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Platform self-observability — exposes /platform-metrics for Prometheus scraping
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator(
+        should_group_status_codes=True,
+        excluded_handlers=["/ping", "/platform-metrics"],
+    ).instrument(app).expose(app, endpoint="/platform-metrics")
+    logger.info("✅ Platform metrics endpoint active at /platform-metrics")
+except ImportError:
+    logger.warning("prometheus-fastapi-instrumentator not installed — /platform-metrics unavailable")
+
 # Mount SaaS API Routers
 app.include_router(clusters.router, prefix="/api/v1")
 app.include_router(incidents.router, prefix="/api/v1")
