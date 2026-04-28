@@ -109,7 +109,7 @@ services:
       - SEED_ADMIN_ORG=${SEED_ADMIN_ORG:-SRE Admin Org}
       - SEED_CLUSTER_TOKEN=${SEED_CLUSTER_TOKEN:-}
       - SEED_CLUSTER_NAME=${SEED_CLUSTER_NAME:-SRE Demo Cluster}
-      - SEED_CLUSTER_STATUS=${SEED_CLUSTER_STATUS:-offline}
+      - SEED_CLUSTER_STATUS=${SEED_CLUSTER_STATUS:-online}
 
       # LLM (runs on platform, not customer edge)
       # Primary: gemini → fallback: groq → fallback: ollama

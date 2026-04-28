@@ -231,14 +231,14 @@ def validate_provider_access(provider: str = "ollama", **kwargs) -> bool:
         return False
 
 
-def create_llm_with_fallback(primary_provider: str = "gemini", **kwargs):
-    """Create LLM with automatic fallback chain: gemini → groq → ollama.
+def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
+    """Create LLM with automatic fallback chain: primary → others in [gemini, groq, ollama].
 
-    If the primary provider fails (quota exhausted, auth error, etc.),
-    automatically tries the next provider in the chain.
+    Respects LLM_PROVIDER env var as default. Falls back on creation errors AND on
+    quota/rate-limit errors raised during invocation by wrapping with _FallbackLLM.
 
     Args:
-        primary_provider: The preferred provider to try first
+        primary_provider: Provider to try first; defaults to LLM_PROVIDER env var or 'groq'
         **kwargs: Additional configuration overrides
 
     Returns:
@@ -247,9 +247,12 @@ def create_llm_with_fallback(primary_provider: str = "gemini", **kwargs):
     Raises:
         LLMProviderError: If all providers fail
     """
-    fallback_chain = ["gemini", "groq", "ollama"]
+    import os
 
-    # Put the primary provider first, then the rest in order
+    if primary_provider is None:
+        primary_provider = os.getenv("LLM_PROVIDER", "groq")
+
+    fallback_chain = ["gemini", "groq", "ollama"]
     ordered = [primary_provider] + [p for p in fallback_chain if p != primary_provider]
 
     last_error = None

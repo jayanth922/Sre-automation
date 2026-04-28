@@ -804,6 +804,25 @@ async def run_graph_background_saas(
             elif hasattr(raw_verification, "dict"):
                 verification_serializable = raw_verification.dict()
 
+        # Store resolved investigation in Qdrant for future RAG similarity search
+        try:
+            from .memory_store import get_memory_store
+            memory = get_memory_store()
+            if memory.is_available():
+                memory.store_incident(
+                    incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
+                    incident_id=str(incident_id),
+                    metadata={
+                        "alert_name": alert_name,
+                        "cluster_id": str(cluster_id),
+                        "resolution": final_response,
+                        "resolved_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                logger.info(f"Stored incident {incident_id} in Qdrant memory")
+        except Exception as me:
+            logger.warning(f"Failed to store incident in Qdrant: {me}")
+
         # Update Incident and Job in Postgres with RICH DATA
         async with database.AsyncSessionLocal() as db:
             # Update Incident
