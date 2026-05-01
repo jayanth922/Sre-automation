@@ -143,8 +143,12 @@ async def _run_post_summary_follow_up(
 ) -> None:
     graph = get_agent_graph()
     config = {"configurable": {"thread_id": str(incident_id)}}
-    current_state = await graph.aget_state(config)
-    base_values = dict(current_state.values or {}) if current_state and current_state.values else {}
+    try:
+        current_state = await graph.aget_state(config)
+        base_values = dict(current_state.values or {}) if current_state and current_state.values else {}
+    except ValueError:
+        # No checkpointer configured — start follow-up with fresh state
+        base_values = {}
     base_metadata = dict(base_values.get("metadata", {}))
 
     follow_up_state = {

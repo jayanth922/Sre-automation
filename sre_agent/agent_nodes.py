@@ -20,7 +20,7 @@ from .incident_timeline import (
     internal_agent_name,
     visible_specialist_role,
 )
-from .llm_utils import create_llm_with_error_handling, create_llm_with_fallback
+from .llm_utils import create_llm_with_error_handling
 from .prompt_loader import prompt_loader
 
 # Logging will be configured by the main entry point
@@ -35,9 +35,9 @@ def _load_agent_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _create_llm(provider: str = "gemini", **kwargs):
-    """Create LLM instance with automatic provider fallback."""
-    return create_llm_with_fallback(provider, **kwargs)
+def _create_llm(provider: str = "ollama", **kwargs):
+    """Create LLM instance for the given provider."""
+    return create_llm_with_error_handling(provider, **kwargs)
 
 
 def _filter_tools_for_agent(
