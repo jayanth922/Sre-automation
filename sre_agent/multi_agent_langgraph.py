@@ -146,8 +146,8 @@ async def create_multi_agent_system(
     """Create multi-agent system with MCP tools."""
     logger.info(f"Creating multi-agent system with provider: {provider}")
 
-    if provider not in ["groq", "ollama", "gemini"]:
-        raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'.")
+    if provider not in ["groq", "ollama", "gemini", "nvidia"]:
+        raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'.")
 
     # Create MCP client and get tools with retry logic
     mcp_tools = []

@@ -151,7 +151,7 @@ async def initialize_agent():
         provider = os.getenv("LLM_PROVIDER", "ollama").lower()
 
         # Validate provider
-        if provider not in ["groq", "ollama", "gemini"]:
+        if provider not in ["groq", "ollama", "gemini", "nvidia"]:
             logger.warning(f"Invalid provider '{provider}', defaulting to 'ollama'")
             provider = "ollama"
 

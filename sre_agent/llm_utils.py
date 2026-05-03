@@ -51,20 +51,16 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         LLMAccessError: For access/permission failures
         ValueError: For unsupported providers
     """
-    if provider == "groq":
-        logger.info(f"Creating LLM with provider: {provider}")
-    elif provider == "ollama":
-        logger.info(f"Creating LLM with provider: {provider}")
-    elif provider == "gemini":
-        logger.info(f"Creating LLM with provider: {provider}")
-    else:
+    if provider not in ("groq", "ollama", "gemini", "nvidia"):
         raise ValueError(
-            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'."
+            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'."
         )
+
+    logger.info(f"Creating LLM with provider: {provider}")
 
     try:
         config = SREConstants.get_model_config(provider, **kwargs)
-        
+
         if provider == "groq":
             logger.info(f"Creating Groq LLM - Model: {config['model_id']}")
             return _create_groq_llm(config)
@@ -74,6 +70,9 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         elif provider == "gemini":
             logger.info(f"Creating Gemini LLM - Model: {config['model_id']}")
             return _create_gemini_llm(config)
+        elif provider == "nvidia":
+            logger.info(f"Creating NVIDIA NIM LLM - Model: {config['model_id']}")
+            return _create_nvidia_llm(config)
 
     except Exception as e:
         error_msg = _get_helpful_error_message(provider, e)
@@ -102,6 +101,30 @@ def _create_groq_llm(config: Dict[str, Any]):
     """Create Groq LLM instance."""
     return ChatGroq(
         model=config["model_id"],
+        temperature=config["temperature"],
+        max_tokens=config["max_tokens"],
+    )
+
+
+def _create_nvidia_llm(config: Dict[str, Any]):
+    """Create NVIDIA NIM LLM instance (OpenAI-compatible endpoint)."""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        raise LLMProviderError(
+            "langchain-openai not installed. Run 'pip install langchain-openai'"
+        )
+
+    api_key = config.get("api_key", "")
+    if not api_key:
+        raise LLMAuthenticationError(
+            "NVIDIA_API_KEY not set. Get a free key at https://build.nvidia.com"
+        )
+
+    return ChatOpenAI(
+        model=config["model_id"],
+        api_key=api_key,
+        base_url=config["base_url"],
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
     )
@@ -189,6 +212,23 @@ def _get_helpful_error_message(provider: str, error: Exception) -> str:
                 "  2. Check if your API key is valid in Google AI Studio"
             )
 
+    if provider == "nvidia":
+        if _is_auth_error(error):
+            return (
+                f"NVIDIA NIM authentication failed: {base_error}\n"
+                "Solutions:\n"
+                "  1. Set NVIDIA_API_KEY environment variable\n"
+                "  2. Get a free key at https://build.nvidia.com\n"
+                "  3. Verify the key is active in your NVIDIA account"
+            )
+        elif _is_access_error(error):
+            return (
+                f"NVIDIA NIM access error: {base_error}\n"
+                "Solutions:\n"
+                "  1. Check NVIDIA_MODEL is a valid NIM model ID\n"
+                "  2. Verify your plan includes this model at build.nvidia.com"
+            )
+
     if provider == "ollama":
         if "connection refused" in base_error.lower():
             return (
@@ -216,8 +256,8 @@ def validate_provider_access(provider: str = "ollama", **kwargs) -> bool:
     Returns:
         True if provider is accessible, False otherwise
     """
-    if provider not in ["groq", "ollama", "gemini"]:
-        logger.warning(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'.")
+    if provider not in ["groq", "ollama", "gemini", "nvidia"]:
+        logger.warning(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'.")
         return False
 
     try:
@@ -252,7 +292,7 @@ def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
     if primary_provider is None:
         primary_provider = os.getenv("LLM_PROVIDER", "groq")
 
-    fallback_chain = ["gemini", "groq", "ollama"]
+    fallback_chain = ["nvidia", "gemini", "groq", "ollama"]
     ordered = [primary_provider] + [p for p in fallback_chain if p != primary_provider]
 
     last_error = None
@@ -276,7 +316,7 @@ def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
 
     raise LLMProviderError(
         f"All LLM providers exhausted. Last error: {last_error}\n"
-        "Check your API keys: GOOGLE_API_KEY, GROQ_API_KEY, and OLLAMA_BASE_URL."
+        "Check your API keys: NVIDIA_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, and OLLAMA_BASE_URL."
     )
 
 

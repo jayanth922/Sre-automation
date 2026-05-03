@@ -112,8 +112,10 @@ services:
       - SEED_CLUSTER_STATUS=${SEED_CLUSTER_STATUS:-online}
 
       # LLM (runs on platform, not customer edge)
-      # Primary: gemini → fallback: groq → fallback: ollama
-      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      # Primary: nvidia → fallback: gemini → fallback: groq → fallback: ollama
+      - LLM_PROVIDER=${LLM_PROVIDER:-nvidia}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NVIDIA_MODEL=${NVIDIA_MODEL:-meta/llama-3.3-70b-instruct}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
@@ -132,7 +134,7 @@ services:
       - MCP_K8S_URI=${MCP_K8S_URI:-http://host.docker.internal:4000/sse}
       - MCP_METRICS_URI=${MCP_METRICS_URI:-http://host.docker.internal:4001/sse}
       - MCP_LOGS_URI=${MCP_LOGS_URI:-http://host.docker.internal:4002/sse}
-      - MCP_GITHUB_URI=${MCP_GITHUB_URI:-http://host.docker.internal:4003/sse}
+      - MCP_GITHUB_URI=${MCP_GITHUB_URI-}
       - MCP_RUNBOOKS_URI=${MCP_RUNBOOKS_URI:-http://host.docker.internal:4004/sse}
 
       # Python

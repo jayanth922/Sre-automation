@@ -68,6 +68,16 @@ class ModelConfig(BaseModel):
         description="Default Gemini model ID",
     )
 
+    # NVIDIA NIM settings
+    nvidia_model: str = Field(
+        default=os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct"),
+        description="NVIDIA NIM model ID",
+    )
+    nvidia_api_key: str = Field(
+        default=os.getenv("NVIDIA_API_KEY", ""),
+        description="NVIDIA NIM API key (from build.nvidia.com)",
+    )
+
 
 class TimeoutConfig(BaseModel):
     """Timeout configuration constants."""
@@ -296,9 +306,18 @@ class SREConstants:
                 "model_id": kwargs.get("model_id", cls.model.gemini_model),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
-        
+
+        if provider == "nvidia":
+            return {
+                "model_id": kwargs.get("model_id", cls.model.nvidia_model),
+                "api_key": kwargs.get("api_key", cls.model.nvidia_api_key),
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
+                "temperature": kwargs.get("temperature", cls.model.default_temperature),
+            }
+
         if provider != "groq":
-            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini'.")
+            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'.")
 
         return {
             "model_id": kwargs.get("model_id", cls.model.groq_model_id),

@@ -47,6 +47,7 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=6.1.0",
 
     # LLM providers (optional but must be listed for import to succeed)
+    "langchain-openai>=0.1.0",
     "langchain-google-genai>=2.0.0",
     "qdrant-client>=1.9.0",
     "fastembed>=0.3.0",
@@ -62,6 +63,11 @@ dev = [
     "bandit>=1.7.0",
     "pre-commit>=3.0.0",
     "ruff>=0.1.0"
+]
+bench = [
+    # httpx is already a core dependency — no extra installs needed.
+    # This group exists as a marker and for any future bench-only additions.
+    "pytest-benchmark>=4.0.0",
 ]
 
 
