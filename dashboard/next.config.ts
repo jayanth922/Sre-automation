@@ -6,24 +6,26 @@ const nextConfig: NextConfig = {
   },
   // Use rewrites to proxy API requests to the backend
   async rewrites() {
+    const api = process.env.API_URL || "http://localhost:8080";
     return [
+      // Full /api passthrough
       {
         source: "/api/:path*",
-        destination: `${process.env.API_URL || "http://localhost:8080"}/api/:path*`,
+        destination: `${api}/api/:path*`,
       },
-      // Also proxy auth endpoints if they are at root
+      // Auth endpoints
       {
         source: "/auth/:path*",
-        destination: `${process.env.API_URL || "http://localhost:8080"}/auth/:path*`,
+        destination: `${api}/auth/:path*`,
       },
       // Proxy metrics and agent state endpoints
       {
         source: "/metrics/:path*",
-        destination: `${process.env.API_URL || "http://localhost:8080"}/metrics/:path*`,
+        destination: `${api}/metrics/:path*`,
       },
       {
         source: "/agent/:path*",
-        destination: `${process.env.API_URL || "http://localhost:8080"}/agent/:path*`,
+        destination: `${api}/agent/:path*`,
       },
     ];
   },

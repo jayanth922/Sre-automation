@@ -43,7 +43,7 @@ export function UserAccountMenu() {
         const loadProfile = async () => {
             setLoadingProfile(true)
             try {
-                const response = await api.get("/auth/me")
+                const response = await api.get("/auth/me", { baseURL: "" })
                 if (!active) return
                 setProfile(response.data as UserProfile)
             } catch {
@@ -109,7 +109,7 @@ export function UserAccountMenu() {
             await api.post("/auth/password", {
                 current_password: passwordCurrent,
                 new_password: passwordNext,
-            })
+            }, { baseURL: "" })
             setPasswordMessage("Password updated successfully.")
             setPasswordCurrent("")
             setPasswordNext("")
