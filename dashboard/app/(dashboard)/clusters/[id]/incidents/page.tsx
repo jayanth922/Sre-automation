@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, ChevronRight, Loader2, RefreshCw, Server, TrendingUp, TriangleAlert } from "lucide-react"
+import { ArrowLeft, ChevronRight, Loader2, RefreshCw, Server, Trash2, TrendingUp, TriangleAlert } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -67,6 +67,7 @@ export default function ClusterIncidentsPage() {
     const [incidents, setIncidents] = useState<Incident[]>([])
     const [loading, setLoading] = useState(true)
     const [refreshing, setRefreshing] = useState(false)
+    const [flushing, setFlushing] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
     const loadIncidents = useCallback(async (initial = false) => {
@@ -92,6 +93,28 @@ export default function ClusterIncidentsPage() {
             setLoading(false)
         }
     }, [clusterId])
+
+    const handleFlushIncidents = async () => {
+        if (!incidents.length) return
+
+        const incidentCount = incidents.length
+        const confirmed = window.confirm(
+            `Delete all ${incidentCount} incidents for ${cluster?.name || "this cluster"}? This will also remove the related jobs and cannot be undone.`
+        )
+        if (!confirmed) return
+
+        setFlushing(true)
+        setError(null)
+
+        try {
+            await api.delete(`/clusters/${clusterId}/incidents`)
+            await loadIncidents()
+        } catch (flushError) {
+            setError(flushError instanceof Error ? flushError.message : "Failed to flush incidents")
+        } finally {
+            setFlushing(false)
+        }
+    }
 
     useEffect(() => {
         void loadIncidents(true)
@@ -144,6 +167,15 @@ export default function ClusterIncidentsPage() {
                     >
                         {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                         Refresh
+                    </Button>
+                    <Button
+                        variant="destructive"
+                        onClick={() => void handleFlushIncidents()}
+                        disabled={flushing || incidents.length === 0}
+                        className="gap-2"
+                    >
+                        {flushing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                        Flush incidents
                     </Button>
                     <Badge variant="outline" className="border-zinc-700 text-zinc-300">
                         {incidents.length} incidents

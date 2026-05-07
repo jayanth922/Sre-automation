@@ -6,31 +6,34 @@ agents:
     name: "Kubernetes Infrastructure Agent"
     description: "Manages Kubernetes cluster operations and monitoring"
     tools:
+      - check_k8s_health
       - get_pod_status
+      - list_namespaces
+      - list_pods
+      - list_services
+      - list_deployments
+      - list_events
+      - get_service_endpoints
+      - get_pod_logs
       - get_deployment_status
-      - get_cluster_events
-      - get_resource_usage
       - get_node_status
 
   logs_agent:
     name: "Application Logs Agent"
     description: "Handles application log analysis and searching"
     tools:
-      - search_logs
+      - query_logs
       - get_error_logs
       - analyze_log_patterns
-      - get_recent_logs
-      - count_log_events
 
   metrics_agent:
     name: "Performance Metrics Agent"
     description: "Provides application performance and resource metrics"
     tools:
-      - get_performance_metrics
-      - get_error_rates
-      - get_resource_metrics
-      - get_availability_metrics
-      - analyze_trends
+      - check_prometheus_health
+      - get_metric
+      - get_metric_range
+      - get_golden_signals
 
   runbooks_agent:
     name: "Operational Runbooks Agent"

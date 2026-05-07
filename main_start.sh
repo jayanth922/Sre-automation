@@ -2,7 +2,15 @@
 
 bash Target_Client/start.sh
 bash platform/start.sh
-cd edge_mcp_servers && docker compose up -d
+
+echo "▶ Starting Edge MCP Servers..."
+cd edge_mcp_servers
+docker compose --progress=quiet up -d --build
 cd ..
-docker compose ps
-kubectl get all 
+
+echo "▶ Running MCP Server Smoke Test..."
+if command -v uv >/dev/null 2>&1; then
+	uv run python test_mcp_servers.py
+else
+	python test_mcp_servers.py
+fi

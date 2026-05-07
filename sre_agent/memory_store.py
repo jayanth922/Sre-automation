@@ -184,13 +184,15 @@ class MemoryStore:
             embeddings = list(self.embedding_model.embed([query_text]))
             query_embedding = embeddings[0].tolist()
 
-            # Search in Qdrant
-            search_results = self.client.search(
+            # Search in Qdrant. qdrant-client >= 1.10 uses query_points;
+            # the legacy `search()` method was removed.
+            query_response = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_embedding,
+                query=query_embedding,
                 limit=limit,
                 score_threshold=score_threshold,
             )
+            search_results = query_response.points
 
             # Format results
             results = []

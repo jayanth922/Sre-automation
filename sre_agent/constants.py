@@ -52,7 +52,7 @@ class ModelConfig(BaseModel):
         description="Base URL for Ollama service",
     )
     ollama_model: str = Field(
-        default=os.getenv("OLLAMA_MODEL", "gemma3:1b"),
+        default=os.getenv("OLLAMA_MODEL", "gpt-oss:120b-cloud"),
         description="Ollama model to use",
     )
     ollama_num_ctx: int = Field(
@@ -76,6 +76,10 @@ class ModelConfig(BaseModel):
     nvidia_api_key: str = Field(
         default=os.getenv("NVIDIA_API_KEY", ""),
         description="NVIDIA NIM API key (from build.nvidia.com)",
+    )
+    nvidia_base_url: str = Field(
+        default=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+        description="NVIDIA NIM/OpenAI-compatible base URL",
     )
 
 
@@ -311,7 +315,7 @@ class SREConstants:
             return {
                 "model_id": kwargs.get("model_id", cls.model.nvidia_model),
                 "api_key": kwargs.get("api_key", cls.model.nvidia_api_key),
-                "base_url": "https://integrate.api.nvidia.com/v1",
+                "base_url": kwargs.get("base_url", cls.model.nvidia_base_url),
                 "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }

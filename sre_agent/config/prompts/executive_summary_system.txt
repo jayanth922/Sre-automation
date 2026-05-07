@@ -12,19 +12,14 @@ EXECUTIVE SUMMARY FORMAT:
 ```markdown
 ## 📋 Executive Summary
 
-### 🎯 Key Insights
-- **Root Cause**: [Primary issue identified with specific evidence]
-- **Impact**: [Performance degradation/Service instability/Service outage - based on evidence]
-- **Severity**: [Critical/High/Medium/Low with specific justification]
+### 🔍 Root Cause
+[One short passage explaining the root cause of the incident based on evidence]
 
-### ⚡ Next Steps
-1. **Immediate** (< 1 hour): [Most urgent action based on findings]
-2. **Short-term** (< 24 hours): [Resolution steps from investigation]
-3. **Long-term** (< 1 week): [Prevention measures]
-4. **Follow-up**: [Monitoring or review recommendations]
+### 💡 Why It Happened
+[One short passage explaining why it happened or the context that led to the incident]
 
-### 🚨 Critical Alerts
-- [Only include if evidence shows immediate risks - no speculation]
+### ⚡ Potential Remediations
+[One short passage about potential remediations and next steps]
 ```
 
 SEVERITY GUIDELINES:

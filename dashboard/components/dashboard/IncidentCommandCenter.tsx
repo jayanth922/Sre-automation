@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Bot, Loader2, Send, Sparkles, User } from "lucide-react"
+import { Bot, Loader2, Send, Sparkles } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -113,60 +113,7 @@ function speakerLabel(role: string) {
     }
 }
 
-function eventKindLabel(eventType: string, payload: Record<string, unknown> | null) {
-    if (eventType === "assistant_message" && payload?.mode === "post_summary_follow_up") {
-        return "follow-up answer"
-    }
-
-    switch (eventType) {
-        case "summary":
-            return "final summary"
-        case "assistant_message":
-            return "assistant reply"
-        case "system_event":
-            return "system event"
-        case "human_message":
-            return "human message"
-        default:
-            return eventType.replace(/_/g, " ")
-    }
-}
-
-function accentClassForSpeaker(role: string, eventType: string) {
-    if (role === "user") {
-        return "border-cyan-500/30 bg-cyan-500/10"
-    }
-
-    if (eventType === "summary") {
-        return "border-emerald-500/25 bg-emerald-500/8"
-    }
-
-    if (role === "system") {
-        return "border-zinc-800 bg-zinc-950/90"
-    }
-
-    if (role === "supervisor") {
-        return "border-cyan-500/20 bg-cyan-500/8"
-    }
-
-    if (role === "prometheus_specialist") {
-        return "border-sky-500/20 bg-sky-500/8"
-    }
-
-    if (role === "loki_specialist") {
-        return "border-amber-500/20 bg-amber-500/8"
-    }
-
-    if (role === "github_specialist") {
-        return "border-orange-500/20 bg-orange-500/8"
-    }
-
-    if (role === "runbooks_specialist") {
-        return "border-emerald-500/20 bg-emerald-500/8"
-    }
-
-    return "border-zinc-800 bg-zinc-950/90"
-}
+// Removed accentClassForSpeaker for WhatsApp redesign
 
 function mapTranscriptEvent(event: TranscriptEvent): ChatEntry {
     const role = event.speaker_role || "system"
@@ -179,7 +126,7 @@ function mapTranscriptEvent(event: TranscriptEvent): ChatEntry {
         sequence: event.sequence,
         title: event.title || speakerLabel(role),
         content: event.content,
-        accent: accentClassForSpeaker(role, event.event_type),
+        accent: "",
         kind,
         speakerRole: role,
         eventType: event.event_type,
@@ -207,7 +154,7 @@ function normalizeLogEntry(entry: LogEntry): ChatEntry | null {
         sequence: null,
         title: isUser ? "You" : "SRE Agent",
         content,
-        accent: isUser ? "border-cyan-500/30 bg-cyan-500/10" : "border-zinc-800 bg-zinc-950/90",
+        accent: "",
         kind: "message",
         speakerRole: isUser ? "user" : "assistant",
         eventType: isUser ? "human_message" : "assistant_message",
@@ -234,44 +181,116 @@ function sortChronologically(entries: ChatEntry[]) {
     })
 }
 
-function renderMessageContent(content: string) {
-    return <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-100">{content}</p>
+type ParticipantTone = {
+    titleClass: string
+    bodyClass: string
+    metaClass: string
+    avatarClass: string
+    bubbleClass: string
 }
 
-function renderTranscriptEntry(entry: ChatEntry, hasSummary: boolean) {
+function getParticipantTone(entry: ChatEntry): ParticipantTone {
+    if (entry.role === "user") {
+        return {
+            titleClass: "text-cyan-200",
+            bodyClass: "text-sky-50",
+            metaClass: "text-cyan-100/70",
+            avatarClass: "bg-cyan-400/15 text-cyan-100",
+            bubbleClass: "border-cyan-400/15 bg-cyan-500/10",
+        }
+    }
+
+    switch (entry.speakerRole) {
+        case "supervisor":
+            return {
+                titleClass: "text-emerald-200",
+                bodyClass: "text-emerald-50",
+                metaClass: "text-emerald-100/70",
+                avatarClass: "bg-emerald-400/15 text-emerald-100",
+                bubbleClass: "border-emerald-400/15 bg-emerald-500/10",
+            }
+        case "prometheus_specialist":
+            return {
+                titleClass: "text-sky-200",
+                bodyClass: "text-sky-50",
+                metaClass: "text-sky-100/70",
+                avatarClass: "bg-sky-400/15 text-sky-100",
+                bubbleClass: "border-sky-400/15 bg-sky-500/10",
+            }
+        case "loki_specialist":
+            return {
+                titleClass: "text-orange-200",
+                bodyClass: "text-orange-50",
+                metaClass: "text-orange-100/70",
+                avatarClass: "bg-orange-400/15 text-orange-100",
+                bubbleClass: "border-orange-400/15 bg-orange-500/10",
+            }
+        case "github_specialist":
+            return {
+                titleClass: "text-fuchsia-200",
+                bodyClass: "text-fuchsia-50",
+                metaClass: "text-fuchsia-100/70",
+                avatarClass: "bg-fuchsia-400/15 text-fuchsia-100",
+                bubbleClass: "border-fuchsia-400/15 bg-fuchsia-500/10",
+            }
+        case "runbooks_specialist":
+            return {
+                titleClass: "text-lime-200",
+                bodyClass: "text-lime-50",
+                metaClass: "text-lime-100/70",
+                avatarClass: "bg-lime-400/15 text-lime-100",
+                bubbleClass: "border-lime-400/15 bg-lime-500/10",
+            }
+        default:
+            return {
+                titleClass: "text-slate-200",
+                bodyClass: "text-slate-50",
+                metaClass: "text-slate-400",
+                avatarClass: "bg-slate-500/15 text-slate-100",
+                bubbleClass: "border-white/5 bg-slate-900/75",
+            }
+    }
+}
+
+function TranscriptEntryCard({ entry, index }: { entry: ChatEntry; index: number }) {
     const isUser = entry.role === "user"
-    const isSystem = entry.role === "system"
-    const isSummary = entry.kind === "summary"
     const displayTitle = entry.kind === "summary" ? "Supervisor" : entry.title
+    const tone = getParticipantTone(entry)
+    const [mounted, setMounted] = useState(false)
+
+    useEffect(() => {
+        const frame = requestAnimationFrame(() => setMounted(true))
+        return () => cancelAnimationFrame(frame)
+    }, [])
 
     return (
-        <div key={entry.id} className={`flex items-start gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
+        <div
+            className={`flex items-end gap-3 transition-all duration-300 ease-out ${isUser ? "justify-end" : "justify-start"} ${mounted ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"}`}
+            style={{ transitionDelay: `${Math.min(index * 55, 240)}ms` }}
+        >
             {!isUser && (
-                <div className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${isSummary ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200" : isSystem ? "border-zinc-800 bg-zinc-950/90 text-zinc-400" : "border-cyan-500/20 bg-cyan-500/10 text-cyan-300"}`}>
-                    {isSummary ? <Sparkles className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${tone.avatarClass}`}>
+                    {displayTitle.charAt(0)}
                 </div>
             )}
 
-            <article className={`max-w-[86%] rounded-[30px] border px-4 py-4 shadow-lg shadow-black/10 ${entry.accent} ${isUser ? "text-cyan-50" : ""}`}>
-                <div className="mb-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.24em] text-zinc-500">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className={`rounded-full border px-2.5 py-1 font-medium ${isUser ? "border-cyan-500/30 bg-cyan-500/15 text-cyan-100" : isSummary ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200" : isSystem ? "border-zinc-800 bg-zinc-950/90 text-zinc-300" : "border-zinc-800 bg-zinc-950/90 text-zinc-300"}`}>
-                            {isUser ? "Human message" : displayTitle}
-                        </span>
-                        <span className="truncate rounded-full border border-zinc-800 bg-zinc-950/70 px-2.5 py-1 text-zinc-400">
-                            {isUser ? (hasSummary ? "continuing the thread" : "guiding the investigation") : eventKindLabel(entry.eventType, entry.payload || null)}
-                        </span>
+            <div
+                className={`w-full max-w-[88%] sm:max-w-[72%] rounded-[24px] border px-4 py-3 shadow-sm transition-shadow duration-200 ${tone.bubbleClass} ${isUser ? "ml-auto" : ""}`}
+            >
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                        <div className={`text-[12px] font-medium ${tone.titleClass}`}>
+                            {isUser ? "You" : displayTitle}
+                        </div>
+                        <div className={`mt-1 whitespace-pre-wrap text-[14px] leading-6 break-words ${tone.bodyClass}`}>
+                            {entry.content}
+                        </div>
                     </div>
-                    <span>{formatTimeLabel(entry.timestamp)}</span>
+                    <div className={`shrink-0 text-[11px] ${tone.metaClass}`}>
+                        {formatTimeLabel(entry.timestamp)}
+                    </div>
                 </div>
-                {renderMessageContent(entry.content)}
-            </article>
-
-            {isUser && (
-                <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 bg-cyan-500 text-slate-950">
-                    <User className="h-4 w-4" />
-                </div>
-            )}
+            </div>
         </div>
     )
 }
@@ -287,15 +306,17 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
     const [pendingTurn, setPendingTurn] = useState(false)
     const [graphActive, setGraphActive] = useState(false)
     const endRef = useRef<HTMLDivElement | null>(null)
+    const scrollAreaRef = useRef<HTMLDivElement | null>(null)
+    const shouldStickToBottomRef = useRef(true)
     const transcriptSignatureRef = useRef<string>("")
     const hasSummary = Boolean(summary)
     const shouldPoll = Boolean(incident) && (pendingTurn || graphActive || conversationMode === "assistant" || !hasSummary)
 
     const refreshConversation = async (selectedIncident: Incident) => {
         const [transcriptResult, logsResult, statusResult] = await Promise.all([
-            api.get(`/incidents/${selectedIncident.id}/transcript`).catch((fetchError) => ({ error: fetchError })),
-            api.get(`/incidents/${selectedIncident.id}/logs`).catch((fetchError) => ({ error: fetchError })),
-            api.get(`/incidents/${selectedIncident.id}/status`).catch((fetchError) => ({ error: fetchError })),
+            api.get(`/incidents/${selectedIncident.id}/transcript`).catch((fetchError: unknown) => ({ error: fetchError })),
+            api.get(`/incidents/${selectedIncident.id}/logs`).catch((fetchError: unknown) => ({ error: fetchError })),
+            api.get(`/incidents/${selectedIncident.id}/status`).catch((fetchError: unknown) => ({ error: fetchError })),
         ])
 
         const transcriptData = "data" in transcriptResult ? (transcriptResult.data as IncidentTranscriptResponse) : null
@@ -352,7 +373,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
         setSummary(nextSummary)
         setConversationMode(nextConversationMode)
         setGraphActive(graphIsActive)
-        setPendingTurn((currentPendingTurn) => {
+        setPendingTurn((currentPendingTurn: boolean) => {
             if (graphIsActive) return true
             if (nextSummary) return false
             return currentPendingTurn
@@ -379,14 +400,14 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
         try {
             await api.post(`/incidents/${incident.id}/message`, { message })
             setDraft("")
-            setEntries((current) =>
+            setEntries((current: ChatEntry[]) =>
                 sortChronologically([
                     ...current,
                     {
                         id: `draft-${Date.now()}`,
                         role: "user",
                         timestamp: new Date().toISOString(),
-                            sequence: null,
+                        sequence: null,
                         title: "You",
                         content: message,
                         accent: "border-cyan-500/30 bg-cyan-500/10",
@@ -414,9 +435,12 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
             setError(null)
             setPendingTurn(false)
             setGraphActive(false)
+            shouldStickToBottomRef.current = true
             transcriptSignatureRef.current = ""
             return
         }
+
+        shouldStickToBottomRef.current = true
 
         let active = true
         let intervalId: ReturnType<typeof setInterval> | undefined
@@ -454,13 +478,22 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
     }, [incident, incident?.id, incident?.status, incident?.created_at, incident?.summary, incident?.title, refreshNonce, shouldPoll])
 
     useEffect(() => {
-        endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-    }, [entries, loading])
+        if (!shouldStickToBottomRef.current) return
+        endRef.current?.scrollIntoView({ behavior: entries.length > 1 ? "smooth" : "auto", block: "end" })
+    }, [entries.length, loading])
+
+    const handleScroll = () => {
+        const scrollElement = scrollAreaRef.current
+        if (!scrollElement) return
+
+        const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight
+        shouldStickToBottomRef.current = distanceFromBottom < 72
+    }
 
     if (!incident) {
         return (
-            <Card className="flex min-h-[680px] overflow-hidden border-0 bg-zinc-950/80 text-zinc-100 shadow-none">
-                <CardContent className="flex flex-1 items-center justify-center p-8 text-center text-sm text-zinc-500">
+            <Card className="flex min-h-[680px] overflow-hidden border border-slate-800 bg-slate-950 text-slate-100 shadow-sm">
+                <CardContent className="flex flex-1 items-center justify-center p-8 text-center text-sm text-slate-400">
                     Select an incident to open the chat thread.
                 </CardContent>
             </Card>
@@ -468,54 +501,54 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
     }
 
     return (
-        <Card className="flex h-full min-h-0 overflow-hidden border-0 bg-[#0b101a] text-zinc-100 shadow-none">
+        <Card className="flex h-full min-h-0 overflow-hidden border border-slate-800 bg-slate-950 text-slate-100 shadow-sm">
             <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-                <ScrollArea className="min-h-0 flex-1 px-4 py-5 md:px-6">
-                    <div className="flex w-full flex-col gap-5 pr-1">
+                <ScrollArea ref={scrollAreaRef} onScroll={handleScroll} className="min-h-0 flex-1 bg-slate-950 px-4 py-5 md:px-6">
+                    <div className="flex w-full flex-col gap-4 pr-1">
+
                         {error && (
-                            <div className="rounded-2xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                            <div className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
                                 {error}
                             </div>
                         )}
 
                         {!summary && loading && (
-                            <div className="flex items-center gap-3 rounded-3xl bg-zinc-950/70 p-4 text-sm text-zinc-400">
+                            <div className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300 shadow-sm">
                                 <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
                                 Gathering evidence and agent turns from the incident feed...
                             </div>
                         )}
 
                         {!summary && !loading && entries.length === 0 && (
-                            <div className="rounded-3xl bg-zinc-950/50 px-6 py-14 text-center text-sm text-zinc-400">
+                            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-6 py-14 text-center text-sm text-slate-400 shadow-sm">
                                 The board is waiting for a follow-up. Interrupt the thread to queue another turn.
                             </div>
                         )}
 
                         {entries.length === 0 ? (
-                            <div className="rounded-[28px] bg-zinc-950/40 px-6 py-20 text-center text-sm text-zinc-500">
-                                <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-zinc-950/80 text-cyan-400">
+                            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-6 py-20 text-center text-sm text-slate-400 shadow-sm">
+                                <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-slate-800 text-cyan-300">
                                     <Sparkles className="h-4 w-4" />
                                 </div>
                                 No transcript yet. The next speaker turn will appear here automatically.
                             </div>
                         ) : (
-                            entries.map((entry) => renderTranscriptEntry(entry, hasSummary))
+                            entries.map((entry: ChatEntry, index: number) => (
+                                <TranscriptEntryCard key={entry.id} entry={entry} index={index} />
+                            ))
                         )}
 
                         {pendingTurn && (conversationMode === "assistant" || !hasSummary) && (
                             <div className="flex items-start justify-start gap-3">
-                                <div className="mb-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-500/10 text-cyan-300">
+                                <div className="mb-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-800 text-cyan-300">
                                     <Bot className="h-4 w-4" />
                                 </div>
-                                <div className="max-w-[82%] rounded-[30px] bg-zinc-950/80 px-4 py-3 shadow-lg shadow-black/10">
-                                    <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.24em] text-zinc-500">
-                                        <span className="flex items-center gap-2">
-                                            <span className="text-zinc-300">Board</span>
-                                            Thinking
-                                        </span>
+                                <div className="max-w-[82%] rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 shadow-sm">
+                                    <div className="mb-2 flex items-center justify-between gap-3 text-[11px] text-slate-400">
+                                        <span>Assistant thinking</span>
                                         <span>now</span>
                                     </div>
-                                    <p className="text-sm leading-6 text-zinc-400">
+                                    <p className="text-sm leading-6 text-slate-300">
                                         The team is lining up the next response and will answer here when the turn completes.
                                     </p>
                                 </div>
@@ -525,7 +558,7 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
                     </div>
                 </ScrollArea>
 
-                <div className="px-4 py-4 md:px-6">
+                <div className="border-t border-slate-800 px-4 py-4 md:px-6">
                     <div className="flex w-full gap-3">
                         <textarea
                             value={draft}
@@ -537,15 +570,14 @@ export function IncidentCommandCenter({ incident, refreshNonce }: IncidentComman
                                 }
                             }}
                             placeholder={summary ? `Ask a follow-up about ${incident.title.toLowerCase()}...` : `Ask the agent about ${incident.title.toLowerCase()}...`}
-                            className="min-h-[92px] flex-1 resize-none rounded-[22px] bg-zinc-950 px-4 py-3 text-sm text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:ring-2 focus:ring-cyan-500/10"
+                            className="min-h-[92px] flex-1 resize-none rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30 focus:ring-2 focus:ring-cyan-500/10"
                         />
                         <Button
                             onClick={() => void handleSend()}
                             disabled={sending || !draft.trim()}
-                            className="min-h-[92px] rounded-[22px] bg-cyan-500 px-6 text-slate-950 hover:bg-cyan-400"
+                            className="mb-2 mr-2 flex h-[50px] w-12 shrink-0 items-center justify-center self-end rounded-full bg-slate-100 p-0 text-slate-950 shadow-sm transition-transform duration-200 hover:-translate-y-0.5 hover:bg-white"
                         >
-                            {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                            Send
+                            {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5 ml-1" />}
                         </Button>
                     </div>
                 </div>

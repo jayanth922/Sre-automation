@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from backend import schemas, crud, models, database
 from backend.rbac import require_admin
@@ -104,21 +104,43 @@ async def clear_cluster_incidents(
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     incidents = await crud.get_incidents_for_cluster(db, cluster_id)
-    incident_ids = [str(incident.id) for incident in incidents]
+    incident_ids = [incident.id for incident in incidents]
+    incident_ids_str = {str(id) for id in incident_ids}
 
     if not incident_ids:
         return {"deleted": 0}
 
-    await db.execute(delete(models.Job).where(models.Job.cluster_id == cluster_id))
+    # Get jobs related to these incidents (by parsing payload JSON)
+    all_jobs = await db.execute(select(models.Job).where(models.Job.cluster_id == cluster_id))
+    job_ids_to_delete = []
+    
+    for job in all_jobs.scalars().all():
+        try:
+            if job.payload:
+                payload = json.loads(job.payload)
+                if payload.get("incident_id") in incident_ids_str:
+                    job_ids_to_delete.append(job.id)
+        except (json.JSONDecodeError, TypeError):
+            # If payload isn't valid JSON, log but continue
+            logger.warning(f"Failed to parse job {job.id} payload: {job.payload}")
+
+    # Bulk deletes do not trigger ORM cascades, so remove child rows explicitly first.
+    await db.execute(
+        delete(models.IncidentTimelineEvent).where(models.IncidentTimelineEvent.incident_id.in_(incident_ids))
+    )
+    if job_ids_to_delete:
+        await db.execute(delete(models.Job).where(models.Job.id.in_(job_ids_to_delete)))
     await db.execute(delete(models.Incident).where(models.Incident.id.in_(incident_ids)))
     await db.commit()
+
+    logger.info(f"Flushed {len(incident_ids)} incidents and {len(job_ids_to_delete)} related jobs for cluster {cluster_id}")
 
     from sre_agent.redis_state_store import get_state_store
     store = get_state_store()
     for incident_id in incident_ids:
         try:
-            store.delete(incident_id)
-        except Exception:
-            pass
+            store.delete(str(incident_id))
+        except Exception as e:
+            logger.warning(f"Failed to delete incident {incident_id} from Redis: {e}")
 
-    return {"deleted": len(incident_ids)}
+    return {"deleted": len(incident_ids), "jobs_deleted": len(job_ids_to_delete)}

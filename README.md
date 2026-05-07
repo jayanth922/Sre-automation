@@ -82,13 +82,13 @@ This path is the fastest way to validate the backend, auth flow, database bootst
 
 ### 3. Start the full demo path
 
-If you want incidents, evidence, and UI behavior together, use the orchestration script at the repository root:
+If you want the platform, evidence layer, and UI together, use the root orchestration script for the platform stack:
 
 ```bash
 ./main_start.sh
 ```
 
-That script starts the Target_Client stack, then the platform stack, then the edge MCP relay. It is the closest thing to an end-to-end smoke test for the entire repo. On Windows, run it from Git Bash or WSL.
+That script now starts the platform stack and the edge MCP relay only. Run [Target_Client/start.sh](Target_Client/start.sh) separately if you want the noisy customer simulation and generated incidents. On Windows, run the scripts from Git Bash or WSL.
 
 ### 4. Open the main surfaces
 
@@ -127,7 +127,7 @@ The Python environment is defined by [pyproject.toml](pyproject.toml) and target
 - [backend/seed.py](backend/seed.py) refreshes the default admin password when the admin user already exists.
 - [platform/docker-compose.yaml](platform/docker-compose.yaml) is the authoritative service topology for the platform stack.
 - [dashboard/next.config.ts](dashboard/next.config.ts) is the source of API rewrite behavior for the browser.
-- [Target_Client/start.sh](Target_Client/start.sh) is the authoritative bootstrap path for the customer simulation.
+- [Target_Client/start.sh](Target_Client/start.sh) is the authoritative bootstrap path for the customer simulation when you want incidents and noisy traffic.
 
 ## Testing
 

@@ -50,7 +50,7 @@ The script does three important things before it starts containers:
 2. Creates one from [../.env.example](../.env.example) when missing.
 3. Sources the variables into the shell so Docker Compose sees the same values the application sees.
 
-For the full end-to-end demo, use [../main_start.sh](../main_start.sh) so the target client and edge MCP servers are included.
+For the full platform demo, use [../main_start.sh](../main_start.sh) for the platform stack and edge MCP relay. Start [../Target_Client/start.sh](../Target_Client/start.sh) separately if you want the incident-generating customer simulation.
 
 ## Startup Order And Behavior
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import asyncio
 import json
 import logging
 import os
@@ -102,7 +103,8 @@ class InvestigationPlan(BaseModel):
     """Investigation plan created by supervisor."""
 
     steps: List[str] = Field(
-        description="List of 3-5 investigation steps to be executed"
+        default_factory=list,
+        description="List of 3-5 investigation steps to be executed",
     )
 
     @field_validator("steps", mode="before")
@@ -332,15 +334,53 @@ class SupervisorAgent:
         """Create LLM instance for the configured provider."""
         return create_llm_with_error_handling(self.llm_provider, **kwargs)
 
+    async def _retrieve_memory_context(self, query_text: str) -> str:
+        """Look up similar past investigations in Qdrant and return a formatted block.
+
+        Returns an empty string if memory is unavailable, no results pass the
+        similarity threshold, or any failure occurs. Errors are intentionally
+        swallowed so a transient memory issue never blocks an investigation.
+        """
+        if not query_text or not query_text.strip():
+            return ""
+        try:
+            from .memory_store import get_memory_store
+
+            memory = get_memory_store()
+            if not memory.is_available():
+                return ""
+
+            similar = await asyncio.to_thread(
+                memory.search_similar_incidents,
+                query_text,
+                5,    # limit
+                0.6,  # score_threshold
+            )
+            if not similar:
+                logger.info("Memory: no similar past incidents found above threshold")
+                return ""
+
+            logger.info(
+                f"Memory: injecting {len(similar)} past incident(s) into planner context"
+            )
+            return memory.format_similar_incidents_for_prompt(similar)
+        except Exception as e:
+            logger.warning(f"Memory retrieval failed (non-fatal): {e}")
+            return ""
+
     async def create_investigation_plan(self, state: AgentState) -> InvestigationPlan:
         """Create an investigation plan for the user's query."""
         current_query = state.get("current_query", "No query provided")
         user_id = state.get("user_id", SREConstants.agents.default_user_id)
         session_id = state.get("session_id")
 
-        # Memory system removed - no memory context retrieval
+        # Retrieve similar past investigations from Qdrant and inject them into
+        # the planner's system prompt as read-only context. This is intentionally
+        # done in Python (not as a tool the LLM has to call) so the function-
+        # calling structured output path (used to produce InvestigationPlan)
+        # cannot be derailed by extra tool invocations.
+        memory_context = await self._retrieve_memory_context(current_query)
 
-        # Planning prompt without memory context
         planning_instructions = _read_planning_prompt()
         # Replace placeholders manually to avoid issues with JSON braces in the prompt
         formatted_planning_instructions = planning_instructions.replace(
@@ -351,14 +391,26 @@ class SupervisorAgent:
                 "{session_id}", session_id
             )
 
-        planning_prompt = f"""{self.system_prompt}
+        memory_block = (
+            f"\n<past_investigations>\n{memory_context}\n</past_investigations>\n"
+            if memory_context
+            else ""
+        )
 
+        planning_prompt = f"""{self.system_prompt}
+{memory_block}
 User's query: {current_query}
 
 {formatted_planning_instructions}"""
 
-        # Use structured output without memory tools
-        structured_llm = self.llm.with_structured_output(InvestigationPlan)
+        # Use tool/function-calling for structured output. This is the most reliable
+        # method across providers (notably Ollama's reasoning models like gpt-oss,
+        # which ignore prompt-based json/json_schema modes and emit prose, but do
+        # follow tool-call schemas). Tool-capable Llama/Qwen/Groq/NVIDIA models
+        # support this path as well.
+        structured_llm = self.llm.with_structured_output(
+            InvestigationPlan, method="function_calling"
+        )
         plan = await structured_llm.ainvoke(
             [
                 SystemMessage(content=planning_prompt),
@@ -366,11 +418,47 @@ User's query: {current_query}
             ]
         )
 
+        # Some Ollama reasoning models (e.g. gpt-oss) occasionally respond with
+        # prose instead of invoking the InvestigationPlan tool. In that case
+        # `with_structured_output(method="function_calling")` returns None.
+        # Retry once with an explicit instruction, then fall back to a generic
+        # plan so the investigation can still proceed.
+        if plan is None:
+            logger.warning(
+                "Supervisor LLM returned no InvestigationPlan tool call; retrying."
+            )
+            plan = await structured_llm.ainvoke(
+                [
+                    SystemMessage(content=planning_prompt),
+                    HumanMessage(content=current_query),
+                    HumanMessage(
+                        content=(
+                            "Respond ONLY by calling the InvestigationPlan tool "
+                            "with all required fields populated. Do not return prose."
+                        )
+                    ),
+                ]
+            )
+
+        if plan is None:
+            logger.warning(
+                "Supervisor LLM still did not produce a plan after retry; "
+                "falling back to a default metrics->logs->runbooks sequence."
+            )
+            plan = InvestigationPlan(
+                steps=[],
+                agents_sequence=["metrics_agent", "logs_agent", "runbooks_agent"],
+                complexity="simple",
+                auto_execute=True,
+                reasoning=(
+                    "Default plan: the model did not return a structured "
+                    "InvestigationPlan; using a generic SRE triage sequence."
+                ),
+            )
+
         logger.info(
             f"Created investigation plan: {len(plan.steps)} steps, complexity: {plan.complexity}"
         )
-
-        # Memory conversation storage removed
 
         return plan
 
@@ -583,6 +671,22 @@ User's query: {current_query}
                     "pending_human_messages": pending_messages[1:],
                     "human_interrupt_pending": len(pending_messages) > 1,
                 }
+                
+                # Incorporate human message into the state context
+                from langchain_core.messages import HumanMessage
+                messages = state.get("messages", [])
+                new_message = HumanMessage(content=pending_events[0].content or "")
+                
+                # We need to pass these updates back in the final return of the route function
+                # So we store them in a special variable to inject later
+                state_updates_from_interrupt = {
+                    "messages": messages + [new_message],
+                    "current_query": state.get("current_query", "") + "\n\n[HUMAN INSTRUCTION UPDATE]: " + (pending_events[0].content or "")
+                }
+            else:
+                state_updates_from_interrupt = {}
+        else:
+            state_updates_from_interrupt = {}
 
         # Check if we have an existing plan
         existing_plan = metadata.get("investigation_plan")
@@ -635,6 +739,7 @@ User's query: {current_query}
                         "plan_pending_approval": True,
                         "plan_text": plan_text,
                     },
+                    **state_updates_from_interrupt,
                 }
             else:
                 # Simple plan - start execution
@@ -676,6 +781,7 @@ User's query: {current_query}
                         "show_plan": True,
                         "current_specialist": next_agent,
                     },
+                    **state_updates_from_interrupt,
                 }
         else:
             # Continue executing existing plan
@@ -724,6 +830,7 @@ User's query: {current_query}
                         "plan_step": len(agents_invoked),
                         "specialist_queue": visible_queue,
                     },
+                    **state_updates_from_interrupt,
                 }
             else:
                 # Continue with next agent in plan
@@ -763,6 +870,7 @@ User's query: {current_query}
                         "specialist_queue": visible_queue,
                         "current_specialist": next_agent,
                     },
+                    **state_updates_from_interrupt,
                 }
 
     async def aggregate_responses(self, state: AgentState) -> Dict[str, Any]:

@@ -1,5 +1,3 @@
-version: '3.8'
-
 # =============================================================================
 # Customer Edge Stack — Lightweight relay + MCP tool servers
 #
@@ -8,7 +6,7 @@ version: '3.8'
 #
 # Usage:
 #   1. Ensure Target_Client K8s deployments are running
-#   2. Create .env with CLUSTER_TOKEN  (from SaaS dashboard)
+#   2. Create .env: cp .env.example .env
 #   3. docker compose up -d --build
 # =============================================================================
 
@@ -44,9 +42,9 @@ services:
       context: ./mcp_servers/prometheus_real
       dockerfile: Dockerfile
     container_name: mcp-prometheus
+    env_file:
+      - .env
     environment:
-      # Reaches the host-exposed Prometheus endpoint from Docker Desktop
-      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://host.docker.internal:9090}
       - HOST=0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -61,9 +59,9 @@ services:
       context: ./mcp_servers/loki_real
       dockerfile: Dockerfile
     container_name: mcp-loki
+    env_file:
+      - .env
     environment:
-      # Reaches the host-exposed Loki endpoint from Docker Desktop
-      - LOKI_URL=${LOKI_URL:-http://host.docker.internal:3100}
       - HOST=0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -78,9 +76,9 @@ services:
       context: ./mcp_servers/github_real
       dockerfile: Dockerfile
     container_name: mcp-github
+    env_file:
+      - .env
     environment:
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - GITHUB_REPO=${GITHUB_REPO}
       - HOST=0.0.0.0
     ports:
       - "4003:3000"

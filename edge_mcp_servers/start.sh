@@ -16,11 +16,6 @@ if [ ! -f "$script_dir/.env" ]; then
     exit 1
 fi
 
-# Verify CLUSTER_TOKEN is set
-if ! grep -q "^CLUSTER_TOKEN=cl_" "$script_dir/.env" 2>/dev/null; then
-    echo -e "${YELLOW}CLUSTER_TOKEN not set in .env. Get it from the SaaS dashboard.${NC}"
-fi
-
 if ! command -v docker &> /dev/null; then
     echo -e "${RED}Docker is not installed.${NC}"
     exit 1
@@ -37,11 +32,9 @@ docker compose -f docker-compose.yaml ps
 echo -e ""
 echo -e "${GREEN}Edge Relay Running!${NC}"
 echo -e ""
-echo -e "   The relay is polling the SaaS platform for tool calls."
-echo -e "   No AI/LLM runs here — all reasoning happens on the platform."
-echo -e ""
-echo -e "   Check the SaaS dashboard to verify your cluster appears as Online."
+echo -e "   The MCP tool servers are now exposed on local ports (4000-4004)."
+echo -e "   The SaaS platform will connect to them directly in local development."
 echo -e ""
 echo -e "   To stop: ./stop.sh"
-echo -e "   Logs:    docker compose logs -f edge-relay"
+echo -e "   Logs:    docker compose logs -f"
 echo -e ""

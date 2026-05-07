@@ -354,10 +354,14 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     traces["reflector"] = [thought]
 
     try:
-        # Use structured output for reflection
+        # Use structured output for reflection.
+        # method="function_calling" is the only reliable cross-provider path with
+        # Ollama reasoning models (e.g. gpt-oss); see supervisor.create_investigation_plan.
         from pydantic import BaseModel
 
-        structured_llm = llm.with_structured_output(ReflectorAnalysis)
+        structured_llm = llm.with_structured_output(
+            ReflectorAnalysis, method="function_calling"
+        )
         analysis = await structured_llm.ainvoke(
             [
                 SystemMessage(
@@ -571,7 +575,9 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     traces["planner"] = [thought]
 
     try:
-        structured_llm = llm.with_structured_output(RemediationPlan)
+        structured_llm = llm.with_structured_output(
+            RemediationPlan, method="function_calling"
+        )
         plan = await structured_llm.ainvoke(
             [
                 SystemMessage(
