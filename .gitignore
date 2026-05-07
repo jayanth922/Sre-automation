@@ -86,6 +86,30 @@ reports/
 config.yaml
 !config.yaml.example
 
+# Dashboard / Next.js
+/dashboard/node_modules/
+/dashboard/.pnp
+/dashboard/.pnp.*
+/dashboard/.yarn/*
+!/dashboard/.yarn/patches
+!/dashboard/.yarn/plugins
+!/dashboard/.yarn/releases
+!/dashboard/.yarn/versions
+/dashboard/coverage/
+/dashboard/.next/
+/dashboard/out/
+/dashboard/build/
+/dashboard/.DS_Store
+/dashboard/*.pem
+/dashboard/npm-debug.log*
+/dashboard/yarn-debug.log*
+/dashboard/yarn-error.log*
+/dashboard/.pnpm-debug.log*
+/dashboard/.env*
+/dashboard/.vercel
+/dashboard/*.tsbuildinfo
+/dashboard/next-env.d.ts
+
 # Temporary files
 *.tmp
 *.temp
