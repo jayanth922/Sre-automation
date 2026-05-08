@@ -2,72 +2,91 @@
 
 This folder contains the source and generated diagrams for the SRE Agent Intermediate system architecture.
 
-## Diagram Files
+## Diagram sources (Mermaid)
 
-### Sources (Mermaid)
+Every committed `.mmd` file in this directory has a matching `.svg` under [images/](images/). Sources are grouped by role:
 
-- **system-topology.mmd** — The 4-layer system flow: Target_Client generates incidents, edge MCP servers expose evidence, sre_agent runtime reasons over evidence, and the platform persists state and serves the dashboard UI.
-- **agent-runtime-flow.mmd** — The request-to-investigation flow inside the sre_agent runtime: from user prompt through specialist evidence gathering, supervisor aggregation, summary generation, and timeline persistence.
-- **backend-data-model.mmd** — The entity-relationship overview of the backend persistence layer: organizations, users, clusters, incidents, timeline events, jobs, audit trails, and SLOs.
+**System and platform**
 
-### Sequence Diagrams (Mermaid)
+- **system-topology.mmd** — Four-layer flow: Target_Client, edge MCP, agent runtime, platform and dashboard.
+- **platform-bootstrap.mmd** — Platform stack bootstrap overview.
+- **platform-bootstrap-sequence.mmd** — Startup sequence: scripts, compose, data stores, migrations, seed, dashboard.
+- **target-client-architecture.mmd** — Simulated customer stack: gateway, services, observability, chaos.
 
-- **dashboard-login-sequence.mmd** — The operator sign-in flow: dashboard form submission, backend credential verification, token issuance, and browser session storage.
-- **incident-followup-sequence.mmd** — The incident follow-up loop: dashboard message, API persistence, new investigation turn, MCP evidence gathering, and timeline update.
-- **mcp-evidence-sequence.mmd** — The tool-call path from the runtime into an MCP server and back with structured evidence payloads.
-- **platform-bootstrap-sequence.mmd** — The platform startup path: scripts, compose, database and cache services, backend migrations and seed, and dashboard readiness.
-- **job-lifecycle-sequence.mmd** — The queued-job path from API submission through consumer execution and persisted status updates.
+**Agent and MCP**
 
-### Generated (SVG)
+- **agent-runtime-flow.mmd** — Request-to-investigation path inside the agent runtime.
+- **incident-investigation-loop.mmd** — Specialist evidence and supervisor loop.
+- **mcp-integration.mmd** — How MCP bridges specialists to evidence servers.
+- **mcp-evidence-sequence.mmd** — Tool call into an MCP server and structured response.
 
-The images folder contains the compiled SVG outputs of the source diagrams above. These SVGs are committed to the repository so they render directly in GitHub-style markdown preview without requiring build steps on read.
+**Backend and API**
 
-## Regenerating Diagrams
+- **backend-data-model.mmd** — High-level persistence entities (orgs, incidents, timeline, jobs, audits, SLOs).
+- **auth-flow.mmd** — Sign-in, token issuance, session storage.
+- **api-routes.mmd** — Product API surface grouped by capability.
+- **job-queue-system.mmd** — Job queue components.
+- **job-lifecycle-sequence.mmd** — Job from API submission to persisted status.
 
-When you update a `.mmd` source file, regenerate the corresponding SVG:
+**Dashboard**
+
+- **dashboard-routing.mmd** — App Router groups, middleware, rewrites.
+- **dashboard-login-sequence.mmd** — Login through token storage.
+
+**Incident product flow**
+
+- **incident-followup-sequence.mmd** — Follow-up message, investigation turn, transcript update.
+
+## Generated SVGs
+
+The [images/](images/) folder holds compiled SVGs for the sources above. They are committed so GitHub and offline readers can render diagrams without running Mermaid.
+
+## Regenerating diagrams
 
 ### One-time setup
 
-From the dashboard folder:
+From the [dashboard](../../dashboard) app (where `@mermaid-js/mermaid-cli` is already a dev dependency):
 
 ```bash
 cd dashboard
-npm install --save-dev @mermaid-js/mermaid-cli
+npm ci
 ```
 
-### Regenerate all diagrams at once
+### Regenerate everything
+
+`npm run generate-diagrams` runs `mmdc` for **every** `.mmd` in this directory that ships a paired `.svg` in `images/`. After editing any source, run:
 
 ```bash
 cd dashboard
 npm run generate-diagrams
 ```
 
-### Regenerate a single diagram
+Then commit both the updated `.mmd` and `.svg` files.
+
+### Regenerate one diagram
 
 ```bash
 cd dashboard
 npx mmdc -i ../docs/architecture/system-topology.mmd -o ../docs/architecture/images/system-topology.svg -t dark
 ```
 
-Repeat for `agent-runtime-flow.mmd`, `backend-data-model.mmd`, and the sequence diagram sources listed above.
+Swap the input and output paths for other base names (for example `incident-followup-sequence`).
 
-## Diagram Semantics
+## Diagram semantics
 
-- **system-topology.svg** shows request flow and evidence flow between layers, not startup dependency order. The dashboard is always a client of the API; the runtime does not call back into the UI.
-- **agent-runtime-flow.svg** shows the reasoning loop: incident or alert enters, specialists gather evidence in parallel, supervisor routes and aggregates, summary is generated, and timeline events are persisted.
-- **backend-data-model.svg** shows high-level entity relationships; it is not a full table catalog. It emphasizes the incident, timeline event, and audit-trail structures that the agent and dashboard rely on most.
+- **system-topology.svg** shows request and evidence flow between layers, not strict startup order. The dashboard is always an API client; the runtime does not call the UI.
+- **agent-runtime-flow.svg** shows the reasoning loop: incident or prompt in, specialists gather evidence, supervisor aggregates, summary and timeline persistence.
+- **backend-data-model.svg** is a conceptual ERD, not an exhaustive table catalog. It emphasizes incidents, timeline events, and audit structures.
 
-## Source Control
+## Source control
 
-- Commit the `.mmd` files directly to git.
-- Commit the generated `.svg` files so they are always available in GitHub markdown preview without running tools.
-- When you update a diagram, regenerate its SVG and commit both the source and the output together.
+- Commit `.mmd` sources and generated `.svg` outputs together when a diagram changes.
+- Avoid committing only one half of a pair.
 
 ## Extending
 
-If you add a new major subsystem diagram (e.g., dashboard routing tree, scheduler flow, MCP server interaction pattern):
+When you add a new diagram:
 
-1. Create a new `.mmd` file in this directory.
-2. Add a generation command to [../dashboard/package.json](../dashboard/package.json) with the same pattern as the existing ones.
-3. Generate the output and commit both files.
-4. Link the new diagram in the relevant README where it adds clarity.
+1. Add `your-diagram.mmd` in this directory.
+2. Add a matching `mmdc` invocation to `generate-diagrams` in [dashboard/package.json](../../dashboard/package.json) (same `-t dark` pattern as existing entries).
+3. Run `npm run generate-diagrams`, then commit `.mmd`, `.svg`, `package.json`, and any README that references the new image.

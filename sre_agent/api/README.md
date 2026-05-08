@@ -14,8 +14,7 @@ The `v1` directory is the current contract. When you need a breaking change, add
 
 ## Contents
 
-- [v1/](v1/) contains the concrete route implementations.
-- `auth_deps.py` centralizes authentication and organization lookup dependencies used by the route modules.
+- [v1/](v1/) contains the concrete route implementations and [v1/auth_deps.py](v1/auth_deps.py), which centralizes authentication and organization lookup for those routes.
 
 ## How The Routes Are Used
 
@@ -34,7 +33,7 @@ Update this layer when you are changing:
 
 ## Practical Notes
 
-- Keep auth and org resolution in [auth_deps.py](auth_deps.py) rather than duplicating token parsing in every route.
+- Keep auth and org resolution in [v1/auth_deps.py](v1/auth_deps.py) rather than duplicating token parsing in every route.
 - Keep response payloads aligned with the backend schemas so the UI does not have to perform guesswork.
 - Document any new route family in [v1/README.md](v1/README.md) so the public contract stays discoverable.
 

@@ -32,7 +32,7 @@ Helper script:
 ./stop.sh
 ```
 
-The startup script expects a `.env` file in this directory and warns if `CLUSTER_TOKEN` is not set to a platform-issued value.
+The startup script requires a `.env` file in this directory. Copy [`.env.example`](.env.example) and fill in observability URLs and GitHub settings before the first run.
 
 ## Ports And Service Roles
 

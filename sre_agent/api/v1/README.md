@@ -6,14 +6,17 @@ This folder contains the concrete HTTP routes for the current SaaS contract. If 
 
 ![API v1 Routes](../../../docs/architecture/images/api-routes.svg)
 
+- [alerts.py](alerts.py) receives alert-webhook traffic.
+- [analytics.py](analytics.py) handles incident trends, severity distribution, and MTTR reporting.
+- [auth_deps.py](auth_deps.py) provides current-user and organization dependencies used by the other routes.
+- [chat.py](chat.py) handles general-purpose chat endpoints without a specific incident context.
 - [clusters.py](clusters.py) handles cluster list/detail operations and cluster-scoped data.
 - [incidents.py](incidents.py) handles incident lifecycle, transcripts, messages, logs, and status views.
 - [jobs.py](jobs.py) handles queued work sent to the agent or edge.
 - [metrics.py](metrics.py) exposes health and golden-signal style metrics.
 - [mission_control.py](mission_control.py) covers audit and approval-style workflows.
+- [recommendations.py](recommendations.py) provides per-cluster AI recommendations based on incident history.
 - [slos.py](slos.py) manages SLO definitions and SLO health reporting.
-- [alerts.py](alerts.py) receives alert-webhook traffic.
-- [auth_deps.py](auth_deps.py) provides current-user and organization dependencies used by the other routes.
 
 ### Job Queue System
 
@@ -43,7 +46,7 @@ When adding or changing routes in this layer:
 
 1. Keep each route module narrow enough that its purpose is obvious from the filename.
 2. Reuse the auth dependency helpers rather than re-parsing the token in each route.
-3. Return schema-backed payloads from [../../backend/schemas.py](../../backend/schemas.py) wherever practical.
+3. Return schema-backed payloads from [../../../backend/schemas.py](../../../backend/schemas.py) wherever practical.
 4. Update the dashboard README if you add a new visible workflow.
 5. Add a new version directory when you make a contract-breaking change.
 

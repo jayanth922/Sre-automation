@@ -23,7 +23,7 @@ The runtime is designed to operate in two modes:
 1. Control-plane/API mode, where the FastAPI application is available and the local AI loop may be disabled.
 2. Cluster-managed mode, where the full graph is initialized and the assistant runs investigations using the selected provider.
 
-At startup the service loads environment variables, configures logging, and initializes the agent graph when the selected mode requires it. The provider selection is controlled by `LLM_PROVIDER`, and the code path supports Ollama, Groq, and Gemini. That choice determines which model backend the supervisor and specialist agents will use.
+At startup the service loads environment variables, configures logging, and initializes the agent graph when the selected mode requires it. The provider selection is controlled by `LLM_PROVIDER`. Supported values are `ollama`, `groq`, `gemini`, and `nvidia`, with matching environment variables in the root `.env` (see `.env.example`). That choice determines which model backend the supervisor and specialist agents will use.
 
 ### Incident Investigation Loop
 

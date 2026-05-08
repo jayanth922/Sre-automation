@@ -1,13 +1,14 @@
 # dashboard app
 
-This directory contains the Next.js App Router tree for the dashboard. The route groups are intentionally used to keep the public auth pages, the protected operator shell, and the future preview/demo paths separated without changing the visible URL structure.
+This directory contains the Next.js App Router tree for the dashboard. Route groups separate **public auth** pages from the **protected operator shell** without changing visible URL paths.
 
 ## Route Structure
 
-- `(auth)/` contains the public login and registration screens.
-- `(dashboard)/` contains the protected workspace, cluster pages, incident views, and audit trail.
-- `(preview)/` is reserved for preview or demo-only routes.
-- `layout.tsx` is the root application layout and applies the global font and auth provider.
+- `(auth)/` — public login and registration.
+- `(dashboard)/` — protected workspace: clusters, incidents, audit trail, and account chrome.
+- `layout.tsx` — root layout (fonts, `AuthProvider`).
+
+If you add demo-only or unauthenticated preview routes later, prefer a dedicated route group (for example `(preview)/`) so middleware and layout boundaries stay clear.
 
 ## Navigation And Auth
 
@@ -32,16 +33,17 @@ The root layout provides fonts and the auth provider. The protected dashboard la
 
 ## What To Extend Here
 
-If you add a route, ask whether it belongs in:
+If you add a route, decide whether it belongs in:
 
 - the public auth group,
 - the protected dashboard shell,
-- or the future preview/demo area.
+- or a new route group for special access rules (preview, marketing, and so on).
 
-That decision matters because it affects authentication, layout chrome, and data fetching behavior.
+That choice matters because it affects authentication, layout chrome, and data fetching behavior.
 
 ## Related Docs
 
 - [../README.md](../README.md)
-- [(auth)/README.md](%28auth%29/README.md)
-- [(dashboard)/README.md](%28dashboard%29/README.md)
+- [(auth)/README.md]((auth)/README.md)
+- [(dashboard)/README.md]((dashboard)/README.md)
+- [../lib/README.md](../lib/README.md)

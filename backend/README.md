@@ -10,7 +10,7 @@ Think of this package as the repository’s system-of-record layer. The agent ru
 - Provide both async and sync SQLAlchemy session factories for the different runtime modes.
 - Handle password hashing, JWT minting, and role-aware auth checks.
 - Seed the default admin user and optional demo cluster at startup.
-- Expose the `/auth` router used by the dashboard for login, registration, profile lookup, and password reset.
+- Expose the `/auth` router used by the dashboard for login, registration, profile lookup, and authenticated password change.
 - Provide the backend pieces that the SaaS API and the agent runtime rely on for incident and cluster state.
 
 ## Data Model Overview

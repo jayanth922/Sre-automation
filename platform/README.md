@@ -50,7 +50,7 @@ The script does three important things before it starts containers:
 2. Creates one from [../.env.example](../.env.example) when missing.
 3. Sources the variables into the shell so Docker Compose sees the same values the application sees.
 
-For the full platform demo, use [../main_start.sh](../main_start.sh) for the platform stack and edge MCP relay. Start [../Target_Client/start.sh](../Target_Client/start.sh) separately if you want the incident-generating customer simulation.
+For the **full** demo (Target_Client, platform, and edge MCP relay), use [../main_start.sh](../main_start.sh), which runs those pieces in order. Use `cd platform && docker compose up` (or `./start.sh` here) when you only need the control plane without the customer simulation or edge tools.
 
 ## Startup Order And Behavior
 
@@ -69,9 +69,10 @@ The dashboard container is built from [../dashboard/](../dashboard/) and points 
 Use [../.env.example](../.env.example) as the source of truth. The most important values are:
 
 - `SECRET_KEY` for JWT signing and auth consistency.
-- `LLM_PROVIDER` to select the model backend.
+- `LLM_PROVIDER` to select the model backend: `ollama`, `groq`, `gemini`, or `nvidia` (see [../.env.example](../.env.example) for provider-specific variables).
 - `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and `OLLAMA_NUM_CTX` when using Ollama.
 - `GROQ_API_KEY` when using Groq.
+- `GOOGLE_API_KEY` and `GEMINI_MODEL` when using Gemini; `NVIDIA_API_KEY`, `NVIDIA_BASE_URL`, and `NVIDIA_MODEL` when using NVIDIA NIM.
 - `POSTGRES_*` for database connectivity.
 - `REDIS_URL` and `QDRANT_URL` when overriding defaults.
 - `PROMETHEUS_URL`, `LOKI_URL`, `MCP_*_URI`, and source-control settings when the platform talks to live edge services.

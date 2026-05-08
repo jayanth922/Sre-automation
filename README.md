@@ -63,11 +63,13 @@ cp .env.example .env
 Minimum values to review:
 
 - `SECRET_KEY` for signing JWTs.
-- `LLM_PROVIDER` to select `ollama`, `groq`, or `gemini`.
+- `LLM_PROVIDER` to select `ollama`, `groq`, `gemini`, or `nvidia` (see [.env.example](.env.example) for the matching API keys and base URLs).
 - `OLLAMA_BASE_URL` if you are using a local model.
 - `GROQ_API_KEY` if you are using Groq.
+- `GOOGLE_API_KEY` / `GEMINI_MODEL` if you are using Gemini; `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_MODEL` if you are using NVIDIA NIM.
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-- `PROMETHEUS_URL`, `LOKI_URL`, `GITHUB_TOKEN`, `GITHUB_REPO`, and `K8S_TOKEN` when you connect to real edge systems.
+- `PROMETHEUS_URL` and `LOKI_URL` when the platform or dashboard should reach a real observability stack.
+- For the GitHub MCP server, set `GITHUB_TOKEN` and `GITHUB_REPO` in [edge_mcp_servers/.env](edge_mcp_servers/.env) (from `edge_mcp_servers/.env.example`). Use `K8S_TOKEN` / `K8S_API_SERVER` in the root `.env` only if you bypass the edge relay for Kubernetes calls.
 
 ### 2. Start the platform stack
 
@@ -82,13 +84,21 @@ This path is the fastest way to validate the backend, auth flow, database bootst
 
 ### 3. Start the full demo path
 
-If you want the platform, evidence layer, and UI together, use the root orchestration script for the platform stack:
+To bring up the simulated customer workload, the SaaS platform, and the edge MCP relay in one shot:
 
 ```bash
 ./main_start.sh
 ```
 
-That script now starts the platform stack and the edge MCP relay only. Run [Target_Client/start.sh](Target_Client/start.sh) separately if you want the noisy customer simulation and generated incidents. On Windows, run the scripts from Git Bash or WSL.
+That script runs, in order:
+
+1. [Target_Client/start.sh](Target_Client/start.sh) — builds and applies the demo Kubernetes stack (gateway, services, monitoring, chaos panel).
+2. [platform/start.sh](platform/start.sh) — starts Postgres, Redis, Qdrant, the agent API, and the dashboard via Docker Compose.
+3. **Edge MCP servers** — `docker compose` in [edge_mcp_servers/](edge_mcp_servers/) (ensure `edge_mcp_servers/.env` exists; copy from `edge_mcp_servers/.env.example`).
+
+For a **platform-only** smoke test (no Target_Client, no edge), use **Start the platform stack** (step 2 above) instead.
+
+On Windows, run these shell scripts from Git Bash or WSL.
 
 ### 4. Open the main surfaces
 

@@ -21,6 +21,7 @@ The prompt structure is one of the most important parts of the assistant because
 - [supervisor_multi_agent_prompt.txt](supervisor_multi_agent_prompt.txt) coordinates multi-agent routing.
 - [supervisor_fallback_prompt.txt](supervisor_fallback_prompt.txt) provides the fallback path when evidence is incomplete.
 - [supervisor_plan_aggregation.txt](supervisor_plan_aggregation.txt) aggregates planning output.
+- [supervisor_aggregation_system.txt](supervisor_aggregation_system.txt) supplies system instructions for aggregation passes.
 - [supervisor_standard_aggregation.txt](supervisor_standard_aggregation.txt) builds the normal response summary.
 
 ### Summary And User Templates
