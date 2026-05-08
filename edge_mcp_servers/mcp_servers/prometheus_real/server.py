@@ -12,7 +12,8 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Union
 
 from mcp.server.fastmcp import FastMCP
 from prometheus_api_client import PrometheusConnect
@@ -69,6 +70,58 @@ def get_prom_client() -> Optional[PrometheusConnect]:
         return None
 
 
+def _coerce_to_datetime(value: Union[str, int, float, datetime, None]) -> datetime:
+    """Coerce LLM-supplied time arguments into a real datetime.
+
+    The prometheus_api_client library expects datetime objects for
+    custom_query_range (it calls .timestamp() on them). LLMs pass strings
+    (RFC3339, unix epoch, relative like "5m"/"1h"), which previously
+    triggered "'str' object has no attribute 'timestamp'" 500-style errors.
+    This helper accepts any of the common formats and always returns a
+    timezone-aware datetime (UTC).
+    """
+    if value is None or value == "":
+        return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    if isinstance(value, str):
+        s = value.strip()
+        # Relative shorthand: "5m", "1h", "30s", "2h30m"
+        if s and s[0] != "-" and s[-1] in {"s", "m", "h", "d"}:
+            try:
+                total_seconds = 0
+                num = ""
+                for ch in s:
+                    if ch.isdigit():
+                        num += ch
+                    elif ch in {"s", "m", "h", "d"} and num:
+                        n = int(num)
+                        total_seconds += n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[ch]
+                        num = ""
+                if total_seconds > 0:
+                    return datetime.now(timezone.utc) - timedelta(seconds=total_seconds)
+            except Exception:
+                pass
+        # Unix timestamp
+        try:
+            return datetime.fromtimestamp(float(s), tz=timezone.utc)
+        except (ValueError, OSError):
+            pass
+        # RFC3339 / ISO-8601
+        try:
+            iso = s.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    # Last resort: now() so the call doesn't crash; the agent will see
+    # an empty result rather than a tool error.
+    logger.warning(f"Could not coerce {value!r} to datetime; defaulting to now().")
+    return datetime.now(timezone.utc)
+
+
 # Create FastMCP server with host/port from environment
 port = int(os.getenv("HTTP_PORT", "3000"))
 host = os.getenv("HOST", "0.0.0.0")
@@ -113,21 +166,50 @@ async def get_metric(query: str, time: str = None) -> str:
     if not client:
         return "Error: Could not connect to Prometheus. Please check infrastructure status."
 
-    logger.info(f"Querying Prometheus: {query}")
+    logger.info(f"Querying Prometheus: {query} (time={time})")
 
     # Run in thread pool to avoid blocking
     loop = asyncio.get_event_loop()
     try:
+        # prometheus_api_client.custom_query(query, params=None) takes a
+        # DICT for params (positional second arg). Passing `time` directly
+        # was producing "'str' object is not a mapping" errors. The HTTP
+        # /api/v1/query endpoint accepts a `time=` query param (unix epoch).
         if time:
+            time_dt = _coerce_to_datetime(time)
+            params = {"time": str(int(time_dt.timestamp()))}
             result = await loop.run_in_executor(
-                None, client.custom_query, query, time
+                None, lambda: client.custom_query(query, params=params)
             )
         else:
             result = await loop.run_in_executor(None, client.custom_query, query)
-        
+
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        logger.error(f"Error querying metric: {e}")
+        # Try to expose HTTP status / body so the agent can distinguish
+        # "your PromQL is malformed" (400/422 from Prometheus) from
+        # "Prometheus is unreachable" (connection error / 5xx). Without
+        # this the agent only saw a generic "Error" string and tended to
+        # blame "monitoring is broken".
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        body = ""
+        try:
+            body = getattr(e, "response", None).text[:300] if getattr(e, "response", None) else ""
+        except Exception:
+            body = ""
+        logger.error(f"Error querying metric (status={status}, body={body!r}): {e}")
+        if status and 400 <= status < 500:
+            return (
+                f"Error querying metric: query was rejected by Prometheus "
+                f"(HTTP {status}). The PromQL is likely malformed or uses "
+                f"unknown labels. query={query!r}; body={body[:200]!r}"
+            )
+        if status and status >= 500:
+            return (
+                f"Error querying metric: Prometheus returned HTTP {status} "
+                f"(server-side issue, NOT a problem with the metrics pipeline). "
+                f"query={query!r}; body={body[:200]!r}"
+            )
         return f"Error querying metric: {e}"
 
 
@@ -146,8 +228,15 @@ async def get_metric_range(query: str, start_time: str, end_time: str, step: str
     if not client:
         return "Error: Could not connect to Prometheus. Please check infrastructure status."
 
+    # The prometheus_api_client library expects datetime objects for
+    # start_time / end_time and calls .timestamp() on them. LLMs pass
+    # strings (RFC3339, "5m", unix epoch), so we coerce here.
+    start_dt = _coerce_to_datetime(start_time)
+    end_dt = _coerce_to_datetime(end_time)
+
     logger.info(
-        f"Querying Prometheus range: {query} from {start_time} to {end_time}"
+        f"Querying Prometheus range: {query} from {start_dt.isoformat()} "
+        f"to {end_dt.isoformat()} (step={step})"
     )
 
     # Run in thread pool to avoid blocking
@@ -157,13 +246,33 @@ async def get_metric_range(query: str, start_time: str, end_time: str, step: str
             None,
             client.custom_query_range,
             query,
-            start_time,
-            end_time,
+            start_dt,
+            end_dt,
             step,
         )
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        logger.error(f"Error querying metric range: {e}")
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        body = ""
+        try:
+            body = getattr(e, "response", None).text[:300] if getattr(e, "response", None) else ""
+        except Exception:
+            body = ""
+        logger.error(
+            f"Error querying metric range (status={status}, body={body!r}): {e}"
+        )
+        if status and 400 <= status < 500:
+            return (
+                f"Error querying metric range: query rejected by Prometheus "
+                f"(HTTP {status}). PromQL is likely malformed or label set is wrong. "
+                f"query={query!r}; body={body[:200]!r}"
+            )
+        if status and status >= 500:
+            return (
+                f"Error querying metric range: Prometheus returned HTTP {status} "
+                f"(server-side issue, NOT a metrics-pipeline failure). "
+                f"query={query!r}; body={body[:200]!r}"
+            )
         return f"Error querying metric range: {e}"
 
 
@@ -208,11 +317,18 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
     # Query all signals
     loop = asyncio.get_event_loop()
     results = {}
+    time_params = None
+    if time:
+        try:
+            time_dt = _coerce_to_datetime(time)
+            time_params = {"time": str(int(time_dt.timestamp()))}
+        except Exception as coerce_err:
+            logger.warning(f"Could not coerce time={time!r}: {coerce_err}")
     for signal_name, query in queries.items():
         try:
-            if time:
+            if time_params:
                 result = await loop.run_in_executor(
-                    None, client.custom_query, query, time
+                    None, lambda q=query: client.custom_query(q, params=time_params)
                 )
             else:
                 result = await loop.run_in_executor(None, client.custom_query, query)

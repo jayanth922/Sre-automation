@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -653,11 +653,20 @@ async def run_graph_background_saas(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
     alert_name: str,
-    job_id: Optional[uuid.UUID] = None
+    job_id: Optional[uuid.UUID] = None,
+    alert_labels: Optional[Dict[str, str]] = None,
+    alert_annotations: Optional[Dict[str, str]] = None,
+    alert_starts_at: Optional[str] = None,
+    alert_severity: str = "warning",
 ):
-    """
-    SaaS-aware background execution.
-    Writes logs/results to the Postgres Database instead of just Redis.
+    """SaaS-aware background execution that writes the full timeline to Postgres.
+
+    The optional alert_* parameters carry the original Alertmanager payload
+    (labels, annotations, time window) so the supervisor and specialists can
+    use the alert's actual label values in their tool queries and surface its
+    label hints (reason=, error_type=, query=, endpoint=, ...) in the final
+    synthesis. When the caller doesn't have them, we best-effort reconstruct
+    them from the incident record's description.
     """
     # Use incident ID as session ID for internal state
     session_id = str(incident_id)
@@ -698,15 +707,93 @@ async def run_graph_background_saas(
         await initialize_agent()
         
         # Initialize State
-        from .agent_state import AgentState
+        from .agent_state import AgentState, AlertContext
         from langchain_core.messages import HumanMessage
-        
+
+        # Build the alert context — the single most important piece of data
+        # the agents need. Without it specialists query with hardcoded labels
+        # and the supervisor blames "missing metrics" instead of the actual
+        # symptom in the alert payload.
+        effective_labels: Dict[str, str] = dict(alert_labels or {})
+        effective_annotations: Dict[str, str] = dict(alert_annotations or {})
+
+        # If the caller didn't pre-pass the alert payload (e.g. legacy
+        # invocation), fall back to parsing it out of the incident record.
+        if not effective_labels or not effective_annotations.get("description"):
+            try:
+                async with database.AsyncSessionLocal() as db:
+                    incident_row = await db.get(models.Incident, incident_id)
+                if incident_row and incident_row.description:
+                    desc_text = incident_row.description
+                    if not effective_labels:
+                        try:
+                            import re as _re
+                            match = _re.search(r"Labels:\s*(\{.*\})", desc_text, _re.DOTALL)
+                            if match:
+                                effective_labels = json.loads(match.group(1))
+                        except Exception:
+                            pass
+                    if not effective_annotations.get("description"):
+                        # The leading paragraphs of the description are the
+                        # alert's summary + description text.
+                        body = desc_text.split("Labels:")[0].strip()
+                        if body:
+                            parts = body.split("\n\n", 1)
+                            effective_annotations.setdefault("summary", parts[0].strip())
+                            if len(parts) > 1:
+                                effective_annotations.setdefault(
+                                    "description", parts[1].strip()
+                                )
+            except Exception as load_err:
+                logger.debug(f"Could not enrich alert context from incident: {load_err}")
+
+        # Normalise severity to AlertContext's allowed values.
+        normalised_severity = (alert_severity or "warning").lower()
+        if normalised_severity in {"critical", "high"}:
+            normalised_severity = "critical"
+        elif normalised_severity in {"info", "low"}:
+            normalised_severity = "info"
+        else:
+            normalised_severity = "warning"
+
+        try:
+            built_alert_context = AlertContext(
+                alert_name=alert_name,
+                severity=normalised_severity,
+                labels=effective_labels,
+                annotations=effective_annotations,
+                starts_at=alert_starts_at,
+            )
+        except Exception as build_err:
+            logger.warning(f"AlertContext build failed, using minimal stub: {build_err}")
+            built_alert_context = AlertContext(
+                alert_name=alert_name,
+                severity="warning",
+                labels=effective_labels,
+                annotations=effective_annotations,
+                starts_at=alert_starts_at,
+            )
+
+        # Build a one-line, searchable summary the specialists can use as a
+        # focused query — including the most actionable label hints.
+        actionable_label_hints: List[str] = []
+        for hint_key in ("service", "job", "instance", "namespace", "pod", "endpoint",
+                          "reason", "error_type", "query", "code"):
+            if effective_labels.get(hint_key):
+                actionable_label_hints.append(f"{hint_key}={effective_labels[hint_key]}")
+        hints_text = (
+            "; ".join(actionable_label_hints) if actionable_label_hints else "no extra labels"
+        )
+
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
             "ooda_phase": "OBSERVE",
+            "alert_context": built_alert_context,
             "next": "supervisor",
             "agent_results": {},
-            "current_query": f"Investigate alert: {alert_name}",
+            "current_query": (
+                f"Investigate alert: {alert_name} ({hints_text})"
+            ),
             "metadata": {
                 "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
                 "tools": tools,

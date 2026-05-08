@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
+import json
 import logging
 import re
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from backend import crud, database
+from sqlalchemy import select
+
+from backend import crud, database, models
 
 logger = logging.getLogger(__name__)
 
@@ -103,172 +106,17 @@ def _clean_public_query(text: str) -> str:
     return cleaned or "the incident"
 
 
-def _is_low_information_response(text: str) -> bool:
-    normalized = re.sub(r"\s+", " ", (text or "").strip().lower().strip(" .!?:"))
-    if not normalized:
-        return True
-
-    low_information_markers = {
-        "okay",
-        "ok",
-        "done",
-        "noted",
-        "yes",
-        "no",
-        "n/a",
-        "na",
-        "none",
-        "unknown",
-        "unclear",
-        "still investigating",
-        "working on it",
-        "no data",
-        "no data available",
-        "unable to tell",
-        "i don't know",
-        "i do not know",
-    }
-    return normalized in low_information_markers or len(normalized.split()) <= 2
-
-
-def _clean_response_lines(response: str) -> List[str]:
-    lines: List[str] = []
-    for raw_line in response.splitlines():
-        cleaned = raw_line.strip()
-        if not cleaned:
-            continue
-        cleaned = re.sub(r"^[#>*\-\u2022\d.\)\s]+", "", cleaned)
-        cleaned = cleaned.strip()
-        if cleaned:
-            lines.append(cleaned)
-    return lines
-
-
-def _extract_evidence_text(response: str) -> str:
-    if _is_low_information_response(response):
-        return "No concrete evidence was provided."
-
-    lines = _clean_response_lines(response)
-    if not lines:
-        return "No concrete evidence was provided."
-
-    evidence_candidates: List[str] = []
-    for line in lines:
-        lower_line = line.lower()
-        if any(marker in lower_line for marker in ["tool", "action", "thinking", "retrieve memory", "call"]):
-            continue
-        if any(marker in lower_line for marker in ["error", "latency", "cpu", "memory", "timeout", "log", "commit", "deploy", "alert", "%"]):
-            evidence_candidates.append(line)
-
-    if not evidence_candidates:
-        evidence_candidates = lines[:2]
-
-    return _truncate(" | ".join(evidence_candidates[:2]), 240)
-
-
-def _extract_conclusion_text(response: str) -> str:
-    if _is_low_information_response(response):
-        return "The specialist did not provide a concrete conclusion."
-
-    lines = _clean_response_lines(response)
-    if not lines:
-        return "The specialist did not provide a concrete conclusion."
-
-    joined = " ".join(lines)
-    sentence_candidates = re.split(r"(?<=[.!?])\s+", joined)
-    for candidate in sentence_candidates:
-        lowered = candidate.strip().lower()
-        if not lowered:
-            continue
-        if lowered.startswith(("i checked", "i reviewed", "i looked", "i queried", "tool output", "according to")):
-            continue
-        return _truncate(candidate.strip(), 180)
-
-    return _truncate(sentence_candidates[0].strip() if sentence_candidates else joined, 180)
-
-
-def _infer_confidence_from_response(response: str) -> str:
-    lower_response = response.lower()
-    if _is_low_information_response(response):
+def _confidence_from_response(response: str) -> str:
+    """Best-effort confidence label retained only for the structured payload."""
+    lower_response = (response or "").lower()
+    cleaned = re.sub(r"\s+", " ", lower_response).strip()
+    if not cleaned or len(cleaned.split()) <= 2:
         return "low"
-    if any(token in lower_response for token in ["high confidence", "very likely", "strong evidence", "clear evidence", "confirmed"]):
+    if any(token in cleaned for token in ["high confidence", "very likely", "strong evidence", "clear evidence", "confirmed"]):
         return "high"
-    if any(token in lower_response for token in ["uncertain", "maybe", "might", "appears", "suggests", "likely", "no data", "unable"]):
-        return "medium"
-    if any(char.isdigit() for char in response):
+    if any(token in cleaned for token in ["uncertain", "maybe", "might", "appears", "suggests", "likely", "no data", "unable"]):
         return "medium"
     return "medium"
-
-
-def _normalize_specialist_finding(agent_name: str, current_query: str, response: str) -> Dict[str, str]:
-    visible_label = visible_specialist_label(agent_name)
-    objective = _truncate(_clean_public_query(current_query or f"Investigate {visible_label}"), 180)
-    evidence = _extract_evidence_text(response)
-    conclusion = _extract_conclusion_text(response)
-    confidence = _infer_confidence_from_response(response)
-    next_step = _infer_next_step(agent_name)
-
-    return {
-        "visible_label": visible_label,
-        "objective": objective,
-        "evidence": evidence,
-        "conclusion": conclusion,
-        "confidence": confidence,
-        "recommended_next_step": next_step,
-    }
-
-
-def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[str]]:
-    if not text:
-        return {}
-
-    patterns = {
-        "error rate": [
-            r"(?:error rate|errors?)\D{0,24}(\d+(?:\.\d+)?%)",
-            r"(\d+(?:\.\d+)?%)\D{0,24}(?:error rate|errors?)",
-        ],
-        "latency": [
-            r"(?:latency|response time|p95|p99)\D{0,24}(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min|mins|minutes))",
-            r"(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min|mins|minutes))\D{0,24}(?:latency|response time|p95|p99)",
-        ],
-        "cpu": [
-            r"(?:cpu(?: usage| utilization)?|cpu)\D{0,24}(\d+(?:\.\d+)?%)",
-            r"(\d+(?:\.\d+)?%)\D{0,24}(?:cpu(?: usage| utilization)?|cpu)",
-        ],
-        "memory": [
-            r"(?:memory(?: usage| utilization)?|memory|mem)\D{0,24}(\d+(?:\.\d+)?%)",
-            r"(\d+(?:\.\d+)?%)\D{0,24}(?:memory(?: usage| utilization)?|memory|mem)",
-        ],
-        "time window": [
-            r"(?:last|past|during|over|within|from|between)\D{0,24}(\d+(?:\.\d+)?\s*(?:seconds?|minutes?|hours?|days?|s|m|h)|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?(?:\s*(?:utc|z))?)",
-        ],
-    }
-
-    fact_values: Dict[str, List[str]] = {}
-    for label, label_patterns in patterns.items():
-        values = []
-        for pattern in label_patterns:
-            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-                value = match.group(1) if match.groups() else match.group(0)
-                normalized = re.sub(r"\s+", " ", value.strip().lower().strip(" ,.;:"))
-                if normalized and normalized not in values:
-                    values.append(normalized)
-        if values:
-            fact_values[label] = values
-
-    return fact_values
-
-
-def _detect_conflicting_numeric_facts(texts: Sequence[str]) -> Dict[str, List[str]]:
-    combined: Dict[str, List[str]] = {}
-    for text in texts:
-        for label, values in _extract_numeric_fact_mentions(text).items():
-            existing = combined.setdefault(label, [])
-            for value in values:
-                if value not in existing:
-                    existing.append(value)
-
-    return {label: values for label, values in combined.items() if len(values) > 1}
 
 
 def _alert_context_to_text(alert_context: Any) -> str:
@@ -291,100 +139,132 @@ def _alert_context_to_text(alert_context: Any) -> str:
     return " ".join(parts)
 
 
-def _first_non_empty_sentence(text: str) -> str:
-    stripped = re.sub(r"\s+", " ", text.strip())
-    if not stripped:
-        return "No visible response captured."
-    sentence = re.split(r"(?<=[.!?])\s+", stripped)[0]
-    return _truncate(sentence, 180)
+def _alert_context_to_text(alert_context: Any) -> str:
+    if not alert_context:
+        return ""
+
+    if isinstance(alert_context, dict):
+        alert_name = alert_context.get("alert_name", "")
+        severity = alert_context.get("severity", "")
+        annotations = alert_context.get("annotations", {}) or {}
+    else:
+        alert_name = getattr(alert_context, "alert_name", "")
+        severity = getattr(alert_context, "severity", "")
+        annotations = getattr(alert_context, "annotations", {}) or {}
+
+    annotation_summary = annotations.get("summary", "") if isinstance(annotations, dict) else ""
+    annotation_description = annotations.get("description", "") if isinstance(annotations, dict) else ""
+
+    parts = [part for part in [alert_name, severity, annotation_summary, annotation_description] if part]
+    return " ".join(parts)
 
 
-def _pick_evidence_lines(response: str) -> str:
-    return _extract_evidence_text(response)
+def build_supervisor_plan_content(
+    query: str,
+    plan: Dict[str, Any],
+    visible_queue: Sequence[str],
+    *,
+    narrative: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Build the timeline event for the supervisor's initial investigation plan.
 
-
-def _infer_confidence(response: str) -> str:
-    return _infer_confidence_from_response(response)
-
-
-def _infer_next_step(agent_name: str) -> str:
-    mapping = {
-        "metrics_agent": "Correlate with logs and code changes.",
-        "logs_agent": "Correlate with metrics and code changes.",
-        "github_agent": "Check whether the suspect change aligns with the symptom window.",
-        "runbooks_agent": "Validate the best runbook path and any safe next actions.",
-    }
-    return mapping.get(agent_name, "Supervisor should correlate this finding with the rest of the thread.")
-
-
-def build_supervisor_plan_content(query: str, plan: Dict[str, Any], visible_queue: Sequence[str]) -> Tuple[str, Dict[str, Any]]:
+    When the caller has produced a conversational `narrative`, that text becomes
+    the visible chat content. Otherwise we fall back to a short one-liner so the
+    chat never displays a robotic key/value template.
+    """
     visible_labels = [visible_specialist_label(agent_name) for agent_name in visible_queue]
     clean_objective = _clean_public_query(query)
-    step_text_by_agent = {
-        "metrics_agent": "Check the metrics around the alert window and confirm the scope of the impact.",
-        "logs_agent": "Review logs for matching error patterns, timeouts, or repeated failures.",
-        "github_agent": "Correlate the incident with recent deployments, commits, or pull requests.",
-        "runbooks_agent": "Check the safest runbook path and confirm the next operational step.",
-    }
-    content_lines = [
-        "Investigation plan",
-        f"- objective: {clean_objective}",
-        f"- selected specialists: {', '.join(visible_labels) if visible_labels else 'none yet'}",
-    ]
-    if visible_queue:
-        content_lines.append("- investigation steps:")
-        for agent_name in visible_queue:
-            content_lines.append(
-                f"  - {visible_specialist_label(agent_name)}: {step_text_by_agent.get(agent_name, 'Review the incident evidence and report back clearly.')}"
-            )
-    if visible_labels:
-        content_lines.append(f"- next action: start with {visible_labels[0]}")
+
+    if narrative and narrative.strip():
+        content = narrative.strip()
+    elif visible_labels:
+        first = visible_labels[0]
+        content = (
+            f"Got the page on {clean_objective}. I'm pulling in "
+            f"{', '.join(visible_labels)} — starting with {first}."
+        )
+    else:
+        content = f"Got the page on {clean_objective}. Triaging now."
 
     payload = {
         "query": query,
+        "objective": clean_objective,
         "plan": plan,
         "visible_queue": list(visible_queue),
+        "specialist_labels": visible_labels,
     }
-    return "\n".join(content_lines), payload
+    return content, payload
 
 
-def build_supervisor_decision_content(next_agent: str, reasoning: str, remaining_agents: Sequence[str]) -> Tuple[str, Dict[str, Any]]:
-    visible_label = visible_specialist_label(next_agent) if next_agent != "aggregate" else "Supervisor summary"
+def build_supervisor_decision_content(
+    next_agent: str,
+    reasoning: str,
+    remaining_agents: Sequence[str],
+    *,
+    narrative: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Build the timeline event for a supervisor handoff to the next specialist."""
+    visible_label = (
+        visible_specialist_label(next_agent)
+        if next_agent != "aggregate"
+        else "Supervisor (synthesis)"
+    )
     remaining_labels = [visible_specialist_label(agent_name) for agent_name in remaining_agents]
-    content_lines = [
-        "Routing update",
-        f"- next specialist: {visible_label}" if next_agent != "aggregate" else "- next action: synthesize the findings",
-        f"- why: {reasoning}",
-    ]
-    if remaining_labels:
-        content_lines.append(f"- remaining specialists: {', '.join(remaining_labels)}")
+
+    if narrative and narrative.strip():
+        content = narrative.strip()
+    elif next_agent == "aggregate":
+        content = "Alright, the team's reported back. Let me pull this together."
+    else:
+        content = f"{visible_label}, can you take this one? {reasoning}".strip()
 
     payload = {
         "next_agent": next_agent,
         "reasoning": reasoning,
         "remaining_agents": list(remaining_agents),
+        "remaining_labels": remaining_labels,
+        "next_label": visible_label,
     }
-    return "\n".join(content_lines), payload
+    return content, payload
 
 
-def build_specialist_finding_content(agent_name: str, current_query: str, response: str) -> Tuple[str, Dict[str, Any]]:
-    normalized = _normalize_specialist_finding(agent_name, current_query, response)
+def build_specialist_finding_content(
+    agent_name: str,
+    current_query: str,
+    response: str,
+    *,
+    narrative: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Build the timeline event for a specialist finding.
 
-    content_lines = [
-        f"{normalized['visible_label']} finding",
-        f"- objective: {normalized['objective']}",
-        f"- evidence: {normalized['evidence']}",
-        f"- conclusion: {normalized['conclusion']}",
-        f"- confidence: {normalized['confidence']}",
-        f"- recommended next step: {normalized['recommended_next_step']}",
-    ]
+    The visible chat content is the conversational `narrative` produced by the
+    narrator (or, in fallback, a clean snippet of the raw response). The full
+    raw response is preserved in the structured payload so downstream consumers
+    (e.g. the dashboard's expandable detail view) can still inspect it.
+    """
+    visible_label = visible_specialist_label(agent_name)
+    objective = _truncate(_clean_public_query(current_query or f"Investigate {visible_label}"), 180)
+    raw_response = (response or "").strip()
+
+    if narrative and narrative.strip():
+        content = narrative.strip()
+    elif raw_response:
+        snippet = re.sub(r"\s+", " ", raw_response)[:600].rstrip()
+        if len(raw_response) > 600:
+            snippet += "..."
+        content = f"{visible_label} here — {snippet}"
+    else:
+        content = f"{visible_label} here — I didn't get any usable output from my tools on that one."
 
     payload = {
         "agent_name": agent_name,
         "speaker_role": visible_specialist_role(agent_name),
-        **normalized,
+        "visible_label": visible_label,
+        "objective": objective,
+        "raw_response": _truncate(raw_response, 8000) if raw_response else "",
+        "confidence": _confidence_from_response(raw_response),
     }
-    return "\n".join(content_lines), payload
+    return content, payload
 
 
 def build_supervisor_summary_content(
@@ -392,118 +272,97 @@ def build_supervisor_summary_content(
     agent_results: Dict[str, Any],
     query: str = "",
     alert_context: Any = None,
+    *,
+    narrative: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    normalized_findings: List[Dict[str, Any]] = []
-    for agent_name, response in agent_results.items():
-        if not response:
-            continue
-        normalized_findings.append(_normalize_specialist_finding(agent_name, query, str(response)))
+    """Build the timeline event for the supervisor's final synthesis.
 
-    if not query and not alert_context:
-        content = final_response.strip() or "Investigation summary is available."
-        payload = {
-            "source": "supervisor.aggregate_responses",
-            "specialists_invoked": list(agent_results.keys()),
-            "objective": "the incident",
-            "alert_context": None,
-            "normalized_findings": normalized_findings,
-            "conflicting_numeric_facts": {},
-        }
-        return content, payload
+    Priority for the visible chat content:
+        1. `narrative` — a conversational, multi-section synthesis produced by
+           the narrator (TL;DR / What we saw / Root cause / Why / Next steps).
+        2. `final_response` — whatever the supervisor's aggregator produced.
+        3. A minimal fallback string.
 
+    The structured payload always lists the specialists that were invoked and
+    the cleaned alert text so downstream consumers can render their own views.
+    """
     objective = _truncate(_clean_public_query(query), 180) if query else "the incident"
     alert_text = _alert_context_to_text(alert_context)
 
-    summary_lines = [
-        "## Incident Summary",
-        "",
-        f"**Objective:** {objective}",
-    ]
-
-    if alert_text:
-        summary_lines.extend(["", f"**Alert context:** {_truncate(alert_text, 220)}"])
-
-    if normalized_findings:
-        summary_lines.extend(["", "**Visible specialist findings:**"])
-        for finding in normalized_findings:
-            summary_lines.append(
-                f"- **{finding['visible_label']}**: {finding['conclusion']}"
-            )
-            summary_lines.append(f"  - Evidence: {finding['evidence']}")
-            summary_lines.append(f"  - Confidence: {finding['confidence']}")
-            summary_lines.append(f"  - Recommended next step: {finding['recommended_next_step']}")
+    if narrative and narrative.strip():
+        content = narrative.strip()
+    elif final_response and final_response.strip():
+        content = final_response.strip()
     else:
-        summary_lines.extend(["", "**Visible specialist findings:** No specialist findings were captured."])
-
-    conflict_sources: List[str] = []
-    if alert_text:
-        conflict_sources.append(alert_text)
-    conflict_sources.extend(
-        [
-            " ".join([finding["evidence"], finding["conclusion"]])
-            for finding in normalized_findings
-        ]
-    )
-    conflicts = _detect_conflicting_numeric_facts(conflict_sources)
-
-    if conflicts:
-        conflict_lines = ", ".join(f"{label}: {', '.join(values)}" for label, values in conflicts.items())
-        summary_lines.extend(
-            [
-                "",
-                "**Conclusion:** The available facts are inconsistent, so no single settled value should be treated as confirmed yet.",
-                f"**Conflicts:** {conflict_lines}.",
-                "**Next step:** Reconcile the conflicting source data before closing the incident.",
-            ]
-        )
-    else:
-        summary_lines.extend(
-            [
-                "",
-                "**Conclusion:** The visible evidence is still limited, so the incident remains unresolved.",
-                "**Next step:** Continue with the remaining checks until the evidence is consistent.",
-            ]
+        content = (
+            f"Wrapping up on {objective}. The specialists didn't return enough "
+            "evidence for a confident root cause yet — happy to dig further if "
+            "you point me at a specific signal."
         )
 
-    grounded_summary = "\n".join(summary_lines).strip()
-    content = grounded_summary or final_response.strip() or "Investigation summary is available."
     payload = {
         "source": "supervisor.aggregate_responses",
         "specialists_invoked": list(agent_results.keys()),
         "objective": objective,
         "alert_context": alert_text or None,
-        "normalized_findings": normalized_findings,
-        "conflicting_numeric_facts": conflicts,
+        "raw_final_response": _truncate(final_response or "", 8000),
     }
     return content, payload
 
 
-def build_supervisor_direct_answer_content(question: str, answer: str, basis: str) -> Tuple[str, Dict[str, Any]]:
-    content_lines = [answer.strip() or "I can answer that directly."]
+def build_supervisor_direct_answer_content(
+    question: str,
+    answer: str,
+    basis: str,
+    *,
+    narrative: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Build the timeline event for a supervisor direct answer (follow-up Q&A).
+
+    `narrative`, when supplied, is the conversational reply that should be
+    shown in the chat. Otherwise we fall back to whatever `answer` text the
+    caller already produced.
+    """
+    if narrative and narrative.strip():
+        content = narrative.strip()
+    else:
+        content = answer.strip() or "I can answer that directly."
     payload = {
         "mode": "direct_answer",
         "question": question,
-        "answer": answer,
+        "answer": content,
         "basis": basis,
     }
-    return "\n".join(content_lines), payload
+    return content, payload
 
 
-def build_supervisor_revised_plan_content(question: str, revised_queue: Sequence[str], reason: str) -> Tuple[str, Dict[str, Any]]:
+def build_supervisor_revised_plan_content(
+    question: str,
+    revised_queue: Sequence[str],
+    reason: str,
+    *,
+    narrative: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
     labels = [visible_specialist_label(agent_name) for agent_name in revised_queue]
-    content_lines = [
-        "Revised plan",
-        f"- question: {question}",
-        f"- revised specialists: {', '.join(labels) if labels else 'none'}",
-        f"- reason: {reason}",
-    ]
+    if narrative and narrative.strip():
+        content = narrative.strip()
+    elif labels:
+        content = (
+            f"Got it — re-prioritising. I'll run {', '.join(labels)} next based on "
+            f"your input ({reason})."
+        )
+    else:
+        content = (
+            f"Got it — I'll keep this in mind for the next checkpoint ({reason})."
+        )
     payload = {
         "mode": "revised_plan",
         "question": question,
         "revised_queue": list(revised_queue),
         "reason": reason,
+        "specialist_labels": labels,
     }
-    return "\n".join(content_lines), payload
+    return content, payload
 
 
 async def emit_timeline_event(
@@ -557,3 +416,106 @@ async def mark_human_event_handled(incident_id: Optional[str], event_id: Optiona
             await crud.mark_incident_timeline_event_handled(db, event_uuid)
     except Exception as e:
         logger.warning(f"Failed to mark human event handled for {incident_id}/{event_id}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Cross-turn context loader (used by follow-ups)
+# ---------------------------------------------------------------------------
+
+
+async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, Any]:
+    """Reload the conversational context for an incident from the database.
+
+    Returned dict (all keys always present, may be empty):
+        objective:       The incident title (also useful as a query stand-in).
+        incident_status: e.g. "OPEN", "INVESTIGATING", "RESOLVED".
+        alert_context:   A best-effort dict shaped like the original alert
+                         payload (alert_name, severity, summary, ...).
+        agent_results:   {agent_name: raw_response} reconstructed from prior
+                         "finding" timeline events. Uses the structured
+                         payload's `raw_response` when available, falling back
+                         to the visible content otherwise.
+        prior_summary:   The most recent supervisor "summary" event content.
+
+    This is what the supervisor needs to answer follow-up questions in the
+    same incident thread without re-running the whole investigation graph.
+    """
+    empty = {
+        "objective": "",
+        "incident_status": "",
+        "alert_context": {},
+        "agent_results": {},
+        "prior_summary": "",
+    }
+    if not incident_id:
+        return empty
+
+    try:
+        incident_uuid = uuid.UUID(str(incident_id))
+    except (ValueError, TypeError):
+        return empty
+
+    try:
+        async with database.AsyncSessionLocal() as db:
+            incident = await db.get(models.Incident, incident_uuid)
+            if incident is None:
+                return empty
+
+            events = await crud.get_incident_timeline_events(db, incident_uuid)
+    except Exception as e:
+        logger.warning(f"Failed to load incident chat context for {incident_id}: {e}")
+        return empty
+
+    objective = incident.title or "the incident"
+    incident_status = ""
+    if incident.status is not None:
+        incident_status = (
+            incident.status.value if hasattr(incident.status, "value") else str(incident.status)
+        )
+
+    agent_results: Dict[str, str] = {}
+    prior_summary: str = incident.summary or ""
+    alert_context: Dict[str, Any] = {
+        "alert_name": incident.title,
+        "severity": (
+            incident.severity.value if hasattr(incident.severity, "value") else str(incident.severity)
+        )
+        if incident.severity is not None
+        else "",
+    }
+    if incident.description:
+        alert_context["description"] = incident.description
+
+    for event in events:
+        payload: Dict[str, Any] = {}
+        if event.payload_json:
+            try:
+                parsed = json.loads(event.payload_json)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = {}
+
+        if event.event_type == "finding":
+            agent_name = payload.get("agent_name")
+            raw_response = payload.get("raw_response") or event.content or ""
+            if agent_name:
+                agent_results[agent_name] = raw_response
+        elif event.event_type == "summary":
+            prior_summary = event.content or prior_summary
+            payload_alert = payload.get("alert_context")
+            if isinstance(payload_alert, dict):
+                merged = {**alert_context, **payload_alert}
+                alert_context = {k: v for k, v in merged.items() if v}
+        elif event.event_type == "plan":
+            plan_payload = payload.get("plan")
+            if isinstance(plan_payload, dict):
+                alert_context.setdefault("plan_reasoning", plan_payload.get("reasoning", ""))
+
+    return {
+        "objective": objective,
+        "incident_status": incident_status,
+        "alert_context": alert_context,
+        "agent_results": agent_results,
+        "prior_summary": prior_summary,
+    }

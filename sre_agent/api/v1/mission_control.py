@@ -105,27 +105,78 @@ def _is_chat_only_message(message: str) -> bool:
     return len(normalized.split()) <= 6
 
 
-def _build_chat_reply(message: str, incident: models.Incident, cluster: models.Cluster) -> str:
-    normalized = re.sub(r"\s+", " ", message.strip().lower())
+def _fallback_chat_reply(message: str, incident: models.Incident, cluster: models.Cluster) -> str:
+    """Deterministic fallback used only when the narrator LLM call fails.
 
-    if normalized in {"hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay"}:
+    Kept intentionally short and informational; the primary path always goes
+    through the LLM-driven narrator so the user gets a teammate-tone reply.
+    """
+    status = str(incident.status)
+    if hasattr(incident.status, "value"):
+        status = incident.status.value
+    summary = incident.summary or incident.description or ""
+    suffix = f" Status: {status.replace('_', ' ').lower()}." if status else ""
+    if summary:
         return (
-            f"I'm tracking [{cluster.name}] {incident.title}. Ask about logs, metrics, the suspected cause, "
-            f"or the remediation plan, and I’ll answer in this thread."
+            f"On [{cluster.name}] {incident.title}.{suffix} Quick recap: "
+            f"{summary[:280].rstrip()}{'...' if len(summary) > 280 else ''}"
         )
-
-    if "cluster" in normalized or "what is this" in normalized or "what is happening" in normalized:
-        status = incident.status.replace("_", " ").title()
-        summary = incident.summary or incident.description or "No summary is available yet."
-        return (
-            f"This is the {cluster.name} incident thread for [{cluster.name}] {incident.title}. "
-            f"Current incident status: {status}. {summary}"
-        )
-
     return (
-        f"I’m here to help with [{cluster.name}] {incident.title}. Ask me about the incident, logs, metrics, "
-        f"or remediation steps."
+        f"On [{cluster.name}] {incident.title}.{suffix} The investigation is still gathering "
+        "evidence — ask about logs, metrics, recent deploys, or the remediation plan."
     )
+
+
+async def _build_chat_reply(message: str, incident: models.Incident, cluster: models.Cluster) -> str:
+    """Generate a context-aware Slack-style reply for casual chat on an active incident.
+
+    Loads the live timeline context and asks the narrator for a 1-2 sentence
+    teammate-style response. Falls back to a deterministic helper only if the
+    LLM call fails.
+    """
+    try:
+        from sre_agent.incident_timeline import load_incident_chat_context
+        from sre_agent.llm_utils import create_llm_with_fallback
+        from sre_agent.narrative import narrate_chat_greeting, narrate_followup_answer
+
+        chat_context = await load_incident_chat_context(str(incident.id))
+        objective = chat_context.get("objective") or incident.title
+        alert_context = chat_context.get("alert_context") or {"alert_name": incident.title}
+        prior_summary = chat_context.get("prior_summary") or incident.summary or ""
+        incident_status = chat_context.get("incident_status", "") or str(incident.status)
+
+        llm = create_llm_with_fallback()
+        normalized = re.sub(r"\s+", " ", message.strip().lower())
+        is_greeting = normalized in {
+            "hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "cool", "k",
+        }
+
+        if is_greeting:
+            return await narrate_chat_greeting(
+                llm,
+                user_message=message,
+                objective=objective,
+                alert_context=alert_context,
+                incident_status=incident_status,
+                prior_summary=prior_summary,
+            )
+
+        return await narrate_followup_answer(
+            llm,
+            question=message,
+            objective=objective,
+            alert_context=alert_context,
+            agent_results=chat_context.get("agent_results") or {},
+            prior_summary=prior_summary,
+            incident_status=incident_status,
+        )
+    except Exception as exc:
+        # Never let a chat reply hard-fail; produce a deterministic fallback.
+        import logging
+        logging.getLogger(__name__).warning(
+            "Chat narrator failed for incident %s: %s", incident.id, exc
+        )
+        return _fallback_chat_reply(message, incident, cluster)
 
 
 def _incident_is_active(incident: models.Incident) -> bool:
@@ -151,6 +202,19 @@ async def _run_post_summary_follow_up(
         base_values = {}
     base_metadata = dict(base_values.get("metadata", {}))
 
+    # Reload the canonical incident context from the database so the
+    # supervisor's follow-up reasoning has the alert payload, all prior
+    # specialist findings, and the prior summary — even if the LangGraph
+    # checkpointer didn't keep them around between turns.
+    from sre_agent.incident_timeline import load_incident_chat_context
+    chat_context = await load_incident_chat_context(str(incident_id))
+    prior_summary = (
+        chat_context.get("prior_summary")
+        or base_values.get("final_response")
+        or base_metadata.get("final_response")
+        or base_metadata.get("incident_summary")
+    )
+
     follow_up_state = {
         **base_values,
         "messages": [HumanMessage(content=message)],
@@ -158,12 +222,20 @@ async def _run_post_summary_follow_up(
         "agent_results": {},
         "agents_invoked": [],
         "current_specialist": None,
+        "alert_context": (
+            base_values.get("alert_context")
+            or chat_context.get("alert_context")
+            or {"alert_name": chat_context.get("objective", "")}
+        ),
         "metadata": {
             **base_metadata,
             "incident_id": str(incident_id),
             "conversation_mode": "assistant",
             "post_investigation_follow_up": True,
-            "final_response": base_values.get("final_response") or base_metadata.get("final_response") or base_metadata.get("incident_summary"),
+            "final_response": prior_summary,
+            "incident_summary": prior_summary,
+            "incident_status": chat_context.get("incident_status", ""),
+            "prior_findings": chat_context.get("agent_results", {}),
         },
         "incident_id": str(incident_id),
         "session_id": str(incident_id),
@@ -434,7 +506,7 @@ async def send_incident_message(
             payload={"source": "dashboard_chat", "mode": "incoming"},
         )
 
-        assistant_reply = _build_chat_reply(message, incident_obj, cluster)
+        assistant_reply = await _build_chat_reply(message, incident_obj, cluster)
 
         await crud.create_incident_timeline_event(
             db,
@@ -510,12 +582,25 @@ async def send_incident_message(
     )
 
     from sre_agent.agent_runtime import run_graph_background_saas
+    # For follow-up investigations on an incident, reuse the original alert's
+    # labels and annotations so the specialists keep the same context they
+    # had during the first pass.
+    from sre_agent.incident_timeline import load_incident_chat_context
+    follow_up_context = await load_incident_chat_context(str(incident_uuid))
+    follow_up_alert = follow_up_context.get("alert_context") or {}
     asyncio.create_task(
         run_graph_background_saas(
             incident_id=incident_uuid,
             cluster_id=cluster.id,
             alert_name=message,
             job_id=follow_up_job.id,
+            alert_labels=follow_up_alert.get("labels") or {},
+            alert_annotations={
+                "summary": follow_up_alert.get("summary", ""),
+                "description": follow_up_alert.get("description", ""),
+            },
+            alert_starts_at=None,
+            alert_severity=follow_up_alert.get("severity") or "warning",
         )
     )
 

@@ -73,13 +73,36 @@ async def trigger_incident(
     # We delay the import to avoid top-level circular dependency if any
     try:
         from sre_agent.agent_runtime import run_graph_background_saas
-        # We need a new function that handles postgres logging
+        # Best-effort extraction of any alert payload encoded in the
+        # description (Alertmanager-style "Labels: {...}" trailer). This
+        # keeps the dashboard "Trigger" button on parity with the webhook
+        # path so the agents always see the alert's labels.
+        parsed_labels: dict = {}
+        parsed_annotations: dict = {}
+        if payload.description:
+            try:
+                import re as _re
+                match = _re.search(r"Labels:\s*(\{.*\})", payload.description, _re.DOTALL)
+                if match:
+                    parsed_labels = json.loads(match.group(1))
+                first_paragraph = payload.description.split("\n\n", 1)[0].strip()
+                if first_paragraph:
+                    parsed_annotations["summary"] = first_paragraph
+            except Exception as parse_err:
+                logger.debug(f"Could not parse labels from description: {parse_err}")
+
         background_tasks.add_task(
-            run_graph_background_saas, 
-            incident_id=incident.id, 
+            run_graph_background_saas,
+            incident_id=incident.id,
             cluster_id=cluster.id,
             alert_name=payload.title,
-            job_id=shadow_job.id  # Pass the job ID to the background task
+            job_id=shadow_job.id,
+            alert_labels=parsed_labels,
+            alert_annotations=parsed_annotations,
+            alert_starts_at=None,
+            alert_severity=(
+                payload.severity.value if hasattr(payload.severity, "value") else str(payload.severity)
+            ),
         )
     except ImportError as e:
         logger.error(

@@ -152,13 +152,25 @@ async def receive_alertmanager_webhook(
         logger.info(f"Queued job {job.id} for incident {incident.id}")
 
         # 🚀 START: SaaS-side background investigation
+        # Pass the full alert payload so the agents have access to labels,
+        # annotations, and the alert's time window — without these the
+        # specialists can't produce queries with the right label values
+        # and the supervisor's synthesis loses the alert's own evidence
+        # (reason=, error_type=, query=, endpoint=, etc.).
         from sre_agent.agent_runtime import run_graph_background_saas
         background_tasks.add_task(
             run_graph_background_saas,
             incident_id=incident.id,
             cluster_id=cluster.id,
             alert_name=alert["alertname"],
-            job_id=job.id
+            job_id=job.id,
+            alert_labels=alert.get("labels") or {},
+            alert_annotations={
+                "summary": alert.get("summary", ""),
+                "description": alert.get("description", ""),
+            },
+            alert_starts_at=alert.get("startsAt") or alert.get("starts_at"),
+            alert_severity=alert.get("severity") or "warning",
         )
         logger.info(f"Launched background investigation for incident {incident.id}")
 

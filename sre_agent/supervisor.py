@@ -23,12 +23,20 @@ from .incident_timeline import (
     build_supervisor_summary_content,
     emit_timeline_event,
     filter_visible_specialists,
+    load_incident_chat_context,
     load_pending_human_events,
     infer_visible_specialist_queue,
     mark_human_event_handled,
     visible_specialist_label,
 )
 from .llm_utils import create_llm_with_error_handling
+from .narrative import (
+    narrate_chat_greeting,
+    narrate_followup_answer,
+    narrate_supervisor_handoff,
+    narrate_supervisor_plan,
+    narrate_supervisor_summary,
+)
 from .output_formatter import create_formatter
 from .prompt_loader import prompt_loader
 
@@ -226,54 +234,43 @@ def _assistant_mode_enabled(state: AgentState) -> bool:
     return bool(metadata.get("conversation_mode") == "assistant" or metadata.get("post_investigation_follow_up"))
 
 
-def _follow_up_specialist_for_question(question: str) -> Optional[str]:
-    normalized = " ".join(question.lower().split())
-    if any(marker in normalized for marker in ("metric", "metrics", "prometheus", "latency", "throughput", "availability")):
-        return "metrics_agent"
-    if any(marker in normalized for marker in ("log", "logs", "error", "exception", "trace", "stack trace", "loki")):
-        return "logs_agent"
-    if any(marker in normalized for marker in ("github", "code", "commit", "pull request", "pr", "deploy", "release", "rollback", "what changed", "recent change", "change caused")):
-        return "github_agent"
-    if any(marker in normalized for marker in ("runbook", "runbooks", "playbook", "procedure", "next step", "remediation")):
-        return "runbooks_agent"
-    return None
-
-
 def _is_casual_follow_up(question: str) -> bool:
+    """A casual greeting / acknowledgement — not an actual question."""
     normalized = " ".join(question.lower().split())
-    return normalized in {"hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay"}
+    if not normalized:
+        return True
+    if normalized in {"hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "cool", "got it", "k"}:
+        return True
+    return False
 
 
-def _friendly_follow_up_reply(question: str) -> str:
-    normalized = " ".join(question.lower().split())
-    if normalized in {"hi", "hello", "hey", "yo"}:
-        return "I’m still here. Ask about the incident summary, the evidence, or the next steps."
-    if normalized in {"thanks", "thank you"}:
-        return "Glad to help. If you want, I can also break down the evidence or next steps."
-    if normalized in {"ok", "okay"}:
-        return "Understood. Ask a follow-up anytime if you want me to dig deeper."
-    return "I’m here if you want to dig deeper into the completed incident."
+def _question_demands_fresh_specialist_run(question: str) -> bool:
+    """Heuristic: should a follow-up trigger a new specialist run?
 
-
-def _summarize_for_direct_follow_up(summary_text: str) -> str:
-    if not summary_text:
-        return "The incident is closed, but I do not have the summary context available in this thread."
-
-    summary_lines = []
-    for raw_line in summary_text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        cleaned = re.sub(r"^[\-*]\s*", "", line)
-        if cleaned:
-            summary_lines.append(cleaned)
-
-    if not summary_lines:
-        compact_summary = re.sub(r"\s+", " ", summary_text.strip())
-        return f"Based on the completed investigation, {compact_summary}"
-
-    excerpt = " ".join(summary_lines[:2])
-    return f"Based on the completed investigation, {excerpt}"
+    We only re-engage a specialist when the user explicitly asks for fresh data
+    (e.g. "re-check metrics now", "search logs again"). Generic follow-ups like
+    "what's the next step" or "give me instructions" should be answered from
+    the existing investigation context rather than re-routed to a context-less
+    specialist call.
+    """
+    normalized = " ".join((question or "").lower().split())
+    if not normalized:
+        return False
+    fresh_markers = (
+        "re-check",
+        "recheck",
+        "re check",
+        "run again",
+        "search logs again",
+        "query metrics",
+        "fetch fresh",
+        "pull fresh",
+        "look again",
+        "check now",
+        "right now",
+        "latest",
+    )
+    return any(marker in normalized for marker in fresh_markers)
 
 
 def _classify_human_interrupt(message: str, current_queue: List[str]) -> Dict[str, Any]:
@@ -397,8 +394,29 @@ class SupervisorAgent:
             else ""
         )
 
+        # Inject the alert payload (labels + annotations + key hints) so the
+        # planner's specialist selection is driven by the actual alert,
+        # not just the alert name string. This is what makes the planner
+        # broaden into github_agent / runbooks_agent when the alert hints
+        # indicate a deploy or a known reason / error_type.
+        alert_block = ""
+        try:
+            from .narrative import _format_alert_block, _format_label_hint_block
+            alert_ctx = state.get("alert_context")
+            if alert_ctx:
+                alert_text = _format_alert_block(alert_ctx)
+                hints_text = _format_label_hint_block(alert_ctx)
+                alert_block = (
+                    "\n<alert_payload>\n"
+                    f"{alert_text}\n"
+                    f"key_label_hints: {hints_text or '(none)'}\n"
+                    "</alert_payload>\n"
+                )
+        except Exception as alert_err:
+            logger.debug(f"Could not format alert block for planner: {alert_err}")
+
         planning_prompt = f"""{self.system_prompt}
-{memory_block}
+{memory_block}{alert_block}
 User's query: {current_query}
 
 {formatted_planning_instructions}"""
@@ -502,36 +520,8 @@ User's query: {current_query}
 
         if _assistant_mode_enabled(state):
             current_query = state.get("current_query", "") or "Follow-up question"
-            final_response_context = (
-                state.get("final_response")
-                or metadata.get("final_response")
-                or metadata.get("incident_summary")
-                or ""
-            )
 
-            if _is_casual_follow_up(current_query):
-                friendly_reply = _friendly_follow_up_reply(current_query)
-                return {
-                    "next": "FINISH",
-                    "final_response": friendly_reply,
-                    "thought_traces": {
-                        **existing_traces,
-                        "supervisor": [
-                            *existing_traces.get("supervisor", []),
-                            "I kept the reply conversational in the same incident thread.",
-                        ],
-                    },
-                    "metadata": {
-                        **metadata,
-                        "conversation_mode": "assistant",
-                        "post_investigation_follow_up": True,
-                        "follow_up_mode": "direct",
-                        "final_response": friendly_reply,
-                        "follow_up_question": current_query,
-                        "follow_up_basis": "A brief conversational follow-up after the incident summary.",
-                    },
-                }
-
+            # If a specialist already answered this follow-up turn, just close out.
             if metadata.get("follow_up_mode") == "specialist" and agents_invoked:
                 return {
                     "next": "FINISH",
@@ -546,50 +536,171 @@ User's query: {current_query}
                         **metadata,
                         "conversation_mode": "assistant",
                         "post_investigation_follow_up": True,
-                        "final_response": final_response_context,
                     },
                 }
 
-            selected_specialist = _follow_up_specialist_for_question(current_query)
-            if selected_specialist:
-                decision_content, decision_payload = build_supervisor_decision_content(
-                    selected_specialist,
-                    "Delegating the follow-up to the most relevant specialist.",
-                    [],
+            # Reload the full incident context (alert payload, all prior
+            # findings, prior summary) from the database. This is what makes
+            # follow-ups answerable from the same chat thread without losing
+            # memory of the original investigation.
+            chat_context = await load_incident_chat_context(incident_id)
+            objective = chat_context.get("objective") or current_query
+            alert_context_for_followup = (
+                state.get("alert_context") or chat_context.get("alert_context") or {}
+            )
+            findings_for_followup = chat_context.get("agent_results") or {}
+            prior_summary = (
+                chat_context.get("prior_summary")
+                or state.get("final_response")
+                or metadata.get("final_response")
+                or metadata.get("incident_summary")
+                or ""
+            )
+            incident_status = chat_context.get("incident_status", "")
+
+            # Casual greetings get a context-aware, conversational reply
+            # generated by the narrator — no canned strings.
+            if _is_casual_follow_up(current_query):
+                greeting_reply = await narrate_chat_greeting(
+                    self.llm,
+                    user_message=current_query,
+                    objective=objective,
+                    alert_context=alert_context_for_followup,
+                    incident_status=incident_status,
+                    prior_summary=prior_summary,
+                )
+                direct_content, direct_payload = build_supervisor_direct_answer_content(
+                    current_query,
+                    greeting_reply,
+                    "Casual follow-up acknowledged in the incident thread.",
+                    narrative=greeting_reply,
                 )
                 await emit_timeline_event(
                     incident_id,
-                    event_type="decision",
+                    event_type="assistant_message",
                     speaker_role="supervisor",
                     title="Supervisor",
-                    content=decision_content,
+                    content=direct_content,
                     payload={
-                        **decision_payload,
+                        **direct_payload,
                         "source": "post_investigation_follow_up",
-                        "question": current_query,
+                        "kind": "greeting",
                     },
                 )
                 return {
-                    "next": selected_specialist,
+                    "next": "FINISH",
+                    "final_response": greeting_reply,
                     "thought_traces": {
                         **existing_traces,
                         "supervisor": [
                             *existing_traces.get("supervisor", []),
-                            f"I’m handing this follow-up to {visible_specialist_label(selected_specialist)}.",
+                            "Replied to the greeting in-thread without rerunning specialists.",
                         ],
                     },
                     "metadata": {
                         **metadata,
                         "conversation_mode": "assistant",
                         "post_investigation_follow_up": True,
-                        "follow_up_mode": "specialist",
-                        "follow_up_specialist": selected_specialist,
-                        "current_specialist": selected_specialist,
-                        "final_response": final_response_context,
+                        "follow_up_mode": "direct",
+                        "final_response": greeting_reply,
+                        "follow_up_question": current_query,
+                        "follow_up_basis": "Casual follow-up after the incident summary.",
                     },
                 }
 
-            direct_answer = _summarize_for_direct_follow_up(final_response_context)
+            # Only re-engage a specialist when the user explicitly asks for
+            # fresh data ("re-check metrics now", etc). Otherwise we answer
+            # the follow-up directly from the existing context, since
+            # questions like "give me instructions" can be served by the
+            # findings we already have.
+            if _question_demands_fresh_specialist_run(current_query):
+                # Pick the most relevant specialist heuristically from the
+                # question's vocabulary.
+                normalized = " ".join(current_query.lower().split())
+                fresh_specialist: Optional[str] = None
+                if any(m in normalized for m in ("metric", "metrics", "prometheus", "latency", "throughput")):
+                    fresh_specialist = "metrics_agent"
+                elif any(m in normalized for m in ("log", "logs", "error", "exception", "trace", "loki")):
+                    fresh_specialist = "logs_agent"
+                elif any(m in normalized for m in ("github", "code", "commit", "pr", "deploy", "release", "rollback")):
+                    fresh_specialist = "github_agent"
+                elif any(m in normalized for m in ("runbook", "playbook", "procedure")):
+                    fresh_specialist = "runbooks_agent"
+
+                if fresh_specialist:
+                    handoff_text = await narrate_supervisor_handoff(
+                        self.llm,
+                        next_agent=fresh_specialist,
+                        objective=objective,
+                        alert_context=alert_context_for_followup,
+                        prior_findings=findings_for_followup,
+                        reasoning="User asked for a fresh probe.",
+                    )
+                    decision_content, decision_payload = build_supervisor_decision_content(
+                        fresh_specialist,
+                        "User asked for a fresh probe.",
+                        [],
+                        narrative=handoff_text,
+                    )
+                    await emit_timeline_event(
+                        incident_id,
+                        event_type="decision",
+                        speaker_role="supervisor",
+                        title="Supervisor",
+                        content=decision_content,
+                        payload={
+                            **decision_payload,
+                            "source": "post_investigation_follow_up",
+                            "question": current_query,
+                        },
+                    )
+                    return {
+                        "next": fresh_specialist,
+                        "thought_traces": {
+                            **existing_traces,
+                            "supervisor": [
+                                *existing_traces.get("supervisor", []),
+                                f"Re-engaging {visible_specialist_label(fresh_specialist)} for a fresh probe.",
+                            ],
+                        },
+                        "metadata": {
+                            **metadata,
+                            "conversation_mode": "assistant",
+                            "post_investigation_follow_up": True,
+                            "follow_up_mode": "specialist",
+                            "follow_up_specialist": fresh_specialist,
+                            "current_specialist": fresh_specialist,
+                        },
+                    }
+
+            # Default: answer directly from the existing incident context.
+            direct_answer = await narrate_followup_answer(
+                self.llm,
+                question=current_query,
+                objective=objective,
+                alert_context=alert_context_for_followup,
+                agent_results=findings_for_followup,
+                prior_summary=prior_summary,
+                incident_status=incident_status,
+            )
+            direct_content, direct_payload = build_supervisor_direct_answer_content(
+                current_query,
+                direct_answer,
+                "Answered from the existing incident context.",
+                narrative=direct_answer,
+            )
+            await emit_timeline_event(
+                incident_id,
+                event_type="assistant_message",
+                speaker_role="supervisor",
+                title="Supervisor",
+                content=direct_content,
+                payload={
+                    **direct_payload,
+                    "source": "post_investigation_follow_up",
+                    "kind": "direct_answer",
+                },
+            )
             return {
                 "next": "FINISH",
                 "final_response": direct_answer,
@@ -597,7 +708,7 @@ User's query: {current_query}
                     **existing_traces,
                     "supervisor": [
                         *existing_traces.get("supervisor", []),
-                        "I answered the follow-up directly from the completed incident context.",
+                        "Answered the follow-up from the loaded incident context.",
                     ],
                 },
                 "metadata": {
@@ -607,7 +718,7 @@ User's query: {current_query}
                     "follow_up_mode": "direct",
                     "final_response": direct_answer,
                     "follow_up_question": current_query,
-                    "follow_up_basis": "The completed incident summary already covers this follow-up.",
+                    "follow_up_basis": "Existing incident context answered the question.",
                 },
             }
 
@@ -633,6 +744,7 @@ User's query: {current_query}
             current_queue = _active_visible_specialist_queue({**state, "metadata": metadata})
             human_interrupt = _classify_human_interrupt(pending_events[0].content or "", current_queue)
 
+            interrupt_question = pending_events[0].content or ""
             if human_interrupt["mode"] == "revised_plan":
                 revised_queue = human_interrupt["revised_queue"]
                 metadata = {
@@ -640,16 +752,45 @@ User's query: {current_query}
                     "specialist_queue": revised_queue,
                     "current_specialist": revised_queue[0] if revised_queue else None,
                 }
+                revised_narrative = ""
+                try:
+                    revised_narrative = await narrate_supervisor_handoff(
+                        self.llm,
+                        next_agent=revised_queue[0] if revised_queue else "metrics_agent",
+                        objective=state.get("current_query", "the incident"),
+                        alert_context=state.get("alert_context"),
+                        prior_findings=state.get("agent_results", {}) or {},
+                        reasoning=f"User interrupted: {interrupt_question}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Revised-plan narration failed: {e}")
                 content, payload = build_supervisor_revised_plan_content(
-                    pending_events[0].content or "",
+                    interrupt_question,
                     revised_queue,
                     human_interrupt["reason"],
+                    narrative=revised_narrative,
                 )
             else:
+                # Direct acknowledgement: produce a short, conversational reply
+                # that ties the user's message to the live investigation context.
+                ack_narrative = ""
+                try:
+                    ack_narrative = await narrate_followup_answer(
+                        self.llm,
+                        question=interrupt_question,
+                        objective=state.get("current_query", "the incident"),
+                        alert_context=state.get("alert_context"),
+                        agent_results=state.get("agent_results", {}) or {},
+                        prior_summary=metadata.get("incident_summary", "") or "",
+                        incident_status="INVESTIGATING",
+                    )
+                except Exception as e:
+                    logger.warning(f"Interrupt acknowledgement narration failed: {e}")
                 content, payload = build_supervisor_direct_answer_content(
-                    pending_events[0].content or "",
-                    "I have the message and will incorporate it at the next safe checkpoint.",
+                    interrupt_question,
+                    ack_narrative or "Got it — I'll fold this in at the next checkpoint.",
                     human_interrupt["basis"],
+                    narrative=ack_narrative,
                 )
 
             emitted_event = await emit_timeline_event(
@@ -699,10 +840,26 @@ User's query: {current_query}
             if not visible_queue:
                 visible_queue = ["metrics_agent", "logs_agent"]
 
+            plan_query = state.get("current_query", "Incident investigation")
+            plan_alert = state.get("alert_context")
+
+            plan_narrative = ""
+            try:
+                plan_narrative = await narrate_supervisor_plan(
+                    self.llm,
+                    objective=plan_query,
+                    alert_context=plan_alert,
+                    visible_queue=visible_queue,
+                    reasoning=plan.reasoning,
+                )
+            except Exception as e:
+                logger.warning(f"Plan narration failed, using fallback: {e}")
+
             plan_content, plan_payload = build_supervisor_plan_content(
-                state.get("current_query", "Incident investigation"),
+                plan_query,
                 plan_dict,
                 visible_queue,
+                narrative=plan_narrative,
             )
             await emit_timeline_event(
                 incident_id,
@@ -710,7 +867,7 @@ User's query: {current_query}
                 speaker_role="supervisor",
                 title="Supervisor",
                 content=plan_content,
-                payload=plan_payload,
+                payload={**plan_payload, "narrative": plan_narrative or plan_content},
             )
 
             # Check if we should auto-approve the plan (defaults to False if not set)
@@ -749,10 +906,25 @@ User's query: {current_query}
                     f"Alright team, let's execute the plan. I'm going to bring in {visible_specialist_label(next_agent)} first to start pulling evidence."
                 )
 
+                handoff_narrative = ""
+                if next_agent != "FINISH":
+                    try:
+                        handoff_narrative = await narrate_supervisor_handoff(
+                            self.llm,
+                            next_agent=next_agent,
+                            objective=plan_query,
+                            alert_context=plan_alert,
+                            prior_findings={},
+                            reasoning=plan.steps[0] if plan.steps else "Start the investigation.",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Handoff narration failed, using fallback: {e}")
+
                 decision_content, decision_payload = build_supervisor_decision_content(
                     next_agent,
                     f"Executing plan step 1: {plan.steps[0] if plan.steps else 'Start'}",
                     visible_queue[1:],
+                    narrative=handoff_narrative,
                 )
                 await emit_timeline_event(
                     incident_id,
@@ -760,7 +932,7 @@ User's query: {current_query}
                     speaker_role="supervisor",
                     title="Supervisor",
                     content=decision_content,
-                    payload=decision_payload,
+                    payload={**decision_payload, "narrative": handoff_narrative or decision_content},
                 )
                 return {
                     "next": next_agent,
@@ -806,6 +978,7 @@ User's query: {current_query}
                     "aggregate",
                     "Visible specialists have reported back; consolidate the investigation.",
                     [],
+                    narrative="Alright, everyone's back with what they found. Let me pull this together and write up where we landed.",
                 )
                 await emit_timeline_event(
                     incident_id,
@@ -840,10 +1013,25 @@ User's query: {current_query}
                 )
 
                 remaining_agents = [agent for agent in visible_queue if agent != next_agent and agent not in agents_invoked]
+
+                handoff_narrative = ""
+                try:
+                    handoff_narrative = await narrate_supervisor_handoff(
+                        self.llm,
+                        next_agent=next_agent,
+                        objective=state.get("current_query", "the incident"),
+                        alert_context=state.get("alert_context"),
+                        prior_findings=state.get("agent_results", {}) or {},
+                        reasoning=step_description,
+                    )
+                except Exception as e:
+                    logger.warning(f"Mid-investigation handoff narration failed: {e}")
+
                 decision_content, decision_payload = build_supervisor_decision_content(
                     next_agent,
                     f"Executing plan step {len(agents_invoked) + 1}: {step_description}",
                     remaining_agents,
+                    narrative=handoff_narrative,
                 )
                 await emit_timeline_event(
                     incident_id,
@@ -851,7 +1039,7 @@ User's query: {current_query}
                     speaker_role="supervisor",
                     title="Supervisor",
                     content=decision_content,
-                    payload=decision_payload,
+                    payload={**decision_payload, "narrative": handoff_narrative or decision_content},
                 )
 
                 return {
@@ -887,64 +1075,82 @@ User's query: {current_query}
         if _assistant_mode_enabled(state):
             follow_up_mode = metadata.get("follow_up_mode")
 
+            # When a fresh specialist run was triggered for the follow-up,
+            # we wrap the result with a short conversational synthesis from
+            # the supervisor so the user gets a teammate-tone answer, not
+            # the raw specialist markdown.
             if follow_up_mode == "specialist" and agent_results:
                 specialist_response = next(iter(agent_results.values())) or "Follow-up complete."
+
+                chat_context = await load_incident_chat_context(incident_id)
+                merged_findings = {
+                    **(chat_context.get("agent_results") or {}),
+                    **agent_results,
+                }
+                follow_up_summary = ""
+                try:
+                    follow_up_summary = await narrate_followup_answer(
+                        self.llm,
+                        question=current_query,
+                        objective=chat_context.get("objective") or current_query,
+                        alert_context=alert_context or chat_context.get("alert_context") or {},
+                        agent_results=merged_findings,
+                        prior_summary=chat_context.get("prior_summary") or "",
+                        incident_status=chat_context.get("incident_status", ""),
+                    )
+                except Exception as e:
+                    logger.warning(f"Follow-up specialist synthesis failed: {e}")
+
+                final_followup_text = follow_up_summary or specialist_response
+
+                content, payload = build_supervisor_direct_answer_content(
+                    current_query,
+                    final_followup_text,
+                    "Specialist re-ran a probe; supervisor synthesised the answer.",
+                    narrative=follow_up_summary,
+                )
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="assistant_message",
+                    speaker_role="supervisor",
+                    title="Supervisor",
+                    content=content,
+                    payload={
+                        **payload,
+                        "source": "post_investigation_follow_up",
+                        "kind": "specialist_synthesis",
+                        "question": current_query,
+                    },
+                )
+
                 return {
-                    "final_response": specialist_response,
+                    "final_response": final_followup_text,
                     "next": "FINISH",
                     "thought_traces": {
                         **existing_traces,
                         "supervisor": [
                             *existing_traces.get("supervisor", []),
-                            "A specialist answered the follow-up in the same incident thread.",
+                            "Wrapped the fresh specialist run with a conversational synthesis.",
                         ],
                     },
                     "metadata": {
                         **metadata,
                         "conversation_mode": "assistant",
                         "post_investigation_follow_up": True,
-                        "final_response": specialist_response,
+                        "final_response": final_followup_text,
                     },
                 }
 
-            follow_up_response = state.get("final_response") or metadata.get("final_response")
-            if not follow_up_response and agent_results:
-                follow_up_response = next(iter(agent_results.values()))
-            follow_up_response = follow_up_response or "Follow-up complete."
-
-            assistant_content, assistant_payload = build_supervisor_direct_answer_content(
-                current_query,
-                follow_up_response,
-                metadata.get("follow_up_basis") or "The completed incident summary already covers this follow-up.",
-            )
-            await emit_timeline_event(
-                incident_id,
-                event_type="assistant_message",
-                speaker_role="supervisor",
-                title="Supervisor",
-                content=assistant_content,
-                payload={
-                    **assistant_payload,
-                    "source": "post_investigation_follow_up",
-                    "question": current_query,
-                },
-            )
-
+            # No specialist results in this turn — direct path was already
+            # handled in route(), so this is a safe no-op fall-through.
             return {
-                "final_response": follow_up_response,
+                "final_response": state.get("final_response") or metadata.get("final_response") or "",
                 "next": "FINISH",
-                "thought_traces": {
-                    **existing_traces,
-                    "supervisor": [
-                        *existing_traces.get("supervisor", []),
-                        "I kept the follow-up in the same incident thread without reopening the investigation.",
-                    ],
-                },
+                "thought_traces": existing_traces,
                 "metadata": {
                     **metadata,
                     "conversation_mode": "assistant",
                     "post_investigation_follow_up": True,
-                    "final_response": follow_up_response,
                 },
             }
 
@@ -1150,12 +1356,29 @@ You can:
             "result back to the user as the final investigation summary."
         )
 
+        # Generate the conversational, multi-section synthesis (TL;DR / What we
+        # saw / Root cause / Why / Next steps). This is the core fix that turns
+        # the wrap-up message from a templated 'Investigation Summary' card into
+        # something the on-call engineer can actually act on.
+        narrative_summary = ""
+        try:
+            narrative_summary = await narrate_supervisor_summary(
+                self.llm,
+                objective=state.get("current_query", "the incident"),
+                alert_context=alert_context,
+                agent_results=agent_results,
+            )
+        except Exception as e:
+            logger.warning(f"Final summary narration failed, using fallback: {e}")
+
         summary_content, summary_payload = build_supervisor_summary_content(
             final_response,
             agent_results,
             query=state.get("current_query", ""),
             alert_context=alert_context,
+            narrative=narrative_summary,
         )
+        summary_payload["narrative"] = narrative_summary or summary_content
         await emit_timeline_event(
             incident_id,
             event_type="summary",

@@ -21,6 +21,11 @@ from .incident_timeline import (
     visible_specialist_role,
 )
 from .llm_utils import create_llm_with_error_handling
+from .narrative import (
+    SPECIALIST_LABELS,
+    build_specialist_task_brief,
+    narrate_specialist_finding,
+)
 from .prompt_loader import prompt_loader
 
 # Logging will be configured by the main entry point
@@ -164,19 +169,40 @@ class BaseAgentNode:
     async def __call__(self, state: AgentState) -> Dict[str, Any]:
         """Process the current state and return updated state."""
         try:
-            # Get the last user message
-            messages = state["messages"]
+            # NOTE: We intentionally do NOT pull state["messages"] here. Each
+            # specialist runs in isolation with only its own system prompt +
+            # task brief. Including the accumulated state["messages"] caused
+            # two real bugs in the live audit:
+            #   1. The next specialist would see prior specialists' tool_call
+            #      AIMessages that referenced tools NOT bound to its own
+            #      react agent, triggering LangChain's INVALID_CHAT_HISTORY
+            #      validation error ("Found AIMessages with tool_calls that
+            #      do not have a corresponding ToolMessage" / unknown tool).
+            #   2. LLMs would hallucinate that they had called tools that
+            #      another specialist actually called (e.g. the Loki
+            #      Specialist reporting on a get_metric_range failure that
+            #      really belonged to the Prometheus Specialist).
+            # The full alert-aware context the specialist needs is already
+            # baked into user_message via build_specialist_task_brief().
             agent_type = self._get_agent_type()
             agent_key = internal_agent_name(agent_type)
 
-            # Create a focused query for this agent
-            agent_prompt = (
-                f"As the {self.name}, help with: {state.get('current_query', '')}"
+            # Build a rich, alert-aware task brief. This is the single
+            # most important fix for diagnostic quality: previously the
+            # specialist only saw the alert NAME, so it would query with
+            # hardcoded labels (e.g. service="web-service") that didn't
+            # match the actual alert and come back empty. The brief now
+            # includes the alert payload's label values, time window,
+            # and an explicit instruction to reuse them in tool calls.
+            specialist_role = SPECIALIST_LABELS.get(
+                agent_key, self.name.replace("_", " ").title()
             )
-
-            # If auto_approve_plan is set, add instruction to not ask follow-up questions
-            if state.get("auto_approve_plan", False):
-                agent_prompt += "\n\nIMPORTANT: Provide a complete, actionable response without asking any follow-up questions. Do not ask if the user wants more details or if they would like you to investigate further."
+            agent_prompt = build_specialist_task_brief(
+                specialist_role=specialist_role,
+                objective=state.get("current_query", "") or self.name,
+                alert_context=state.get("alert_context"),
+                auto_approve=bool(state.get("auto_approve_plan", False)),
+            )
 
             # We'll collect all messages and the final response
             all_messages = []
@@ -213,11 +239,15 @@ class BaseAgentNode:
                 async def execute_agent():
                     nonlocal agent_response  # Fix scope issue - allow access to outer variable
                     chunk_count = 0
+                    # Isolated chat history: only this specialist's system
+                    # prompt + alert-aware brief. See the note at the top
+                    # of __call__ for why we don't include state["messages"].
+                    isolated_messages = [system_message, user_message]
                     logger.info(
-                        f"{self.name} - Executing agent with {[system_message] + messages + [user_message]}"
+                        f"{self.name} - Executing agent with {isolated_messages}"
                     )
                     async for chunk in self.agent.astream(
-                        {"messages": [system_message] + messages + [user_message]}
+                        {"messages": isolated_messages}
                     ):
                         chunk_count += 1
                         logger.info(
@@ -328,11 +358,32 @@ class BaseAgentNode:
             specialist_agent_name = agent_key
             speaker_role = visible_specialist_role(specialist_agent_name)
             if speaker_role != "system":
+                # Narrate the finding conversationally before persisting it.
+                # The specialist's raw markdown response (with its tables, tool
+                # output, etc.) is preserved in the structured payload, but the
+                # visible chat content reads like a teammate's Slack post.
+                narrative_text = ""
+                try:
+                    narrative_text = await narrate_specialist_finding(
+                        self.llm,
+                        agent_name=specialist_agent_name,
+                        objective=state.get("current_query", "") or self.name,
+                        alert_context=state.get("alert_context"),
+                        raw_response=agent_response,
+                    )
+                except Exception as narration_error:
+                    logger.warning(
+                        f"{self.name} - finding narration failed, falling back: {narration_error}"
+                    )
+
                 finding_content, finding_payload = build_specialist_finding_content(
                     specialist_agent_name,
                     state.get("current_query", ""),
                     agent_response,
+                    narrative=narrative_text,
                 )
+                finding_payload["narrative"] = narrative_text or finding_content
+
                 await emit_timeline_event(
                     incident_id,
                     event_type="finding",
@@ -342,13 +393,21 @@ class BaseAgentNode:
                     payload=finding_payload,
                 )
 
+            # Intentionally do NOT return "messages" here. The specialist's
+            # internal tool_call AIMessages and ToolMessages are an
+            # implementation detail of THIS specialist's react loop and
+            # must not leak into state["messages"] — otherwise the next
+            # specialist (with a different bound tool set) would see
+            # tool_calls referencing tools it doesn't have, triggering
+            # LangChain's INVALID_CHAT_HISTORY error. The full raw response
+            # is preserved in agent_results[agent_key] for the supervisor
+            # to synthesize from, and in metadata[..._trace] for debugging.
             return {
                 "agent_results": {
                     **state.get("agent_results", {}),
                     agent_key: agent_response,
                 },
                 "agents_invoked": state.get("agents_invoked", []) + [agent_key],
-                "messages": messages + all_messages,
                 "metadata": {
                     **state.get("metadata", {}),
                     f"{agent_key}_trace": all_messages,

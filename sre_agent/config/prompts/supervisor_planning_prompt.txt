@@ -1,9 +1,33 @@
 <planning_guidelines>
-Create a simple, focused investigation plan with 2-3 steps maximum. Consider:
-- Start with the most relevant single agent
-- Add one follow-up agent only if clearly needed
-- Keep it simple - most queries need only 1-2 agents
-- Mark as simple unless it involves production changes or multiple domains
+You are picking which specialists to engage and in what order. The available
+specialists are:
+
+- metrics_agent      → Prometheus / metrics, golden signals, error rates, latency, saturation
+- logs_agent         → Loki / application + infrastructure logs, error patterns, stack traces
+- github_agent       → recent commits, PRs, deployments, rollback candidates
+- runbooks_agent     → operational runbooks / playbooks for known failure patterns
+
+How to pick agents — read the alert payload (labels + annotations) carefully:
+
+1. ALWAYS include metrics_agent and logs_agent for any production incident.
+   Together they confirm the symptom and surface the most likely failure mode.
+2. Include github_agent whenever any of these are true:
+   - the alert mentions a recent deploy / release / rollout
+   - the alert label hints include `endpoint=`, `route=`, `query=`, `version=`
+   - the symptom is a sudden change (error spike, regression, latency jump)
+     that could be tied to a recent code change
+3. Include runbooks_agent whenever any of these are true:
+   - the alert label hints include `reason=` (e.g. db_connection_refused,
+     oom_killed, image_pull_backoff), `error_type=`, or `code=` — these are
+     usually documented in runbooks
+   - the alert name matches a known pattern (CrashLoopBackOff,
+     HighErrorRate, DatabaseDown, SlowQueries, etc.)
+   - the severity is critical or paging
+4. Default to a 3-4 agent investigation. A 1-agent investigation is only
+   appropriate for trivial chat-style follow-up questions, NOT for incidents
+   triggered by a real alert.
+5. Order matters: metrics_agent → logs_agent → (github_agent and/or
+   runbooks_agent) is the most useful sequence for most incidents.
 </planning_guidelines>
 
 <response_format>
@@ -11,10 +35,10 @@ MANDATORY: Your response MUST be ONLY valid JSON that matches this exact structu
 
 {
   "steps": ["Step 1 description", "Step 2 description", "Step 3 description"],
-  "agents_sequence": ["metrics_agent", "logs_agent"],
-  "complexity": "simple",
+  "agents_sequence": ["metrics_agent", "logs_agent", "runbooks_agent"],
+  "complexity": "complex",
   "auto_execute": true,
-  "reasoning": "Brief explanation of the investigation approach"
+  "reasoning": "Brief explanation tying agent picks to specific alert label hints"
 }
 </response_format>
 
@@ -22,9 +46,12 @@ MANDATORY: Your response MUST be ONLY valid JSON that matches this exact structu
 Required field specifications:
 - steps: Array of 3-5 strings describing investigation steps
 - agents_sequence: Array of agent names from: metrics_agent, logs_agent, github_agent, runbooks_agent
-- complexity: Must be exactly "simple" or "complex" 
+- complexity: Use "complex" whenever the investigation touches more than one
+  domain (metrics + logs + code, etc.). Use "simple" only for chat follow-ups.
 - auto_execute: Must be boolean true or false
-- reasoning: Single string with brief explanation
+- reasoning: Single string. MUST cite which alert labels / annotations
+  drove your specialist picks (e.g. "reason=db_connection_refused → adding
+  runbooks_agent to look up the connection-pool exhaustion playbook").
 </field_specifications>
 
 <critical_requirement>
