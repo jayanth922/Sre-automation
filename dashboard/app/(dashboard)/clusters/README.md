@@ -7,22 +7,24 @@ This subtree contains the cluster-scoped dashboard pages. It is where operators 
 1. [id]/page.tsx redirects the cluster root into the incident list.
 2. [id]/incidents/page.tsx shows the table of incidents for that cluster.
 3. [id]/incidents/[incidentId]/ opens the incident workspace.
-4. [id]/audit/page.tsx shows the audit log for remediation and operator actions.
+4. [id]/analytics/page.tsx shows cluster analytics (MTTR, severity distribution, recurring alerts).
+5. [id]/audit/page.tsx shows the audit log for remediation and operator actions.
 
 ## What This Subtree Represents
 
 Cluster identity is the pivot for most dashboard interactions. Once a cluster is selected, the rest of the experience stays scoped to that cluster so the operator can follow incidents, actions, and transcripts without losing context.
 
-This subtree is the operator’s path from overview to action:
+This subtree is the operator's path from overview to action:
 
 - cluster selection,
 - incident review,
+- analytics and trend inspection,
 - incident conversation and follow-up,
 - and audit inspection.
 
 ## How The Pages Relate
 
-The redirect page keeps the cluster root from becoming a dead end. The incidents page provides the operational table view. The incident page is the main workspace. The audit page gives the compliance and remediation record that closes the loop.
+The redirect page keeps the cluster root from becoming a dead end. The incidents page provides the operational table view plus active controls (`Analytics`, `Refresh`, `Flush incidents`) and an incident-count status pill. The incident page is the main workspace. The analytics page helps operators reason about trend and severity patterns. The audit page gives the compliance and remediation record that closes the loop.
 
 ## Extension Notes
 

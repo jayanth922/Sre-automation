@@ -1,23 +1,23 @@
 graph TB
     subgraph Org["Organization Management"]
-        ORGANIZATION["ORGANIZATION<br/>org_id (PK)<br/>name<br/>created_at"]
-        USER["USER<br/>user_id (PK)<br/>email<br/>role<br/>org_id (FK)"]
+        ORGANIZATION["ORGANIZATION<br/>id (PK)<br/>name<br/>api_key (unique)<br/>created_at"]
+        USER["USER<br/>id (PK)<br/>email<br/>hashed_password<br/>full_name<br/>role<br/>is_active<br/>org_id (FK)<br/>created_at"]
     end
 
     subgraph Cluster["Cluster & Infrastructure"]
-        CLUSTER["CLUSTER<br/>cluster_id (PK)<br/>name<br/>api_endpoint<br/>token<br/>org_id (FK)"]
-        JOB["JOB<br/>job_id (PK)<br/>cluster_id (FK)<br/>job_type<br/>status<br/>created_at"]
-        SLO["SLO<br/>slo_id (PK)<br/>cluster_id (FK)<br/>service<br/>error_budget"]
+        CLUSTER["CLUSTER<br/>id (PK)<br/>name<br/>org_id (FK)<br/>token<br/>status<br/>last_heartbeat<br/>prometheus_url<br/>loki_url<br/>k8s_api_server<br/>k8s_token<br/>github_token<br/>github_repo<br/>notion_api_key<br/>notion_database_id<br/>created_at"]
+        JOB["JOB<br/>id (PK)<br/>cluster_id (FK)<br/>job_type<br/>status<br/>payload<br/>result<br/>logs<br/>created_at<br/>started_at<br/>completed_at"]
+        SLO["SLO<br/>id (PK)<br/>cluster_id (FK)<br/>name<br/>sli_metric<br/>target<br/>window_days<br/>current_value<br/>error_budget_remaining<br/>last_calculated<br/>created_at"]
     end
 
     subgraph Incident["Incident & Timeline"]
-        INCIDENT["INCIDENT<br/>incident_id (PK)<br/>cluster_id (FK)<br/>title<br/>status"]
-        TIMELINE["INCIDENT_TIMELINE_EVENT<br/>event_id (PK)<br/>incident_id (FK)<br/>event_type<br/>content<br/>pending_supervisor<br/>timestamp"]
+        INCIDENT["INCIDENT<br/>id (PK)<br/>cluster_id (FK)<br/>title<br/>description<br/>severity<br/>status<br/>summary<br/>created_at<br/>resolved_at"]
+        TIMELINE["INCIDENT_TIMELINE_EVENT<br/>id (PK)<br/>incident_id (FK)<br/>sequence<br/>event_type<br/>speaker_role<br/>title<br/>content<br/>payload_json<br/>pending_supervisor<br/>handled_at<br/>created_at"]
     end
 
     subgraph Audit["Audit & Compliance"]
-        AUDITLOG["AUDITLOG<br/>log_id (PK)<br/>user_id (FK)<br/>action<br/>timestamp"]
-        AUDITEVENT["AUDITEVENT<br/>event_id (PK)<br/>log_id (FK)<br/>event_details"]
+        AUDITLOG["AUDITLOG<br/>id (PK)<br/>user_id (FK)<br/>action<br/>target_resource<br/>target_id<br/>timestamp"]
+        AUDITEVENT["AUDITEVENT<br/>id (PK)<br/>cluster_id (FK)<br/>timestamp<br/>actor_type<br/>actor_id<br/>action_type<br/>resource_target<br/>outcome<br/>details"]
     end
 
     ORGANIZATION -->|owns| CLUSTER
@@ -26,8 +26,8 @@ graph TB
     CLUSTER -->|has| INCIDENT
     CLUSTER -->|queues| JOB
     CLUSTER -->|defines| SLO
+    CLUSTER -->|emits| AUDITEVENT
     INCIDENT -->|generates| TIMELINE
-    AUDITLOG -->|records| AUDITEVENT
 
     style ORGANIZATION fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
     style USER fill:#e3f2fd,stroke:#1976d2,stroke-width:2px

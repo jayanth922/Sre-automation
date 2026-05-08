@@ -1,5 +1,5 @@
 flowchart TD
-    Start["User visits localhost:3000"] --> Check{"Token exists<br/>in cookie?"}
+    Start["User visits dashboard<br/>localhost:3002 (compose)<br/>or localhost:3000 (dev)"] --> Check{"Token exists<br/>in cookie?"}
     Check -->|No| Redirect1["Redirect to /login"]
     Check -->|Yes| Validate{"Token valid<br/>& not expired?"}
     Validate -->|No| Redirect1

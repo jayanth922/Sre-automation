@@ -1,41 +1,41 @@
 flowchart TD
     subgraph JobLifecycle["Job Lifecycle"]
-        Create["1. Job Created<br/>type: edge_task<br/>or agent_task<br/>status: queued"]
-        Queue["2. Job enqueued<br/>to job_queue<br/>cluster_id scoped"]
-        Poll["3. Worker polls<br/>job_queue<br/>status: processing"]
-        Execute["4. Task executed<br/>edge or agent<br/>logs events"]
-        Result["5. Result persisted<br/>status: completed<br/>or failed"]
-        Clean["6. Job removed<br/>from queue"]
+        Create["1. Job row created in Postgres<br/>job_type: tool_call | investigation | remediation<br/>status: pending"]
+        Pick["2. Worker/runtime picks pending job<br/>cluster_id scoped"]
+        Run["3. Investigation or action executes<br/>status: running<br/>logs appended"]
+        Result["4. Result persisted<br/>status: completed or failed<br/>result JSON + timestamps"]
     end
 
     subgraph JobSources["Job Creation Sources"]
-        Agent["Agent Runtime<br/>POST /invocations<br/>creates incident jobs"]
-        User["Dashboard User<br/>Manual trigger<br/>remediation jobs"]
-        Schedule["Scheduler<br/>Periodic sync<br/>health check jobs"]
+        Alert["Alertmanager webhook<br/>POST /alerts/webhook"]
+        User["Dashboard trigger<br/>POST /clusters/{id}/jobs/trigger"]
+        Incident["Incident trigger/follow-up<br/>/clusters/{id}/trigger<br/>/incidents/{id}/message"]
     end
 
     subgraph JobTypes["Job Types"]
-        EdgeJob["Edge Job<br/>apply Kubernetes patch<br/>restart pod<br/>toggle chaos"]
-        AgentJob["Agent Job<br/>run investigation<br/>check SLO<br/>generate report"]
+        ToolCall["TOOL_CALL<br/>tool execution task"]
+        Investigation["INVESTIGATION<br/>incident analysis turn"]
+        Remediation["REMEDIATION<br/>approved action execution"]
     end
 
-    subgraph Storage["State Storage"]
-        DB["PostgreSQL<br/>job_id, status<br/>created_at<br/>result"]
-        Redis["Redis Queue<br/>job_id in queue<br/>priority ordering"]
+    subgraph StatusModel["Job Status Enum"]
+        Pending["PENDING"]
+        Running["RUNNING"]
+        Completed["COMPLETED"]
+        Failed["FAILED"]
     end
 
     JobSources --> Create
-    Create --> Queue
-    Queue --> Redis
-    Redis --> Poll
-    Poll --> Execute
-    JobTypes --> Execute
-    Execute --> Result
-    Result --> DB
-    Result --> Clean
-    Clean --> Redis
+    Create --> Pick
+    Pick --> Run
+    JobTypes --> Run
+    Run --> Result
+    Pending --> Pick
+    Pick --> Running
+    Running --> Completed
+    Running --> Failed
 
     style JobSources fill:#e1f5ff
     style JobLifecycle fill:#f3e5f5
     style JobTypes fill:#fff3e0
-    style Storage fill:#fce4ec
+    style StatusModel fill:#fce4ec

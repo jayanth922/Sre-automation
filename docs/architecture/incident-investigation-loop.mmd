@@ -3,17 +3,18 @@ flowchart TD
     Two["2. Dashboard sends<br/>follow-up message or<br/>user initiates"]
     Three["3. Invocation queued<br/>to sre_agent runtime"]
     Four["4. Graph initializes state<br/>with incident context<br/>& MCP tools"]
-    Five["5. Specialists gather<br/>evidence in parallel<br/>K8s, metrics,<br/>logs, code, runbooks"]
-    Six["6. Supervisor aggregates<br/>findings & decides<br/>continue or summarize"]
+    Five["5. Supervisor selects<br/>next specialist step"]
+    Six["6. Selected specialist runs<br/>(K8s, metrics, logs,<br/>code, or runbooks)"]
+    Seven["7. Supervisor reviews<br/>new evidence and decides<br/>continue or summarize"]
     
     Decision{"More evidence<br/>needed?"}
     
-    Seven["7. Generate executive<br/>summary from evidence"]
-    Eight["8. Timeline events<br/>persisted to PostgreSQL<br/>with pending status"]
-    Nine["9. Follow-up state<br/>stored to Redis<br/>for conversation resume"]
-    Ten["10. Response returned<br/>to dashboard"]
-    Eleven["11. Dashboard updates<br/>incident panel<br/>& transcript"]
-    Twelve["12. Operator reads<br/>findings & decides<br/>on remediation"]
+    Eight["8. Aggregate node builds<br/>executive summary"]
+    Nine["9. Timeline + incident summary<br/>persisted to PostgreSQL"]
+    Ten["10. Live state/logs updated<br/>for polling and follow-up"]
+    Eleven["11. Response returned<br/>to dashboard"]
+    Twelve["12. Dashboard updates<br/>incident panel<br/>& transcript"]
+    Thirteen["13. Operator reviews findings<br/>and decides on remediation"]
     
     Resume["User sends<br/>follow-up message"]
 
@@ -22,20 +23,21 @@ flowchart TD
     Three --> Four
     Four --> Five
     Five --> Six
-    Six --> Decision
+    Six --> Seven
+    Seven --> Decision
     Decision -->|Yes| Five
-    Decision -->|No| Seven
-    Seven --> Eight
+    Decision -->|No| Eight
     Eight --> Nine
     Nine --> Ten
     Ten --> Eleven
     Eleven --> Twelve
-    Twelve --> Resume
+    Twelve --> Thirteen
+    Thirteen --> Resume
     Resume --> Two
 
     style One fill:#e1f5ff
     style Decision fill:#ffe0b2
-    style Seven fill:#e8f5e9
-    style Eleven fill:#f3e5f5
-    style Twelve fill:#fff3e0
+    style Eight fill:#e8f5e9
+    style Twelve fill:#f3e5f5
+    style Thirteen fill:#fff3e0
     style Resume fill:#fff3e0

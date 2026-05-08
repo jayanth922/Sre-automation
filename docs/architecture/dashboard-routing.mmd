@@ -13,7 +13,7 @@ graph TB
         Config["next.config.ts<br/>rewrite /api → backend<br/>rewrite /auth → backend"]
     end
 
-    Browser["Browser<br/>localhost:3000"]
+    Browser["Browser<br/>localhost:3002 (compose)<br/>localhost:3000 (dev)"]
     Backend["Backend API<br/>localhost:8080"]
 
     Browser --> Auth

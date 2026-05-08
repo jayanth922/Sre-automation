@@ -21,6 +21,7 @@ For the incident dashboard, the main content area switches to a tighter overflow
 - `clusters/[id]/page.tsx` redirects to the cluster incident list.
 - `clusters/[id]/incidents/page.tsx` shows the incident table.
 - `clusters/[id]/incidents/[incidentId]/` opens the incident conversation view.
+- `clusters/[id]/analytics/page.tsx` shows cluster analytics (incident trends, MTTR, severity distribution, recurring alerts).
 - `clusters/[id]/audit/page.tsx` shows the audit trail.
 
 ## Dashboard Shell Responsibilities
