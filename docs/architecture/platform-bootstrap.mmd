@@ -1,7 +1,7 @@
 flowchart TD
     Start["Start: ./main_start.sh"] --> Env["1. Load .env<br/>or use .env.example<br/>as template"]
     
-    Env --> TC["2. Start Target_Client<br/>docker compose up<br/>Target_Client/docker-compose.yaml"]
+    Env --> TC["2. Start Target_Client<br/>kubectl apply -f Target_Client/k8s/<br/>Apply K8s manifests to Docker Desktop"]
     TC --> TCUP["Target_Client Ready<br/>gateway 8000<br/>services 8001-8002<br/>Prometheus/Loki"]
     
     TCUP --> Platform["3. Start Platform Stack<br/>docker compose up<br/>platform/docker-compose.yaml"]
