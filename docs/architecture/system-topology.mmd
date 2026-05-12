@@ -1,41 +1,38 @@
+%% Portrait / Word-friendly: stacked tiers inside one wrapper subgraph (TB).
+%% Detailed MCP wiring: see mcp-integration.mmd. Original twin microservices
+%% are summarized as one node here to avoid a wide gateway fan-out.
+
 graph TB
-    subgraph Target["Target_Client"]
-        LG["load-generator"]
-        GW["api-gateway"]
-        CK["checkout-service"]
-        INV["inventory-service"]
-        CP["chaos-panel"]
-        LG -->|traffic| GW
-        GW -->|routes| CK
-        GW -->|routes| INV
-        CP -->|controls| LG
+    subgraph Topology[" "]
+        direction TB
+
+        subgraph Platform["platform + backend + sre_agent"]
+            direction TB
+            UI["dashboard"]
+            API["sre_agent runtime"]
+            STORES[("PostgreSQL · Redis · Qdrant")]
+            UI -->|requests| API
+            API -->|persist / state / vector memory| STORES
+        end
+
+        subgraph Edge["edge_mcp_servers"]
+            direction TB
+            MCPS["Kubernetes MCP<br/>Prometheus MCP<br/>Loki MCP<br/>GitHub MCP<br/>Runbooks MCP"]
+        end
+
+        subgraph Target["Target_Client"]
+            direction TB
+            CP["chaos-panel"]
+            LG["load-generator"]
+            GW["api-gateway"]
+            SVC["checkout-service<br/>inventory-service"]
+            CP -->|controls| LG
+            LG -->|traffic| GW
+            GW -->|routes| SVC
+        end
     end
 
-    subgraph Edge["edge_mcp_servers"]
-        K8S["Kubernetes MCP"]
-        PR["Prometheus MCP"]
-        LK["Loki MCP"]
-        GH["GitHub MCP"]
-        RB["Runbooks MCP"]
-    end
-
-    subgraph Platform["platform + backend + sre_agent"]
-        UI["dashboard"]
-        API["sre_agent runtime"]
-        DB[("PostgreSQL")]
-        REDIS[("Redis")]
-        QDRANT[("Qdrant")]
-        UI -->|requests| API
-        API -->|persists| DB
-        API -->|state| REDIS
-        API -->|memory| QDRANT
-    end
-
-    K8S -->|evidence| API
-    PR -->|metrics| API
-    LK -->|logs| API
-    GH -->|commits| API
-    RB -->|runbooks| API
+    MCPS -->|"MCP tool results (HTTP/SSE)"| API
 
     style Target fill:#e1f5ff
     style Edge fill:#fff3e0
