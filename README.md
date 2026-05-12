@@ -38,6 +38,50 @@ The backend persists organizations, users, clusters, incidents, timeline events,
 
 For implementation details and diagram maintenance, see [docs/architecture/README.md](docs/architecture/README.md).
 
+## Screenshots
+
+### Dashboard — Login
+
+![Login Page](docs/Screenshot%20(632).png)
+
+### Dashboard — Cluster Overview
+
+![Cluster Overview](docs/Screenshot%20(631).png)
+
+### Dashboard — Incident List
+
+![Incident List](docs/Screenshot%20(620).png)
+
+### Dashboard — Multi-Agent Incident Investigation
+
+The incident dashboard shows a conversational view where the Supervisor agent orchestrates specialist agents (Performance Metrics, Application Logs, Code Change Intelligence, Operational Runbooks) to investigate and resolve a critical `CheckoutHighErrorRate` alert.
+
+![Incident Investigation — Supervisor kicks off and Prometheus + Loki agents respond](docs/Screenshot%20(624).png)
+
+![Incident Investigation — Loki, GitHub, and Code Change agents provide findings](docs/Screenshot%20(625).png)
+
+![Incident Investigation — Runbooks agent responds and Supervisor begins summary](docs/Screenshot%20(626).png)
+
+![Incident Investigation — Final TL;DR, root cause analysis, and next steps](docs/Screenshot%20(627).png)
+
+### Target Client — Chaos Control Panel
+
+![Chaos Control Panel](docs/Screenshot%20(619).png)
+
+### Infrastructure — Startup and Teardown
+
+#### Target Client startup (`./main_start.sh`)
+
+![Target Client Startup](docs/Screenshot%202026-05-07%20203306.png)
+
+#### Platform startup (Docker Compose)
+
+![Platform Startup](docs/Screenshot%202026-05-07%20203332.png)
+
+#### Full system teardown (`./main_Stop.sh`)
+
+![System Teardown](docs/Screenshot%202026-05-07%20203404.png)
+
 ## Repository Map
 
 | Path | What It Teaches |
