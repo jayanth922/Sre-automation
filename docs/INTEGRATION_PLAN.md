@@ -146,9 +146,19 @@ repo's Qdrant incident-memory (`memory_store.py`, `recall_similar_incidents` /
 similar ones into the Planner. Wrapping the Executor (#1) in Hermes/OpenClaw
 turns successful remediations into named, replayable skills.
 
-**Integration points.** A runtime adapter behind the Executor node; persist
-learned skills alongside incident memory so the Planner can propose "apply skill
-X" for a recurring incident class.
+**Integration points (built).** Two parts:
+1. **Skill memory** (`skill_store.py`) — applied remediations become reusable,
+   success-compounding skills; the Planner proposes matches for recurring
+   incidents (closing the self-improving loop).
+2. **Hermes as a real actor backend** (`actor_runtime.py`) — a pluggable
+   `AgentRuntime` for the terminal/executor actor: `LocalTerminalRuntime` (our
+   `TerminalAgent`) by default, `HermesRuntime` (Nous Research Hermes Agent, via
+   its documented `AIAgent` API) when `AGENT_RUNTIME=hermes`. This is the key
+   design call: **LangGraph stays the orchestrator** of the safe/auditable flow;
+   Hermes is used where an autonomous agent framework belongs — the "hands," not
+   the brain. Install with the `hermes` extra. Replacing LangGraph wholesale
+   would trade away the auditability and human-in-the-loop control the SRE
+   pipeline requires, so we integrate Hermes rather than swap the engine.
 
 ### #3 — Slack + AI → chat-native steering + reliable NL→data
 

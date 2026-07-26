@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Unit tests for the pluggable actor runtime (project #2: Hermes backend)."""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sre_agent.actor_runtime import (  # noqa: E402
+    ActorResult,
+    HermesRuntime,
+    LocalTerminalRuntime,
+    get_agent_runtime,
+)
+
+
+def _scripted_decider(task, history):
+    if history:
+        return {"action": "done", "success": True, "reason": "done"}
+    return {"action": "run", "command": "echo hi"}
+
+
+def test_local_runtime_runs_terminal_agent(tmp_path):
+    rt = LocalTerminalRuntime(decider=_scripted_decider, workdir=str(tmp_path), max_steps=5)
+    res = rt.run("say hi")
+    assert isinstance(res, ActorResult)
+    assert res.backend == "local-terminal"
+    assert res.status == "SOLVED"
+    assert "echo hi" in res.output
+
+
+def test_factory_selects_local_by_default(monkeypatch):
+    monkeypatch.delenv("AGENT_RUNTIME", raising=False)
+    assert isinstance(get_agent_runtime(), LocalTerminalRuntime)
+
+
+def test_factory_selects_hermes(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME", "hermes")
+    assert isinstance(get_agent_runtime(), HermesRuntime)
+
+
+def test_factory_openclaw_maps_to_hermes():
+    assert isinstance(get_agent_runtime("openclaw"), HermesRuntime)
+
+
+def test_hermes_runtime_raises_clear_error_without_package():
+    # hermes-agent isn't installed here → run() must fail with an install hint,
+    # not a cryptic ImportError.
+    with pytest.raises(RuntimeError, match="hermes-agent not installed"):
+        HermesRuntime().run("do something")
+
+
+def test_hermes_runtime_construction_does_not_import_package():
+    # Constructing the backend must not require the package (only run() does).
+    rt = HermesRuntime(model="anthropic/claude-sonnet-4.6", max_iterations=10)
+    assert rt.name == "hermes"
+    assert rt.max_iterations == 10
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

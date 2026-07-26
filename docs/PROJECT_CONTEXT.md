@@ -281,6 +281,19 @@ Four-layer multi-agent incident-response system:
   - Honest note: #4 cockpit is an SRE-monitoring reframe of Superset/T3's
     "orchestrate coding agents" — deliberate, not a coding-agent orchestrator.
 
+- **2026-07-26 — #2 completed properly: Hermes actually used (not just skill memory).**
+  - Q "why not Hermes instead of LangGraph?" → LangGraph stays the ORCHESTRATOR
+    (auditable, gated, human-in-loop = SRE requirement); Hermes = autonomous ACTOR.
+    Replacing the engine ≠ integrating; it'd be a rewrite + downgrade for safety.
+  - Researched + verified Hermes's real Python API (docs): `pip install
+    git+…/hermes-agent`, `from run_agent import AIAgent`, `run_conversation`/`chat`,
+    `disabled_toolsets`/`skip_memory`/`max_iterations`.
+  - `sre_agent/actor_runtime.py`: `AgentRuntime` interface + `LocalTerminalRuntime`
+    (default) + `HermesRuntime` (real, guarded import). `get_agent_runtime` via
+    `AGENT_RUNTIME=local|hermes`. terminal_agent CLI uses it. `hermes` extra in
+    pyproject. 6 tests (local runs; hermes raises clean install error here).
+  - Note: #4 cockpit intentionally dropped as out-of-scope (user agreed).
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

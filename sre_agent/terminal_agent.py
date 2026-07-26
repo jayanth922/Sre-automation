@@ -192,14 +192,17 @@ def _main() -> int:
     parser.add_argument("--max-steps", type=int, default=15)
     args = parser.parse_args()
 
-    from .model_router import TaskType, route_llm
+    # Backend selection: AGENT_RUNTIME=local (our TerminalAgent) | hermes (Nous
+    # Research Hermes Agent). Both implement the same AgentRuntime interface.
+    from .actor_runtime import get_agent_runtime
 
-    llm = route_llm(TaskType.SPECIALIST, use_fallback=True)
-    agent = TerminalAgent(make_llm_decider(llm), workdir=args.workdir, max_steps=args.max_steps)
-    result = agent.run(args.task)
-    print(result.transcript())
-    print(f"\n== {result.status}: {result.summary}")
-    return 0 if result.status == "SOLVED" else 1
+    runtime = get_agent_runtime(workdir=args.workdir, max_steps=args.max_steps) \
+        if os.getenv("AGENT_RUNTIME", "local").lower() == "local" \
+        else get_agent_runtime()
+    result = runtime.run(args.task)
+    print(result.output)
+    print(f"\n== [{result.backend}] {result.status}: {result.detail}")
+    return 0 if result.status in ("SOLVED", "DONE") else 1
 
 
 if __name__ == "__main__":

@@ -69,6 +69,11 @@ bench = [
     # This group exists as a marker and for any future bench-only additions.
     "pytest-benchmark>=4.0.0",
 ]
+# Optional autonomous-actor backend (project #2). Install to run the Hermes
+# runtime: `uv pip install -e '.[hermes]'` and set AGENT_RUNTIME=hermes.
+hermes = [
+    "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git",
+]
 
 
 
