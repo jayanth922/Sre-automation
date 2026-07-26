@@ -21,6 +21,7 @@ the real ``AgentState`` / ``RemediationPlan`` and with lightweight test doubles.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -239,4 +240,31 @@ def apply_skill_learning(state: Any, report: ActReport, store: Any = None) -> Di
     return {
         "proposed_skills": [s.brief() for s in proposed],
         "recorded_skill": recorded.brief() if recorded else None,
+    }
+
+
+async def verify_live(state: Any, tool_caller: Any, wait_seconds: int = 0) -> Dict[str, Any]:
+    """Confirm a remediation worked by re-checking the incident's error rate.
+
+    Builds an error-rate PromQL for the affected service, re-queries it through
+    the injected Prometheus tool_caller, and evaluates RESOLVED/FAILED against a
+    configurable threshold. Injected caller → testable without a live cluster.
+    """
+    from .nl_query import QueryIntent, build_promql
+    from .skill_store import signature_from_alert
+    from .verification import verify_remediation
+
+    alert = _get(state, "alert_context")
+    service = signature_from_alert(alert).service
+    promql = build_promql(QueryIntent("error_rate", None if service == "unknown" else service, "5m"))
+    threshold = float(os.getenv("VERIFY_ERROR_THRESHOLD", "0.05"))
+
+    outcome = await verify_remediation(promql, threshold, tool_caller, wait_seconds=wait_seconds)
+    return {
+        "status": outcome.status,
+        "current_value": outcome.current_value,
+        "threshold": threshold,
+        "improvement_pct": outcome.improvement_pct,
+        "detail": outcome.detail,
+        "promql": promql,
     }

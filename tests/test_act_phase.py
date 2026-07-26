@@ -21,6 +21,7 @@ from sre_agent.act_phase import (  # noqa: E402
     build_act_report,
     execute_autonomous_live,
     extract_incident_signals,
+    verify_live,
 )
 from sre_agent.skill_store import InMemorySkillStore  # noqa: E402
 
@@ -161,6 +162,21 @@ def test_apply_skill_learning_records_then_proposes():
     out2 = apply_skill_learning(_state(alert, plan), report2, store=store)
     assert len(out2["proposed_skills"]) == 1
     assert out2["proposed_skills"][0]["actions"] == ["rollback"]
+
+
+def test_verify_live_builds_query_and_evaluates():
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    state = _state(alert)
+
+    captured = {}
+
+    async def caller(tool, args):
+        captured["query"] = args["query"]
+        return [{"value": [0, "0.01"]}]  # below threshold → RESOLVED
+
+    out = asyncio.run(verify_live(state, caller))
+    assert 'http_errors_total{service="checkout-service"}' in captured["query"]
+    assert out["status"] == "RESOLVED"
 
 
 if __name__ == "__main__":

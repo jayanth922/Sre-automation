@@ -271,29 +271,43 @@ class Executor:
             )
 
 
-async def build_executor_tool_caller(uri: Optional[str] = None):
-    """Build a live async tool_caller bound to the executor MCP server.
+async def build_mcp_tool_caller(uri: str, server_name: str = "server"):
+    """Build a generic async tool_caller bound to any MCP (SSE) server.
 
     Lazily imports the MCP adapter so importing this module stays dependency-light.
+    Returns an async ``(tool_name, args) -> result`` callable.
     """
-    uri = uri or os.getenv("MCP_EXECUTOR_URI")
     if not uri:
-        raise RuntimeError("MCP_EXECUTOR_URI is not set; cannot reach the executor server")
+        raise RuntimeError("MCP URI not set")
 
     from langchain_mcp_adapters.client import MultiServerMCPClient  # lazy
 
-    client = MultiServerMCPClient({"executor": {"url": uri, "transport": "sse"}})
+    client = MultiServerMCPClient({server_name: {"url": uri, "transport": "sse"}})
     tools = await client.get_tools()
     by_name = {getattr(t, "name", ""): t for t in tools}
 
     async def _caller(tool_name: str, args: Dict[str, Any]) -> Any:
         tool = by_name.get(tool_name)
         if tool is None:
-            raise RuntimeError(
-                f"executor tool '{tool_name}' not found (available: {sorted(by_name)})"
-            )
+            raise RuntimeError(f"tool '{tool_name}' not found (available: {sorted(by_name)})")
         if hasattr(tool, "ainvoke"):
             return await tool.ainvoke(args)
         return tool.invoke(args)
 
     return _caller
+
+
+async def build_executor_tool_caller(uri: Optional[str] = None):
+    """Tool caller bound to the executor MCP server (MCP_EXECUTOR_URI)."""
+    uri = uri or os.getenv("MCP_EXECUTOR_URI")
+    if not uri:
+        raise RuntimeError("MCP_EXECUTOR_URI is not set; cannot reach the executor server")
+    return await build_mcp_tool_caller(uri, "executor")
+
+
+async def build_metrics_tool_caller(uri: Optional[str] = None):
+    """Tool caller bound to the Prometheus MCP server (MCP_METRICS_URI)."""
+    uri = uri or os.getenv("MCP_METRICS_URI")
+    if not uri:
+        raise RuntimeError("MCP_METRICS_URI is not set; cannot reach the metrics server")
+    return await build_mcp_tool_caller(uri, "metrics")
