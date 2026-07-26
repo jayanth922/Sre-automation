@@ -42,6 +42,55 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _act_phase_enabled() -> bool:
+    """ACT phase (severity gate + dry-run executor) is opt-in via env flag.
+
+    Default False so the existing advisor flow (supervisor → specialists →
+    aggregate → END) is completely unchanged unless explicitly enabled.
+    """
+    return os.getenv("ACT_PHASE_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
+async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
+    """Graph node: run the severity-gated ACT phase after aggregation.
+
+    Thin wrapper over ``act_phase.build_act_report`` (the pure, tested core).
+    Emits an incident-timeline event when an incident_id is present, and stores
+    the serialized report in metadata for the dashboard/API. Never raises: an
+    ACT failure must not break the investigation transcript.
+    """
+    try:
+        from .act_phase import build_act_report
+
+        report = build_act_report(state)  # dry-run; uses real policy_engine
+        incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
+
+        if incident_id:
+            try:
+                from .incident_timeline import emit_timeline_event
+
+                await emit_timeline_event(
+                    incident_id,
+                    event_type="act",
+                    speaker_role="executor",
+                    title="Executor (dry-run)",
+                    content=report.summary,
+                    payload={"act_report": report.to_dict(), "source": "act_phase"},
+                )
+            except Exception as emit_err:  # timeline emission is best-effort
+                logger.warning(f"ACT timeline emission failed (non-fatal): {emit_err}")
+
+        return {
+            "metadata": {
+                **(state.get("metadata", {}) or {}),
+                "act_report": report.to_dict(),
+            }
+        }
+    except Exception as e:
+        logger.error(f"ACT gate node failed (non-fatal): {e}")
+        return {}
+
+
 def _route_supervisor(state: AgentState) -> str:
     """Route from supervisor to the next visible specialist or summary node."""
     next_node = state.get("next", "metrics_agent")
@@ -57,7 +106,16 @@ def _route_supervisor(state: AgentState) -> str:
         "FINISH": "aggregate",
     }
 
-    return node_map.get(next_node, "aggregate")
+    target = node_map.get(next_node, "aggregate")
+
+    # When ACT is enabled, divert the terminal step through the OODA orient/decide
+    # nodes (reflector → planner) before aggregation, so a remediation plan exists
+    # for the ACT gate to evaluate. Specialist routing is unaffected.
+    if target == "aggregate" and _act_phase_enabled():
+        logger.info("ACT enabled: routing supervisor-complete → reflector (OODA)")
+        return "reflector"
+
+    return target
 
 
 async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
@@ -996,18 +1054,20 @@ def build_multi_agent_graph(
     # Always route through the supervisor so the transcript includes explicit reasoning.
     workflow.add_edge("prepare", "supervisor")
 
-    # Add conditional edges from supervisor
-    workflow.add_conditional_edges(
-        "supervisor",
-        _route_supervisor,
-        {
-            "metrics_agent": "metrics_agent",
-            "logs_agent": "logs_agent",
-            "github_agent": "github_agent",
-            "runbooks_agent": "runbooks_agent",
-            "aggregate": "aggregate",
-        },
-    )
+    # Supervisor routing targets. When the ACT phase is enabled, the supervisor's
+    # terminal "aggregate" decision is diverted through the OODA orient/decide
+    # nodes (reflector → planner) first, so add "reflector" as a valid target.
+    _supervisor_routes = {
+        "metrics_agent": "metrics_agent",
+        "logs_agent": "logs_agent",
+        "github_agent": "github_agent",
+        "runbooks_agent": "runbooks_agent",
+        "aggregate": "aggregate",
+    }
+    if _act_phase_enabled():
+        _supervisor_routes["reflector"] = "reflector"
+
+    workflow.add_conditional_edges("supervisor", _route_supervisor, _supervisor_routes)
 
     # Specialist nodes always hand control back to the supervisor.
     workflow.add_edge("logs_agent", "supervisor")
@@ -1015,8 +1075,29 @@ def build_multi_agent_graph(
     workflow.add_edge("github_agent", "supervisor")
     workflow.add_edge("runbooks_agent", "supervisor")
 
-    # Add edge from aggregate to END
-    workflow.add_edge("aggregate", END)
+    # Terminal wiring. Default (advisor mode) is byte-for-byte the prior flow:
+    # aggregate → END. When ACT is enabled, investigation completion flows through
+    # the full OODA loop:
+    #
+    #   supervisor(done) → reflector (ORIENT) → planner (DECIDE)
+    #                    → aggregate (rich OODA summary) → act_gate (ACT, dry-run) → END
+    #
+    # Reflector's own "deeper investigation" loop-back is intentionally collapsed
+    # to a single forward pass in v1 (fixed reflector → planner edge); wiring the
+    # investigation_swarm loop is a later enhancement.
+    if _act_phase_enabled():
+        logger.info(
+            "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → act_gate → END"
+        )
+        workflow.add_node("reflector", _reflector_node)
+        workflow.add_node("planner", _planner_node)
+        workflow.add_node("act_gate", _act_gate_node)
+        workflow.add_edge("reflector", "planner")
+        workflow.add_edge("planner", "aggregate")
+        workflow.add_edge("aggregate", "act_gate")
+        workflow.add_edge("act_gate", END)
+    else:
+        workflow.add_edge("aggregate", END)
 
     # Compile the graph
     compiled_graph = workflow.compile()
