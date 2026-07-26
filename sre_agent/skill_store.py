@@ -87,6 +87,32 @@ class Skill:
             "success_count": self.success_count,
         }
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "skill_id": self.skill_id,
+            "signature": {
+                "alert_name": self.signature.alert_name,
+                "service": self.signature.service,
+                "failure_class": self.signature.failure_class,
+            },
+            "actions": self.actions,
+            "source_incident_id": self.source_incident_id,
+            "success_count": self.success_count,
+            "notes": self.notes,
+        }
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "Skill":
+        sig = d.get("signature", {})
+        return Skill(
+            skill_id=d["skill_id"],
+            signature=IncidentSignature(sig.get("alert_name", ""), sig.get("service", ""), sig.get("failure_class", "")),
+            actions=d.get("actions", []),
+            source_incident_id=d.get("source_incident_id"),
+            success_count=int(d.get("success_count", 1)),
+            notes=d.get("notes", ""),
+        )
+
 
 def signature_from_alert(alert: Any) -> IncidentSignature:
     """Derive an incident signature from an alert context (dict or object)."""
@@ -135,13 +161,61 @@ class InMemorySkillStore:
         return list(self._skills.values())
 
 
+class JsonSkillStore(InMemorySkillStore):
+    """Skill store persisted to a JSON file — survives process restarts.
+
+    Same interface as InMemorySkillStore; loads on init and saves on every add.
+    A DB/Qdrant-backed store can drop in behind the same interface later.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        import os
+
+        self.path = path
+        self._load()
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+
+    def _load(self) -> None:
+        import json
+        import os
+
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                for d in json.load(f):
+                    skill = Skill.from_dict(d)
+                    self._skills[skill.signature.key()] = skill
+        except Exception as e:  # corrupt/partial file → start empty, don't crash
+            logger.warning(f"SkillStore: could not load {self.path}: {e}")
+
+    def _save(self) -> None:
+        import json
+
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump([s.to_dict() for s in self._skills.values()], f, indent=2)
+        except Exception as e:
+            logger.warning(f"SkillStore: could not persist {self.path}: {e}")
+
+    def add(self, skill: Skill) -> Skill:
+        stored = super().add(skill)
+        self._save()
+        return stored
+
+
 _GLOBAL_STORE: Optional[InMemorySkillStore] = None
 
 
 def get_skill_store() -> InMemorySkillStore:
+    """Process store. JSON-backed (durable) when SKILL_STORE_PATH is set, else in-memory."""
     global _GLOBAL_STORE
     if _GLOBAL_STORE is None:
-        _GLOBAL_STORE = InMemorySkillStore()
+        import os
+
+        path = os.getenv("SKILL_STORE_PATH")
+        _GLOBAL_STORE = JsonSkillStore(path) if path else InMemorySkillStore()
     return _GLOBAL_STORE
 
 

@@ -85,6 +85,38 @@ def test_propose_returns_empty_when_no_match():
     assert skill_store.propose_skills(store, _alert("WeirdUnknownThing", "other-service")) == []
 
 
+def test_skill_to_dict_roundtrip():
+    s = skill_store.skill_from_remediation(_alert("CheckoutHighErrorRate", "checkout-service"),
+                                           [{"action_type": "rollback", "target": "checkout-service"}], "inc-1")
+    s2 = skill_store.Skill.from_dict(s.to_dict())
+    assert s2.skill_id == s.skill_id
+    assert s2.signature.failure_class == "high_error_rate"
+    assert s2.actions[0]["action_type"] == "rollback"
+
+
+def test_json_skill_store_persists_across_instances(tmp_path):
+    path = str(tmp_path / "skills.json")
+    store1 = skill_store.JsonSkillStore(path)
+    skill_store.record_successful_remediation(
+        store1, _alert("CheckoutHighErrorRate", "checkout-service"),
+        [{"action_type": "rollback", "target": "checkout-service"}], "inc-1",
+    )
+    # New instance reading the same file sees the skill.
+    store2 = skill_store.JsonSkillStore(path)
+    proposed = skill_store.propose_skills(store2, _alert("CheckoutHighErrorRate", "checkout-service"))
+    assert len(proposed) == 1
+    assert proposed[0].actions[0]["action_type"] == "rollback"
+
+
+def test_json_skill_store_merges_success_count(tmp_path):
+    path = str(tmp_path / "skills.json")
+    alert = _alert("CheckoutHighErrorRate", "checkout-service")
+    actions = [{"action_type": "rollback", "target": "checkout-service"}]
+    skill_store.record_successful_remediation(skill_store.JsonSkillStore(path), alert, actions, "inc-1")
+    merged = skill_store.record_successful_remediation(skill_store.JsonSkillStore(path), alert, actions, "inc-2")
+    assert merged.success_count == 2
+
+
 def test_format_skills_for_prompt():
     store = skill_store.InMemorySkillStore()
     skill_store.record_successful_remediation(
