@@ -129,6 +129,17 @@ Four-layer multi-agent incident-response system:
     across chaos scenarios; (b) grow Target_Client complexity; (c) wire model
     router (#6) into call sites.
 
+- **2026-07-26 — Project #7 SRE benchmark built:**
+  - `benchmarks/scoring.py` — pure scoring: root-cause (AC@1), remediation,
+    severity band, safety; `ScenarioSpec` (ground truth) + `aggregate`.
+  - `benchmarks/sre_bench.py` — runner: fires alerts, polls resolution, fetches
+    `/api/v1/incidents/{id}/transcript`, extracts `act_report`, scores across
+    MTTR + 4 quality dims. Needs live platform + ACT_PHASE_ENABLED.
+  - `benchmarks/README.md`; `tests/test_bench_scoring.py` (14 tests). **74 total.**
+  - Reads real API fields (transcript summary + act timeline event payload).
+  - NEXT candidates: grow Target_Client complexity; wire model router (#6) into
+    call sites; run full benchmark on Jayanth's machine.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
