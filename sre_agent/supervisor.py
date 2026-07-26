@@ -328,8 +328,14 @@ class SupervisorAgent:
         logger.info("Memory system disabled")
 
     def _create_llm(self, **kwargs):
-        """Create LLM instance for the configured provider."""
-        return create_llm_with_error_handling(self.llm_provider, **kwargs)
+        """Create the supervisor's working LLM.
+
+        Routed to the fast tier: the supervisor's persistent LLM is used mostly
+        for routing decisions and conversational narration/handoffs. High-stakes
+        structured planning uses a strong-tier LLM (see create_investigation_plan).
+        """
+        from .model_router import TaskType, route_llm
+        return route_llm(TaskType.NARRATION, provider=self.llm_provider, use_fallback=False, **kwargs)
 
     async def _retrieve_memory_context(self, query_text: str) -> str:
         """Look up similar past investigations in Qdrant and return a formatted block.
@@ -426,7 +432,10 @@ User's query: {current_query}
         # which ignore prompt-based json/json_schema modes and emit prose, but do
         # follow tool-call schemas). Tool-capable Llama/Qwen/Groq/NVIDIA models
         # support this path as well.
-        structured_llm = self.llm.with_structured_output(
+        # Structured investigation planning is high-stakes → strong tier.
+        from .model_router import TaskType, route_llm
+        planning_llm = route_llm(TaskType.PLANNING, provider=self.llm_provider, use_fallback=False)
+        structured_llm = planning_llm.with_structured_output(
             InvestigationPlan, method="function_calling"
         )
         plan = await structured_llm.ainvoke(

@@ -41,8 +41,9 @@ def _load_agent_config() -> Dict[str, Any]:
 
 
 def _create_llm(provider: str = "ollama", **kwargs):
-    """Create LLM instance for the given provider."""
-    return create_llm_with_error_handling(provider, **kwargs)
+    """Create a specialist LLM, routed to the balanced tier by the model router."""
+    from .model_router import TaskType, route_llm
+    return route_llm(TaskType.SPECIALIST, provider=provider, use_fallback=False, **kwargs)
 
 
 def _filter_tools_for_agent(
