@@ -637,6 +637,20 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"⚠️ Memory search failed: {e}")
 
+    # Learned skills (self-improving loop): propose remediations that worked for
+    # prior incidents of this class so the Planner can reuse them instead of
+    # re-deriving from scratch. This is what closes the skill loop.
+    skill_context = ""
+    try:
+        from .skill_store import format_skills_for_prompt, get_skill_store, propose_skills
+
+        proposed = propose_skills(get_skill_store(), alert_context)
+        if proposed:
+            skill_context = format_skills_for_prompt(proposed)
+            logger.info(f"🧠 PlannerNode: {len(proposed)} learned skill(s) proposed for this incident class")
+    except Exception as skill_err:
+        logger.warning(f"⚠️ Skill proposal failed: {skill_err}")
+
     # Create LLM for planning via the model router (PLANNING → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
@@ -656,8 +670,10 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     Severity: {alert_context.severity if alert_context else "unknown"}
 
     {runbook_content}
-    
+
     {past_solutions}
+
+    {skill_context}
 
     Generate a remediation plan with:
     1. Specific actions to resolve the issue
@@ -671,6 +687,9 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
        Set 'source_runbook_url' to the runbook URL if available.
     2. IF NO RUNBOOK: Generate a plan based on first principles and past incidents.
     3. IF PAST INCIDENTS exist: Prioritize their successful resolutions.
+    4. IF LEARNED SKILLS are listed above: strongly prefer the skill with the
+       highest success count for this incident class; reuse its action(s) unless
+       a runbook overrides them.
 
     Return plan in JSON format matching RemediationPlan schema.
     """
