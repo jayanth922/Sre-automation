@@ -231,6 +231,18 @@ Four-layer multi-agent incident-response system:
     node wrote `RB-AUTO-high_error_rate-checkout-service.md` with valid frontmatter.
   - PROJECTS: #1✓ #2✓ #5✓ #6✓ #7✓. REMAINING: #3 Slack+AI/NL-query, #4 T3 cockpit.
 
+- **2026-07-26 — Project #3 (Slack+AI / PromptQL NL-query) built:**
+  - `sre_agent/nl_query.py`: PromptQL-style pipeline — parse intent → generate
+    PromQL → **validate** (allow-listed metrics/funcs, bounded window, balanced
+    syntax) → execute via injected Prometheus tool_caller. Only validated queries
+    run. Plus `classify_chat_message` (query/steer/greeting) +
+    `build_incident_message_payload` (bridges chat steer → existing /message
+    human-checkpoint endpoint).
+  - `docs/CHAT_INTEGRATION.md`: Buzz/Slack transport layer (agent-as-member) +
+    security. Transport is the only deployment-specific piece; reasoning is done.
+  - `tests/test_nl_query.py` (18). **122 tests pass.**
+  - PROJECTS: #1✓ #2✓ #3✓ #5✓ #6✓ #7✓. REMAINING: #4 Superset/T3 cockpit (UI).
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
