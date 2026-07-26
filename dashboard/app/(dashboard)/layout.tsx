@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { UserAccountMenu } from "@/components/dashboard/UserAccountMenu"
 
@@ -13,6 +14,7 @@ export default function DashboardLayout({
 
     const pageTitle = (() => {
         if (pathname === "/") return "Clusters"
+        if (pathname === "/cockpit") return "Cockpit"
         if (pathname.includes("/incidents/") && pathname.split("/").filter(Boolean).length === 4) return "Incident Dashboard"
         if (pathname.endsWith("/incidents")) return "Incidents"
         if (pathname.includes("/audit")) return "Audit Trail"
@@ -29,7 +31,21 @@ export default function DashboardLayout({
                             {pageTitle}
                         </h2>
                     </div>
-                    <UserAccountMenu />
+                    <nav className="flex items-center gap-1">
+                        <Link
+                            href="/"
+                            className={`rounded-lg px-3 py-1.5 text-sm transition ${pathname === "/" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white"}`}
+                        >
+                            Clusters
+                        </Link>
+                        <Link
+                            href="/cockpit"
+                            className={`rounded-lg px-3 py-1.5 text-sm transition ${pathname === "/cockpit" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white"}`}
+                        >
+                            Cockpit
+                        </Link>
+                        <UserAccountMenu />
+                    </nav>
                 </div>
             </header>
             <main className={`flex w-full flex-1 min-h-0 flex-col ${isIncidentDashboard ? "overflow-hidden px-4 py-4 md:px-6" : "overflow-auto overscroll-none px-4 py-6 md:px-6"}`}>
