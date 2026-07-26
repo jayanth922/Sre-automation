@@ -102,6 +102,28 @@ services:
       - edge-network
     restart: unless-stopped
 
+  # Executor — WRITE tools (restart/scale/patch/rollback). The ACT phase's hands.
+  # Dry-run by default; guardrails restrict actions/namespaces (see executor_real/README.md).
+  mcp-executor:
+    build:
+      context: ./mcp_servers/executor_real
+      dockerfile: Dockerfile
+    container_name: mcp-executor
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    environment:
+      - HOST=0.0.0.0
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal
+      - EXECUTOR_ALLOWED_NAMESPACES=demo-app
+      - EXECUTOR_MIN_REPLICAS=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4005:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
 networks:
   edge-network:
     driver: bridge

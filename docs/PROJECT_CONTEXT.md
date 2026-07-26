@@ -99,6 +99,20 @@ Four-layer multi-agent incident-response system:
     -ollama, sqlalchemy, asyncpg, psycopg2-binary, pydantic[email], passlib,
     python-jose, bcrypt, redis, socksio.
 
+- **2026-07-26 — Phase 1 START: Executor MCP server (edge write-tools) built:**
+  - `edge_mcp_servers/mcp_servers/executor_real/` — FastMCP server (port 4005):
+    `restart_deployment`, `scale_deployment`, `patch_resource_limits`,
+    `rollback_deployment`, `executor_health`. Dry-run by default (k8s
+    server-side `dryRun=All`); `guardrails.py` = defense-in-depth (action +
+    namespace allow-list, scale-to-0 floor, operator-owned env vars).
+    Dockerfile installs kubectl (for rollback). README documents least-priv RBAC.
+  - `docker-compose.yaml` → new `mcp-executor` service; `.env.example` → adds
+    `MCP_EXECUTOR_URI` + `ACT_PHASE_ENABLED`.
+  - `tests/test_executor_guardrails.py` (8 tests). **54 tests pass total.**
+  - NEXT: wire agent-side `executor.py` live path (dry_run=False) to CALL this
+    MCP server via MCP client, replacing the NotImplementedError. Then benchmark.
+  - Git: committing each step now (4 retro commits + this one).
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
