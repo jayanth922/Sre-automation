@@ -95,6 +95,22 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                 report_payload["recorded_skill"] = learning["recorded_skill"]
         except Exception as skill_err:
             logger.warning(f"Skill learning failed (non-fatal): {skill_err}")
+            learning = {}
+
+        # Generative runbook (project #5): auto-write a runbook/postmortem for this
+        # incident into the runbooks corpus so future RAG finds it. Opt-in
+        # (RUNBOOK_AUTOGEN) since it writes files. Non-fatal.
+        if os.getenv("RUNBOOK_AUTOGEN", "false").lower() in ("true", "1", "yes"):
+            try:
+                from .runbook_generator import input_from_act, write_runbook
+
+                skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
+                rb_input = input_from_act(state, report, skill_id=skill_id)
+                path = write_runbook(rb_input)
+                report_payload["generated_runbook"] = path.name
+                logger.info(f"📝 ACT: generated runbook {path.name}")
+            except Exception as rb_err:
+                logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
 
         if incident_id:
             try:

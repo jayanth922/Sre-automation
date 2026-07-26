@@ -220,6 +220,17 @@ Four-layer multi-agent incident-response system:
   - PROJECTS status: #1✓(ACT executor) #6✓(router) #7✓(bench) #2✓(skills).
     REMAINING projects: #5 generative runbooks, #3 Slack+AI/NL-query, #4 T3 cockpit.
 
+- **2026-07-26 — Project #5 (generative runbooks/postmortems) built:**
+  - `sre_agent/runbook_generator.py`: deterministic markdown generator that
+    mirrors the existing runbook YAML-frontmatter format (indexable by the
+    runbooks MCP for RAG). `input_from_act(state, report)` reuses skill_store
+    signature logic; `write_runbook` writes to RUNBOOKS_DIR (or repo corpus).
+  - Wired into `_act_gate_node`, gated by `RUNBOOK_AUTOGEN` (default off, writes
+    files). Closes the learning loop: agent's own runbooks feed future RAG.
+  - `tests/test_runbook_generator.py` (8). **104 tests pass.** E2E verified:
+    node wrote `RB-AUTO-high_error_rate-checkout-service.md` with valid frontmatter.
+  - PROJECTS: #1✓ #2✓ #5✓ #6✓ #7✓. REMAINING: #3 Slack+AI/NL-query, #4 T3 cockpit.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
