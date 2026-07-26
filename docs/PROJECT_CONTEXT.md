@@ -268,6 +268,19 @@ Four-layer multi-agent incident-response system:
   - STILL requires Jayanth's machine: live e2e run, benchmark run, dashboard
     `npm run build`, confirm Redis/Postgres checkpointer API + TB run.
 
+- **2026-07-26 — Depth pass (addressed "too shallow" critique):**
+  - **#1 real terminal agent** `sre_agent/terminal_agent.py` — agentic run/observe
+    loop, sub-agent orchestration, safety deny-list/sandbox; TB adapter now points
+    at it (fixed phantom `sre_terminal_agent` reference).
+  - **#5 genuinely generative** — `generate_runbook_llm`/`write_runbook_generative`
+    (LLM-authored bodies, template fallback; node prefers generative) +
+    `generative_course.py` (LLM course: sections/slides+quiz, parsed to typed Course).
+  - **#3 real Slack transport** `sre_agent/integrations/slack_bot.py` (slack_bolt;
+    process_mention/format_reply tested without Slack).
+  - **181 tests pass.**
+  - Honest note: #4 cockpit is an SRE-monitoring reframe of Superset/T3's
+    "orchestrate coding agents" — deliberate, not a coding-agent orchestrator.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

@@ -24,7 +24,21 @@ members** you can tag, and they go do their thing. Paired with **PromptQL**
   supervisor's human-checkpoint interrupt queue. So chat steering reuses the
   interrupt mechanism the platform already has.
 
-## The thin transport layer (to wire per deployment)
+## Slack transport (implemented)
+
+`sre_agent/integrations/slack_bot.py` is a working Slack app (slack_bolt):
+registers the agent as a member, handles `app_mention`, routes the text through
+`handle_chat_message`, and posts the reply to the thread. The message logic
+(`process_mention`, `format_reply`) is unit-tested without Slack/MCP; the Bolt
+wiring imports lazily so the module loads even without `slack_bolt` installed.
+
+```bash
+pip install "slack_bolt>=1.18"
+export SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-...
+python -m sre_agent.integrations.slack_bot
+```
+
+## Other transports (Buzz)
 
 Only the chat transport is deployment-specific; the reasoning above is done:
 
