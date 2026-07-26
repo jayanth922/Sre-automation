@@ -235,3 +235,39 @@ def build_incident_message_payload(incident_id: str, text: str) -> Tuple[str, Di
     """Shape a chat 'steer' into the existing mission-control message endpoint,
     which feeds the human-checkpoint queue the supervisor already consumes."""
     return f"/api/v1/incidents/{incident_id}/message", {"message": text}
+
+
+# ── Runtime integration ──────────────────────────────────────────────────────
+async def answer_metric_question(question: str, metrics_uri: Optional[str] = None) -> NLQueryResult:
+    """End-to-end: run an NL query against the live Prometheus MCP server."""
+    from .executor import build_metrics_tool_caller  # lazy (MCP adapter)
+
+    caller = await build_metrics_tool_caller(metrics_uri)
+    return await run_nl_query(question, tool_caller=caller)
+
+
+async def handle_chat_message(text: str, incident_id: Optional[str] = None) -> Dict[str, Any]:
+    """Dispatch a chat message (the Slack/Buzz 'AI member' behavior).
+
+    - query   → run a verified NL metric query and return the result.
+    - steer   → shape a POST to the incident message endpoint (human-checkpoint).
+    - greeting→ acknowledge.
+    The chat transport calls this; the transport itself is deployment-specific.
+    """
+    route = classify_chat_message(text)
+    mode = route["mode"]
+
+    if mode == "query":
+        result = await answer_metric_question(text)
+        return {
+            "mode": "query",
+            "promql": result.plan.promql,
+            "valid": result.plan.valid,
+            "executed": result.executed,
+            "data": result.data,
+            "error": result.error,
+        }
+    if mode == "steer" and incident_id:
+        path, body = build_incident_message_payload(incident_id, text)
+        return {"mode": "steer", "post": {"path": path, "body": body}}
+    return {"mode": mode}

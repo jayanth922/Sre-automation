@@ -136,5 +136,16 @@ def test_incident_message_payload():
     assert body == {"message": "focus on logs"}
 
 
+def test_handle_chat_message_steer_builds_post():
+    out = asyncio.run(nl.handle_chat_message("focus on the logs", incident_id="inc-1"))
+    assert out["mode"] == "steer"
+    assert out["post"]["path"] == "/api/v1/incidents/inc-1/message"
+
+
+def test_handle_chat_message_greeting():
+    out = asyncio.run(nl.handle_chat_message("hi"))
+    assert out["mode"] == "greeting"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
