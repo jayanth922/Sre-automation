@@ -76,8 +76,11 @@ _DEFAULT_POLICY: Dict[TaskType, ModelTier] = {
     TaskType.PLANNING: ModelTier.STRONG,
 }
 
-# Ordering used when complexity bumps a task up a tier.
+# Ordering used when complexity bumps a task up a tier (and budget bumps down).
 _TIER_ORDER: List[ModelTier] = [ModelTier.FAST, ModelTier.BALANCED, ModelTier.STRONG]
+
+# Budget below which the router downgrades to the cheapest tier to conserve spend.
+_LOW_BUDGET_THRESHOLD = float(os.getenv("MODEL_ROUTER_LOW_BUDGET_THRESHOLD", "1.0"))
 
 # Suggested per-tier temperatures. Low temps for structured/high-stakes work,
 # a touch more warmth for conversational narration.
@@ -86,6 +89,24 @@ _TIER_TEMPERATURE: Dict[ModelTier, float] = {
     ModelTier.BALANCED: 0.1,
     ModelTier.STRONG: 0.1,
 }
+
+
+class ModelRouterBlocked(Exception):
+    """Raised when the router refuses a request (off-policy or budget-exhausted)."""
+
+
+@dataclass
+class RequestContext:
+    """Per-request signals the router uses beyond task type.
+
+    This is what makes the router match the *product* definition (not OpenRouter):
+    it routes by task complexity **and** by the caller's remaining budget, and it
+    can **block** off-policy requests entirely.
+    """
+
+    remaining_budget: Optional[float] = None  # remaining credits/USD; None = unmetered
+    off_policy: bool = False                   # caller-classified: disallowed request
+    user_id: Optional[str] = None
 
 
 @dataclass
@@ -100,6 +121,8 @@ class RoutingDecision:
     # constants.py". It is only set when an explicit per-tier override exists.
     model_id: Optional[str] = None
     reason: str = ""
+    blocked: bool = False
+    block_reason: str = ""
     llm_kwargs: Dict = field(default_factory=dict)
 
 
@@ -114,6 +137,12 @@ def _default_provider() -> str:
 def _escalate(tier: ModelTier, steps: int = 1) -> ModelTier:
     """Bump a tier up by ``steps`` positions, clamped at STRONG."""
     idx = min(_TIER_ORDER.index(tier) + steps, len(_TIER_ORDER) - 1)
+    return _TIER_ORDER[idx]
+
+
+def _downgrade(tier: ModelTier, steps: int = 1) -> ModelTier:
+    """Bump a tier down by ``steps`` positions, clamped at FAST."""
+    idx = max(_TIER_ORDER.index(tier) - steps, 0)
     return _TIER_ORDER[idx]
 
 
@@ -152,27 +181,51 @@ def select_model(
     complexity: str = "simple",
     provider: Optional[str] = None,
     policy: Optional[Dict[TaskType, ModelTier]] = None,
+    request: Optional[RequestContext] = None,
 ) -> RoutingDecision:
     """Decide which model tier / provider / model a task should use.
 
     Pure function — no LLM libraries imported — so it is cheap and easy to test.
 
+    Routing considers three axes (matching the product definition, not OpenRouter):
+    1. **Task complexity** — task type + simple/complex escalate the tier.
+    2. **Budget** — a low remaining budget downgrades the tier (cheaper model);
+       an exhausted budget blocks the request.
+    3. **Policy** — an off-policy request is blocked outright.
+
     Args:
         task_type: What the LLM call is for (see :class:`TaskType`).
-        complexity: "simple" or "complex". "complex" bumps the task up one tier
-            (e.g. a complex investigation escalates SPECIALIST from BALANCED to
-            STRONG). Mirrors the supervisor's existing simple/complex plan flag.
+        complexity: "simple" or "complex". "complex" bumps the task up one tier.
         provider: Base provider override; defaults to ``LLM_PROVIDER`` env.
         policy: Optional task→tier policy override (defaults to the built-in one).
+        request: Optional per-request budget/policy signals (see :class:`RequestContext`).
 
     Returns:
-        A :class:`RoutingDecision`.
+        A :class:`RoutingDecision` (check ``.blocked`` before using).
     """
     if isinstance(task_type, str):
         task_type = TaskType(task_type)
 
     base_provider = provider or _default_provider()
     active_policy = policy or _DEFAULT_POLICY
+
+    # Off-policy requests are refused regardless of router state.
+    if request and request.off_policy:
+        return RoutingDecision(
+            task_type=task_type, tier=ModelTier.FAST, provider=base_provider,
+            temperature=_TIER_TEMPERATURE[ModelTier.FAST],
+            blocked=True, block_reason="Request is off-policy and was blocked.",
+            reason="blocked: off-policy",
+        )
+
+    # Exhausted budget is refused too.
+    if request and request.remaining_budget is not None and request.remaining_budget <= 0:
+        return RoutingDecision(
+            task_type=task_type, tier=ModelTier.FAST, provider=base_provider,
+            temperature=_TIER_TEMPERATURE[ModelTier.FAST],
+            blocked=True, block_reason="Budget exhausted; request blocked.",
+            reason="blocked: budget exhausted",
+        )
 
     # Router off → everything on the BALANCED tier with the base provider. This
     # reproduces the pre-router single-model behavior.
@@ -195,12 +248,22 @@ def select_model(
             escalated = True
         tier = bumped
 
+    # Budget-constrained downgrade: conserve spend when running low.
+    budget_downgraded = False
+    if request and request.remaining_budget is not None and request.remaining_budget < _LOW_BUDGET_THRESHOLD:
+        bumped_down = _downgrade(tier, 1)
+        if bumped_down != tier:
+            budget_downgraded = True
+        tier = bumped_down
+
     tier_provider = _tier_provider(tier, base_provider)
     model_override = _tier_model_override(tier, tier_provider)
 
     reason = f"{task_type.value} → {tier.value} tier on '{tier_provider}'"
     if escalated:
         reason += " (escalated: complex task)"
+    if budget_downgraded:
+        reason += f" (downgraded: low budget < {_LOW_BUDGET_THRESHOLD})"
     if model_override:
         reason += f" (model={model_override})"
 
@@ -219,6 +282,7 @@ def route_llm(
     complexity: str = "simple",
     provider: Optional[str] = None,
     use_fallback: bool = True,
+    request: Optional[RequestContext] = None,
     **kwargs,
 ):
     """Select a model for ``task_type`` and build the LLM instance.
@@ -228,10 +292,16 @@ def route_llm(
     True the router still benefits from the provider fallback chain, so a routed
     provider being unavailable degrades gracefully instead of failing hard.
 
+    Raises:
+        ModelRouterBlocked: if the request is off-policy or the budget is exhausted.
+
     Returns:
         An LLM instance, exactly as ``create_llm_with_error_handling`` would.
     """
-    decision = select_model(task_type, complexity=complexity, provider=provider)
+    decision = select_model(task_type, complexity=complexity, provider=provider, request=request)
+    if decision.blocked:
+        logger.warning(f"ModelRouter BLOCKED: {decision.block_reason}")
+        raise ModelRouterBlocked(decision.block_reason)
     logger.info(f"ModelRouter: {decision.reason}")
 
     # Lazy import: keeps ``select_model`` (and this module) importable without

@@ -26,6 +26,8 @@ _spec.loader.exec_module(model_router)
 TaskType = model_router.TaskType
 ModelTier = model_router.ModelTier
 select_model = model_router.select_model
+RequestContext = model_router.RequestContext
+ModelRouterBlocked = model_router.ModelRouterBlocked
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +116,41 @@ def test_string_task_type_is_accepted():
 def test_temperature_is_low_for_high_stakes_and_warmer_for_narration():
     assert select_model(TaskType.PLANNING).temperature <= 0.1
     assert select_model(TaskType.NARRATION).temperature > 0.1
+
+
+# ── Budget + policy axes (transcript's precise #6 definition) ────────────────
+
+def test_off_policy_request_is_blocked():
+    d = select_model(TaskType.PLANNING, request=RequestContext(off_policy=True))
+    assert d.blocked is True and "off-policy" in d.block_reason.lower()
+
+
+def test_exhausted_budget_is_blocked():
+    d = select_model(TaskType.PLANNING, request=RequestContext(remaining_budget=0))
+    assert d.blocked is True and "budget" in d.block_reason.lower()
+
+
+def test_low_budget_downgrades_tier():
+    # PLANNING is normally STRONG; a low budget knocks it down a tier.
+    normal = select_model(TaskType.PLANNING)
+    low = select_model(TaskType.PLANNING, request=RequestContext(remaining_budget=0.5))
+    assert normal.tier is ModelTier.STRONG
+    assert low.tier is ModelTier.BALANCED
+    assert low.blocked is False
+
+
+def test_healthy_budget_does_not_downgrade():
+    d = select_model(TaskType.PLANNING, request=RequestContext(remaining_budget=100.0))
+    assert d.tier is ModelTier.STRONG
+
+
+def test_no_request_context_is_unchanged():
+    assert select_model(TaskType.PLANNING).tier is ModelTier.STRONG
+
+
+def test_route_llm_raises_when_blocked():
+    with pytest.raises(ModelRouterBlocked):
+        model_router.route_llm(TaskType.PLANNING, request=RequestContext(off_policy=True))
 
 
 if __name__ == "__main__":

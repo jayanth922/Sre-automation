@@ -383,11 +383,12 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     """
         logger.warning(f"ReflectorNode: Tools unavailable: {tool_failures}")
 
-    # Create LLM for reflection
+    # Create LLM for reflection via the model router (REFLECTION → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
     llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "ollama")
-    llm = create_llm_with_error_handling(llm_provider)
+    from .model_router import TaskType, route_llm
+    llm = route_llm(TaskType.REFLECTION, provider=llm_provider, use_fallback=False)
 
     # Reflection prompt
     reflection_prompt = f"""
@@ -607,11 +608,12 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"⚠️ Memory search failed: {e}")
 
-    # Create LLM for planning
+    # Create LLM for planning via the model router (PLANNING → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
     llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "ollama")
-    llm = create_llm_with_error_handling(llm_provider)
+    from .model_router import TaskType, route_llm
+    llm = route_llm(TaskType.PLANNING, provider=llm_provider, use_fallback=False)
 
     planning_prompt = f"""
     You are the PlannerNode in an SRE autonomic system. Generate a structured
