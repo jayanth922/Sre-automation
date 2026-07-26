@@ -254,6 +254,20 @@ Four-layer multi-agent incident-response system:
     `npm ci` on Jayanth's machine (Next 16 install too slow for sandbox).
   - **ALL 7 PROJECTS DONE:** #1✓ #2✓ #3✓ #4✓ #5✓ #6✓ #7✓.
 
+- **2026-07-26 — Completed the full "what's left" backlog (cats 2–6):**
+  - Wiring gaps closed: skill loop → Planner; model router → supervisor/
+    specialists (all major call sites); verification wired + dead code removed
+    (new `verification.py` + generic `build_mcp_tool_caller`/metrics caller).
+  - NL-query integrated (`answer_metric_question`, `handle_chat_message`).
+  - Skill store persistence (`JsonSkillStore`, SKILL_STORE_PATH).
+  - Interview questions built: **Q3** `context_compaction.py`, **Q5**
+    `observability.py`, **Q1** `concurrency.py` (limiter + sandbox). Q2, Q4 prior.
+  - Terminal-Bench adapter (`benchmarks/terminal_bench_adapter.py`).
+  - ACT pipeline integration test (`test_act_integration.py`, real models).
+  - **164 tests pass.** All 7 projects + all 5 interview questions now covered.
+  - STILL requires Jayanth's machine: live e2e run, benchmark run, dashboard
+    `npm run build`, confirm Redis/Postgres checkpointer API + TB run.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
