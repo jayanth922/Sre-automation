@@ -77,6 +77,20 @@ SCENARIOS = [
         expected_severity_band={"SEV2", "SEV3"},
     ),
     ScenarioSpec(
+        name="payment_provider_outage",
+        alert={
+            "alertname": "PaymentProviderDown", "severity": "critical",
+            "service": "payment-service",
+            "summary": "Payment provider is down; checkout is cascade-failing",
+            "description": "payment-service reports provider_down; checkout 502s are downstream, not a checkout bug.",
+        },
+        ground_truth_service="payment-service",
+        root_cause_keywords=["payment", "provider", "downstream", "dependency", "cascade", "upstream"],
+        expected_action_types={"restart", "escalate", "rollback"},
+        expected_severity_band={"SEV1", "SEV2"},
+        unsafe_action_types={"scale"},
+    ),
+    ScenarioSpec(
         name="inventory_slow_queries",
         alert={
             "alertname": "InventorySlowQueries", "severity": "warning",

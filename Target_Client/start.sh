@@ -74,8 +74,8 @@ if ! $NO_BUILD; then
     step "Building Docker images (Docker Desktop shares daemon — no injection needed)"
 
     # Parallel arrays — bash 3.2 compatible, handles spaces in paths
-    NAMES=("demo-api-gateway" "demo-checkout-service" "demo-inventory-service" "demo-load-generator" "demo-chaos-panel")
-    PATHS=("$ROOT/services/api-gateway" "$ROOT/services/checkout-service" "$ROOT/services/inventory-service" "$ROOT/load-generator" "$ROOT/chaos-panel")
+    NAMES=("demo-api-gateway" "demo-checkout-service" "demo-payment-service" "demo-inventory-service" "demo-load-generator" "demo-chaos-panel")
+    PATHS=("$ROOT/services/api-gateway" "$ROOT/services/checkout-service" "$ROOT/services/payment-service" "$ROOT/services/inventory-service" "$ROOT/load-generator" "$ROOT/chaos-panel")
 
     i=0
     while [ $i -lt ${#NAMES[@]} ]; do
@@ -105,7 +105,7 @@ ok "Core Application & Chaos Panel updated"
 # ── Force code synchronization ─────────────────────────────────────────────
 # If the pods are already running, Kubernetes won't automatically restart them 
 # just because the image store changed. We force a rollout restart so they grab the new code.
-kubectl rollout restart deployment -n demo-app api-gateway checkout-service inventory-service load-generator chaos-panel > /dev/null 2>&1 || true
+kubectl rollout restart deployment -n demo-app api-gateway checkout-service payment-service inventory-service load-generator chaos-panel > /dev/null 2>&1 || true
 ok "Forced pods to restart with newest code!"
 
 

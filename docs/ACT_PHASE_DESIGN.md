@@ -144,7 +144,7 @@ each with a mapped remediation and default reversibility:
 | High error rate | rollback or restart | reversible |
 | Config drift | config_change (re-apply) | risky |
 | Resource saturation | scale up | risky |
-| Dependency failure | escalate / restart dependent | reversible |
+| Dependency failure (e.g. payment provider down → checkout cascade) | escalate / restart dependent / rollback | reversible |
 
 To surface more of these, `Target_Client` is slated to grow (database, cache,
 a checkout→payment→inventory→DB dependency chain) so failures cascade

@@ -15,6 +15,7 @@ import logging
 import os
 import random
 import time
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -98,6 +99,25 @@ async def process_checkout(order_id: str = "unknown"):
     # Simulate memory leak (tiny allocation per request)
     _leak_store.append(b"x" * 1024)
     MEMORY_BYTES.labels(service="checkout-service").set(len(_leak_store) * 1024)
+
+    # Downstream dependency: call payment-service when PAYMENT_URL is configured.
+    # A payment outage cascades into checkout 502s even though checkout is healthy
+    # — this is the "downstream dependency failure" incident class.
+    payment_url = os.getenv("PAYMENT_URL")
+    if payment_url:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(f"{payment_url}/charge", params={"order_id": order_id})
+            if resp.status_code >= 500:
+                ERROR_COUNT.labels(service="checkout-service", endpoint="/process", error_type="payment_dependency_failure").inc()
+                REQUEST_COUNT.labels(service="checkout-service", method="POST", endpoint="/process", status="502").inc()
+                logger.error(f"Downstream payment dependency failed order={order_id} status={resp.status_code}")
+                raise HTTPException(status_code=502, detail="Downstream payment dependency failed")
+        except httpx.RequestError as e:
+            ERROR_COUNT.labels(service="checkout-service", endpoint="/process", error_type="payment_unreachable").inc()
+            REQUEST_COUNT.labels(service="checkout-service", method="POST", endpoint="/process", status="502").inc()
+            logger.error(f"Payment service unreachable order={order_id} error={e}")
+            raise HTTPException(status_code=502, detail="Payment service unreachable")
 
     # Chaos mode: DB connection errors (higher failure rate)
     if config["chaos_mode"] and random.random() < 0.50:

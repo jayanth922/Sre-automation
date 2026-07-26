@@ -87,6 +87,8 @@ spec:
               value: "0.15"
             - name: SLOW_RATE
               value: "0.20"
+            - name: PAYMENT_URL
+              value: "http://payment-service:8004"
             - name: CHAOS_MODE
               valueFrom:
                 configMapKeyRef:
@@ -104,6 +106,57 @@ spec:
   ports:
     - port: 8001
       targetPort: 8001
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: demo-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8004"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: payment-service
+          image: demo-payment-service:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8004
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            - name: ERROR_RATE
+              value: "0.05"
+            - name: SLOW_RATE
+              value: "0.10"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: demo-app
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - port: 8004
+      targetPort: 8004
   type: LoadBalancer
 ---
 apiVersion: apps/v1

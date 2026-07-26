@@ -194,6 +194,19 @@ Four-layer multi-agent incident-response system:
     graph. `test_checkpointer.py` (7). **87 tests pass.**
   - Order progress: #1 router✓ #2 durability✓ → next #3 Target_Client, #4 plan doc.
 
+- **2026-07-26 — Target_Client complexity grown (dependency chain):**
+  - New `payment-service` (port 8004, `/charge`, chaos incl. `provider_down` +
+    `payment_provider_up` gauge). checkout → payment via `PAYMENT_URL` (backward
+    compatible) → real **downstream dependency cascade** failure class.
+  - k8s: payment-service Deployment/Service in services.yaml; checkout gets
+    PAYMENT_URL; start.sh builds + rolls it out.
+  - Prometheus: `PaymentProviderDown` + `PaymentServiceHighErrorRate` alerts.
+  - Benchmark: `payment_provider_outage` ScenarioSpec (ground truth = payment,
+    not checkout — tests root-cause *attribution* across the chain).
+  - Taxonomy doc updated. Validated: YAML parses (11 docs), Python compiles,
+    scenarios load. 87 tests still pass. (Cluster run needed for live exercise.)
+  - Order: #1✓ #2✓ #3✓ → last: #4 INTEGRATION_PLAN.md update.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

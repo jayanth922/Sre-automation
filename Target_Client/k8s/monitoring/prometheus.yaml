@@ -75,6 +75,33 @@ data:
               summary: "Payment failure spike"
               description: "Payment failures at {{ $value | humanize }} per second."
 
+      - name: payment-service
+        rules:
+          - alert: PaymentProviderDown
+            expr: payment_provider_up{service="payment-service"} == 0
+            for: 1m
+            labels:
+              severity: critical
+              service: payment-service
+            annotations:
+              summary: "Payment provider is DOWN"
+              description: "payment-service reports the provider is unavailable; checkout will cascade-fail."
+
+          - alert: PaymentServiceHighErrorRate
+            expr: |
+              (
+                sum by(service) (rate(http_errors_total{service="payment-service"}[5m]))
+                /
+                sum by(service) (rate(http_requests_total{service="payment-service"}[5m]))
+              ) > 0.10
+            for: 2m
+            labels:
+              severity: critical
+              service: payment-service
+            annotations:
+              summary: "High error rate on payment-service"
+              description: "payment-service error rate is {{ humanizePercentage $value }} over the last 5 minutes."
+
       - name: inventory-service
         rules:
           - alert: InventorySlowQueries
