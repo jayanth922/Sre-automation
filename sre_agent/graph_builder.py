@@ -997,6 +997,7 @@ def build_multi_agent_graph(
     llm_provider: str = "ollama",
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
+    checkpointer: Any = None,
     **llm_kwargs,
 ) -> StateGraph:
     """
@@ -1119,8 +1120,14 @@ def build_multi_agent_graph(
     else:
         workflow.add_edge("aggregate", END)
 
-    # Compile the graph
-    compiled_graph = workflow.compile()
+    # Compile the graph. When a checkpointer is provided, graph state is
+    # persisted per thread_id so a crashed investigation can resume from its last
+    # checkpoint (durability). checkpointer=None reproduces the prior behavior.
+    if checkpointer is not None:
+        logger.info(f"Compiling graph WITH checkpointer: {type(checkpointer).__name__}")
+        compiled_graph = workflow.compile(checkpointer=checkpointer)
+    else:
+        compiled_graph = workflow.compile()
 
     # Export graph visualization if requested
     if export_graph:

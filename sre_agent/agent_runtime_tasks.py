@@ -93,9 +93,10 @@ async def run_graph_background_saas(
         callback_handler = RedisLogCallbackHandler(session_id)
         current_execution_state = initial_state
         
+        from .checkpointer import thread_config
         async for event in agent_graph.astream(
-            initial_state, 
-            config={"callbacks": [callback_handler]}
+            initial_state,
+            config=thread_config(str(incident_id), {"callbacks": [callback_handler]}),
         ):
             for node_name, node_output in event.items():
                 timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")

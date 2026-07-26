@@ -140,6 +140,60 @@ Four-layer multi-agent incident-response system:
   - NEXT candidates: grow Target_Client complexity; wire model router (#6) into
     call sites; run full benchmark on Jayanth's machine.
 
+- **2026-07-26 — FULL VIDEO TRANSCRIPT received; accurate facts (supersede earlier inference):**
+  Video = Harkirat/Super30. THREE parts, not just "7 projects":
+  1. **5 class topics** (vote-to-release): memory; Firecracker/sandboxes (E2B);
+     context engineering (context rot, compaction at ~700–800k of a 1M window);
+     evals & RL environments (SWE-bench-from-scratch); cloud agents (Devon,
+     Claude Code remote).
+  2. **5 interview questions** for a Devon-like CODING agent (all map onto our SRE agent):
+     Q1 architecture — you need a **sandbox per concurrent user**, scale up/down.
+     Q2 **crash durability** — long tasks (30 min–2 h); resume from checkpoint via
+        backed-up agent↔LLM message history; ref **Temporal**.
+     Q3 context management — compaction/summarization (Manus/Claude).
+     Q4 **evals** — deterministic, SWE-bench / terminal-bench.
+     Q5 **observability** — Datadog/Prometheus/Grafana + LLM-obs (Neatlogs);
+        agent failure traces; auto-switch infra provider on outage.
+  3. **7 projects** (precise):
+     #1 Terminal agent — ref codebase **"pi"** (~2k LOC TS); easy to build, HARD to
+        match Claude Code on **terminal-bench**; nuance: **sub-agent orchestration**
+        (pi lacks it, still competitive).
+     #2 Hermes/Clawbot ("Cloudbot") — memory + integrations (WhatsApp/Telegram/
+        Slack) + autonomous decisions; open source.
+     #3 Slack+AI — **Buzz** (Block/Dorsey, **Rust**) + **PromptQL**; agents are
+        taggable workspace members.
+     #4 Superset vs T3 Code — Superset spawns CLIs in tabs; **T3 hacks into the
+        agent and re-renders messages in its own UI** ("slightly better"; teaches
+        agent↔LLM message flow). NOTE: our dashboard is already T3-style.
+     #5 Generative courses/UI — paradigm.study; variant = AI slides + MCQ quiz.
+     #6 **Model router — explicitly NOT OpenRouter.** Route by (a) task complexity,
+        (b) **user's remaining credit/budget**, (c) **block personal/off-policy
+        requests**. Cost control for companies.
+     #7 Benchmark for a specific repo — SWE-bench/terminal-bench-style evals for ONE
+        codebase (dub.sh example) + RL environments; very hard to set up.
+  **Implications for what we built:**
+  - `model_router.py` routes by task-type/complexity/tier only — **MISSING #6's
+    budget-awareness + request-blocking**. Enhancement candidate.
+  - Interview Q2 (durability): `build_multi_agent_graph` already threads a
+    `checkpointer` (currently None). LangGraph checkpointer = durable resume →
+    high-value, low-effort hardening that directly answers the #1 interview Q.
+  - Our SRE benchmark (#7) aligns with "benchmark for a use case" spirit. ✓
+  - Interview Q4/Q5 (evals + observability): benchmark done; agent-obs (thought
+    traces/timeline) exists — could add LLM-obs framing.
+
+- **2026-07-26 — Durability/checkpointing (interview Q2) wired:**
+  - Fixed real bug: `checkpointer` was passed to `build_multi_agent_graph` but
+    never reached `compile()` (silently dropped). Now compiled in.
+  - `sre_agent/checkpointer.py`: `get_checkpointer()` (memory default; redis/
+    postgres external → cross-crash durable, guarded w/ fallback), `thread_config`
+    + `thread_id_from_state` (inject thread_id only when enabled).
+  - Wired thread_config into ALL 6 astream sites (tasks + agent_runtime).
+  - `CHECKPOINTER_ENABLED` (default false) → None checkpointer → **zero behavior
+    change**; no thread_id needed. Enabled → per-incident durable resume.
+  - Validated: OFF→no checkpointer; ON(memory)→InMemorySaver attached to compiled
+    graph. `test_checkpointer.py` (7). **87 tests pass.**
+  - Order progress: #1 router✓ #2 durability✓ → next #3 Target_Client, #4 plan doc.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

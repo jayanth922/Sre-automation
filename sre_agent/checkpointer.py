@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""
+Durable checkpointing for long-running investigations (interview Q2).
+
+Agent investigations are long-running tasks (a gnarly incident can take many
+minutes of back-and-forth with the LLM). If the process crashes mid-run, we do
+not want to lose the work. LangGraph supports this natively via a *checkpointer*:
+graph state is persisted per ``thread_id`` after every node, so a restarted
+process can resume the same investigation from the last checkpoint.
+
+This module provides:
+- `get_checkpointer()` — build the configured checkpointer (or None when off).
+- `thread_config(thread_id, base)` — inject the required ``thread_id`` into an
+  invoke config, but only when checkpointing is enabled (so the default path is
+  byte-for-byte unchanged and needs no thread_id).
+
+Backends (via `CHECKPOINTER_BACKEND`):
+- `memory` (default) — in-process; resumes within a running process.
+- `redis` / `postgres` — external stores → true cross-crash durability (require
+  the `langgraph-checkpoint-redis` / `langgraph-checkpoint-postgres` package).
+
+Everything is gated by `CHECKPOINTER_ENABLED` (default false): when off,
+`get_checkpointer()` returns None and `compile(checkpointer=None)` reproduces the
+prior behavior exactly.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def checkpointer_enabled() -> bool:
+    return os.getenv("CHECKPOINTER_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
+def select_backend() -> str:
+    return os.getenv("CHECKPOINTER_BACKEND", "memory").lower()
+
+
+def _memory_saver():
+    from langgraph.checkpoint.memory import MemorySaver
+    return MemorySaver()
+
+
+def _redis_saver():
+    # Requires `langgraph-checkpoint-redis`. Confirm the exact API against your
+    # installed version; guarded by the caller's try/except → falls back to memory.
+    from langgraph.checkpoint.redis import RedisSaver
+
+    url = os.getenv("CHECKPOINTER_REDIS_URL") or os.getenv("REDIS_URL", "redis://redis:6379")
+    cm = RedisSaver.from_conn_string(url)
+    saver = cm.__enter__()  # hold open for the process lifetime
+    if hasattr(saver, "setup"):
+        saver.setup()
+    return saver
+
+
+def _postgres_saver():
+    # Requires `langgraph-checkpoint-postgres`. Guarded → falls back to memory.
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    uri = os.getenv("CHECKPOINTER_POSTGRES_URI") or _build_pg_uri()
+    cm = PostgresSaver.from_conn_string(uri)
+    saver = cm.__enter__()
+    if hasattr(saver, "setup"):
+        saver.setup()
+    return saver
+
+
+def _build_pg_uri() -> str:
+    user = os.getenv("POSTGRES_USER", "postgres")
+    pw = os.getenv("POSTGRES_PASSWORD", "postgres")
+    host = os.getenv("POSTGRES_HOST", "postgres")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "sre")
+    return f"postgresql://{user}:{pw}@{host}:{port}/{db}"
+
+
+def get_checkpointer():
+    """Return the configured checkpointer, or None when checkpointing is off.
+
+    External backends fall back to the in-memory saver (with a warning) if their
+    package or connection is unavailable, so enabling the flag never hard-fails.
+    """
+    if not checkpointer_enabled():
+        return None
+
+    backend = select_backend()
+    try:
+        if backend == "redis":
+            return _redis_saver()
+        if backend == "postgres":
+            return _postgres_saver()
+    except Exception as e:
+        logger.warning(
+            f"Checkpointer backend '{backend}' unavailable ({e}); "
+            f"falling back to in-memory MemorySaver (not crash-durable)."
+        )
+    return _memory_saver()
+
+
+def thread_id_from_state(state: Any) -> str:
+    """Derive a stable checkpoint thread id from graph state.
+
+    Prefers incident_id (so a resumed run rejoins the same investigation), then
+    session_id, with a safe fallback.
+    """
+    if not isinstance(state, dict):
+        return "adhoc"
+    md = state.get("metadata", {}) or {}
+    return str(state.get("incident_id") or md.get("incident_id") or state.get("session_id") or "adhoc")
+
+
+def thread_config(thread_id: str, base: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Merge the required ``thread_id`` into an invoke config — only when enabled.
+
+    When checkpointing is off, returns ``base`` unchanged (may be None), so
+    existing invoke sites behave exactly as before. When on, adds
+    ``configurable.thread_id`` so the checkpointer persists/resumes per thread.
+    """
+    if not checkpointer_enabled():
+        return base
+    cfg: Dict[str, Any] = dict(base or {})
+    configurable = dict(cfg.get("configurable", {}))
+    configurable["thread_id"] = thread_id
+    cfg["configurable"] = configurable
+    return cfg

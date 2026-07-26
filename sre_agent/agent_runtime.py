@@ -293,7 +293,11 @@ async def invoke_agent(request: InvocationRequest):
 
         logger.info("Starting agent graph execution")
 
-        async for event in agent_graph.astream(initial_state):
+        from .checkpointer import thread_config, thread_id_from_state
+        async for event in agent_graph.astream(
+            initial_state,
+            config=thread_config(thread_id_from_state(initial_state)),
+        ):
             for node_name, node_output in event.items():
                 logger.info(f"Processing node: {node_name}")
 
@@ -540,7 +544,11 @@ async def approve_remediation(session_id: str):
         execution_results = None
         verification_result = None
         
-        async for event in agent_graph.astream(current_state):
+        from .checkpointer import thread_config, thread_id_from_state
+        async for event in agent_graph.astream(
+            current_state,
+            config=thread_config(thread_id_from_state(current_state)),
+        ):
             for node_name, node_output in event.items():
                 logger.info(f"Resuming execution - Processing node: {node_name}")
                 # ... (rest of logic) ...
@@ -594,9 +602,10 @@ async def run_graph_background(
         from .callbacks import RedisLogCallbackHandler
         callback_handler = RedisLogCallbackHandler(session_id)
         
+        from .checkpointer import thread_config, thread_id_from_state
         async for event in agent_graph.astream(
-            initial_state, 
-            config={"callbacks": [callback_handler]}
+            initial_state,
+            config=thread_config(thread_id_from_state(initial_state), {"callbacks": [callback_handler]}),
         ):
             for node_name, node_output in event.items():
                 logger.info(f"Background processing node: {node_name}")
@@ -822,9 +831,10 @@ async def run_graph_background_saas(
         
         current_execution_state = initial_state
         
+        from .checkpointer import thread_config, thread_id_from_state
         async for event in agent_graph.astream(
-            initial_state, 
-            config={"callbacks": [callback_handler]}
+            initial_state,
+            config=thread_config(thread_id_from_state(initial_state), {"callbacks": [callback_handler]}),
         ):
             for node_name, node_output in event.items():
                 logger.info(f"SaaS Background processing node: {node_name}")
@@ -1188,7 +1198,11 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
 
         # Execute and get final response
         final_response = ""
-        async for event in graph.astream(initial_state):
+        from .checkpointer import thread_config, thread_id_from_state
+        async for event in graph.astream(
+            initial_state,
+            config=thread_config(thread_id_from_state(initial_state)),
+        ):
             for node_name, node_output in event.items():
                 if node_name == "aggregate":
                     final_response = node_output.get("final_response", "")

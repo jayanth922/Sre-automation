@@ -264,6 +264,12 @@ async def create_multi_agent_system(
             print(f"  - {tool.name}: {description}")
             logger.info(f"  - {tool.name}: {description}")
 
+    # Default the checkpointer from env config when one wasn't supplied. Returns
+    # None unless CHECKPOINTER_ENABLED=true, so the default path is unchanged.
+    if checkpointer is None:
+        from .checkpointer import get_checkpointer
+        checkpointer = get_checkpointer()
+
     # Build the multi-agent graph
     graph = build_multi_agent_graph(
         tools=all_tools,
