@@ -71,9 +71,9 @@ class SRETerminalAgent(_BaseAgent):
 
     def _run_agent_commands(self, instruction: str) -> List[str]:
         """Command(s) Harbor runs to have the agent attempt the task."""
-        # The agent reads the task instruction and drives the terminal to solve it.
+        # Drives the real terminal agent (sre_agent.terminal_agent) on the task.
         safe = instruction.replace("'", "'\\''")
-        return [f"python -m sre_terminal_agent --task '{safe}'"]
+        return [f"python -m sre_agent.terminal_agent --task '{safe}'"]
 
 
 def harbor_available() -> bool:

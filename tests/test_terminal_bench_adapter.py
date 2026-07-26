@@ -30,6 +30,7 @@ def test_run_commands_include_and_escape_instruction():
     cmds = tba.SRETerminalAgent()._run_agent_commands("fix the build; it's broken")
     assert len(cmds) == 1
     assert "--task" in cmds[0]
+    assert "sre_agent.terminal_agent" in cmds[0]  # points at the real agent module
     assert "'\\''" in cmds[0]  # single quote escaped for the shell
 
 
