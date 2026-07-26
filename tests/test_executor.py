@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for the dry-run Executor (ACT phase)."""
 
+import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,55 @@ def test_live_execution_is_not_implemented_in_phase0():
 def test_rollback_command_for_scale():
     rb = build_rollback_command(FakeAction("scale", parameters={"replicas": 4}))
     assert rb is not None and "replicas=<previous>" in rb
+
+
+# ── Live path (aexecute) ────────────────────────────────────────────────────
+
+def test_aexecute_dry_run_matches_sync():
+    ex = Executor()
+    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=True))
+    assert res.status == "DRY_RUN"
+
+
+def test_aexecute_live_calls_tool_caller_with_mapped_tool():
+    calls = {}
+
+    async def fake_caller(tool_name, args):
+        calls["tool"] = tool_name
+        calls["args"] = args
+        return {"status": "OK", "tool": tool_name}
+
+    ex = Executor()
+    action = FakeAction("scale", parameters={"replicas": 3, "namespace": "demo-app"})
+    res = asyncio.run(ex.aexecute(action, "autonomous", dry_run=False, tool_caller=fake_caller))
+    assert res.status == "EXECUTED"
+    assert calls["tool"] == "scale_deployment"
+    assert calls["args"]["replicas"] == 3
+    assert calls["args"]["dry_run"] is False
+
+
+def test_aexecute_live_without_caller_is_error_not_silent():
+    ex = Executor()
+    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=None))
+    assert res.status == "ERROR"
+
+
+def test_aexecute_unmapped_action_is_skipped():
+    async def fake_caller(tool_name, args):
+        return {}
+
+    ex = Executor()
+    res = asyncio.run(ex.aexecute(FakeAction("escalate"), "autonomous", dry_run=False, tool_caller=fake_caller))
+    assert res.status == "SKIPPED"
+
+
+def test_aexecute_tool_error_surfaces_as_error():
+    async def boom(tool_name, args):
+        raise RuntimeError("apiserver refused")
+
+    ex = Executor()
+    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=boom))
+    assert res.status == "ERROR" and "apiserver refused" in res.detail
 
 
 if __name__ == "__main__":

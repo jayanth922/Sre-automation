@@ -184,3 +184,36 @@ def build_act_report(
         executed=executed,
         summary=summary,
     )
+
+
+async def execute_autonomous_live(
+    state: Any,
+    report: ActReport,
+    tool_caller: Callable[[str, Dict[str, Any]], Any],
+    actor: str = "sre-agent",
+) -> List[Dict[str, Any]]:
+    """Really apply the plan's autonomous actions via the executor MCP server.
+
+    Called by the graph node only when ``EXECUTOR_LIVE`` is enabled AND the whole
+    plan was gated AUTONOMOUS (mixed plans never auto-apply). Each action is sent
+    through the injected ``tool_caller`` (the executor MCP client). Returns a list
+    of live result records for the audit trail / dashboard.
+    """
+    plan = _get(state, "remediation_plan")
+    actions = _plan_actions(plan)
+    incident_id = _get(state, "incident_id") or _get(_get(state, "metadata", {}) or {}, "incident_id")
+    executor = Executor(actor=actor, incident_id=incident_id)
+
+    results: List[Dict[str, Any]] = []
+    for action, arep in zip(actions, report.action_reports):
+        if arep.get("decision") != AutonomyDecision.AUTONOMOUS.value:
+            continue
+        res = await executor.aexecute(action, "autonomous", dry_run=False, tool_caller=tool_caller)
+        results.append({
+            "action_type": res.action_type,
+            "target": res.target,
+            "status": res.status,
+            "command": res.command,
+            "detail": res.detail,
+        })
+    return results

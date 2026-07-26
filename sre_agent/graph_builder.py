@@ -63,7 +63,25 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
         from .act_phase import build_act_report
 
         report = build_act_report(state)  # dry-run; uses real policy_engine
+        report_payload = report.to_dict()
         incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
+
+        # Live remediation is a SECOND opt-in flag beyond ACT_PHASE_ENABLED, and
+        # only fires when the ENTIRE plan was gated AUTONOMOUS (mixed plans never
+        # auto-apply). Any failure here is non-fatal to the transcript.
+        live_on = os.getenv("EXECUTOR_LIVE", "false").lower() in ("true", "1", "yes")
+        if live_on and report.aggregate_decision == "autonomous" and report.plan_present:
+            try:
+                from .executor import build_executor_tool_caller
+                from .act_phase import execute_autonomous_live
+
+                caller = await build_executor_tool_caller()
+                live_results = await execute_autonomous_live(state, report, caller)
+                report_payload["live_results"] = live_results
+                logger.info(f"⚙️  ACT: applied {len(live_results)} live remediation(s)")
+            except Exception as live_err:
+                logger.error(f"Live remediation failed (non-fatal): {live_err}")
+                report_payload["live_error"] = str(live_err)
 
         if incident_id:
             try:
@@ -73,9 +91,9 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                     incident_id,
                     event_type="act",
                     speaker_role="executor",
-                    title="Executor (dry-run)",
+                    title="Executor" if report_payload.get("live_results") else "Executor (dry-run)",
                     content=report.summary,
-                    payload={"act_report": report.to_dict(), "source": "act_phase"},
+                    payload={"act_report": report_payload, "source": "act_phase"},
                 )
             except Exception as emit_err:  # timeline emission is best-effort
                 logger.warning(f"ACT timeline emission failed (non-fatal): {emit_err}")
@@ -83,7 +101,7 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
         return {
             "metadata": {
                 **(state.get("metadata", {}) or {}),
-                "act_report": report.to_dict(),
+                "act_report": report_payload,
             }
         }
     except Exception as e:

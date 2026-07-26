@@ -113,6 +113,22 @@ Four-layer multi-agent incident-response system:
     MCP server via MCP client, replacing the NotImplementedError. Then benchmark.
   - Git: committing each step now (4 retro commits + this one).
 
+- **2026-07-26 — Phase 1 COMPLETE: agent-side live executor path wired:**
+  - `executor.py`: `Executor.aexecute(dry_run=False, tool_caller=...)` calls the
+    executor MCP server; `EXECUTOR_TOOL_MAP` (restart/scale/rollback/patch);
+    `build_executor_tool_caller(MCP_EXECUTOR_URI)` builds the MCP client. Sync
+    `execute` stays dry-run only.
+  - `act_phase.execute_autonomous_live(...)` applies only AUTONOMOUS actions.
+  - `graph_builder._act_gate_node`: when `EXECUTOR_LIVE=true` AND whole plan is
+    AUTONOMOUS → live apply; failures non-fatal (captured as live_error).
+  - THREE safety levels: ACT_PHASE_ENABLED (reason) → dry-run preview →
+    EXECUTOR_LIVE (apply, autonomous-only).
+  - Validated: dry-run path unchanged; live-with-no-server degrades gracefully.
+    **60 unit tests pass** (added live aexecute + execute_autonomous_live tests).
+  - NEXT candidates: (a) SRE benchmark (#7) scoring MTTR/root-cause/remediation
+    across chaos scenarios; (b) grow Target_Client complexity; (c) wire model
+    router (#6) into call sites.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

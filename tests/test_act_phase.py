@@ -6,6 +6,7 @@ Imported as a package module; a stub ``evaluate_fn`` is injected so the real
 doubles that mimic the shape of AgentState / RemediationPlan / RemediationAction.
 """
 
+import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sre_agent.act_phase import build_act_report, extract_incident_signals  # noqa: E402
+from sre_agent.act_phase import (  # noqa: E402
+    build_act_report,
+    execute_autonomous_live,
+    extract_incident_signals,
+)
 
 ALLOW = lambda a, e, r: (True, "allowed")  # noqa: E731
 
@@ -111,6 +116,28 @@ def test_report_is_serializable():
     report = build_act_report(_state(alert, plan), evaluate_fn=ALLOW)
     d = report.to_dict()
     assert isinstance(d, dict) and d["plan_present"] is True
+
+
+def test_execute_autonomous_live_only_applies_autonomous_actions():
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    # restart => autonomous; config_change w/o rollback => held.
+    plan = FakePlan([
+        FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
+        FakeAction("config_change", "inventory-service", {"namespace": "demo-app"}),
+    ])
+    state = _state(alert, plan)
+    report = build_act_report(state, evaluate_fn=ALLOW)
+
+    applied = []
+
+    async def fake_caller(tool_name, args):
+        applied.append(tool_name)
+        return {"status": "OK", "tool": tool_name}
+
+    results = asyncio.run(execute_autonomous_live(state, report, fake_caller))
+    # Only the restart (autonomous) is applied; the held config_change is not.
+    assert applied == ["restart_deployment"]
+    assert len(results) == 1 and results[0]["status"] == "EXECUTED"
 
 
 if __name__ == "__main__":

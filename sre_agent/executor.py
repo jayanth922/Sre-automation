@@ -22,11 +22,23 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# Maps a RemediationAction.action_type to the executor MCP server tool that
+# carries it out. Types with no infra tool (escalate = notify-only,
+# revert_commit = handled by the GitHub agent) are intentionally absent.
+EXECUTOR_TOOL_MAP: Dict[str, str] = {
+    "restart": "restart_deployment",
+    "scale": "scale_deployment",
+    "rollback": "rollback_deployment",
+    "patch": "patch_resource_limits",
+    "config_change": "patch_resource_limits",
+}
 
 
 class ExecutionMode(str):
@@ -107,8 +119,39 @@ def build_rollback_command(action: Any) -> Optional[str]:
     return None
 
 
+def _live_args(action: Any) -> Dict[str, Any]:
+    """Build the executor-MCP tool arguments for a live (real) execution."""
+    params = getattr(action, "parameters", None) or {}
+    if not isinstance(params, dict):
+        params = {}
+    action_type = str(getattr(action, "action_type", "")).lower()
+    args: Dict[str, Any] = {
+        "name": str(getattr(action, "target", "")),
+        "namespace": params.get("namespace", "default"),
+        "dry_run": False,  # live apply (the MCP server still validates server-side)
+    }
+    if action_type == "scale":
+        raw = params.get("replicas", params.get("replica_count", 1))
+        try:
+            args["replicas"] = int(raw)
+        except (TypeError, ValueError):
+            args["replicas"] = 1
+    if action_type in ("patch", "config_change"):
+        args["container"] = params.get("container", str(getattr(action, "target", "")))
+        if params.get("memory"):
+            args["memory"] = params["memory"]
+        if params.get("cpu"):
+            args["cpu"] = params["cpu"]
+    return args
+
+
 class Executor:
-    """Executes cleared remediation actions. Phase 0 = dry-run only."""
+    """Executes cleared remediation actions.
+
+    - ``execute(...)`` is synchronous and dry-run only (local preview + audit).
+    - ``aexecute(..., dry_run=False, tool_caller=...)`` performs live remediation
+      by calling the executor MCP server through an injected async ``tool_caller``.
+    """
 
     def __init__(self, actor: str = "sre-agent", incident_id: Optional[str] = None):
         self.actor = actor
@@ -151,10 +194,11 @@ class Executor:
         mode = ExecutionMode.DRY_RUN if dry_run else ExecutionMode.LIVE
 
         if not dry_run:
-            # Honesty guarantee: no real mutation exists yet.
+            # Synchronous live execution is unsupported by design — live apply
+            # goes through the executor MCP server, which is async.
             raise NotImplementedError(
-                "Live execution is not implemented in Phase 0. Wire the sandboxed "
-                "Executor MCP server (least-privilege RBAC) before enabling dry_run=False."
+                "Synchronous live execution is not supported. Use "
+                "'await Executor.aexecute(..., dry_run=False, tool_caller=...)'."
             )
 
         audit = self._audit(action, command, gate_decision, mode)
@@ -169,3 +213,87 @@ class Executor:
             rollback_command=rollback,
             detail="Dry-run only; no cluster mutation performed.",
         )
+
+    async def aexecute(
+        self,
+        action: Any,
+        gate_decision: str,
+        dry_run: bool = True,
+        tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+    ) -> "ExecutionResult":
+        """Async execution. Dry-run mirrors ``execute``; live calls the MCP server.
+
+        Args:
+            tool_caller: async ``(tool_name, args) -> result`` that invokes the
+                executor MCP server tool. Injected so this is testable without a
+                live server. Build a real one with ``build_executor_tool_caller``.
+        """
+        if dry_run:
+            return self.execute(action, gate_decision, dry_run=True)
+
+        command = build_command(action)
+        rollback = build_rollback_command(action)
+        atype = str(getattr(action, "action_type", "")).lower()
+        target = str(getattr(action, "target", ""))
+        audit = self._audit(action, command, gate_decision, ExecutionMode.LIVE)
+
+        if tool_caller is None:
+            return ExecutionResult(
+                action_type=atype, target=target, command=command,
+                mode=ExecutionMode.LIVE, status="ERROR", audit=audit,
+                rollback_command=rollback,
+                detail="Live execution requested but no executor tool_caller configured.",
+            )
+
+        tool_name = EXECUTOR_TOOL_MAP.get(atype)
+        if not tool_name:
+            return ExecutionResult(
+                action_type=atype, target=target, command=command,
+                mode=ExecutionMode.LIVE, status="SKIPPED", audit=audit,
+                rollback_command=rollback,
+                detail=f"No executor MCP tool maps to action_type '{atype}'.",
+            )
+
+        try:
+            resp = await tool_caller(tool_name, _live_args(action))
+            logger.info(f"⚙️  Executor[live]: {tool_name} → applied ({command})")
+            return ExecutionResult(
+                action_type=atype, target=target, command=command,
+                mode=ExecutionMode.LIVE, status="EXECUTED", audit=audit,
+                rollback_command=rollback, detail=str(resp),
+            )
+        except Exception as e:
+            logger.error(f"❌ Executor[live]: {tool_name} failed: {e}")
+            return ExecutionResult(
+                action_type=atype, target=target, command=command,
+                mode=ExecutionMode.LIVE, status="ERROR", audit=audit,
+                rollback_command=rollback, detail=f"executor MCP call failed: {e}",
+            )
+
+
+async def build_executor_tool_caller(uri: Optional[str] = None):
+    """Build a live async tool_caller bound to the executor MCP server.
+
+    Lazily imports the MCP adapter so importing this module stays dependency-light.
+    """
+    uri = uri or os.getenv("MCP_EXECUTOR_URI")
+    if not uri:
+        raise RuntimeError("MCP_EXECUTOR_URI is not set; cannot reach the executor server")
+
+    from langchain_mcp_adapters.client import MultiServerMCPClient  # lazy
+
+    client = MultiServerMCPClient({"executor": {"url": uri, "transport": "sse"}})
+    tools = await client.get_tools()
+    by_name = {getattr(t, "name", ""): t for t in tools}
+
+    async def _caller(tool_name: str, args: Dict[str, Any]) -> Any:
+        tool = by_name.get(tool_name)
+        if tool is None:
+            raise RuntimeError(
+                f"executor tool '{tool_name}' not found (available: {sorted(by_name)})"
+            )
+        if hasattr(tool, "ainvoke"):
+            return await tool.ainvoke(args)
+        return tool.invoke(args)
+
+    return _caller

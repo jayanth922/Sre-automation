@@ -66,17 +66,29 @@ For each action the gate returns **AUTONOMOUS**, **REQUIRES_APPROVAL**, or
 
 A whole plan is autonomous only if *every* action is (`decide_plan`).
 
-## 4. Executor (`sre_agent/executor.py`) — Phase 0: dry-run
+## 4. Executor (`sre_agent/executor.py`)
 
 The Executor translates a cleared action into the concrete `kubectl`/`gh`
-command it would run, and in Phase 0 **stops there**, returning the command plus
-a **tamper-evident (sha256-chained) audit record**. Calling with
-`dry_run=False` raises `NotImplementedError` — a deliberate honesty guarantee
-that nothing can mutate real infrastructure until Phase 1 wires the sandboxed
-Executor MCP server with least-privilege RBAC.
+command, with a **tamper-evident (sha256-chained) audit record** for every
+action.
 
-Run `python examples/act_phase_demo.py` to see the full path over five scenarios
-with zero cluster access.
+- **Dry-run (`execute`, sync):** returns the command it *would* run; no mutation.
+- **Live (`aexecute`, async):** calls the **Executor MCP server**
+  (`edge_mcp_servers/mcp_servers/executor_real`, port 4005) through an injected
+  async `tool_caller` (built by `build_executor_tool_caller`, which speaks MCP
+  to `MCP_EXECUTOR_URI`). Action types map to server tools via
+  `EXECUTOR_TOOL_MAP` (restart/scale/rollback/patch); `escalate`/`revert_commit`
+  are skipped (not infra mutations). The MCP server applies its own guardrails
+  and server-side dry-run — defense in depth.
+
+Live remediation is gated by a **second** flag, `EXECUTOR_LIVE` (default off),
+*and* only runs when the whole plan was gated AUTONOMOUS. So there are three
+safety levels: `ACT_PHASE_ENABLED` (reason about actions) → dry-run preview →
+`EXECUTOR_LIVE` (actually apply, autonomous-only). Any live failure is non-fatal
+to the incident transcript.
+
+Run `python examples/act_phase_demo.py` to see the decision path over five
+scenarios with zero cluster access.
 
 ---
 
@@ -167,8 +179,10 @@ swarm → reflector → planner → [severity → policy_gate] → executor → 
 - **Phase 0 (built):** Severity Engine, Policy Gate, dry-run Executor, audit
   trail, demo, and this design. Zero production risk, fully demoable. 40 unit
   tests passing.
-- **Phase 1:** Sandboxed Executor MCP server; enable real Tier-1 (reversible,
-  low-sev) execution against `Target_Client` only, with abort window.
+- **Phase 1 (built):** Executor MCP server (`executor_real`, port 4005, dry-run
+  default + edge guardrails) and the agent-side live path (`Executor.aexecute` →
+  MCP, driven by `execute_autonomous_live` in the `act_gate` node, gated by
+  `EXECUTOR_LIVE`). Real Tier-1 apply against `Target_Client` when enabled.
 - **Phase 2:** Tier-2 with mandatory notification + rollback verification;
   persist audit records to `AuditLog`.
 - **Phase 3:** Egress-only edge relay + GitHub App / Slack OAuth onboarding;
