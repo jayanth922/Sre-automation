@@ -17,10 +17,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sre_agent.act_phase import (  # noqa: E402
+    apply_skill_learning,
     build_act_report,
     execute_autonomous_live,
     extract_incident_signals,
 )
+from sre_agent.skill_store import InMemorySkillStore  # noqa: E402
 
 ALLOW = lambda a, e, r: (True, "allowed")  # noqa: E731
 
@@ -138,6 +140,27 @@ def test_execute_autonomous_live_only_applies_autonomous_actions():
     # Only the restart (autonomous) is applied; the held config_change is not.
     assert applied == ["restart_deployment"]
     assert len(results) == 1 and results[0]["status"] == "EXECUTED"
+
+
+def test_apply_skill_learning_records_then_proposes():
+    store = InMemorySkillStore()
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    plan = FakePlan([FakeAction("rollback", "checkout-service", {"namespace": "demo-app"},
+                                rollback_plan="redeploy")], risk_level="high")
+
+    # Incident 1: force an executed action by faking the report's executed list.
+    report1 = build_act_report(_state(alert, plan), evaluate_fn=ALLOW)
+    report1.executed = [{"action_type": "rollback", "target": "checkout-service"}]
+    out1 = apply_skill_learning(_state(alert, plan), report1, store=store)
+    assert out1["recorded_skill"] is not None
+    assert out1["proposed_skills"] == []  # nothing learned before this one
+
+    # Incident 2 (same class): the skill from incident 1 is now proposed.
+    report2 = build_act_report(_state(alert, plan), evaluate_fn=ALLOW)
+    report2.executed = [{"action_type": "rollback", "target": "checkout-service"}]
+    out2 = apply_skill_learning(_state(alert, plan), report2, store=store)
+    assert len(out2["proposed_skills"]) == 1
+    assert out2["proposed_skills"][0]["actions"] == ["rollback"]
 
 
 if __name__ == "__main__":

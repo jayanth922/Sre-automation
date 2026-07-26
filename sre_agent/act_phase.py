@@ -217,3 +217,26 @@ async def execute_autonomous_live(
             "detail": res.detail,
         })
     return results
+
+
+def apply_skill_learning(state: Any, report: ActReport, store: Any = None) -> Dict[str, Any]:
+    """Self-improving loop (project #2): propose prior skills, record this one.
+
+    Proposes skills learned from *earlier* incidents of the same class, then
+    records the actions applied in *this* incident as a (possibly recurring)
+    skill. ``store`` is injectable for testing; defaults to the process store.
+    """
+    from .skill_store import get_skill_store, propose_skills, record_successful_remediation
+
+    store = store or get_skill_store()
+    alert = _get(state, "alert_context")
+    incident_id = _get(state, "incident_id") or _get(_get(state, "metadata", {}) or {}, "incident_id")
+
+    proposed = propose_skills(store, alert)  # from prior incidents, before recording this one
+    executed = getattr(report, "executed", None) or []
+    recorded = record_successful_remediation(store, alert, executed, incident_id) if executed else None
+
+    return {
+        "proposed_skills": [s.brief() for s in proposed],
+        "recorded_skill": recorded.brief() if recorded else None,
+    }

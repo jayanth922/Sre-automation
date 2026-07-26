@@ -207,6 +207,19 @@ Four-layer multi-agent incident-response system:
     scenarios load. 87 tests still pass. (Cluster run needed for live exercise.)
   - Order: #1✓ #2✓ #3✓ → last: #4 INTEGRATION_PLAN.md update.
 
+- **2026-07-26 — Project #2 (Hermes → skill memory / self-improving) built:**
+  - `sre_agent/skill_store.py`: incident signature (alert/service/failure_class),
+    `Skill`, `InMemorySkillStore` (recurrences compound success_count),
+    match/record/propose + prompt formatting. Backend-agnostic (in-memory
+    default; Qdrant/DB swappable). Global `get_skill_store()`.
+  - `act_phase.apply_skill_learning(state, report, store)` — propose prior skills
+    + record this remediation; wired into `_act_gate_node` (adds
+    proposed_skills/recorded_skill to act_report). Injectable store for tests.
+  - `tests/test_skill_store.py` (10) + act_phase learning test. **97 tests pass.**
+  - Validated E2E: ACT node recorded `skill-latency-inventory-service`.
+  - PROJECTS status: #1✓(ACT executor) #6✓(router) #7✓(bench) #2✓(skills).
+    REMAINING projects: #5 generative runbooks, #3 Slack+AI/NL-query, #4 T3 cockpit.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

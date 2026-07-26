@@ -83,6 +83,19 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                 logger.error(f"Live remediation failed (non-fatal): {live_err}")
                 report_payload["live_error"] = str(live_err)
 
+        # Self-improving loop (project #2): propose prior skills for this incident
+        # class and record the remediation that was applied as a reusable skill.
+        try:
+            from .act_phase import apply_skill_learning
+
+            learning = apply_skill_learning(state, report)
+            if learning.get("proposed_skills"):
+                report_payload["proposed_skills"] = learning["proposed_skills"]
+            if learning.get("recorded_skill"):
+                report_payload["recorded_skill"] = learning["recorded_skill"]
+        except Exception as skill_err:
+            logger.warning(f"Skill learning failed (non-fatal): {skill_err}")
+
         if incident_id:
             try:
                 from .incident_timeline import emit_timeline_event
