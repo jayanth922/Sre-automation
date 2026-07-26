@@ -13,6 +13,13 @@ Every external reference below was verified against current (2026) sources; see
 the Sources section at the end. Nothing in the mapping is assumed — where a
 project's fit is a judgment call, that is stated explicitly.
 
+> **Build status (2026-07-26).** Implemented so far: the Model Router (#6, all
+> three axes), the full ACT phase (severity engine + policy gate + dry-run
+> executor + Executor MCP server + live path), the SRE domain benchmark (#7),
+> durable checkpointing, and a payment-service dependency chain in Target_Client.
+> The video's *second half* (five standard interview questions) is mapped in the
+> new section below — several answers are already latent in this codebase.
+
 ---
 
 ## 1. The system you already have
@@ -61,10 +68,13 @@ gives you a scoreboard to prove that each subsequent addition actually helps.
 
 ## 3. Project-by-project integration detail
 
-### #6 — Model Router → task-aware model selection *(build first)*
+### #6 — Model Router → task-aware model selection *(built)*
 
-**What it is.** A router that, per task, picks the model with the best
-quality-for-cost — the RouteLLM / OpenRouter idea.
+**What it is.** Harkirat is explicit that this is **not** OpenRouter. It's a
+router smart enough to pick a model on three axes: (a) **task complexity**
+(Fable vs GPT-5.5 vs Opus 4.8…), (b) **the caller's remaining credit/budget**,
+and (c) **policy** — blocking off-policy requests (e.g. a dev using the
+company's Claude Code for a personal project). The goal is company cost control.
 
 **Why it fits.** The repo already abstracts providers behind
 `create_llm_with_error_handling(provider)` and `create_llm_with_fallback(...)`,
@@ -78,9 +88,11 @@ hard calls to a strong tier cuts cost and latency without hurting quality.
 - New `sre_agent/model_router.py`: a pure-logic `select_model(task_type,
   complexity)` returning a `RoutingDecision`, plus `route_llm(...)` that
   delegates to the existing `create_llm_with_error_handling`.
-- Call sites: `supervisor.py` (routing/narration → FAST; planning → STRONG),
-  `graph_builder.py` `_reflector_node` (→ STRONG) and `_planner_node` (→ STRONG),
-  and `agent_nodes.py` specialists (→ BALANCED).
+- Call sites: `graph_builder.py` `_reflector_node` and `_planner_node` are wired
+  to `route_llm` (→ STRONG). Supervisor/specialists remain candidates.
+- **All three axes are implemented:** `RequestContext(remaining_budget,
+  off_policy)` — low budget downgrades the tier, an exhausted budget or an
+  off-policy request raises `ModelRouterBlocked`.
 - Fully env-configurable and backward compatible: disabled ⇒ current behavior.
 
 **This is implemented in this commit** — see `sre_agent/model_router.py` and
@@ -205,6 +217,25 @@ incident into training material** (#5), is **measured by a domain benchmark**
 feature of the same platform, sharing the same state, memory, and audit trail.
 
 ---
+
+## 4b. Interview-question hardening (the video's second half)
+
+Beyond the 7 projects, the video walks through five "standard interview
+questions" for a Devon-like agent company. They map directly onto this SRE agent,
+and answering them in-code is high-value resume signal:
+
+| # | Interview question | How it maps here | Status |
+|---|--------------------|------------------|--------|
+| Q1 | Architecture: sandbox per user, scale up/down | Executor runs in sandboxed pods; edge relay is per-tenant (egress-only) | Designed (ACT_PHASE_DESIGN §5) |
+| Q2 | **Crash durability** — resume a long task from a checkpoint (Temporal) | LangGraph checkpointer wired per incident_id; `CHECKPOINTER_ENABLED` | **Built** |
+| Q3 | Context management — compaction/summarization | Follow-up flow reloads incident context; compaction is a candidate | Partial |
+| Q4 | **Evals** — deterministic, SWE-bench/terminal-bench style | SRE domain benchmark scoring MTTR + root-cause/remediation/severity/safety | **Built (#7)** |
+| Q5 | **Observability** — agent failure traces, auto-switch provider | `thought_traces` + incident timeline; model-router fallback chain switches providers | Partial |
+
+The standout is **Q2**: the video emphasizes crash durability most, and it is now
+implemented — a restarted process resumes the same investigation from its last
+checkpoint. Q1's sandboxing/scaling and Q5's provider auto-switch are also
+partially realized (sandboxed executor + edge relay; router fallback chain).
 
 ## 5. Sources
 
