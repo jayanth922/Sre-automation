@@ -187,6 +187,50 @@ Use this runbook when **{inp.alert_name}** fires on **{inp.service}**
 """
 
 
+async def generate_runbook_llm(inp: RunbookInput, llm: Any) -> str:
+    """LLM-authored runbook body (genuinely generative) with deterministic fallback.
+
+    The frontmatter stays deterministic (so the corpus stays machine-indexable),
+    but the prose is written by the model from the incident facts — richer and
+    more useful than a fixed template. Falls back to the template if the LLM
+    call fails, so generation never breaks the pipeline.
+    """
+    import yaml
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    commands = "\n".join(
+        f"- {a.get('action_type')} {a.get('target')}" for a in inp.actions
+    ) or "- (none recorded)"
+    facts = (
+        f"alert={inp.alert_name} service={inp.service} failure_class={inp.failure_class} "
+        f"severity={inp.severity}\nhypothesis={inp.hypothesis}\napplied_actions:\n{commands}"
+    )
+    try:
+        resp = await llm.ainvoke([
+            SystemMessage(content=(
+                "You write concise SRE runbooks. Given incident facts, produce a markdown "
+                "body with these sections: Summary, Symptoms, Root cause, Remediation "
+                "(include the applied actions as concrete steps), Verification, Prevention. "
+                "Do NOT include YAML frontmatter or a top-level title; start at '## Summary'."
+            )),
+            HumanMessage(content=facts),
+        ])
+        body = str(getattr(resp, "content", resp)).strip()
+        if "## " not in body:
+            raise ValueError("LLM body missing sections")
+    except Exception as e:
+        logger.warning(f"RunbookGenerator: LLM generation failed ({e}); using template.")
+        return generate_runbook_markdown(inp)
+
+    fm = yaml.safe_dump(_frontmatter(inp), sort_keys=False, default_flow_style=False).strip()
+    rid = runbook_id(inp)
+    return (
+        f"---\n{fm}\n---\n\n# {rid} | {inp.service} | "
+        f"{inp.failure_class.replace('_', ' ').title()}\n\n"
+        f"> Auto-generated (LLM) from incident `{inp.incident_id or 'unknown'}`.\n\n{body}\n"
+    )
+
+
 def runbooks_dir() -> Path:
     """Where generated runbooks are written (feeds the runbooks MCP corpus)."""
     env = os.getenv("RUNBOOKS_DIR")
@@ -196,10 +240,20 @@ def runbooks_dir() -> Path:
 
 
 def write_runbook(inp: RunbookInput, target_dir: Optional[Path] = None) -> Path:
-    """Generate and write the runbook markdown; returns the written path."""
+    """Generate (deterministic) and write the runbook markdown; returns the path."""
     target_dir = Path(target_dir) if target_dir else runbooks_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / runbook_filename(inp)
     path.write_text(generate_runbook_markdown(inp), encoding="utf-8")
     logger.info(f"📝 RunbookGenerator: wrote {path.name}")
+    return path
+
+
+async def write_runbook_generative(inp: RunbookInput, llm: Any, target_dir: Optional[Path] = None) -> Path:
+    """LLM-author the runbook and write it (deterministic fallback inside)."""
+    target_dir = Path(target_dir) if target_dir else runbooks_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / runbook_filename(inp)
+    path.write_text(await generate_runbook_llm(inp, llm), encoding="utf-8")
+    logger.info(f"📝 RunbookGenerator: wrote {path.name} (generative)")
     return path

@@ -114,11 +114,18 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
         # (RUNBOOK_AUTOGEN) since it writes files. Non-fatal.
         if os.getenv("RUNBOOK_AUTOGEN", "false").lower() in ("true", "1", "yes"):
             try:
-                from .runbook_generator import input_from_act, write_runbook
+                from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
 
                 skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
                 rb_input = input_from_act(state, report, skill_id=skill_id)
-                path = write_runbook(rb_input)
+                # Prefer LLM-authored (generative) runbooks; fall back to template.
+                try:
+                    from .model_router import TaskType, route_llm
+
+                    rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
+                    path = await write_runbook_generative(rb_input, rb_llm)
+                except Exception:
+                    path = write_runbook(rb_input)
                 report_payload["generated_runbook"] = path.name
                 logger.info(f"📝 ACT: generated runbook {path.name}")
             except Exception as rb_err:

@@ -11,8 +11,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import asyncio  # noqa: E402
+
 from sre_agent.runbook_generator import (  # noqa: E402
     RunbookInput,
+    generate_runbook_llm,
     generate_runbook_markdown,
     input_from_act,
     runbook_filename,
@@ -98,6 +101,34 @@ def test_input_from_act_extracts_fields():
     assert inp.severity == "SEV2"
     assert inp.actions[0]["action_type"] == "rollback"
     assert inp.skill_id == "skill-x"
+
+
+class _FakeLLM:
+    def __init__(self, content, fail=False):
+        self._content = content
+        self._fail = fail
+
+    async def ainvoke(self, messages):
+        if self._fail:
+            raise RuntimeError("llm down")
+        class R:
+            content = self._content
+        return R()
+
+
+def test_generate_runbook_llm_uses_model_body():
+    body = "## Summary\nGenerated summary.\n## Root cause\nA bad deploy.\n## Remediation\nrollback."
+    md = asyncio.run(generate_runbook_llm(_inp(), _FakeLLM(body)))
+    assert "Generated summary." in md
+    assert md.startswith("---\n")  # frontmatter preserved
+    import yaml
+    assert yaml.safe_load(md.split("---", 2)[1])["alert_name"] == "CheckoutHighErrorRate"
+
+
+def test_generate_runbook_llm_falls_back_on_failure():
+    md = asyncio.run(generate_runbook_llm(_inp(), _FakeLLM("", fail=True)))
+    # Deterministic template fallback still produces a valid runbook.
+    assert "## Summary" in md and "kubectl rollout undo" in md
 
 
 def test_write_runbook_to_tmp(tmp_path):
