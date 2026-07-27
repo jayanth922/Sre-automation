@@ -365,6 +365,17 @@ Four-layer multi-agent incident-response system:
     on-call. 16 tests; **228 total**.
   - Roadmap: #1 stream ✓ #2 war room ✓ #3 monitor+on-call ✓ → #4 dashboard chat panel.
 
+- **2026-07-26 — Live-chat slice #4: dashboard chat panel (design COMPLETE).**
+  - `dashboard/components/dashboard/IncidentChatPanel.tsx`: mirrors the war-room
+    conversation via `useLiveStream` (WebSocket) and posts operator replies to
+    `/incidents/{id}/message` — same human-checkpoint queue as Slack. So Slack +
+    dashboard are two symmetric views of one conversation.
+  - esbuild-validated TSX. Mount: drop `<IncidentChatPanel incidentId={id} />`
+    into the incident workspace page (not auto-mounted to avoid a blind edit of
+    that large page; full `npm run build` verifies on Jayanth's machine).
+  - **Live-chat design DONE: #1 WS stream ✓ #2 Slack war room ✓ #3 monitor+on-call ✓
+    #4 dashboard chat ✓.** 228 Python tests; frontend esbuild-validated.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
