@@ -379,7 +379,7 @@ async def emit_timeline_event(
     try:
         incident_uuid = uuid.UUID(str(incident_id))
         async with database.AsyncSessionLocal() as db:
-            return await crud.create_incident_timeline_event(
+            event = await crud.create_incident_timeline_event(
                 db,
                 incident_uuid,
                 event_type=event_type,
@@ -388,6 +388,18 @@ async def emit_timeline_event(
                 content=content,
                 payload=payload,
             )
+        # Push the event to the live bus so WebSocket subscribers (dashboard)
+        # see the conversation update in real time. Best-effort, non-fatal.
+        try:
+            from .live_events import publish_incident_event
+
+            await publish_incident_event(
+                str(incident_id), "timeline",
+                {"event_type": event_type, "speaker_role": speaker_role, "title": title, "content": content},
+            )
+        except Exception as pub_err:
+            logger.debug(f"live publish skipped: {pub_err}")
+        return event
     except Exception as e:
         logger.warning(f"Failed to emit timeline event {event_type} for {incident_id}: {e}")
         return None

@@ -325,6 +325,20 @@ Four-layer multi-agent incident-response system:
     repo + test_command (planner/schema enhancement); mechanism + report support ready.
   - **203 tests pass.**
 
+- **2026-07-26 — Live-streaming slice #1 (of the continuous-live-chat design):**
+  - `sre_agent/live_events.py`: event-bus backbone — `InMemoryEventBus` (default,
+    tested) + `RedisEventBus` (prod, guarded) + `get_event_bus()`; channels
+    `incident:{id}` and `insights`; `publish_incident_event`/`publish_insight`.
+  - `agent_runtime.py`: WebSocket endpoints `/ws/incidents/{id}` and `/ws/insights`
+    (push, not poll).
+  - `incident_timeline.emit_timeline_event` now publishes every event to the bus
+    (best-effort) → the incident conversation streams live.
+  - `dashboard/lib/useLiveStream.ts`: React hook (WS + auto-reconnect) to consume it.
+  - `LIVE_BUS_BACKEND` env. 8 bus tests; **211 total**. esbuild-validated TS.
+  - Design roadmap (docs): #1 live stream ✓ → #2 per-incident Slack thread + inbound
+    routing to the human-checkpoint queue (two-way chat) → #3 always-on monitor +
+    on-call routing → #4 dashboard chat panel. All reuse this bus.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

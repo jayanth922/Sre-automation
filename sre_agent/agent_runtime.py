@@ -10,7 +10,7 @@ load_dotenv()
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
@@ -96,6 +96,41 @@ app.include_router(mission_control.router, prefix="/api/v1")
 # SLO Management Router
 from sre_agent.api.v1 import slos as slos_router
 app.include_router(slos_router.router, prefix="/api/v1")
+
+
+# ── Live streaming (WebSocket) — push, not poll ──────────────────────────────
+# Subscribers (the dashboard) receive incident-conversation events and global
+# app/cluster health insights in real time via the live event bus. See
+# sre_agent/live_events.py.
+async def _stream(websocket: WebSocket, channel: str) -> None:
+    from .live_events import get_event_bus
+
+    await websocket.accept()
+    sub = get_event_bus().subscribe(channel)
+    try:
+        while True:
+            event = await sub.get()
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:  # client gone / send failure
+        logger.info(f"WebSocket stream closed for {channel}: {e}")
+    finally:
+        sub.close()
+
+
+@app.websocket("/ws/incidents/{incident_id}")
+async def ws_incident(websocket: WebSocket, incident_id: str):
+    """Live stream of one incident's conversation/act events."""
+    from .live_events import incident_channel
+    await _stream(websocket, incident_channel(incident_id))
+
+
+@app.websocket("/ws/insights")
+async def ws_insights(websocket: WebSocket):
+    """Live stream of global app/cluster health insights."""
+    from .live_events import INSIGHTS_CHANNEL
+    await _stream(websocket, INSIGHTS_CHANNEL)
 
 # Alert Webhook Router (receives Alertmanager webhooks)
 from sre_agent.api.v1 import alerts as alerts_router
