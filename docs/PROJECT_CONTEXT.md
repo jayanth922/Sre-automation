@@ -352,6 +352,19 @@ Four-layer multi-agent incident-response system:
     supervisor's human-checkpoint queue → agent responds in-thread. 6 tests; **217**.
   - Roadmap: #1 stream ✓ #2 war room ✓ → #3 monitor+on-call routing, #4 dash chat panel.
 
+- **2026-07-26 — Live-chat slice #3: always-on monitor + on-call routing.**
+  - `sre_agent/monitor.py`: `evaluate_health(signals)` → OK/DEGRADED/CRITICAL +
+    flags (env thresholds); `MonitorState` (transition-based dedup); `run_monitor`
+    (fetch→evaluate→publish insight→flag on transition, injected fetch/on_flag);
+    `build_alert_payload` (flag → Alertmanager webhook, reuses incident-creation
+    path); `default_on_flag`/`run_monitor_service` (guarded infra).
+  - `sre_agent/oncall.py`: `current_oncall` rotation (pure), `resolve_oncall`
+    (env rotation / PagerDuty guarded), `format_slack_mention`.
+  - Flow: monitor continuously observes → streams live health to `insights` bus →
+    on transition into degraded/critical, opens an incident (webhook) + pages
+    on-call. 16 tests; **228 total**.
+  - Roadmap: #1 stream ✓ #2 war room ✓ #3 monitor+on-call ✓ → #4 dashboard chat panel.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
