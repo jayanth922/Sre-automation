@@ -164,6 +164,33 @@ def test_apply_skill_learning_records_then_proposes():
     assert out2["proposed_skills"][0]["actions"] == ["rollback"]
 
 
+def test_execute_autonomous_live_routes_code_change_to_github():
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    # A bad-deploy plan whose fix is a code change (revert the bad commit).
+    plan = FakePlan([FakeAction("revert_commit", "checkout-service",
+                                {"commit_sha": "deadbeef"}, rollback_plan="re-apply")], risk_level="low")
+    state = _state(alert, plan)
+    report = build_act_report(state, evaluate_fn=ALLOW)
+
+    infra, github = [], []
+
+    async def infra_caller(tool, args):
+        infra.append(tool)
+        return {"ok": True}
+
+    async def github_caller(tool, args):
+        github.append((tool, args))
+        return {"status": "DRY_RUN"}
+
+    # Only run live if the gate cleared it autonomous (low sev + revert has rollback).
+    if report.aggregate_decision == "autonomous":
+        results = asyncio.run(execute_autonomous_live(state, report, infra_caller, github_caller=github_caller))
+        assert github and github[0][0] == "create_revert_pr"
+        assert github[0][1]["identifier"] == "deadbeef"
+        assert not infra  # code change did not touch the infra backend
+        assert results[0]["status"] == "EXECUTED"
+
+
 def test_verify_live_builds_query_and_evaluates():
     alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
     state = _state(alert)

@@ -294,6 +294,21 @@ Four-layer multi-agent incident-response system:
     pyproject. 6 tests (local runs; hermes raises clean install error here).
   - Note: #4 cockpit intentionally dropped as out-of-scope (user agreed).
 
+- **2026-07-26 — Closed the code-change remediation gap (the video's composite).**
+  - Found: github MCP is READ-only; write tools (create_revert_pr etc.) were in
+    agent_config.yaml but implemented nowhere; executor SKIPPED revert_commit. So
+    "LLM-suggested code change executed" was NOT happening.
+  - Built `edge_mcp_servers/mcp_servers/github_exec/` (WRITE MCP, port 4006):
+    create_revert_pr / comment_on_pr, dry-run default + guardrails (revert/comment
+    only, repo allow-list). Compose service + MCP_GITHUB_EXEC_URI.
+  - Executor: `GITHUB_EXEC_TOOL_MAP` + `_github_args`; `aexecute` now routes
+    infra→executor MCP, code-change→github-exec MCP (via `github_caller`);
+    `build_github_exec_tool_caller`. `execute_autonomous_live` + node pass the
+    github caller. So a bad-deploy fix (revert PR) executes under the same
+    severity/policy gate, alongside infra/runbook steps, then verification confirms.
+  - Now the full composite the video describes IS done: code change + runbook-
+    informed plan + executed + system-state verified. **195 tests pass.**
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

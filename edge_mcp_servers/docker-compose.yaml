@@ -102,6 +102,23 @@ services:
       - edge-network
     restart: unless-stopped
 
+  # GitHub-exec — WRITE tools for code-change remediation (revert PRs). Dry-run
+  # by default; guardrails restrict to revert/comment on allow-listed repos.
+  mcp-github-exec:
+    build:
+      context: ./mcp_servers/github_exec
+      dockerfile: Dockerfile
+    container_name: mcp-github-exec
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+    ports:
+      - "4006:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
   # Executor — WRITE tools (restart/scale/patch/rollback). The ACT phase's hands.
   # Dry-run by default; guardrails restrict actions/namespaces (see executor_real/README.md).
   mcp-executor:

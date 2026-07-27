@@ -76,7 +76,16 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                 from .act_phase import execute_autonomous_live
 
                 caller = await build_executor_tool_caller()
-                live_results = await execute_autonomous_live(state, report, caller)
+                # Code-change remediation (revert PR) goes to the github-exec MCP;
+                # best-effort so an infra-only plan still runs if it's not configured.
+                github_caller = None
+                try:
+                    from .executor import build_github_exec_tool_caller
+
+                    github_caller = await build_github_exec_tool_caller()
+                except Exception:
+                    github_caller = None
+                live_results = await execute_autonomous_live(state, report, caller, github_caller=github_caller)
                 report_payload["live_results"] = live_results
                 logger.info(f"⚙️  ACT: applied {len(live_results)} live remediation(s)")
 

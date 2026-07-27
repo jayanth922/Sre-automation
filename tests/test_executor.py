@@ -131,5 +131,47 @@ def test_aexecute_tool_error_surfaces_as_error():
     assert res.status == "ERROR" and "apiserver refused" in res.detail
 
 
+# ── Code-change remediation routing (github-exec backend) ───────────────────
+
+def test_aexecute_revert_commit_routes_to_github_caller():
+    calls = {}
+
+    async def github_caller(tool_name, args):
+        calls["tool"] = tool_name
+        calls["args"] = args
+        return {"status": "DRY_RUN", "tool": tool_name}
+
+    async def infra_caller(tool_name, args):
+        raise AssertionError("infra caller should not be used for a code change")
+
+    ex = Executor()
+    action = FakeAction("revert_commit", target="checkout-service", parameters={"commit_sha": "abc123"})
+    res = asyncio.run(ex.aexecute(action, "autonomous", dry_run=False,
+                                  tool_caller=infra_caller, github_caller=github_caller))
+    assert res.status == "EXECUTED"
+    assert calls["tool"] == "create_revert_pr"
+    assert calls["args"]["identifier"] == "abc123"
+
+
+def test_aexecute_revert_commit_without_github_caller_errors():
+    ex = Executor()
+    action = FakeAction("revert_commit", parameters={"commit_sha": "abc123"})
+    res = asyncio.run(ex.aexecute(action, "autonomous", dry_run=False, tool_caller=None, github_caller=None))
+    assert res.status == "ERROR" and "github-exec" in res.detail
+
+
+def test_infra_action_still_uses_infra_caller():
+    async def infra_caller(tool_name, args):
+        return {"tool": tool_name}
+
+    async def github_caller(tool_name, args):
+        raise AssertionError("github caller should not be used for an infra action")
+
+    ex = Executor()
+    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=False,
+                                  tool_caller=infra_caller, github_caller=github_caller))
+    assert res.status == "EXECUTED"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

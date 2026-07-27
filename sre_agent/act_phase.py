@@ -192,13 +192,14 @@ async def execute_autonomous_live(
     report: ActReport,
     tool_caller: Callable[[str, Dict[str, Any]], Any],
     actor: str = "sre-agent",
+    github_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Really apply the plan's autonomous actions via the executor MCP server.
+    """Really apply the plan's autonomous actions via the MCP servers.
 
     Called by the graph node only when ``EXECUTOR_LIVE`` is enabled AND the whole
-    plan was gated AUTONOMOUS (mixed plans never auto-apply). Each action is sent
-    through the injected ``tool_caller`` (the executor MCP client). Returns a list
-    of live result records for the audit trail / dashboard.
+    plan was gated AUTONOMOUS (mixed plans never auto-apply). Infra actions go to
+    the executor MCP (``tool_caller``); code-change actions (revert_commit) go to
+    the github-exec MCP (``github_caller``). Returns live result records.
     """
     plan = _get(state, "remediation_plan")
     actions = _plan_actions(plan)
@@ -209,7 +210,9 @@ async def execute_autonomous_live(
     for action, arep in zip(actions, report.action_reports):
         if arep.get("decision") != AutonomyDecision.AUTONOMOUS.value:
             continue
-        res = await executor.aexecute(action, "autonomous", dry_run=False, tool_caller=tool_caller)
+        res = await executor.aexecute(
+            action, "autonomous", dry_run=False, tool_caller=tool_caller, github_caller=github_caller,
+        )
         results.append({
             "action_type": res.action_type,
             "target": res.target,

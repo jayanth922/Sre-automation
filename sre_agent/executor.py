@@ -29,15 +29,22 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Maps a RemediationAction.action_type to the executor MCP server tool that
-# carries it out. Types with no infra tool (escalate = notify-only,
-# revert_commit = handled by the GitHub agent) are intentionally absent.
+# Infra remediation → executor MCP server tools. (escalate = notify-only, absent.)
 EXECUTOR_TOOL_MAP: Dict[str, str] = {
     "restart": "restart_deployment",
     "scale": "scale_deployment",
     "rollback": "rollback_deployment",
     "patch": "patch_resource_limits",
     "config_change": "patch_resource_limits",
+}
+
+# Code-change remediation → github-exec MCP server tools. This is what makes an
+# LLM-suggested code fix (revert the bad deploy) actually execute, not just be
+# proposed. Routed to a separate caller (the github-exec server).
+GITHUB_EXEC_TOOL_MAP: Dict[str, str] = {
+    "revert_commit": "create_revert_pr",
+    "revert_pr": "create_revert_pr",
+    "comment_pr": "comment_on_pr",
 }
 
 
@@ -117,6 +124,20 @@ def build_rollback_command(action: Any) -> Optional[str]:
     if action_type == "scale":
         return f"kubectl scale deployment/{target} --replicas=<previous> -n {ns}"
     return None
+
+
+def _github_args(action: Any) -> Dict[str, Any]:
+    """Build github-exec tool arguments for a code-change action."""
+    params = getattr(action, "parameters", None) or {}
+    if not isinstance(params, dict):
+        params = {}
+    atype = str(getattr(action, "action_type", "")).lower()
+    if atype in ("revert_commit", "revert_pr"):
+        identifier = params.get("commit_sha") or params.get("sha") or params.get("pr_number") or ""
+        return {"identifier": str(identifier), "dry_run": False}
+    if atype == "comment_pr":
+        return {"pr_number": params.get("pr_number"), "body": str(params.get("body", "")), "dry_run": False}
+    return {"dry_run": False}
 
 
 def _live_args(action: Any) -> Dict[str, Any]:
@@ -220,13 +241,13 @@ class Executor:
         gate_decision: str,
         dry_run: bool = True,
         tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        github_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
     ) -> "ExecutionResult":
-        """Async execution. Dry-run mirrors ``execute``; live calls the MCP server.
+        """Async execution. Dry-run mirrors ``execute``; live routes to a backend.
 
-        Args:
-            tool_caller: async ``(tool_name, args) -> result`` that invokes the
-                executor MCP server tool. Injected so this is testable without a
-                live server. Build a real one with ``build_executor_tool_caller``.
+        Infra actions (restart/scale/…) go to the executor MCP via ``tool_caller``;
+        code-change actions (revert_commit/…) go to the github-exec MCP via
+        ``github_caller``. Both injected so this is testable without live servers.
         """
         if dry_run:
             return self.execute(action, gate_decision, dry_run=True)
@@ -237,38 +258,31 @@ class Executor:
         target = str(getattr(action, "target", ""))
         audit = self._audit(action, command, gate_decision, ExecutionMode.LIVE)
 
-        if tool_caller is None:
+        def _result(status: str, detail: str) -> "ExecutionResult":
             return ExecutionResult(
                 action_type=atype, target=target, command=command,
-                mode=ExecutionMode.LIVE, status="ERROR", audit=audit,
-                rollback_command=rollback,
-                detail="Live execution requested but no executor tool_caller configured.",
+                mode=ExecutionMode.LIVE, status=status, audit=audit,
+                rollback_command=rollback, detail=detail,
             )
 
-        tool_name = EXECUTOR_TOOL_MAP.get(atype)
-        if not tool_name:
-            return ExecutionResult(
-                action_type=atype, target=target, command=command,
-                mode=ExecutionMode.LIVE, status="SKIPPED", audit=audit,
-                rollback_command=rollback,
-                detail=f"No executor MCP tool maps to action_type '{atype}'.",
-            )
+        # Route to the right backend by action type.
+        if atype in GITHUB_EXEC_TOOL_MAP:
+            caller, tool_name, args, backend = github_caller, GITHUB_EXEC_TOOL_MAP[atype], _github_args(action), "github-exec"
+        elif atype in EXECUTOR_TOOL_MAP:
+            caller, tool_name, args, backend = tool_caller, EXECUTOR_TOOL_MAP[atype], _live_args(action), "executor"
+        else:
+            return _result("SKIPPED", f"No MCP tool maps to action_type '{atype}'.")
+
+        if caller is None:
+            return _result("ERROR", f"Live execution requested but no {backend} tool_caller configured.")
 
         try:
-            resp = await tool_caller(tool_name, _live_args(action))
-            logger.info(f"⚙️  Executor[live]: {tool_name} → applied ({command})")
-            return ExecutionResult(
-                action_type=atype, target=target, command=command,
-                mode=ExecutionMode.LIVE, status="EXECUTED", audit=audit,
-                rollback_command=rollback, detail=str(resp),
-            )
+            resp = await caller(tool_name, args)
+            logger.info(f"⚙️  Executor[live/{backend}]: {tool_name} → applied ({command})")
+            return _result("EXECUTED", str(resp))
         except Exception as e:
-            logger.error(f"❌ Executor[live]: {tool_name} failed: {e}")
-            return ExecutionResult(
-                action_type=atype, target=target, command=command,
-                mode=ExecutionMode.LIVE, status="ERROR", audit=audit,
-                rollback_command=rollback, detail=f"executor MCP call failed: {e}",
-            )
+            logger.error(f"❌ Executor[live/{backend}]: {tool_name} failed: {e}")
+            return _result("ERROR", f"{backend} MCP call failed: {e}")
 
 
 async def build_mcp_tool_caller(uri: str, server_name: str = "server"):
@@ -311,3 +325,11 @@ async def build_metrics_tool_caller(uri: Optional[str] = None):
     if not uri:
         raise RuntimeError("MCP_METRICS_URI is not set; cannot reach the metrics server")
     return await build_mcp_tool_caller(uri, "metrics")
+
+
+async def build_github_exec_tool_caller(uri: Optional[str] = None):
+    """Tool caller bound to the github-exec MCP server (MCP_GITHUB_EXEC_URI)."""
+    uri = uri or os.getenv("MCP_GITHUB_EXEC_URI")
+    if not uri:
+        raise RuntimeError("MCP_GITHUB_EXEC_URI is not set; cannot reach the github-exec server")
+    return await build_mcp_tool_caller(uri, "github_exec")
