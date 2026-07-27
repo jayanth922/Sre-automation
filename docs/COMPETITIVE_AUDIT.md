@@ -71,21 +71,27 @@ Where it is clearly behind (and should say so): integration coverage (HolmesGPT'
 sandboxing (Firecracker/E2B), and observability (Langfuse). Most individual
 features are deliberately small versions of mature tools.
 
-## Highest-leverage upgrades to close the gap
+## Highest-leverage upgrades — now BUILT (as real, guarded adapters)
 
-If the goal is to move specific features from "educational" toward "credible":
+All five are implemented against the current SDK APIs, guarded so they fall back
+to the built-in path when the optional package/keys aren't present:
 
-1. **Run against ITBench / AIOpsLab** instead of (or alongside) the home-grown
-   benchmark — real, comparable numbers.
-2. **Emit traces to Langfuse** (OpenLLMetry) rather than the in-process recorder.
-3. **Back the model router with LiteLLM** (keep our SRE-tier policy on top).
-4. **Adopt HolmesGPT's toolset breadth** — it's CNCF/OSS; our MCP layer could wrap
-   more of the same sources.
-5. **Real sandboxing** via E2B/Firecracker for the executor/terminal agent.
+1. **ITBench adapter** (`benchmarks/itbench_adapter.py`) — maps our output to the
+   IBM ITBench SRE diagnosis shape for real, comparable numbers.
+2. **Langfuse tracing** (`sre_agent/tracing.py`) — Langfuse v3 CallbackHandler
+   wired into the investigation config; enable with `LANGFUSE_PUBLIC_KEY`.
+3. **LiteLLM router backend** (`sre_agent/litellm_backend.py`) — `route_llm`
+   builds via `ChatLiteLLM` when `MODEL_ROUTER_BACKEND=litellm`; our SRE tier
+   policy stays on top.
+4. **Toolset breadth** (`sre_agent/toolsets.py`) — explicit registry of the 7
+   integrated MCP toolsets + HolmesGPT-style candidates to add behind the same
+   interface.
+5. **E2B sandbox** (`sre_agent/code_sandbox.py` → `run_code_fix`,
+   `SANDBOX_BACKEND=e2b`) — microVM isolation for running LLM code fixes.
 
-None of these change the thesis; they swap toy components for the tools the
-industry actually uses, which is itself a strong story ("I know the landscape and
-where my build sits in it").
+These swap toy components for the tools the industry actually uses. Each is
+validated at the logic level here; live use needs the optional package + keys on
+your machine.
 
 ## Sources
 

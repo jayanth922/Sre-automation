@@ -376,6 +376,18 @@ Four-layer multi-agent incident-response system:
   - **Live-chat design DONE: #1 WS stream ✓ #2 Slack war room ✓ #3 monitor+on-call ✓
     #4 dashboard chat ✓.** 228 Python tests; frontend esbuild-validated.
 
+- **2026-07-26 — Competitive-audit upgrades BUILT (all 5, guarded adapters):**
+  APIs verified via web before coding (Langfuse v3, LiteLLM Router/ChatLiteLLM,
+  E2B Sandbox, ITBench).
+  - #2 `tracing.py` (Langfuse v3 CallbackHandler → investigation config).
+  - #3 `litellm_backend.py` (route_llm → ChatLiteLLM when MODEL_ROUTER_BACKEND=litellm).
+  - #5 `code_sandbox.run_code_fix` + `apply_and_test_e2b` (SANDBOX_BACKEND=e2b microVM).
+  - #1 `benchmarks/itbench_adapter.py` (map output → ITBench diagnosis shape).
+  - #4 `sre_agent/toolsets.py` (registry: 7 integrated + HolmesGPT-style candidates).
+  - All guarded/fallback; validated at logic level (live needs the pkg+keys).
+  - **243+ tests pass** (added tracing/litellm/e2b/itbench/toolsets tests).
+  - COMPETITIVE_AUDIT.md updated: upgrades marked BUILT.
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.
