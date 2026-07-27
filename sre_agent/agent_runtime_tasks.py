@@ -92,7 +92,22 @@ async def run_graph_background_saas(
         
         callback_handler = RedisLogCallbackHandler(session_id)
         current_execution_state = initial_state
-        
+
+        # Announce the incident on the live bus so the Slack service can open a
+        # two-way war-room thread for it (design slice #2). Best-effort.
+        try:
+            from .live_events import LiveEvent, get_event_bus
+            from .war_room import INCIDENTS_CHANNEL
+
+            await get_event_bus().publish(INCIDENTS_CHANNEL, LiveEvent(
+                "opened",
+                {"incident_id": str(incident_id), "alert_name": alert_name,
+                 "summary": f"Investigating alert: {alert_name}"},
+                str(incident_id),
+            ).to_dict())
+        except Exception as _bus_err:
+            logger.debug(f"incident-open publish skipped: {_bus_err}")
+
         from .checkpointer import thread_config
         async for event in agent_graph.astream(
             initial_state,

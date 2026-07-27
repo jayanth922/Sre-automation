@@ -91,6 +91,59 @@ def build_slack_app():
     return app
 
 
+async def post_incident_message(incident_id: str, text: str,
+                                base_url: Optional[str] = None, token: Optional[str] = None) -> Any:
+    """Steer sink: push an on-call reply into the incident's checkpoint queue.
+
+    POSTs to the mission-control /message endpoint the supervisor already consumes.
+    """
+    import httpx
+
+    base_url = base_url or os.getenv("AGENT_API_URL", "http://localhost:8080")
+    token = token or os.getenv("SLACK_STEER_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(f"{base_url}/api/v1/incidents/{incident_id}/message",
+                              json={"message": text}, headers=headers)
+        r.raise_for_status()
+        return r.json()
+
+
+def build_war_room_app(registry):  # pragma: no cover - requires Slack
+    """Bolt app that routes war-room thread replies to the agent (two-way chat)."""
+    from slack_bolt.async_app import AsyncApp
+
+    from ..war_room import ThreadRef, route_thread_reply
+
+    app = AsyncApp(token=os.getenv("SLACK_BOT_TOKEN"))
+
+    @app.event("message")
+    async def _on_thread_message(event, say):
+        # Only react to human replies inside a war-room thread.
+        if event.get("bot_id") or not event.get("thread_ts"):
+            return
+        thread = ThreadRef(channel=event.get("channel", ""), thread_ts=event.get("thread_ts", ""))
+
+        async def poster(_thread, text):
+            await say(text=text, thread_ts=thread.thread_ts)
+
+        await route_thread_reply(event.get("text", ""), thread, registry, poster, post_incident_message)
+
+    return app
+
+
+async def open_war_room(app, registry, incident_id: str, summary: str,
+                        channel: Optional[str] = None):  # pragma: no cover - requires Slack
+    """Open a war-room thread for an incident and register it."""
+    from ..war_room import ThreadRef
+
+    channel = channel or os.getenv("SLACK_WAR_ROOM_CHANNEL", "#incidents")
+    resp = await app.client.chat_postMessage(channel=channel, text=f":rotating_light: *Incident opened*\n{summary}")
+    thread = ThreadRef(channel=resp["channel"], thread_ts=resp["ts"])
+    registry.open(incident_id, thread)
+    return thread
+
+
 def run() -> None:  # pragma: no cover - requires Slack tokens
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
