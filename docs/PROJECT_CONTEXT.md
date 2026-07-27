@@ -309,6 +309,22 @@ Four-layer multi-agent incident-response system:
   - Now the full composite the video describes IS done: code change + runbook-
     informed plan + executed + system-state verified. **195 tests pass.**
 
+- **2026-07-26 — Code-fix sandbox + resolution report (user request):**
+  - `code_sandbox.py`: `apply_and_test(repo, patch/patch_files, test_command)` —
+    copies/clones repo into an isolated workspace, applies the LLM's change, runs
+    the repo's tests, reports TESTED_PASS/FAIL. Answers "can we apply+test LLM
+    code in a sandbox" = yes (mechanism proven with a toy git repo; true isolation
+    = Firecracker/E2B, per audit). Posture: sandbox-test + RECOMMEND, don't auto-merge.
+  - `resolution_report.py`: `build_resolution_report(state, act_report,
+    verification, code_fix)` → detailed markdown (issue, root cause, actions +
+    verification, sandbox-tested suggested code fix for manual apply, next steps).
+  - Wired into ACT node: builds the report, attaches to act_report, and emits an
+    `assistant_message` timeline event → shows up in the SAME incident conversation
+    (dashboard + Slack). Verified E2E (node emits resolution_report). 
+  - Note: auto-running the sandbox during ACT needs the plan to carry a patch +
+    repo + test_command (planner/schema enhancement); mechanism + report support ready.
+  - **203 tests pass.**
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

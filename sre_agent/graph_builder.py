@@ -140,6 +140,22 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
             except Exception as rb_err:
                 logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
 
+        # Resolution report: a detailed, human-readable "here's what happened and
+        # how we fixed it" posted into the incident conversation. Code-level causes
+        # include a (sandbox-tested) suggested fix for the human to apply.
+        try:
+            from .resolution_report import build_resolution_report
+
+            resolution = build_resolution_report(
+                state, report_payload,
+                verification=report_payload.get("verification"),
+                code_fix=report_payload.get("code_fix"),
+            )
+            report_payload["resolution_report"] = resolution
+        except Exception as res_err:
+            logger.warning(f"Resolution report failed (non-fatal): {res_err}")
+            resolution = None
+
         if incident_id:
             try:
                 from .incident_timeline import emit_timeline_event
@@ -152,6 +168,16 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                     content=report.summary,
                     payload={"act_report": report_payload, "source": "act_phase"},
                 )
+                # Post the human-readable resolution into the same conversation.
+                if resolution:
+                    await emit_timeline_event(
+                        incident_id,
+                        event_type="assistant_message",
+                        speaker_role="supervisor",
+                        title="Resolution",
+                        content=resolution["markdown"],
+                        payload={"source": "resolution_report", "resolved": resolution["resolved"]},
+                    )
             except Exception as emit_err:  # timeline emission is best-effort
                 logger.warning(f"ACT timeline emission failed (non-fatal): {emit_err}")
 
