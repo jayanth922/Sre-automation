@@ -76,5 +76,24 @@ def test_workspace_cleaned_up_by_default(tmp_path):
     assert not Path(result.workspace).exists()  # cleaned up
 
 
+def test_backend_default_is_local(monkeypatch):
+    monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+    assert cs.sandbox_backend() == "local"
+
+
+def test_run_code_fix_dispatches_local(tmp_path, monkeypatch):
+    monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+    repo = _make_repo(tmp_path, "exit 1\n")
+    result = cs.run_code_fix(repo, patch_files={"check.sh": "exit 0\n"}, test_command="bash check.sh")
+    assert result.status == "TESTED_PASS"
+
+
+def test_e2b_backend_raises_clean_error_without_package(monkeypatch, tmp_path):
+    monkeypatch.setenv("SANDBOX_BACKEND", "e2b")
+    repo = _make_repo(tmp_path, "exit 0\n")
+    with pytest.raises(RuntimeError, match="pip install e2b"):
+        cs.run_code_fix(repo, patch_files={"x": "y"}, test_command="bash check.sh")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

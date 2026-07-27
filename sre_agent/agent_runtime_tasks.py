@@ -109,10 +109,11 @@ async def run_graph_background_saas(
             logger.debug(f"incident-open publish skipped: {_bus_err}")
 
         from .checkpointer import thread_config
-        async for event in agent_graph.astream(
-            initial_state,
-            config=thread_config(str(incident_id), {"callbacks": [callback_handler]}),
-        ):
+        from .tracing import tracing_callbacks
+        # thread_config adds durability (thread_id); tracing_callbacks adds the
+        # Langfuse handler when configured. Both no-op by default.
+        _config = tracing_callbacks(thread_config(str(incident_id), {"callbacks": [callback_handler]}))
+        async for event in agent_graph.astream(initial_state, config=_config):
             for node_name, node_output in event.items():
                 timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 log_line = f"[{timestamp}] 🤖 AGENT_{node_name.upper()}: Step execution started."

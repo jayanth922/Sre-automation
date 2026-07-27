@@ -127,3 +127,75 @@ def apply_and_test(
     finally:
         if not keep_workspace:
             shutil.rmtree(workspace, ignore_errors=True)
+
+
+def sandbox_backend() -> str:
+    """local (temp dir + subprocess) | e2b (microVM isolation)."""
+    return os.getenv("SANDBOX_BACKEND", "local").lower()
+
+
+def apply_and_test_e2b(
+    repo_source: str,
+    patch: Optional[str] = None,
+    patch_files: Optional[Dict[str, str]] = None,
+    test_command: Optional[str] = None,
+    timeout: int = 180,
+) -> CodeFixResult:
+    """Real-isolation backend (competitive-audit upgrade #5): run the fix in an
+    E2B microVM instead of a local temp dir. Requires ``e2b`` + ``E2B_API_KEY``.
+
+    Verified E2B API: ``Sandbox.create()`` context manager, ``commands.run(cmd)``
+    (→ ``.stdout``/``.stderr``/``.exit_code``), ``files.write(path, content)``.
+    """
+    try:
+        from e2b import Sandbox  # lazy; optional dep
+    except Exception as e:
+        raise RuntimeError(
+            "E2B backend requested but e2b not installed. Install with: "
+            "pip install e2b  (and set E2B_API_KEY)"
+        ) from e
+
+    repo = "/home/user/repo"
+    with Sandbox.create() as sbx:  # pragma: no cover - requires E2B + key
+        if os.path.isdir(repo_source):
+            for root, _dirs, files in os.walk(repo_source):
+                if ".git" in root.split(os.sep):
+                    continue
+                for fn in files:
+                    local = os.path.join(root, fn)
+                    rel = os.path.relpath(local, repo_source)
+                    try:
+                        sbx.files.write(f"{repo}/{rel}", open(local, "r", encoding="utf-8").read())
+                    except Exception:
+                        pass  # skip binaries
+            sbx.commands.run(f"cd {repo} && git init -q && git add -A && git commit -qm base || true")
+        else:
+            sbx.commands.run(f"git clone --depth 1 {repo_source} {repo}")
+
+        applied = False
+        if patch_files:
+            for rel, content in patch_files.items():
+                sbx.files.write(f"{repo}/{rel}", content)
+            applied = True
+        if patch:
+            sbx.files.write(f"{repo}/fix.patch", patch)
+            sbx.commands.run(f"cd {repo} && git apply fix.patch")
+            applied = True
+
+        diff = sbx.commands.run(f"cd {repo} && git diff").stdout[-8000:]
+        if not test_command:
+            return CodeFixResult("APPLIED_NO_TESTS", applied, None, None, diff=diff, workspace="e2b")
+
+        res = sbx.commands.run(f"cd {repo} && {test_command}", timeout=timeout)
+        passed = getattr(res, "exit_code", 1) == 0
+        return CodeFixResult(
+            "TESTED_PASS" if passed else "TESTED_FAIL", applied, passed, test_command,
+            diff=diff, output=(res.stdout + res.stderr)[-4000:], workspace="e2b",
+        )
+
+
+def run_code_fix(repo_source: str, **kwargs) -> CodeFixResult:
+    """Dispatch to the configured sandbox backend (local default, e2b for isolation)."""
+    if sandbox_backend() == "e2b":
+        return apply_and_test_e2b(repo_source, **{k: v for k, v in kwargs.items() if k != "keep_workspace"})
+    return apply_and_test(repo_source, **kwargs)

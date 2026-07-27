@@ -304,6 +304,19 @@ def route_llm(
         raise ModelRouterBlocked(decision.block_reason)
     logger.info(f"ModelRouter: {decision.reason}")
 
+    # LiteLLM backend (optional): our tier decides the model; LiteLLM does the
+    # multi-provider/cost/fallback plumbing. Falls through to the provider path
+    # if not enabled, no tier model configured, or LiteLLM is unavailable.
+    from .litellm_backend import build_litellm_llm, litellm_enabled, tier_litellm_model
+
+    if litellm_enabled():
+        model = tier_litellm_model(decision.tier.value)
+        if model:
+            try:
+                return build_litellm_llm(model, temperature=decision.temperature, max_tokens=kwargs.get("max_tokens"))
+            except Exception as e:
+                logger.warning(f"LiteLLM backend unavailable ({e}); using provider path")
+
     # Lazy import: keeps ``select_model`` (and this module) importable without
     # langchain installed, which is what makes the unit tests dependency-free.
     from .llm_utils import create_llm_with_error_handling, create_llm_with_fallback
