@@ -53,7 +53,7 @@ export default function RunbooksPage() {
             </thead>
             <tbody>
               {shown.map((r) => (
-                <tr key={r.id}>
+                <tr key={r.id} className="click" onClick={() => (window.location.href = `/clusters/${id}/runbooks/${encodeURIComponent(r.id)}`)}>
                   <td className="l" style={{ fontWeight: 500 }}>
                     {r.title}
                   </td>

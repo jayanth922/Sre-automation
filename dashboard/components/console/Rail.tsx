@@ -15,11 +15,13 @@ const MONITOR = [
   { n: "02", label: "Services", seg: "services" },
   { n: "03", label: "Incidents", seg: "incidents" },
   { n: "04", label: "SLOs", seg: "slos" },
+  { n: "05", label: "Live insights", seg: "insights" },
+  { n: "06", label: "Analytics", seg: "analytics" },
 ]
 const RECORDS = [
-  { n: "05", label: "Runbooks", seg: "runbooks" },
-  { n: "06", label: "Audit trail", seg: "audit" },
-  { n: "07", label: "Settings", seg: "settings" },
+  { n: "07", label: "Runbooks", seg: "runbooks" },
+  { n: "08", label: "Audit trail", seg: "audit" },
+  { n: "09", label: "Settings", seg: "settings" },
 ]
 
 export function Rail({ cluster, openIncidents }: RailProps) {

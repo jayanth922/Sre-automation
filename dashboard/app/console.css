@@ -16,7 +16,7 @@
 /* shell */
 .sx-app{display:grid;grid-template-columns:214px 1fr;height:100vh;overflow:hidden;background:var(--paper);color:var(--ink);
   font-family:var(--font-sans),'Hanken Grotesk',system-ui,sans-serif;font-size:13px;line-height:1.5}
-.sx-rail{background:var(--panel);border-right:1px solid var(--rule2);display:flex;flex-direction:column;min-height:0}
+.sx-rail{background:var(--panel);border-right:1px solid var(--rule2);display:flex;flex-direction:column;min-height:0;overflow-y:auto}
 .sx-mast{padding:20px 18px 16px;border-bottom:1px solid var(--rule)}
 .sx-wordmark{font-weight:700;font-size:19px;letter-spacing:.01em;display:flex;align-items:center;gap:8px}
 .sx-wordmark .tick{width:8px;height:8px;background:var(--ok);display:inline-block;border-radius:1px}

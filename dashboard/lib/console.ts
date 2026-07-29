@@ -89,6 +89,26 @@ export interface Analytics {
   cluster_name: string
 }
 
+export interface Recommendations {
+  cluster_name: string
+  recommendations: string
+  stats: { total: number; mttr_minutes: number; resolution_rate: number }
+  generated_at: string
+}
+
+export interface NLQueryResult {
+  question: string
+  promql: string
+  valid: boolean
+  executed: boolean
+  data: unknown
+  error: string | null
+}
+
+export interface RunbookDetail extends Runbook {
+  content: string
+}
+
 export interface AuditEvent {
   id: string
   cluster_id: string
