@@ -43,12 +43,15 @@ logger = logging.getLogger(__name__)
 
 
 def _act_phase_enabled() -> bool:
-    """ACT phase (severity gate + dry-run executor) is opt-in via env flag.
+    """The full OODA reasoning loop is the default, unconditional path:
+    supervisor → reflector (orient) → planner (decide) → aggregate →
+    act_gate (severity → policy gate → dry-run proposal → skill memory →
+    resolution report). No flag — this is the product, not an advisor mode.
 
-    Default False so the existing advisor flow (supervisor → specialists →
-    aggregate → END) is completely unchanged unless explicitly enabled.
+    Live cluster *mutation* is a separate concern, governed by the policy gate
+    and human approval (see _act_gate_node), not by this switch.
     """
-    return os.getenv("ACT_PHASE_ENABLED", "false").lower() in ("true", "1", "yes")
+    return True
 
 
 async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
@@ -118,27 +121,26 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
             logger.warning(f"Skill learning failed (non-fatal): {skill_err}")
             learning = {}
 
-        # Generative runbook (project #5): auto-write a runbook/postmortem for this
-        # incident into the runbooks corpus so future RAG finds it. Opt-in
-        # (RUNBOOK_AUTOGEN) since it writes files. Non-fatal.
-        if os.getenv("RUNBOOK_AUTOGEN", "false").lower() in ("true", "1", "yes"):
+        # Generative runbook: auto-write a runbook/postmortem for this incident so
+        # future RAG can find it. Runs unconditionally; entirely non-fatal (a
+        # failed write or LLM call never breaks the transcript).
+        try:
+            from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
+
+            skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
+            rb_input = input_from_act(state, report, skill_id=skill_id)
+            # Prefer LLM-authored (generative) runbooks; fall back to template.
             try:
-                from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
+                from .model_router import TaskType, route_llm
 
-                skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
-                rb_input = input_from_act(state, report, skill_id=skill_id)
-                # Prefer LLM-authored (generative) runbooks; fall back to template.
-                try:
-                    from .model_router import TaskType, route_llm
-
-                    rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
-                    path = await write_runbook_generative(rb_input, rb_llm)
-                except Exception:
-                    path = write_runbook(rb_input)
-                report_payload["generated_runbook"] = path.name
-                logger.info(f"📝 ACT: generated runbook {path.name}")
-            except Exception as rb_err:
-                logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
+                rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
+                path = await write_runbook_generative(rb_input, rb_llm)
+            except Exception:
+                path = write_runbook(rb_input)
+            report_payload["generated_runbook"] = path.name
+            logger.info(f"📝 ACT: generated runbook {path.name}")
+        except Exception as rb_err:
+            logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
 
         # Resolution report: a detailed, human-readable "here's what happened and
         # how we fixed it" posted into the incident conversation. Code-level causes

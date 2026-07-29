@@ -96,9 +96,12 @@ auth:
   # carries the Secure flag.
   cookieSecure: "false"
 
-# ── Feature flags ─────────────────────────────────────────────────────────────
+# ── Remediation + feature flags ────────────────────────────────────────────
 features:
-  actPhaseEnabled: "false"
+  # Reasoning + dry-run proposal always runs. This only authorizes autonomous
+  # EXECUTION of gate-approved reversible actions on the live cluster. Read-only
+  # by default; high severities always require human approval.
+  executorLive: "false"
   checkpointerEnabled: "false"
   checkpointerBackend: "memory"
   liveBusBackend: "memory"

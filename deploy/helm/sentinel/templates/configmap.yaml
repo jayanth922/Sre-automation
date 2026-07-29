@@ -44,8 +44,8 @@ data:
   REFRESH_TOKEN_EXPIRE_DAYS: {{ .Values.auth.refreshTokenDays | quote }}
   COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
 
-  # Feature flags
-  ACT_PHASE_ENABLED: {{ .Values.features.actPhaseEnabled | quote }}
+  # Remediation + feature flags
+  EXECUTOR_LIVE: {{ .Values.features.executorLive | quote }}
   CHECKPOINTER_ENABLED: {{ .Values.features.checkpointerEnabled | quote }}
   CHECKPOINTER_BACKEND: {{ .Values.features.checkpointerBackend | quote }}
   LIVE_BUS_BACKEND: {{ .Values.features.liveBusBackend | quote }}

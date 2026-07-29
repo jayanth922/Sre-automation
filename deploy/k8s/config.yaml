@@ -57,8 +57,14 @@ data:
   # Set "true" when serving over TLS (production) so the refresh cookie is Secure.
   COOKIE_SECURE: "false"
 
+  # --- Remediation authorization ---
+  # The reasoning + dry-run remediation proposal always runs. This governs
+  # whether Sentinel may EXECUTE a gate-approved, reversible action on the live
+  # cluster autonomously. Read-only by default (industry standard); higher
+  # severities always require human approval regardless.
+  EXECUTOR_LIVE: "false"
+
   # --- Feature flags ---
-  ACT_PHASE_ENABLED: "false"
   CHECKPOINTER_ENABLED: "false"
   CHECKPOINTER_BACKEND: "memory"
   LIVE_BUS_BACKEND: "memory"
