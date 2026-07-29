@@ -269,6 +269,15 @@ async def startup_event():
     # Keep cluster status fresh in the dashboard
     asyncio.create_task(_heartbeat_loop())
 
+    # Continuous, proactive monitoring: sweeps every connected cluster's
+    # per-service health and opens incidents on breach (drives the same
+    # investigation pipeline as the alert webhook).
+    try:
+        from sre_agent.monitor_service import run_platform_monitor
+        asyncio.create_task(run_platform_monitor())
+    except Exception as monitor_err:
+        logger.warning(f"Could not start platform monitor: {monitor_err}")
+
     # Always initialize the AI graph if we are managing a cluster
     if agent_mode != "api" or cluster_token:
         logger.info("🧠 Initializing SRE Agent Graph for automated investigations...")

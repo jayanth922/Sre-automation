@@ -72,17 +72,13 @@ def _status(error_pct: Optional[float], p95_ms: Optional[float]) -> str:
     return "ok"
 
 
-@router.get("/{cluster_id}/services")
-async def get_cluster_services(
-    cluster_id: uuid.UUID,
-    user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db),
-) -> List[Dict[str, Any]]:
-    """Per-service golden signals grouped by the cluster's configured service label."""
-    cluster = await _load_cluster(cluster_id, user, db)
+async def fetch_service_health(cluster: models.Cluster) -> List[Dict[str, Any]]:
+    """Per-service golden signals (RED) for a cluster, from its Prometheus + profile.
+    Returns [] when no Prometheus endpoint is configured. Shared by the API
+    endpoint and the continuous platform monitor."""
     base = _prom_base(cluster)
     if not base:
-        raise HTTPException(status_code=503, detail="No Prometheus endpoint configured for this cluster.")
+        return []
 
     cfg = mp.resolve(cluster.metrics_config)
     label = cfg["service_label"]
@@ -115,6 +111,19 @@ async def get_cluster_services(
             }
         )
     return services
+
+
+@router.get("/{cluster_id}/services")
+async def get_cluster_services(
+    cluster_id: uuid.UUID,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+) -> List[Dict[str, Any]]:
+    """Per-service golden signals grouped by the cluster's configured service label."""
+    cluster = await _load_cluster(cluster_id, user, db)
+    if not _prom_base(cluster):
+        raise HTTPException(status_code=503, detail="No Prometheus endpoint configured for this cluster.")
+    return await fetch_service_health(cluster)
 
 
 @router.get("/{cluster_id}/metrics")
