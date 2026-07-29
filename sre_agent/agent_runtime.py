@@ -136,9 +136,16 @@ async def ws_insights(websocket: WebSocket):
 @app.get("/agent/metrics")
 async def agent_metrics():
     """Agent self-observability: per-node run counts, avg latency, errors, and
-    provider switches, captured around the graph nodes."""
+    provider switches, plus whether full distributed tracing is active."""
     from .observability import get_recorder
-    return get_recorder().summary()
+    from .tracing import langfuse_enabled
+
+    summary = get_recorder().summary()
+    summary["tracing"] = {
+        "langfuse": langfuse_enabled(),
+        "note": "LLM/tool/chain spans (tokens, cost, latency) exported to Langfuse when enabled.",
+    }
+    return summary
 
 # Alert Webhook Router (receives Alertmanager webhooks)
 from sre_agent.api.v1 import alerts as alerts_router

@@ -68,6 +68,12 @@ data:
   # severities always require human approval regardless.
   EXECUTOR_LIVE: "false"
 
+  # --- Agent observability / tracing ---
+  # Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY (in the Secret) to export every
+  # LLM/tool/chain span (tokens, cost, latency, reasoning trajectory) to Langfuse
+  # (self-hostable). The always-on in-process recorder is at /agent/metrics.
+  LANGFUSE_HOST: "https://cloud.langfuse.com"
+
   # --- Feature flags ---
   CHECKPOINTER_ENABLED: "false"
   CHECKPOINTER_BACKEND: "memory"

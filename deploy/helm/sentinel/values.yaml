@@ -45,6 +45,9 @@ secrets:
   # Optional Slack war-room (bot token enables incident mirroring; app token for replies)
   slackBotToken: ""
   slackAppToken: ""
+  # Optional Langfuse tracing (both keys enable full LLM/tool span export)
+  langfusePublicKey: ""
+  langfuseSecretKey: ""
 
 # ── Model provider (bring your own) ───────────────────────────────────────────
 llm:
@@ -94,6 +97,10 @@ observability:
 # ── Slack war-room (optional) ────────────────────────────────────────────────
 slack:
   warRoomChannel: "#incidents"
+
+# ── Agent tracing (optional) ─────────────────────────────────────────────────
+tracing:
+  langfuseHost: "https://cloud.langfuse.com"
 
 # ── Auth / session ─────────────────────────────────────────────────────────
 auth:

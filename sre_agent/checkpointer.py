@@ -122,9 +122,17 @@ def thread_config(thread_id: str, base: Optional[Dict[str, Any]] = None) -> Opti
     existing invoke sites behave exactly as before. When on, adds
     ``configurable.thread_id`` so the checkpointer persists/resumes per thread.
     """
+    # Always attach agent tracing (Langfuse) when configured, so every LLM /
+    # tool / chain span is traced with tokens, cost, latency and the reasoning
+    # trajectory. No-op when tracing is off. This is what makes observability
+    # first-class at every graph invocation site.
+    from .tracing import tracing_callbacks
+
+    cfg = tracing_callbacks(base)
+
     if not checkpointer_enabled():
-        return base
-    cfg: Dict[str, Any] = dict(base or {})
+        return cfg
+    cfg = dict(cfg or {})
     configurable = dict(cfg.get("configurable", {}))
     configurable["thread_id"] = thread_id
     cfg["configurable"] = configurable
