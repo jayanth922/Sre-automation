@@ -44,6 +44,9 @@ data:
   REFRESH_TOKEN_EXPIRE_DAYS: {{ .Values.auth.refreshTokenDays | quote }}
   COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
 
+  # Slack war-room (bot token in the Secret enables it)
+  SLACK_WAR_ROOM_CHANNEL: {{ .Values.slack.warRoomChannel | quote }}
+
   # Remediation + feature flags
   EXECUTOR_LIVE: {{ .Values.features.executorLive | quote }}
   CHECKPOINTER_ENABLED: {{ .Values.features.checkpointerEnabled | quote }}

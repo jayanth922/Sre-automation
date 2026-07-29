@@ -42,6 +42,9 @@ secrets:
   googleApiKey: ""
   nvidiaApiKey: ""
   githubToken: ""
+  # Optional Slack war-room (bot token enables incident mirroring; app token for replies)
+  slackBotToken: ""
+  slackAppToken: ""
 
 # ── Model provider (bring your own) ───────────────────────────────────────────
 llm:
@@ -87,6 +90,10 @@ mcp:
 observability:
   prometheusUrl: ""
   lokiUrl: ""
+
+# ── Slack war-room (optional) ────────────────────────────────────────────────
+slack:
+  warRoomChannel: "#incidents"
 
 # ── Auth / session ─────────────────────────────────────────────────────────
 auth:

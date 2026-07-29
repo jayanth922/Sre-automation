@@ -57,6 +57,10 @@ data:
   # Set "true" when serving over TLS (production) so the refresh cookie is Secure.
   COOKIE_SECURE: "false"
 
+  # --- Slack war-room (optional) ---
+  # Set SLACK_BOT_TOKEN in the Secret to enable; incidents mirror into this channel.
+  SLACK_WAR_ROOM_CHANNEL: "#incidents"
+
   # --- Remediation authorization ---
   # The reasoning + dry-run remediation proposal always runs. This governs
   # whether Sentinel may EXECUTE a gate-approved, reversible action on the live

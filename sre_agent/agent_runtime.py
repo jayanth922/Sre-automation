@@ -734,7 +734,15 @@ async def run_graph_background_saas(
     global agent_graph, tools
     
     logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id} (Job: {job_id})")
-    
+
+    # Mirror this incident into a Slack war-room thread (no-op unless Slack is
+    # configured). Fire-and-forget; never blocks or breaks the investigation.
+    try:
+        from sre_agent.war_room_service import maybe_open_war_room
+        asyncio.create_task(maybe_open_war_room(session_id, alert_name))
+    except Exception as war_err:
+        logger.debug(f"war-room start skipped: {war_err}")
+
     # Update Incident Status to INVESTIGATING and Job to RUNNING
     async with database.AsyncSessionLocal() as db:
         # Update Incident
