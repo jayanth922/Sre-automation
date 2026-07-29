@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-api
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels: { app: sentinel-api }
+  template:
+    metadata:
+      labels: { app: sentinel-api }
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "sentinel.image" (dict "root" . "name" "api") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["sh", "-c"]
+          args:
+            - >
+              uv run alembic upgrade head &&
+              uv run python backend/seed.py &&
+              exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: {{ include "sentinel.fullname" . }}-config }
+            - secretRef: { name: {{ include "sentinel.secretName" . }} }
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "sentinel.secretName" . }}, key: POSTGRES_PASSWORD } }
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@{{ include "sentinel.postgresHost" . }}:{{ include "sentinel.postgresPort" . }}/$(POSTGRES_DB)"
+            - name: PYTHONPATH
+              value: /app
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          readinessProbe:
+            httpGet: { path: /ping, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /ping, port: 8080 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-api
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  selector: { app: sentinel-api }
+  ports: [{ port: 8080, targetPort: 8080 }]

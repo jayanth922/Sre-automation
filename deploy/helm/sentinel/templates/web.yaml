@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-web
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels: { app: sentinel-web }
+  template:
+    metadata:
+      labels: { app: sentinel-web }
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: web
+          image: {{ include "sentinel.image" (dict "root" . "name" "web") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports: [{ containerPort: 3000 }]
+          env:
+            - name: API_URL
+              value: "http://sentinel-api:8080"
+            - name: NEXT_PUBLIC_WS_BASE
+              value: {{ .Values.web.wsBase | quote }}
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-web
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  selector: { app: sentinel-web }
+  ports: [{ port: 3000, targetPort: 3000 }]

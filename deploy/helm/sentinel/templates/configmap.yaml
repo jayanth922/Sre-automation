@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-config
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+data:
+  # Model provider
+  LLM_PROVIDER: {{ .Values.llm.provider | quote }}
+  LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
+  LLM_MODEL: {{ .Values.llm.model | quote }}
+  GROQ_MODEL: {{ .Values.llm.groqModel | quote }}
+  GEMINI_MODEL: {{ .Values.llm.geminiModel | quote }}
+  NVIDIA_BASE_URL: {{ .Values.llm.nvidiaBaseUrl | quote }}
+  NVIDIA_MODEL: {{ .Values.llm.nvidiaModel | quote }}
+  OLLAMA_BASE_URL: {{ .Values.llm.ollamaBaseUrl | quote }}
+  OLLAMA_MODEL: {{ .Values.llm.ollamaModel | quote }}
+  OLLAMA_NUM_CTX: {{ .Values.llm.ollamaNumCtx | quote }}
+
+  # Datastores
+  POSTGRES_USER: {{ .Values.postgres.user | quote }}
+  POSTGRES_DB: {{ .Values.postgres.database | quote }}
+  REDIS_URL: {{ include "sentinel.redisUrl" . | quote }}
+  QDRANT_URL: {{ include "sentinel.qdrantUrl" . | quote }}
+  AGENT_MODE: "api"
+
+  # MCP tool servers
+  MCP_SERVERS_JSON: {{ .Values.mcp.extraServersJson | quote }}
+  {{- if .Values.mcp.edge.enabled }}
+  MCP_K8S_URI: "http://mcp-k8s:3000/sse"
+  MCP_LOGS_URI: "http://mcp-loki:3000/sse"
+  MCP_METRICS_URI: "http://mcp-prometheus:3000/sse"
+  MCP_RUNBOOKS_URI: "http://mcp-runbooks:3000/sse"
+  MCP_GITHUB_URI: "http://mcp-github:3000/sse"
+  MCP_EXECUTOR_URI: "http://mcp-executor:3000/sse"
+  MCP_GITHUB_EXEC_URI: "http://mcp-github-exec:3000/sse"
+  {{- end }}
+
+  # Observability fallback (per-cluster settings live in the console)
+  PROMETHEUS_URL: {{ .Values.observability.prometheusUrl | quote }}
+  LOKI_URL: {{ .Values.observability.lokiUrl | quote }}
+
+  # Feature flags
+  ACT_PHASE_ENABLED: {{ .Values.features.actPhaseEnabled | quote }}
+  CHECKPOINTER_ENABLED: {{ .Values.features.checkpointerEnabled | quote }}
+  CHECKPOINTER_BACKEND: {{ .Values.features.checkpointerBackend | quote }}
+  LIVE_BUS_BACKEND: {{ .Values.features.liveBusBackend | quote }}
+  DEBUG: {{ .Values.features.debug | quote }}
+  LANGCHAIN_TRACING_V2: "false"
+
+  # Seed admin
+  SEED_ADMIN_EMAIL: {{ .Values.seed.adminEmail | quote }}
+  SEED_ADMIN_ORG: {{ .Values.seed.adminOrg | quote }}

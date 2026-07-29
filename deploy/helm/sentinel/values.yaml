@@ -1,0 +1,162 @@
+# =============================================================================
+# Sentinel — Helm values. Everything the platform needs is configurable here;
+# nothing is hardcoded in the templates. Override with -f my-values.yaml or --set.
+#
+# The guiding principle: we orchestrate, we don't override your choices. Bring
+# your own LLM, your own MCP tool servers, and your own Postgres/Redis if you
+# have them — or let the chart deploy the basics for you.
+# =============================================================================
+
+# ── Images ───────────────────────────────────────────────────────────────────
+image:
+  # Registry prefix for all Sentinel images. For air-gapped / private registries,
+  # set this to your internal registry (e.g. registry.internal/sentinel).
+  registry: sentinel
+  tag: latest
+  pullPolicy: IfNotPresent
+# Names of imagePullSecrets that already exist in the namespace.
+imagePullSecrets: []
+
+# Common pod security posture (restricted-friendly).
+podSecurityContext:
+  runAsNonRoot: false        # set true once images are verified to run as non-root
+securityContext: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── Secrets ────────────────────────────────────────────────────────────────
+secrets:
+  # create=true: the chart renders a Secret from the values below.
+  # create=false: you manage the Secret yourself — set existingSecret to its name.
+  create: true
+  existingSecret: ""
+  # Used only when create=true. Prefer --set / a sealed secret / external-secrets.
+  secretKey: "change-me-to-a-long-random-string"
+  seedAdminPassword: "change-me-admin-password"
+  postgresPassword: "change-me-postgres-password"
+  # Model provider keys (fill the one you use; blank is fine for keyless on-site LLMs)
+  llmApiKey: ""
+  groqApiKey: ""
+  googleApiKey: ""
+  nvidiaApiKey: ""
+  githubToken: ""
+
+# ── Model provider (bring your own) ───────────────────────────────────────────
+llm:
+  # groq | gemini | nvidia | ollama | openai_compatible
+  provider: "openai_compatible"
+  # For openai_compatible: point at your on-site endpoint (vLLM, Ollama /v1,
+  # LiteLLM proxy, LocalAI, on-prem gateway). Key (if any) goes in secrets.llmApiKey.
+  baseUrl: "http://vllm.your-infra:8000/v1"
+  model: "your-model-name"
+  # provider-specific extras
+  groqModel: "llama-3.3-70b-versatile"
+  geminiModel: "gemini-2.0-flash"
+  nvidiaBaseUrl: "https://integrate.api.nvidia.com/v1"
+  nvidiaModel: "meta/llama-3.3-70b-instruct"
+  ollamaBaseUrl: "http://ollama:11434"
+  ollamaModel: "qwen2.5:3b"
+  ollamaNumCtx: "8192"
+
+# ── MCP tool servers ──────────────────────────────────────────────────────────
+mcp:
+  # Bring your own: a JSON object of client-run MCP servers, merged with the
+  # built-in edge servers. Example:
+  #   extraServersJson: '{"my-tool":{"url":"http://my-tool.ns:9000/sse","transport":"sse"}}'
+  extraServersJson: ""
+  # The built-in edge tool servers shipped with the chart. Disable any you don't
+  # want, or set edge.enabled=false to run none and rely entirely on your own.
+  edge:
+    enabled: true
+    resources:
+      requests: { cpu: "25m", memory: "96Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+    servers:
+      - { name: mcp-k8s, image: mcp-k8s, serviceAccount: observer }
+      - { name: mcp-executor, image: mcp-executor, serviceAccount: actuator,
+          env: [ { name: EXECUTOR_ALLOWED_NAMESPACES, value: "" }, { name: EXECUTOR_MIN_REPLICAS, value: "1" } ] }
+      - { name: mcp-prometheus, image: mcp-prometheus, configEnv: [ PROMETHEUS_URL ] }
+      - { name: mcp-loki, image: mcp-loki, configEnv: [ LOKI_URL ] }
+      - { name: mcp-github, image: mcp-github, secretEnv: [ GITHUB_TOKEN ] }
+      - { name: mcp-github-exec, image: mcp-github-exec, secretEnv: [ GITHUB_TOKEN ] }
+      - { name: mcp-runbooks, image: mcp-runbooks, env: [ { name: RUNBOOKS_DIR, value: /app/runbooks } ] }
+
+# ── Observability defaults (per-cluster settings live in the console) ─────────
+observability:
+  prometheusUrl: ""
+  lokiUrl: ""
+
+# ── Feature flags ─────────────────────────────────────────────────────────────
+features:
+  actPhaseEnabled: "false"
+  checkpointerEnabled: "false"
+  checkpointerBackend: "memory"
+  liveBusBackend: "memory"
+  debug: "false"
+
+# ── Seed admin (first login) ──────────────────────────────────────────────────
+seed:
+  adminEmail: "admin@example.com"
+  adminOrg: "Sentinel"
+
+# ── API (control plane + agent runtime) ───────────────────────────────────────
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1536Mi" }
+
+# ── Web console ───────────────────────────────────────────────────────────────
+web:
+  replicas: 1
+  # How the BROWSER reaches the API WebSocket. With the ingress below this is
+  # usually wss://<host>. Without ingress, port-forward and use ws://localhost:8080.
+  wsBase: "ws://localhost:8080"
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+# ── Datastores: deploy ours, or bring your own ────────────────────────────────
+postgres:
+  deploy: true                 # false → use an external Postgres you already run
+  image: postgres:15-alpine
+  user: sentinel
+  database: sentinel
+  storage: 5Gi
+  storageClass: ""             # "" = cluster default
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+  external:                    # used when deploy=false
+    host: ""
+    port: "5432"
+    # password comes from the Secret (secrets.* or existingSecret key POSTGRES_PASSWORD)
+
+redis:
+  deploy: true                 # false → set external.url
+  image: redis:7-alpine
+  external:
+    url: ""                    # e.g. redis://redis.mycorp:6379/0
+
+qdrant:
+  deploy: true                 # false → set external.url
+  image: qdrant/qdrant:latest
+  storage: 2Gi
+  storageClass: ""
+  external:
+    url: ""                    # e.g. http://qdrant.mycorp:6333
+
+# ── RBAC for the agent's k8s tools ────────────────────────────────────────────
+rbac:
+  create: true                 # ServiceAccounts + ClusterRoles for observe/actuate
+
+# ── Ingress (optional) ────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: "nginx"
+  host: "sentinel.your-domain"
+  tls: false
+  tlsSecretName: ""
+  annotations: {}
