@@ -144,6 +144,14 @@ app.include_router(metrics_router.router, prefix="/metrics")
 from sre_agent.api.v1 import analytics as analytics_router
 app.include_router(analytics_router.router, prefix="/api/v1")
 
+# Services Router (per-service RED signals)
+from sre_agent.api.v1 import services as services_router
+app.include_router(services_router.router, prefix="/api/v1")
+
+# Runbooks Router (markdown corpus catalog)
+from sre_agent.api.v1 import runbooks as runbooks_router
+app.include_router(runbooks_router.router, prefix="/api/v1")
+
 # General Chat Router
 from sre_agent.api.v1 import chat as chat_router
 app.include_router(chat_router.router, prefix="/api/v1")

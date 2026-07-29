@@ -18,13 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
     && pip install --no-cache-dir uv
 
 # Copy dependency manifest and install
-COPY pyproject.toml ./
-RUN uv sync --no-dev
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
 
 # Copy application code — only platform-relevant modules
 COPY sre_agent/ ./sre_agent/
 COPY backend/   ./backend/
 COPY alembic.ini ./
+# Runbook corpus — the console's runbook catalog reads this at /app/runbooks
+COPY edge_mcp_servers/mcp_servers/runbooks_local/runbooks ./runbooks
 
 ENV PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \
