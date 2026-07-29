@@ -257,5 +257,20 @@ class SLO(Base):
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="slos")
 
+
+class RefreshSession(Base):
+    """A rotating refresh-token session. The raw token is never stored — only its
+    SHA-256 hash. `family_id` groups a rotation lineage so reuse of a rotated
+    token can revoke the whole family (reuse detection)."""
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
     def __repr__(self):
         return f"<SLO(name='{self.name}', target={self.target}%)>"

@@ -88,6 +88,14 @@ observability:
   prometheusUrl: ""
   lokiUrl: ""
 
+# ── Auth / session ─────────────────────────────────────────────────────────
+auth:
+  accessTokenMinutes: "15"
+  refreshTokenDays: "7"
+  # Set true when serving over TLS (e.g. with ingress.tls) so the refresh cookie
+  # carries the Secure flag.
+  cookieSecure: "false"
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 features:
   actPhaseEnabled: "false"

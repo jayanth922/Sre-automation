@@ -39,6 +39,11 @@ data:
   PROMETHEUS_URL: {{ .Values.observability.prometheusUrl | quote }}
   LOKI_URL: {{ .Values.observability.lokiUrl | quote }}
 
+  # Auth / session
+  ACCESS_TOKEN_EXPIRE_MINUTES: {{ .Values.auth.accessTokenMinutes | quote }}
+  REFRESH_TOKEN_EXPIRE_DAYS: {{ .Values.auth.refreshTokenDays | quote }}
+  COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
+
   # Feature flags
   ACT_PHASE_ENABLED: {{ .Values.features.actPhaseEnabled | quote }}
   CHECKPOINTER_ENABLED: {{ .Values.features.checkpointerEnabled | quote }}

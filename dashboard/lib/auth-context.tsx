@@ -1,84 +1,106 @@
 "use client"
 
-import React, {
-    createContext,
-    useCallback,
-    useContext,
-    useEffect,
-    useMemo,
-    useState,
-} from "react"
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import axios from "axios"
-import Cookies from "js-cookie"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface AuthUser {
-    user_id: string
-    email: string
-    org_id: string
-    role: string
+  user_id: string
+  email: string
+  org_id: string
+  role: string
 }
 
 interface AuthContextValue {
-    user: AuthUser | null
-    token: string | null
-    login: (token: string) => void
-    logout: () => void
+  user: AuthUser | null
+  token: string | null
+  ready: boolean
+  login: (token: string) => void
+  logout: () => void
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// JWT decode (no validation — the server validates; we only read claims)
 // ---------------------------------------------------------------------------
 
-const TOKEN_KEY = "sre_token"
-const COOKIE_KEY = "token"          // must match middleware.ts
-
-/** Minimal JWT payload decoder — no validation, just base64url parsing. */
 function decodeJwt(token: string): AuthUser | null {
-    try {
-        const payload = token.split(".")[1]
-        if (!payload) return null
-        const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"))
-        const claims = JSON.parse(json) as Record<string, unknown>
-        return {
-            user_id: String(claims.sub ?? claims.user_id ?? ""),
-            email: String(claims.email ?? ""),
-            org_id: String(claims.org_id ?? ""),
-            role: String(claims.role ?? "member"),
-        }
-    } catch {
-        return null
+  try {
+    const payload = token.split(".")[1]
+    if (!payload) return null
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"))
+    const claims = JSON.parse(json) as Record<string, unknown>
+    return {
+      user_id: String(claims.user_id ?? claims.sub ?? ""),
+      email: String(claims.email ?? claims.sub ?? ""),
+      org_id: String(claims.org_id ?? ""),
+      role: String(claims.role ?? "member"),
     }
+  } catch {
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Axios instance
+// Access token lives in memory only (never localStorage → no XSS token theft).
+// The refresh token is an httpOnly cookie the browser can't read.
 // ---------------------------------------------------------------------------
 
-/**
- * Pre-configured Axios instance. A request interceptor reads the token from
- * localStorage and injects it as a Bearer Authorization header so every call
- * made through `api` is automatically authenticated.
- */
-export const api = axios.create({
-    // All data endpoints live under /api/v1 on the backend.
-    // The Next.js rewrite proxies /api/* → backend, so setting baseURL here
-    // means api.get("/clusters") actually hits /api/v1/clusters.
-    baseURL: "/api/v1",
-})
+let accessToken: string | null = null
+
+export const api = axios.create({ baseURL: "/api/v1", withCredentials: true })
 
 api.interceptors.request.use((config) => {
-    const token = localStorage.getItem(TOKEN_KEY)
-    if (token) {
-        config.headers = config.headers ?? {}
-        config.headers["Authorization"] = `Bearer ${token}`
-    }
-    return config
+  if (accessToken) {
+    config.headers = config.headers ?? {}
+    config.headers["Authorization"] = `Bearer ${accessToken}`
+  }
+  return config
 })
+
+// Single-flight refresh so concurrent 401s don't stampede /auth/refresh.
+let refreshPromise: Promise<string | null> | null = null
+function refreshAccessToken(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = axios
+      .post("/auth/refresh", {}, { withCredentials: true })
+      .then((r) => {
+        accessToken = r.data.access_token as string
+        return accessToken
+      })
+      .catch(() => {
+        accessToken = null
+        return null
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+  return refreshPromise
+}
+
+let onAuthFail: () => void = () => {}
+
+api.interceptors.response.use(
+  (r) => r,
+  async (error) => {
+    const original = error.config
+    if (error.response?.status === 401 && original && !original._retry) {
+      original._retry = true
+      const t = await refreshAccessToken()
+      if (t) {
+        original.headers = original.headers ?? {}
+        original.headers["Authorization"] = `Bearer ${t}`
+        return api(original)
+      }
+      onAuthFail()
+    }
+    return Promise.reject(error)
+  },
+)
 
 // ---------------------------------------------------------------------------
 // Context
@@ -87,62 +109,57 @@ api.interceptors.request.use((config) => {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-    const router = useRouter()
-    const [token, setToken] = useState<string | null>(null)
-    const [user, setUser] = useState<AuthUser | null>(null)
+  const router = useRouter()
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [ready, setReady] = useState(false)
 
-    // Rehydrate from localStorage on mount (client-side only)
-    useEffect(() => {
-        const stored = localStorage.getItem(TOKEN_KEY)
-        if (stored) {
-            const decoded = decodeJwt(stored)
-            if (decoded) {
-                setToken(stored)
-                setUser(decoded)
-            } else {
-                localStorage.removeItem(TOKEN_KEY)
-                Cookies.remove(COOKIE_KEY, { path: "/" })
-            }
-        }
-    }, [])
-
-    const login = useCallback((newToken: string) => {
-        const decoded = decodeJwt(newToken)
-        if (!decoded) {
-            console.error("auth-context: received an invalid JWT — ignoring")
-            return
-        }
-        localStorage.setItem(TOKEN_KEY, newToken)
-        Cookies.set(COOKIE_KEY, newToken, { path: "/" })
-        setToken(newToken)
-        setUser(decoded)
-        router.push("/")
-    }, [router])
-
-    const logout = useCallback(() => {
-        localStorage.removeItem(TOKEN_KEY)
-        Cookies.remove(COOKIE_KEY, { path: "/" })
-        setToken(null)
-        setUser(null)
+  useEffect(() => {
+    onAuthFail = () => {
+      accessToken = null
+      setUser(null)
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
         router.push("/login")
-    }, [router])
+      }
+    }
+    // Bootstrap: the access token is in memory only, so on every load we try to
+    // mint one from the refresh cookie. Failure just means "not logged in".
+    refreshAccessToken()
+      .then((t) => {
+        if (t) setUser(decodeJwt(t))
+      })
+      .finally(() => setReady(true))
+  }, [router])
 
-    const value = useMemo<AuthContextValue>(
-        () => ({ user, token, login, logout }),
-        [user, token, login, logout],
-    )
+  const login = useCallback(
+    (newToken: string) => {
+      accessToken = newToken
+      setUser(decodeJwt(newToken))
+      router.push("/")
+    },
+    [router],
+  )
 
-    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  const logout = useCallback(async () => {
+    try {
+      await axios.post("/auth/logout", {}, { withCredentials: true })
+    } catch {
+      /* best-effort */
+    }
+    accessToken = null
+    setUser(null)
+    router.push("/login")
+  }, [router])
+
+  const value = useMemo<AuthContextValue>(
+    () => ({ user, token: accessToken, ready, login, logout }),
+    [user, ready, login, logout],
+  )
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-// ---------------------------------------------------------------------------
-// Hook
-// ---------------------------------------------------------------------------
-
 export function useAuth(): AuthContextValue {
-    const ctx = useContext(AuthContext)
-    if (!ctx) {
-        throw new Error("useAuth must be used inside <AuthProvider>")
-    }
-    return ctx
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>")
+  return ctx
 }

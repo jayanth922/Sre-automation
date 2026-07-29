@@ -414,3 +414,38 @@ async def delete_slo(db: AsyncSession, slo_id: uuid.UUID) -> bool:
     await db.delete(slo)
     await db.commit()
     return True
+
+
+# ── Refresh sessions ─────────────────────────────────────────────────────────
+async def create_refresh_session(db: AsyncSession, user_id: uuid.UUID, token_hash: str, family_id: uuid.UUID, expires_at: datetime):
+    session = models.RefreshSession(
+        user_id=user_id, token_hash=token_hash, family_id=family_id, expires_at=expires_at
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+async def get_refresh_session_by_hash(db: AsyncSession, token_hash: str):
+    result = await db.execute(
+        select(models.RefreshSession).filter(models.RefreshSession.token_hash == token_hash)
+    )
+    return result.scalars().first()
+
+
+async def revoke_refresh_session(db: AsyncSession, session: "models.RefreshSession") -> None:
+    session.revoked = True
+    await db.commit()
+
+
+async def revoke_refresh_family(db: AsyncSession, family_id: uuid.UUID) -> None:
+    result = await db.execute(
+        select(models.RefreshSession).filter(
+            models.RefreshSession.family_id == family_id,
+            models.RefreshSession.revoked == False,  # noqa: E712
+        )
+    )
+    for s in result.scalars().all():
+        s.revoked = True
+    await db.commit()
