@@ -820,6 +820,20 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
+def _observed(node_name: str, fn):
+    """Wrap a graph node so every run is timed and any failure captured by the
+    observability recorder (surfaced at /agent/metrics)."""
+    async def wrapped(state: AgentState) -> Dict[str, Any]:
+        from .observability import get_recorder, track
+
+        incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
+        with track(get_recorder(), node_name, incident_id):
+            return await fn(state)
+
+    wrapped.__name__ = f"observed_{node_name}"
+    return wrapped
+
+
 def build_multi_agent_graph(
     tools: List[BaseTool],
     llm_provider: str = "ollama",
@@ -938,9 +952,9 @@ def build_multi_agent_graph(
         logger.info(
             "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → act_gate → END"
         )
-        workflow.add_node("reflector", _reflector_node)
-        workflow.add_node("planner", _planner_node)
-        workflow.add_node("act_gate", _act_gate_node)
+        workflow.add_node("reflector", _observed("reflector", _reflector_node))
+        workflow.add_node("planner", _observed("planner", _planner_node))
+        workflow.add_node("act_gate", _observed("act_gate", _act_gate_node))
         workflow.add_edge("reflector", "planner")
         workflow.add_edge("planner", "aggregate")
         workflow.add_edge("aggregate", "act_gate")

@@ -129,6 +129,17 @@ export default function IncidentConsolePage() {
   const isAdmin = (user?.role ?? "member") === "admin"
   const awaitingApproval = status?.status === "WAITING_APPROVAL"
 
+  // Concrete remediation actions from the act report on the timeline.
+  type ActItem = { decision?: string; command?: string; rollback_command?: string; action_type?: string }
+  const actReport = (() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const p = events[i].payload as Record<string, unknown> | null
+      if (p && p.act_report) return p.act_report as { executed?: ActItem[]; aggregate_decision?: string; summary?: string }
+    }
+    return null
+  })()
+  const actions: ActItem[] = actReport?.executed ?? []
+
   // Conversation for the side panel: user + assistant follow-ups.
   const chatEvents = events.filter((e) => e.speaker_role === "user" || e.event_type === "human_message" || /assistant|follow/.test(e.event_type))
 
@@ -258,22 +269,46 @@ export default function IncidentConsolePage() {
             </div>
           </div>
 
-          {awaitingApproval && (
+          {(actions.length > 0 || awaitingApproval) && (
             <div className="sx-remedy">
-              <div className="h">⚙ Awaiting approval</div>
-              <div className="sx-action">
-                <div className="at">
-                  <span className="sx-badge sel">gated</span> Sentinel has a remediation ready
+              <div className="h">⚙ Proposed remediation</div>
+              {actions.length === 0 ? (
+                <div className="sx-action">
+                  <div className="at">
+                    <span className="sx-badge sel">gated</span> Sentinel has a remediation ready
+                  </div>
+                  <div className="ad">Severity {sv.label}. Execution is paused pending approval.</div>
                 </div>
-                <div className="ad">Severity {sv.label}. Execution is paused pending human approval.</div>
-                <div className="gate">⚠ requires admin approval before it runs</div>
-              </div>
-              <div className="sx-btnrow">
-                <button className="sx-btn primary" onClick={approve} disabled={!isAdmin || approving}>
-                  {approving ? "Approving…" : "Approve & run"}
-                </button>
-              </div>
-              {!isAdmin && <div className="sx-dry">Only admins can approve remediations.</div>}
+              ) : (
+                actions.map((a, i) => {
+                  const autonomous = a.decision === "autonomous"
+                  return (
+                    <div className="sx-action" key={i} style={{ marginBottom: 10 }}>
+                      <div className="at">
+                        <span className={`sx-badge ${autonomous ? "ok" : "warn"}`}>{autonomous ? "autonomous" : "needs approval"}</span>
+                        {a.action_type || "action"}
+                      </div>
+                      {a.command && <div className="ad">{a.command}</div>}
+                      {a.rollback_command && <div className="gate" style={{ color: "var(--ink2)" }}>rollback: {a.rollback_command}</div>}
+                    </div>
+                  )
+                })
+              )}
+              {actReport?.aggregate_decision && (
+                <div className="sx-dry" style={{ textAlign: "left", marginTop: 8 }}>
+                  Gate decision: {actReport.aggregate_decision} · dry-run verified
+                </div>
+              )}
+              {awaitingApproval && (
+                <>
+                  <div className="sx-btnrow">
+                    <button className="sx-btn primary" onClick={approve} disabled={!isAdmin || approving}>
+                      {approving ? "Approving…" : "Approve & run"}
+                    </button>
+                  </div>
+                  {!isAdmin && <div className="sx-dry">Only admins can approve remediations.</div>}
+                </>
+              )}
             </div>
           )}
         </div>

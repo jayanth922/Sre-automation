@@ -132,6 +132,14 @@ async def ws_insights(websocket: WebSocket):
     from .live_events import INSIGHTS_CHANNEL
     await _stream(websocket, INSIGHTS_CHANNEL)
 
+
+@app.get("/agent/metrics")
+async def agent_metrics():
+    """Agent self-observability: per-node run counts, avg latency, errors, and
+    provider switches, captured around the graph nodes."""
+    from .observability import get_recorder
+    return get_recorder().summary()
+
 # Alert Webhook Router (receives Alertmanager webhooks)
 from sre_agent.api.v1 import alerts as alerts_router
 app.include_router(alerts_router.router, prefix="/api/v1")
@@ -711,6 +719,41 @@ async def run_graph_background(
 
 
 async def run_graph_background_saas(
+    incident_id: uuid.UUID,
+    cluster_id: uuid.UUID,
+    alert_name: str,
+    job_id: Optional[uuid.UUID] = None,
+    alert_labels: Optional[Dict[str, str]] = None,
+    alert_annotations: Optional[Dict[str, str]] = None,
+    alert_starts_at: Optional[str] = None,
+    alert_severity: str = "warning",
+):
+    """Concurrency-bounded entry point: reserve an investigation slot (bounded
+    wait so bursts serialize instead of stampeding the LLM/rate limits), run the
+    investigation, then always release the slot."""
+    from sre_agent.concurrency import get_limiter
+
+    limiter = get_limiter()
+    sid = str(incident_id)
+    acquired = False
+    for _ in range(24):  # ~2 min bounded wait
+        if limiter.try_acquire(sid):
+            acquired = True
+            break
+        await asyncio.sleep(5)
+    if not acquired:
+        logger.warning(f"investigation limiter at capacity; running {sid} without a slot")
+    try:
+        return await _run_graph_impl(
+            incident_id, cluster_id, alert_name, job_id,
+            alert_labels, alert_annotations, alert_starts_at, alert_severity,
+        )
+    finally:
+        if acquired:
+            limiter.release(sid)
+
+
+async def _run_graph_impl(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
     alert_name: str,
