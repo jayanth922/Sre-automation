@@ -1,0 +1,64 @@
+# =============================================================================
+# Non-secret configuration for the Sentinel platform.
+# In-cluster service DNS is used throughout (no host networking).
+# Edit values here; put credentials in secret.example.yaml.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: sentinel
+data:
+  # --- Model provider (bring your own) ---
+  # Options: groq | gemini | nvidia | ollama | openai_compatible.
+  # For an on-site LLM, set LLM_PROVIDER=openai_compatible and point LLM_BASE_URL
+  # at your vLLM / Ollama(/v1) / LiteLLM / LocalAI endpoint. Put LLM_API_KEY in
+  # the Secret (leave blank for keyless endpoints).
+  LLM_PROVIDER: "groq"
+  LLM_BASE_URL: "http://vllm.your-infra:8000/v1"
+  LLM_MODEL: "your-model-name"
+  GROQ_MODEL: "llama-3.3-70b-versatile"
+  GEMINI_MODEL: "gemini-2.0-flash"
+  NVIDIA_BASE_URL: "https://integrate.api.nvidia.com/v1"
+  NVIDIA_MODEL: "meta/llama-3.3-70b-instruct"
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  OLLAMA_MODEL: "qwen2.5:3b"
+  OLLAMA_NUM_CTX: "8192"
+
+  # --- Database / infra (in-cluster) ---
+  POSTGRES_USER: "sentinel"
+  POSTGRES_DB: "sentinel"
+  REDIS_URL: "redis://redis:6379/0"
+  QDRANT_URL: "http://qdrant:6333"
+  AGENT_MODE: "api"
+
+  # --- Edge MCP tool servers (in-cluster service DNS) ---
+  # Bring your own tools: add client-run MCP servers as a JSON object, merged
+  # with the defaults below. Example:
+  #   MCP_SERVERS_JSON: '{"my-tool":{"url":"http://my-tool.ns:9000/sse","transport":"sse"}}'
+  MCP_SERVERS_JSON: ""
+  MCP_K8S_URI: "http://mcp-k8s:3000/sse"
+  MCP_METRICS_URI: "http://mcp-prometheus:3000/sse"
+  MCP_LOGS_URI: "http://mcp-loki:3000/sse"
+  MCP_GITHUB_URI: "http://mcp-github:3000/sse"
+  MCP_RUNBOOKS_URI: "http://mcp-runbooks:3000/sse"
+  MCP_EXECUTOR_URI: "http://mcp-executor:3000/sse"
+  MCP_GITHUB_EXEC_URI: "http://mcp-github-exec:3000/sse"
+
+  # --- Observability targets ---
+  # Blank by default: connect a cluster in the console and set its Prometheus /
+  # Loki endpoints there (per-cluster). These are only a global fallback.
+  PROMETHEUS_URL: ""
+  LOKI_URL: ""
+
+  # --- Feature flags ---
+  ACT_PHASE_ENABLED: "false"
+  CHECKPOINTER_ENABLED: "false"
+  CHECKPOINTER_BACKEND: "memory"
+  LIVE_BUS_BACKEND: "memory"
+  DEBUG: "false"
+  LANGCHAIN_TRACING_V2: "false"
+
+  # --- Seed admin (first login) ---
+  SEED_ADMIN_EMAIL: "admin@example.com"
+  SEED_ADMIN_ORG: "Sentinel"

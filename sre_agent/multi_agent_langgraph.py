@@ -81,14 +81,7 @@ def _get_mcp_server_uris() -> dict[str, str]:
     
     # Filter out None values
     mcp_uris = {k: v for k, v in mcp_uris.items() if v}
-    
-    if not mcp_uris:
-        raise ValueError(
-            "No MCP server URIs configured. Set at least one of: "
-            "MCP_K8S_URI, MCP_LOGS_URI, MCP_METRICS_URI, MCP_RUNBOOKS_URI, MCP_GITHUB_URI"
-        )
-    
-    logger.info(f"Configured MCP servers: {list(mcp_uris.keys())}")
+    logger.info(f"Configured default MCP servers: {list(mcp_uris.keys())}")
     return mcp_uris
 
 
@@ -132,6 +125,35 @@ def create_mcp_client() -> MultiServerMCPClient:
                 # No authentication required for in-cluster communication
             }
     
+    # Client-supplied MCP servers (bring-your-own tools). The client orchestrates
+    # whatever tool servers they run; we just connect to them. JSON object:
+    #   {"name": {"url": "https://...", "transport": "sse"|"streamable_http"|"stdio", "headers": {...}}}
+    # A bare string value is treated as an SSE URL.
+    import json as _json
+
+    extra_raw = os.getenv("MCP_SERVERS_JSON") or os.getenv("MCP_EXTRA_SERVERS")
+    if extra_raw:
+        try:
+            extra = _json.loads(extra_raw)
+            if isinstance(extra, dict):
+                for name, spec in extra.items():
+                    if isinstance(spec, str):
+                        server_config[name] = {"url": spec, "transport": "sse"}
+                    elif isinstance(spec, dict) and (spec.get("url") or spec.get("command")):
+                        spec.setdefault("transport", "sse")
+                        server_config[name] = spec
+                logger.info(f"Added client-supplied MCP servers: {list(extra.keys())}")
+            else:
+                logger.warning("MCP_SERVERS_JSON is not a JSON object; ignoring.")
+        except Exception as e:
+            logger.warning(f"Ignoring invalid MCP_SERVERS_JSON: {e}")
+
+    if not server_config:
+        raise ValueError(
+            "No MCP servers configured. Set the MCP_*_URI defaults and/or "
+            "MCP_SERVERS_JSON with your own tool servers."
+        )
+
     client = MultiServerMCPClient(server_config)
     return client
 

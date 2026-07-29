@@ -51,9 +51,9 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         LLMAccessError: For access/permission failures
         ValueError: For unsupported providers
     """
-    if provider not in ("groq", "ollama", "gemini", "nvidia"):
+    if provider not in ("groq", "ollama", "gemini", "nvidia", "openai_compatible"):
         raise ValueError(
-            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'."
+            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia', 'openai_compatible'."
         )
 
     logger.info(f"Creating LLM with provider: {provider}")
@@ -73,6 +73,9 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         elif provider == "nvidia":
             logger.info(f"Creating NVIDIA NIM LLM - Model: {config['model_id']}")
             return _create_nvidia_llm(config)
+        elif provider == "openai_compatible":
+            logger.info(f"Creating OpenAI-compatible LLM - Model: {config['model_id']} at {config['base_url']}")
+            return _create_openai_compatible_llm(config)
 
     except Exception as e:
         error_msg = _get_helpful_error_message(provider, e)
@@ -127,6 +130,32 @@ def _create_nvidia_llm(config: Dict[str, Any]):
         base_url=config["base_url"],
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
+    )
+
+
+def _create_openai_compatible_llm(config: Dict[str, Any]):
+    """Create a client for any OpenAI-compatible endpoint (vLLM, Ollama /v1,
+    LiteLLM proxy, LocalAI, on-prem gateway). Bring-your-own LLM."""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        raise LLMProviderError(
+            "langchain-openai not installed. Run 'pip install langchain-openai'"
+        )
+
+    if not config.get("base_url"):
+        raise LLMProviderError(
+            "openai_compatible provider needs a base URL. Set LLM_BASE_URL "
+            "(e.g. http://vllm.your-infra:8000/v1)."
+        )
+
+    return ChatOpenAI(
+        model=config["model_id"],
+        # Many on-prem endpoints are keyless; ChatOpenAI still requires a value.
+        api_key=config.get("api_key") or "not-needed",
+        base_url=config["base_url"],
+        temperature=config["temperature"],
+        max_tokens=config.get("max_tokens"),
     )
 
 
