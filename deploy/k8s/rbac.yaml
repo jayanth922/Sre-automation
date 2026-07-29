@@ -1,0 +1,72 @@
+# =============================================================================
+# In-cluster identities for the agent's Kubernetes tools. No kubeconfig is
+# mounted — the k8s / executor MCP servers use their ServiceAccount token and
+# the cluster API via in-cluster config.
+#
+#   sentinel-observer : read-only (used by the read k8s tool server)
+#   sentinel-actuator : read + scale/restart (used by the executor tool server)
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sentinel-observer
+  namespace: sentinel
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sentinel-actuator
+  namespace: sentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sentinel-observer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "nodes", "events", "namespaces", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sentinel-actuator
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "nodes", "events", "namespaces"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sentinel-observer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sentinel-observer
+subjects:
+  - kind: ServiceAccount
+    name: sentinel-observer
+    namespace: sentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sentinel-actuator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sentinel-actuator
+subjects:
+  - kind: ServiceAccount
+    name: sentinel-actuator
+    namespace: sentinel

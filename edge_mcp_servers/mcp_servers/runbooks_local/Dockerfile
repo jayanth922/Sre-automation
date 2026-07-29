@@ -16,6 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
 COPY server.py .
+# Bake the runbook corpus into the image (compose mounts it as a volume; in
+# Kubernetes there is no host mount, so it must ship in the image).
+COPY runbooks ./runbooks
+ENV RUNBOOKS_DIR=/app/runbooks
 
 # Expose port
 EXPOSE 3000
