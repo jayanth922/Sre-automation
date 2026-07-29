@@ -1,23 +1,25 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import "./console.css";
+import { AuthProvider } from "@/lib/auth-context";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const sans = Hanken_Grotesk({
+  variable: "--font-sans",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const mono = JetBrains_Mono({
+  variable: "--font-mono",
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
-  title: "SRE Platform",
-  description: "Multi-Agent SRE Assistant — Autonomous incident response for Kubernetes",
+  title: "Sentinel — reliability console",
+  description: "Multi-agent SRE console — autonomous incident response for Kubernetes",
 };
-
-import { AuthProvider } from "@/lib/auth-context";
 
 export default function RootLayout({
   children,
@@ -26,12 +28,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        <AuthProvider>
-          {children}
-        </AuthProvider>
+      <body className={`${sans.variable} ${mono.variable}`}>
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

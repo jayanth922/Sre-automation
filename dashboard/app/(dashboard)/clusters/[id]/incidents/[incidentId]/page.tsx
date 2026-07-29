@@ -1,236 +1,283 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Loader2, RefreshCw } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import Link from "next/link"
+import { useParams } from "next/navigation"
+import { api, useAuth } from "@/lib/auth-context"
+import { useLiveStream } from "@/lib/useLiveStream"
+import { ConsolePage } from "@/components/console/ConsolePage"
+import { Spinner } from "@/components/console/ui"
+import {
+  type Transcript,
+  type TimelineEvent,
+  sev,
+  statusBadge,
+  timeAgo,
+  elapsed,
+} from "@/lib/console"
 
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { IncidentCommandCenter } from "@/components/dashboard/IncidentCommandCenter"
-import { api } from "@/lib/auth-context"
-
-interface Cluster {
-    id: string
-    name: string
-    status: string
-    last_heartbeat?: string | null
+interface GraphStatus {
+  status: string
+  next?: unknown
+  values?: Record<string, unknown>
 }
 
-interface Incident {
-    id: string
-    cluster_id: string
-    title: string
-    description: string | null
-    severity: string
-    status: string
-    summary: string | null
-    created_at: string
-    resolved_at: string | null
+function sourceTag(ev: TimelineEvent): { cls: string; label: string } | null {
+  const hay = `${ev.event_type} ${ev.title ?? ""} ${JSON.stringify(ev.payload ?? {})}`.toLowerCase()
+  if (/prometheus|metric|latency|error rate|p95|p99/.test(hay)) return { cls: "metric", label: "metric" }
+  if (/loki|\blog/.test(hay)) return { cls: "logs", label: "logs" }
+  if (/k8s|kube|pod|deployment|replica|namespace/.test(hay)) return { cls: "k8s", label: "k8s" }
+  if (/github|deploy|commit|revert|pull request/.test(hay)) return { cls: "deploy", label: "deploy" }
+  if (/runbook/.test(hay)) return { cls: "book", label: "runbook" }
+  if (/tool|query|call/.test(hay)) return { cls: "tool", label: "tool" }
+  return null
 }
 
-function severityClass(severity: string) {
-    switch (severity.toLowerCase()) {
-        case "critical":
-            return "border-rose-500/30 bg-rose-500/10 text-rose-200"
-        case "high":
-            return "border-orange-500/30 bg-orange-500/10 text-orange-200"
-        case "medium":
-            return "border-amber-500/30 bg-amber-500/10 text-amber-200"
-        default:
-            return "border-sky-500/30 bg-sky-500/10 text-sky-200"
+function pretty(s: string): string {
+  return s.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+export default function IncidentConsolePage() {
+  const { id, incidentId } = useParams<{ id: string; incidentId: string }>()
+  const { user } = useAuth()
+  const { events: liveEvents, connected } = useLiveStream(incidentId)
+  const [tx, setTx] = useState<Transcript | null>(null)
+  const [status, setStatus] = useState<GraphStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  const [approving, setApproving] = useState(false)
+  const lastLive = useRef(0)
+
+  const loadTranscript = useCallback(async () => {
+    try {
+      const { data } = await api.get<Transcript>(`/incidents/${incidentId}/transcript`)
+      setTx(data)
+    } finally {
+      setLoading(false)
     }
-}
+  }, [incidentId])
 
-function statusClass(status: string) {
-    switch (status.toLowerCase()) {
-        case "resolved":
-            return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-        case "investigating":
-            return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200"
-        default:
-            return "border-amber-500/30 bg-amber-500/10 text-amber-200"
+  const loadStatus = useCallback(async () => {
+    try {
+      const { data } = await api.get<GraphStatus>(`/incidents/${incidentId}/status`)
+      setStatus(data)
+    } catch {
+      /* graph may not be started */
     }
-}
+  }, [incidentId])
 
-function formatTime(value?: string | null) {
-    if (!value) return "-"
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return value
-    return date.toLocaleString([], {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-    })
-}
+  useEffect(() => {
+    loadTranscript()
+    loadStatus()
+    const t = setInterval(loadStatus, 8000)
+    return () => clearInterval(t)
+  }, [loadTranscript, loadStatus])
 
-export default function IncidentDashboardPage() {
-    const router = useRouter()
-    const params = useParams()
-    const clusterId = params.id as string
-    const incidentId = params.incidentId as string
-
-    const [cluster, setCluster] = useState<Cluster | null>(null)
-    const [incident, setIncident] = useState<Incident | null>(null)
-    const [loading, setLoading] = useState(true)
-    const [refreshing, setRefreshing] = useState(false)
-    const [refreshNonce, setRefreshNonce] = useState(0)
-    const [error, setError] = useState<string | null>(null)
-
-    const loadIncident = useCallback(async (initial = false) => {
-        if (initial) {
-            setLoading(true)
-        }
-        setRefreshing(true)
-        setError(null)
-
-        try {
-            const [clustersResponse, incidentsResponse] = await Promise.all([
-                api.get("/clusters"),
-                api.get(`/clusters/${clusterId}/incidents`),
-            ])
-
-            const matchedCluster = (clustersResponse.data as Cluster[]).find((item) => item.id === clusterId) || null
-            const clusterIncidents = incidentsResponse.data as Incident[]
-            const matchedIncident = clusterIncidents.find((item) => item.id === incidentId) || clusterIncidents[0] || null
-
-            setCluster(matchedCluster)
-            setIncident(matchedIncident)
-        } catch (loadError) {
-            setError(loadError instanceof Error ? loadError.message : "Failed to load incident dashboard")
-        } finally {
-            setRefreshing(false)
-            setLoading(false)
-        }
-    }, [clusterId, incidentId])
-
-    useEffect(() => {
-        void loadIncident(true)
-    }, [loadIncident])
-
-    useEffect(() => {
-        const interval = setInterval(() => {
-            void loadIncident()
-        }, 12000)
-
-        return () => clearInterval(interval)
-    }, [loadIncident])
-
-    const liveFlags = useMemo(() => {
-        if (!incident) {
-            return []
-        }
-
-        return [
-            { label: "Status", value: incident.status },
-            { label: "Severity", value: incident.severity },
-            { label: "Open since", value: formatTime(incident.created_at) },
-            { label: "Resolution", value: incident.resolved_at ? "Closed" : "Open" },
-        ]
-    }, [incident])
-
-    if (loading) {
-        return (
-            <div className="flex min-h-[60vh] items-center justify-center text-zinc-400">
-                <Loader2 className="h-10 w-10 animate-spin" />
-            </div>
-        )
+  // A new WebSocket frame for this incident → refetch canonical transcript.
+  useEffect(() => {
+    if (liveEvents.length && liveEvents.length !== lastLive.current) {
+      lastLive.current = liveEvents.length
+      loadTranscript()
+      loadStatus()
     }
+  }, [liveEvents.length, loadTranscript, loadStatus])
 
-    if (!incident) {
-        return (
-            <Card className="border-zinc-800 bg-zinc-950/70 shadow-2xl shadow-black/20">
-                <CardContent className="flex min-h-[320px] flex-col items-center justify-center gap-4 p-8 text-center text-zinc-400">
-                    <p>Incident not found.</p>
-                    <Button onClick={() => router.push(`/clusters/${clusterId}/incidents`)} className="gap-2 bg-cyan-500 text-slate-950 hover:bg-cyan-400">
-                        Back to incidents
-                    </Button>
-                </CardContent>
-            </Card>
-        )
+  const sendMessage = async () => {
+    const msg = draft.trim()
+    if (!msg || sending) return
+    setSending(true)
+    try {
+      await api.post(`/incidents/${incidentId}/message`, { message: msg })
+      setDraft("")
+      await loadTranscript()
+    } finally {
+      setSending(false)
     }
+  }
 
+  const approve = async () => {
+    setApproving(true)
+    try {
+      await api.post(`/incidents/${incidentId}/approve`)
+      await loadStatus()
+    } finally {
+      setApproving(false)
+    }
+  }
+
+  if (loading) {
     return (
-        <div className="grid h-full min-h-0 w-full flex-1 gap-6 overflow-hidden xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)] xl:items-stretch">
-            <aside className="xl:sticky xl:top-24">
-                <Card className="h-full overflow-hidden border-0 bg-zinc-950/70 shadow-none backdrop-blur">
-                    <CardContent className="space-y-5 p-5">
-                        <div className="flex items-start justify-between gap-4">
-                            <div className="flex min-w-0 items-start gap-4">
-                                <Button variant="ghost" size="icon" onClick={() => router.push(`/clusters/${clusterId}/incidents`)} className="shrink-0 border border-zinc-800 bg-zinc-950/60 text-zinc-300 hover:bg-zinc-900 hover:text-white">
-                                    <ArrowLeft className="h-5 w-5" />
-                                </Button>
-                                <div className="min-w-0 space-y-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <Badge variant="outline" className={severityClass(incident.severity)}>
-                                            {incident.severity}
-                                        </Badge>
-                                        <Badge variant="outline" className={statusClass(incident.status)}>
-                                            {incident.status}
-                                        </Badge>
-                                    </div>
-                                    <h1 className="text-2xl font-semibold tracking-tight text-white">{incident.title}</h1>
-                                    <p className="text-sm leading-6 text-zinc-400">
-                                        {incident.description || "This incident dashboard is focused on the current thread, live status signals, and the assistant chat surface."}
-                                    </p>
-                                </div>
-                            </div>
-
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    setRefreshNonce((current) => current + 1)
-                                    void loadIncident()
-                                }}
-                                disabled={refreshing}
-                                className="gap-2 border-0 bg-zinc-950/60 text-zinc-200 hover:bg-zinc-900"
-                            >
-                                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                                Refresh
-                            </Button>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2">
-                            {liveFlags.map((flag) => (
-                                <div key={flag.label} className="rounded-2xl bg-zinc-900/50 px-4 py-3 text-sm text-zinc-300">
-                                    <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">{flag.label}</div>
-                                    <div className="mt-1 text-zinc-100">{flag.value}</div>
-                                </div>
-                            ))}
-                        </div>
-
-                        <div className="grid gap-3 rounded-2xl bg-zinc-900/40 p-4 text-sm text-zinc-300 sm:grid-cols-2">
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Incident ID</div>
-                                <div className="mt-1 break-all font-mono text-xs text-zinc-400">{incident.id}</div>
-                            </div>
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Cluster</div>
-                                <div className="mt-1 text-zinc-100">{cluster?.name || clusterId}</div>
-                            </div>
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Opened</div>
-                                <div className="mt-1 text-zinc-100">{formatTime(incident.created_at)}</div>
-                            </div>
-                            <div>
-                                <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Resolved</div>
-                                <div className="mt-1 text-zinc-100">{incident.resolved_at ? formatTime(incident.resolved_at) : "Open"}</div>
-                            </div>
-                        </div>
-
-                        {error && (
-                            <div className="rounded-2xl bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                                {error}
-                            </div>
-                        )}
-                    </CardContent>
-                </Card>
-            </aside>
-
-            <main className="min-h-0">
-                <IncidentCommandCenter incident={incident} refreshNonce={refreshNonce} />
-            </main>
-        </div>
+      <ConsolePage crumb="incidents" title="Incident" live={connected}>
+        <Spinner />
+      </ConsolePage>
     )
+  }
+
+  if (!tx) {
+    return (
+      <ConsolePage crumb="incidents" title="Incident not found" live={false}>
+        <div className="sx-empty">This incident could not be loaded.</div>
+      </ConsolePage>
+    )
+  }
+
+  const inc = tx.incident
+  const sv = sev(inc.severity)
+  const sb = statusBadge(inc.status)
+  const events = tx.events
+  const isAdmin = (user?.role ?? "member") === "admin"
+  const awaitingApproval = status?.status === "WAITING_APPROVAL"
+
+  // Conversation for the side panel: user + assistant follow-ups.
+  const chatEvents = events.filter((e) => e.speaker_role === "user" || e.event_type === "human_message" || /assistant|follow/.test(e.event_type))
+
+  return (
+    <ConsolePage
+      crumb={
+        <>
+          <Link href={`/clusters/${id}/incidents`}>Incidents</Link> / {inc.id.slice(0, 8)}
+        </>
+      }
+      title={inc.title}
+      live={connected}
+    >
+      <Link href={`/clusters/${id}/incidents`} className="sx-back">
+        ← Incidents
+      </Link>
+
+      <div className="sx-console">
+        <div>
+          {/* header line */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+            <span className={`sx-badge ${sv.tone}`}>{sv.label}</span>
+            <span className={`sx-badge ${sb.cls}`}>{sb.label}</span>
+            <span className="sx-mono" style={{ fontSize: 12, color: "var(--ink2)" }}>
+              opened {timeAgo(inc.created_at)} · {inc.resolved_at ? `resolved in ${elapsed(inc.created_at, inc.resolved_at)}` : `${elapsed(inc.created_at)} elapsed`}
+            </span>
+          </div>
+
+          {inc.description && (
+            <div className="sx-origin">
+              <b>Origin signal.</b> {inc.description.split("\n\n")[0]}
+              {" — opened by telemetry, not by hand."}
+            </div>
+          )}
+
+          {/* timeline */}
+          <div className="sx-phase" style={{ marginTop: 10 }}>
+            <span className="lbl">Investigation</span>
+            <span className="tag">{events.length} events · OODA</span>
+            <span className="rule" />
+          </div>
+
+          {events.length === 0 ? (
+            <div className="sx-empty">The agent hasn’t emitted investigation steps yet. This view updates live as it works.</div>
+          ) : (
+            events.map((ev, idx) => {
+              const tag = sourceTag(ev)
+              const isUser = ev.speaker_role === "user"
+              const rawConf = typeof ev.payload?.confidence === "number" ? (ev.payload.confidence as number) : null
+              const conf = rawConf === null ? null : Math.round(rawConf <= 1 ? rawConf * 100 : rawConf)
+              return (
+                <div className="sx-ev" key={ev.id ?? ev.sequence ?? idx}>
+                  <div className="rl">
+                    <div className={`node${isUser ? " user" : ""}`} />
+                    {idx < events.length - 1 && <div className="ln" />}
+                  </div>
+                  <div className="c2">
+                    <div className="et">
+                      {ev.title || pretty(ev.event_type)}
+                      {conf !== null && (
+                        <span className="sx-conf">
+                          confidence
+                          <span className="sx-cbar">
+                            <span style={{ width: `${conf}%` }} />
+                          </span>
+                          {conf}%
+                        </span>
+                      )}
+                    </div>
+                    {ev.content && <div className="ed">{ev.content}</div>}
+                    <div className="src">
+                      {tag && <span className={`sx-t2 ${tag.cls}`}>{tag.label}</span>}
+                      {isUser ? "you" : ev.speaker_role || "agent"} · {timeAgo(ev.created_at)}
+                    </div>
+                  </div>
+                </div>
+              )
+            })
+          )}
+
+          {tx.summary && (
+            <div className="sx-rootc">
+              <div className="h">◆ Root cause · Sentinel summary</div>
+              <h3>{inc.title}</h3>
+              <p>{tx.summary}</p>
+            </div>
+          )}
+        </div>
+
+        {/* right pane */}
+        <div>
+          <div className="sx-pane">
+            <div className="sx-pane-h">
+              <span className="tick" style={{ background: connected ? "var(--ok)" : "var(--ink3)" }} />
+              Ask Sentinel
+            </div>
+            <div className="sx-chat sx-scroll">
+              {chatEvents.length === 0 && !tx.summary && (
+                <div className="sx-m2 a">
+                  <div className="who2">Sentinel</div>
+                  <div className="bub">Investigation in progress. Ask a question any time and I’ll fold it into the analysis.</div>
+                </div>
+              )}
+              {tx.summary && chatEvents.length === 0 && (
+                <div className="sx-m2 a">
+                  <div className="who2">Sentinel</div>
+                  <div className="bub">{tx.summary}</div>
+                </div>
+              )}
+              {chatEvents.map((e, i) => (
+                <div className={`sx-m2 ${e.speaker_role === "user" ? "u" : "a"}`} key={e.id ?? i}>
+                  <div className="who2">{e.speaker_role === "user" ? "You" : "Sentinel"}</div>
+                  <div className="bub">{e.content}</div>
+                </div>
+              ))}
+            </div>
+            <div className="sx-chatbox">
+              <input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                placeholder="Direct the investigation…"
+              />
+              <button className="snd" onClick={sendMessage} disabled={sending || !draft.trim()}>
+                ↑
+              </button>
+            </div>
+          </div>
+
+          {awaitingApproval && (
+            <div className="sx-remedy">
+              <div className="h">⚙ Awaiting approval</div>
+              <div className="sx-action">
+                <div className="at">
+                  <span className="sx-badge sel">gated</span> Sentinel has a remediation ready
+                </div>
+                <div className="ad">Severity {sv.label}. Execution is paused pending human approval.</div>
+                <div className="gate">⚠ requires admin approval before it runs</div>
+              </div>
+              <div className="sx-btnrow">
+                <button className="sx-btn primary" onClick={approve} disabled={!isAdmin || approving}>
+                  {approving ? "Approving…" : "Approve & run"}
+                </button>
+              </div>
+              {!isAdmin && <div className="sx-dry">Only admins can approve remediations.</div>}
+            </div>
+          )}
+        </div>
+      </div>
+    </ConsolePage>
+  )
 }
