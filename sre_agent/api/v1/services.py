@@ -149,3 +149,51 @@ async def get_cluster_metrics(
         return None if v is None or v != v else round(v, dp)
 
     return {"errors": r(errors), "latency": r(latency, 0), "cpu": r(cpu), "mem": r(mem)}
+
+
+@router.post("/{cluster_id}/query")
+async def cluster_nl_query(
+    cluster_id: uuid.UUID,
+    payload: Dict[str, Any],
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+) -> Dict[str, Any]:
+    """Natural-language metric query. Translates the question to PromQL, verifies
+    it (allow-listed metrics/functions, bounded window — never arbitrary code),
+    then runs the *validated* query against this cluster's Prometheus."""
+    from sre_agent.nl_query import plan_and_generate
+
+    cluster = await _load_cluster(cluster_id, user, db)
+    question = str((payload or {}).get("question", "")).strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    plan = plan_and_generate(question)
+    result: Dict[str, Any] = {
+        "question": question,
+        "promql": plan.promql,
+        "valid": plan.valid,
+        "executed": False,
+        "data": None,
+        "error": None if plan.valid else plan.reason,
+    }
+    if not plan.valid:
+        return result
+
+    base = _prom_base(cluster)
+    if not base:
+        result["error"] = "No Prometheus endpoint configured for this cluster."
+        return result
+
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        try:
+            resp = await client.get(f"{base}/api/v1/query", params={"query": plan.promql})
+            data = resp.json()
+            if data.get("status") == "success":
+                result["executed"] = True
+                result["data"] = data["data"]["result"]
+            else:
+                result["error"] = "Prometheus rejected the query."
+        except Exception as e:
+            result["error"] = f"Execution failed: {e}"
+    return result

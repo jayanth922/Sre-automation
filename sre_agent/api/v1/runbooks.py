@@ -79,3 +79,42 @@ async def list_runbooks(
             }
         )
     return out
+
+
+@router.get("/{cluster_id}/runbooks/{runbook_id}")
+async def get_runbook(
+    cluster_id: uuid.UUID,
+    runbook_id: str,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+) -> Dict[str, Any]:
+    """Return a single runbook's metadata + full markdown body."""
+    cluster = await crud.get_cluster_by_id(db, cluster_id)
+    if not cluster or cluster.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    root = _runbooks_dir()
+    if not root:
+        raise HTTPException(status_code=404, detail="No runbook corpus available")
+
+    for path in root.glob("*.md"):
+        if path.name.lower() == "readme.md":
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        meta = _parse_frontmatter(text)
+        rid = meta.get("runbook_id") or path.stem
+        if rid == runbook_id or path.stem == runbook_id:
+            body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", text, count=1, flags=re.DOTALL)
+            return {
+                "id": rid,
+                "title": meta.get("title") or path.stem,
+                "service": meta.get("service") or "—",
+                "incident_type": meta.get("incident_type") or "—",
+                "severity": meta.get("severity") or "—",
+                "path": path.name,
+                "content": body.strip(),
+            }
+    raise HTTPException(status_code=404, detail="Runbook not found")
