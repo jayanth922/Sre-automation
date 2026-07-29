@@ -28,7 +28,7 @@ export default function AuditPage() {
   }, [load])
 
   return (
-    <ConsolePage crumb="prod cluster" title="Audit trail">
+    <ConsolePage title="Audit trail">
       {loading ? (
         <Spinner />
       ) : events.length === 0 ? (

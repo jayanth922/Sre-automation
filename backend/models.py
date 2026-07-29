@@ -109,6 +109,9 @@ class Cluster(Base):
     github_repo: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. org/repo
     notion_api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     notion_database_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Observability query conventions (JSON). Null = platform defaults. Lets the
+    # platform work against any workload's metric schema, not one demo's.
+    metrics_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="clusters")

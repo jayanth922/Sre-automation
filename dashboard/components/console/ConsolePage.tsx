@@ -1,6 +1,7 @@
 "use client"
 
 import type { ReactNode } from "react"
+import { useCluster } from "@/components/console/ClusterContext"
 
 interface ConsolePageProps {
   crumb?: ReactNode
@@ -11,12 +12,14 @@ interface ConsolePageProps {
 }
 
 export function ConsolePage({ crumb, title, live, updated, children }: ConsolePageProps) {
+  const cluster = useCluster()
+  const resolvedCrumb = crumb !== undefined ? crumb : cluster?.name
   return (
     <>
       <div className="sx-header">
         <div className="sx-topline">
           <div>
-            {crumb !== undefined && <div className="sx-crumb">{crumb}</div>}
+            {resolvedCrumb !== undefined && resolvedCrumb !== null && <div className="sx-crumb">{resolvedCrumb}</div>}
             <h1>{title}</h1>
           </div>
           <div className="sx-grow" />

@@ -38,7 +38,7 @@ export default function IncidentsPage() {
   const shown = tab === "open" ? open : tab === "resolved" ? resolved : incidents
 
   return (
-    <ConsolePage crumb="prod cluster" title="Incidents" live={connected}>
+    <ConsolePage title="Incidents" live={connected}>
       {loading ? (
         <Spinner />
       ) : (

@@ -64,6 +64,8 @@ async def get_clusters_for_org(db: AsyncSession, org_id: uuid.UUID):
     return result.scalars().all()
 
 async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_id: uuid.UUID):
+    import json as _json
+
     cluster_token = f"cl_{uuid.uuid4().hex}"
     db_cluster = models.Cluster(
         name=cluster.name,
@@ -78,11 +80,29 @@ async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_i
         github_repo=cluster.github_repo,
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
+        metrics_config=_json.dumps(cluster.metrics_config) if cluster.metrics_config else None,
     )
     db.add(db_cluster)
     await db.commit()
     await db.refresh(db_cluster)
     return db_cluster, cluster_token
+
+
+async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.UUID, update: "schemas.ClusterUpdate"):
+    import json as _json
+
+    cluster = await get_cluster_by_id(db, cluster_id)
+    if not cluster or cluster.org_id != org_id:
+        return None
+    data = update.model_dump(exclude_unset=True)
+    for field in ("name", "prometheus_url", "loki_url", "k8s_api_server", "github_token", "github_repo"):
+        if field in data and data[field] is not None:
+            setattr(cluster, field, data[field])
+    if "metrics_config" in data:
+        cluster.metrics_config = _json.dumps(data["metrics_config"]) if data["metrics_config"] else None
+    await db.commit()
+    await db.refresh(cluster)
+    return cluster
 
 async def get_cluster_by_token(db: AsyncSession, token: str):
     result = await db.execute(select(models.Cluster).filter(models.Cluster.token == token))

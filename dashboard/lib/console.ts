@@ -70,10 +70,10 @@ export interface SLOStatus {
 }
 
 export interface MetricsSnapshot {
-  latency: number
-  errors: number
-  cpu: number
-  mem: number
+  latency: number | null
+  errors: number | null
+  cpu: number | null
+  mem: number | null
 }
 
 export interface Analytics {

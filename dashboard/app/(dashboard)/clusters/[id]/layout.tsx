@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Rail } from "@/components/console/Rail"
+import { ClusterContext } from "@/components/console/ClusterContext"
 import { api } from "@/lib/auth-context"
 import type { Cluster, Incident } from "@/lib/console"
 
@@ -72,9 +73,11 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
   }
 
   return (
-    <div className="sx-app">
-      <Rail cluster={cluster} openIncidents={openIncidents} />
-      <main className="sx-main sx-scroll">{children}</main>
-    </div>
+    <ClusterContext.Provider value={cluster}>
+      <div className="sx-app">
+        <Rail cluster={cluster} openIncidents={openIncidents} />
+        <main className="sx-main sx-scroll">{children}</main>
+      </div>
+    </ClusterContext.Provider>
   )
 }

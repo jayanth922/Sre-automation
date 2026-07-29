@@ -44,7 +44,7 @@ export default function OverviewPage() {
 
   const load = useCallback(async () => {
     const [m, inc, svc, slos, aud, ana] = await Promise.allSettled([
-      fetch("/metrics/snapshot").then((r) => (r.ok ? r.json() : Promise.reject())),
+      api.get<MetricsSnapshot>(`/clusters/${id}/metrics`),
       api.get<Incident[]>(`/clusters/${id}/incidents`),
       api.get<ServiceHealth[]>(`/clusters/${id}/services`),
       api.get<SLO[]>(`/clusters/${id}/slos`),
@@ -53,7 +53,7 @@ export default function OverviewPage() {
     ])
 
     if (m.status === "fulfilled") {
-      setMetrics(m.value)
+      setMetrics(m.value.data)
       setMetricsErr(false)
     } else setMetricsErr(true)
     if (inc.status === "fulfilled") setIncidents(inc.value.data)
@@ -100,7 +100,7 @@ export default function OverviewPage() {
   )
 
   return (
-    <ConsolePage crumb={"prod cluster"} title="Fleet overview" live={connected} updated={updated}>
+    <ConsolePage title="Fleet overview" live={connected} updated={updated}>
       {loading ? (
         <Spinner />
       ) : (

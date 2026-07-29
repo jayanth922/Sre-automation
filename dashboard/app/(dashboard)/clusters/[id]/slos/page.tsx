@@ -47,7 +47,7 @@ export default function SlosPage() {
   }, [load])
 
   return (
-    <ConsolePage crumb="prod cluster" title="Service level objectives">
+    <ConsolePage title="Service level objectives">
       {loading ? (
         <Spinner />
       ) : rows.length === 0 ? (

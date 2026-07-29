@@ -89,6 +89,17 @@ class ClusterCreate(BaseModel):
     github_repo: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
+    # Observability query conventions (service label, metric names, error selector).
+    metrics_config: Optional[Dict[str, str]] = None
+
+class ClusterUpdate(BaseModel):
+    name: Optional[str] = None
+    prometheus_url: Optional[str] = None
+    loki_url: Optional[str] = None
+    k8s_api_server: Optional[str] = None
+    github_token: Optional[str] = None
+    github_repo: Optional[str] = None
+    metrics_config: Optional[Dict[str, str]] = None
 
 class ClusterResponse(BaseModel):
     id: uuid.UUID
@@ -100,6 +111,7 @@ class ClusterResponse(BaseModel):
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
+    metrics_config: Optional[str] = None
 
     class Config:
         from_attributes = True

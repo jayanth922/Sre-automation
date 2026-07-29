@@ -35,6 +35,20 @@ async def list_clusters(
     """List all clusters for the user's organization."""
     return await crud.get_clusters_for_org(db, org_id=user.org_id)
 
+@router.patch("/{cluster_id}", response_model=schemas.ClusterResponse)
+async def update_cluster_endpoint(
+    cluster_id: uuid.UUID,
+    update: schemas.ClusterUpdate,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db)
+):
+    """Update a cluster's endpoints and observability config. Admin only."""
+    require_admin(user)
+    cluster = await crud.update_cluster(db, cluster_id, user.org_id, update)
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    return cluster
+
 @router.get("/{cluster_id}/health")
 async def get_cluster_health(
     cluster_id: uuid.UUID,

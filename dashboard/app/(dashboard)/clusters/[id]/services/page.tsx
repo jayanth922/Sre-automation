@@ -35,7 +35,7 @@ export default function ServicesPage() {
   }, [load])
 
   return (
-    <ConsolePage crumb="prod cluster" title="Services" live={connected}>
+    <ConsolePage title="Services" live={connected}>
       {loading ? (
         <Spinner />
       ) : err ? (

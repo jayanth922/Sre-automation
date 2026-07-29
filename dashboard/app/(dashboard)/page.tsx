@@ -119,11 +119,11 @@ export default function HomeGate() {
             </div>
             <div>
               <label className="sx-label">Prometheus URL</label>
-              <input className="sx-input" placeholder="http://host.docker.internal:9090" value={form.prometheus_url} onChange={(e) => setForm({ ...form, prometheus_url: e.target.value })} />
+              <input className="sx-input" placeholder="https://prometheus.your-infra:9090" value={form.prometheus_url} onChange={(e) => setForm({ ...form, prometheus_url: e.target.value })} />
             </div>
             <div>
               <label className="sx-label">Loki URL</label>
-              <input className="sx-input" placeholder="http://host.docker.internal:3100" value={form.loki_url} onChange={(e) => setForm({ ...form, loki_url: e.target.value })} />
+              <input className="sx-input" placeholder="https://loki.your-infra:3100" value={form.loki_url} onChange={(e) => setForm({ ...form, loki_url: e.target.value })} />
             </div>
             <div>
               <label className="sx-label">GitHub repo (optional)</label>
