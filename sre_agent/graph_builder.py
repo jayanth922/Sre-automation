@@ -475,6 +475,14 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     from .model_router import TaskType, route_llm
     llm = route_llm(TaskType.REFLECTION, provider=llm_provider, use_fallback=False)
 
+    # Wrap attacker-influenceable telemetry so it's treated as data, not instructions.
+    from .prompt_guard import wrap_untrusted
+
+    alert_block = wrap_untrusted("alert", alert_context.model_dump_json()) if alert_context else "No alert context"
+    infra_block = wrap_untrusted("infra_metrics", infra_findings) if infra_findings else "No infrastructure findings available"
+    code_block = wrap_untrusted("github", code_findings) if code_findings else "No code change findings available"
+    logs_block = wrap_untrusted("logs", logs_findings) if logs_findings else "No logs findings available"
+
     # Reflection prompt
     reflection_prompt = f"""
     You are the ReflectorNode in an SRE autonomic system. Your task is to analyze
@@ -482,16 +490,16 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     hypotheses, and determine if deeper investigation is needed.
     {tool_status}
     Alert Context:
-    {alert_context.model_dump_json() if alert_context else "No alert context"}
+    {alert_block}
 
     Infrastructure Findings:
-    {infra_findings if infra_findings else "No infrastructure findings available"}
+    {infra_block}
 
     Code Change Findings (GitHub):
-    {code_findings if code_findings else "No code change findings available"}
+    {code_block}
 
     Logs Findings:
-    {logs_findings if logs_findings else "No logs findings available"}
+    {logs_block}
 
     Analyze these findings and:
     1. Identify any discrepancies between infrastructure and code findings
