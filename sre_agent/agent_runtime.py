@@ -668,6 +668,7 @@ async def run_graph_background(
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
+        initial_state = await _maybe_compact(initial_state)
         current_execution_state = initial_state
         # Log initial message to Redis list
         state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Investigation started...")
@@ -730,6 +731,25 @@ async def run_graph_background(
             "error": str(e)
         })
 
+
+
+async def _maybe_compact(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact the input message history before invoking the graph when it's over
+    the token budget (keeps recent turns + one summary). Safe: operates on the
+    input state before the reducer runs, and only triggers above the budget."""
+    try:
+        from sre_agent.context_compaction import compact_state_messages, make_llm_summarizer, should_compact
+
+        if should_compact(state.get("messages", [])):
+            from sre_agent.model_router import TaskType, route_llm
+
+            llm = route_llm(TaskType.NARRATION, use_fallback=False)
+            new_msgs, did = await compact_state_messages(state, make_llm_summarizer(llm))
+            if did:
+                state["messages"] = new_msgs
+    except Exception as e:
+        logger.warning(f"context compaction skipped (non-fatal): {e}")
+    return state
 
 
 async def run_graph_background_saas(
@@ -946,6 +966,7 @@ async def _run_graph_impl(
         from .callbacks import RedisLogCallbackHandler
         callback_handler = RedisLogCallbackHandler(session_id)
         
+        initial_state = await _maybe_compact(initial_state)
         current_execution_state = initial_state
         
         from .checkpointer import thread_config, thread_id_from_state

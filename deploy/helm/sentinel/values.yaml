@@ -116,7 +116,10 @@ features:
   # EXECUTION of gate-approved reversible actions on the live cluster. Read-only
   # by default; high severities always require human approval.
   executorLive: "false"
-  checkpointerEnabled: "false"
+  # Durability on by default (enables human-approval resume + interrupted-run
+  # continuation). "memory" = in-process; "redis" = cross-crash (needs the
+  # langgraph-checkpoint-redis package).
+  checkpointerEnabled: "true"
   checkpointerBackend: "memory"
   liveBusBackend: "memory"
   debug: "false"

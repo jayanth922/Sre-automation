@@ -74,9 +74,15 @@ data:
   # (self-hostable). The always-on in-process recorder is at /agent/metrics.
   LANGFUSE_HOST: "https://cloud.langfuse.com"
 
-  # --- Feature flags ---
-  CHECKPOINTER_ENABLED: "false"
+  # --- Durability ---
+  # On by default: graph state is checkpointed per incident, so human-approval
+  # resume works and an interrupted investigation can continue. "memory" resumes
+  # within a process; set "redis" (with langgraph-checkpoint-redis installed) for
+  # true cross-crash durability.
+  CHECKPOINTER_ENABLED: "true"
   CHECKPOINTER_BACKEND: "memory"
+
+  # --- Feature flags ---
   LIVE_BUS_BACKEND: "memory"
   DEBUG: "false"
   LANGCHAIN_TRACING_V2: "false"
