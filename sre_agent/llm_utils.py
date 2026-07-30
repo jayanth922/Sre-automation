@@ -51,9 +51,9 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         LLMAccessError: For access/permission failures
         ValueError: For unsupported providers
     """
-    if provider not in ("groq", "ollama", "gemini", "nvidia", "openai_compatible"):
+    if provider not in ("groq", "ollama", "gemini", "nvidia", "anthropic", "openai_compatible"):
         raise ValueError(
-            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia', 'openai_compatible'."
+            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia', 'anthropic', 'openai_compatible'."
         )
 
     logger.info(f"Creating LLM with provider: {provider}")
@@ -76,6 +76,9 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         elif provider == "openai_compatible":
             logger.info(f"Creating OpenAI-compatible LLM - Model: {config['model_id']} at {config['base_url']}")
             return _create_openai_compatible_llm(config)
+        elif provider == "anthropic":
+            logger.info(f"Creating Anthropic (Claude) LLM - Model: {config['model_id']}")
+            return _create_anthropic_llm(config)
 
     except Exception as e:
         error_msg = _get_helpful_error_message(provider, e)
@@ -130,6 +133,32 @@ def _create_nvidia_llm(config: Dict[str, Any]):
         base_url=config["base_url"],
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
+    )
+
+
+def _create_anthropic_llm(config: Dict[str, Any]):
+    """Create an Anthropic (Claude) client. Requires ``langchain-anthropic`` and
+    ANTHROPIC_API_KEY. Claude has first-class tool/function calling, so the
+    structured-output paths (with_structured_output) work natively."""
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:
+        raise LLMProviderError(
+            "langchain-anthropic not installed. Add it to the image "
+            "(pip install langchain-anthropic) to use LLM_PROVIDER=anthropic."
+        )
+
+    api_key = config.get("api_key", "")
+    if not api_key:
+        raise LLMAuthenticationError(
+            "ANTHROPIC_API_KEY not set. Get a key at https://console.anthropic.com"
+        )
+
+    return ChatAnthropic(
+        model=config["model_id"],
+        api_key=api_key,
+        temperature=config["temperature"],
+        max_tokens=config.get("max_tokens", 4096),
     )
 
 

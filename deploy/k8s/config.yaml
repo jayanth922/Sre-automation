@@ -10,11 +10,12 @@ metadata:
   namespace: sentinel
 data:
   # --- Model provider (bring your own) ---
-  # Options: groq | gemini | nvidia | ollama | openai_compatible.
-  # For an on-site LLM, set LLM_PROVIDER=openai_compatible and point LLM_BASE_URL
-  # at your vLLM / Ollama(/v1) / LiteLLM / LocalAI endpoint. Put LLM_API_KEY in
-  # the Secret (leave blank for keyless endpoints).
+  # Options: anthropic | groq | gemini | nvidia | ollama | openai_compatible.
+  # For Claude, set LLM_PROVIDER=anthropic + ANTHROPIC_MODEL, put ANTHROPIC_API_KEY
+  # in the Secret (image needs langchain-anthropic). For an on-site LLM, use
+  # openai_compatible + LLM_BASE_URL (vLLM / Ollama /v1 / LiteLLM / LocalAI).
   LLM_PROVIDER: "groq"
+  ANTHROPIC_MODEL: "claude-3-5-sonnet-latest"
   LLM_BASE_URL: "http://vllm.your-infra:8000/v1"
   LLM_MODEL: "your-model-name"
   GROQ_MODEL: "llama-3.3-70b-versatile"

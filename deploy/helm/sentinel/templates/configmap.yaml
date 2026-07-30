@@ -8,6 +8,7 @@ data:
   LLM_PROVIDER: {{ .Values.llm.provider | quote }}
   LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
   LLM_MODEL: {{ .Values.llm.model | quote }}
+  ANTHROPIC_MODEL: {{ .Values.llm.anthropicModel | quote }}
   GROQ_MODEL: {{ .Values.llm.groqModel | quote }}
   GEMINI_MODEL: {{ .Values.llm.geminiModel | quote }}
   NVIDIA_BASE_URL: {{ .Values.llm.nvidiaBaseUrl | quote }}

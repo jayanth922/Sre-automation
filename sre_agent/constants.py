@@ -318,6 +318,15 @@ class SREConstants:
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
 
+        if provider == "anthropic":
+            import os as _os
+            return {
+                "model_id": kwargs.get("model_id", _os.getenv("ANTHROPIC_MODEL") or "claude-3-5-sonnet-latest"),
+                "api_key": kwargs.get("api_key", _os.getenv("ANTHROPIC_API_KEY", "")),
+                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
+                "temperature": kwargs.get("temperature", cls.model.default_temperature),
+            }
+
         if provider == "gemini":
             return {
                 "model_id": kwargs.get("model_id", cls.model.gemini_model),
@@ -334,7 +343,7 @@ class SREConstants:
             }
 
         if provider != "groq":
-            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia', 'openai_compatible'.")
+            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia', 'anthropic', 'openai_compatible'.")
 
         return {
             "model_id": kwargs.get("model_id", cls.model.groq_model_id),

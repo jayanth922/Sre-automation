@@ -38,6 +38,7 @@ secrets:
   postgresPassword: "change-me-postgres-password"
   # Model provider keys (fill the one you use; blank is fine for keyless on-site LLMs)
   llmApiKey: ""
+  anthropicApiKey: ""
   groqApiKey: ""
   googleApiKey: ""
   nvidiaApiKey: ""
@@ -58,6 +59,7 @@ llm:
   baseUrl: "http://vllm.your-infra:8000/v1"
   model: "your-model-name"
   # provider-specific extras
+  anthropicModel: "claude-3-5-sonnet-latest"
   groqModel: "llama-3.3-70b-versatile"
   geminiModel: "gemini-2.0-flash"
   nvidiaBaseUrl: "https://integrate.api.nvidia.com/v1"
