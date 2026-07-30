@@ -28,13 +28,14 @@ kubectl -n sentinel port-forward svc/sentinel-web 3002:3000 &    # console
 kubectl -n sentinel port-forward svc/sentinel-api 8080:8080 &    # API + WebSocket
 ```
 
-Open http://localhost:3002 and log in with `admin@example.com` and the
-`SEED_ADMIN_PASSWORD` from your secret.
+Open http://localhost:3002 and **register**. The first person to sign up creates
+the organization and becomes its admin; teammates join by registering with the
+same organization name, and the admin manages roles under Team.
 
 ## Configure
 
 - **Secrets** — `secret.yaml` (git-ignored): `SECRET_KEY`, `POSTGRES_PASSWORD`,
-  `SEED_ADMIN_PASSWORD`, and your model provider key (`GROQ_API_KEY`, etc.).
+  and your model provider key (`GROQ_API_KEY`, etc.).
 - **Config** — `config.yaml`: model choice, feature flags, and the in-cluster
   service DNS for the edge tool servers (already wired). `PROMETHEUS_URL` /
   `LOKI_URL` are blank by default — set them **per cluster** in the console

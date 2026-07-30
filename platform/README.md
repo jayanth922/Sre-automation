@@ -80,7 +80,7 @@ Use [../.env.example](../.env.example) as the source of truth. The most importan
 ## Operational Notes
 
 - The platform stack assumes Docker Desktop or another environment that can resolve the host-exposed observability services used by the MCP layer.
-- [backend/seed.py](../backend/seed.py) refreshes the default admin password if the seeded account already exists.
+- There is no seeding: the first person to register creates the org and becomes its admin.
 - If you are using local Ollama instead of a host-accessible instance, adjust `OLLAMA_BASE_URL` before starting the stack.
 - The same compose file drives both local smoke tests and the full demo path, so this file is the best place to inspect service dependencies.
 

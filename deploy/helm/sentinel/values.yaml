@@ -34,7 +34,6 @@ secrets:
   existingSecret: ""
   # Used only when create=true. Prefer --set / a sealed secret / external-secrets.
   secretKey: "change-me-to-a-long-random-string"
-  seedAdminPassword: "change-me-admin-password"
   postgresPassword: "change-me-postgres-password"
   # Model provider keys (fill the one you use; blank is fine for keyless on-site LLMs)
   llmApiKey: ""
@@ -118,18 +117,6 @@ features:
   checkpointerBackend: "memory"
   liveBusBackend: "memory"
   debug: "false"
-
-# ── Seed admin + cluster (first login) ────────────────────────────────────────
-seed:
-  adminEmail: "jayanth.kalyanam@sjsu.edu"
-  adminOrg: "sjsu"
-  # Seed a cluster on first boot. Token also authenticates the target's
-  # Alertmanager webhook. Leave clusterToken empty to skip seeding a cluster.
-  clusterName: "jayanth"
-  clusterStatus: "online"
-  clusterToken: "cl_jayanth_demo_change_me"
-  clusterPrometheusUrl: "http://prometheus.demo-app.svc.cluster.local:9090"
-  clusterLokiUrl: "http://loki.demo-app.svc.cluster.local:3100"
 
 # ── API (control plane + agent runtime) ───────────────────────────────────────
 api:

@@ -25,4 +25,18 @@ async def get_current_user_and_org(
     user = await crud.get_user_by_email(db, email=payload.get("sub"))
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account is deactivated")
+    return user
+
+
+async def require_admin(
+    user: models.User = Depends(get_current_user_and_org),
+) -> models.User:
+    """Require the authenticated user to be an org admin."""
+    if user.role != models.UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator privileges required",
+        )
     return user

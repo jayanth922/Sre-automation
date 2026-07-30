@@ -34,12 +34,6 @@ variable "postgres_password" {
   sensitive   = true
 }
 
-variable "seed_admin_password" {
-  description = "First admin login password."
-  type        = string
-  sensitive   = true
-}
-
 variable "groq_api_key" {
   description = "Groq API key (if llm_provider = groq)."
   type        = string

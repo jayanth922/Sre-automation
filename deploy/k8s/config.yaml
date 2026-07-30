@@ -86,14 +86,3 @@ data:
   LIVE_BUS_BACKEND: "memory"
   DEBUG: "false"
   LANGCHAIN_TRACING_V2: "false"
-
-  # --- Seed admin (first login) ---
-  SEED_ADMIN_EMAIL: "jayanth.kalyanam@sjsu.edu"
-  SEED_ADMIN_ORG: "sjsu"
-  # Seed a cluster named "jayanth" pointed at the demo target's telemetry.
-  # SEED_CLUSTER_TOKEN also authenticates the target's Alertmanager webhook.
-  SEED_CLUSTER_NAME: "jayanth"
-  SEED_CLUSTER_STATUS: "online"
-  SEED_CLUSTER_TOKEN: "cl_jayanth_demo_change_me"
-  SEED_CLUSTER_PROMETHEUS_URL: "http://prometheus.demo-app.svc.cluster.local:9090"
-  SEED_CLUSTER_LOKI_URL: "http://loki.demo-app.svc.cluster.local:3100"

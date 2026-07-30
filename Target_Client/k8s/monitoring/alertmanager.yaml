@@ -59,8 +59,11 @@ spec:
           ports:
             - containerPort: 9093
           env:
+            # Paste the cluster token shown when you connect this cluster in the
+            # Sentinel console (Clusters → Connect). It authenticates this
+            # Alertmanager's webhook to the Sentinel API.
             - name: CLUSTER_TOKEN
-              value: "cl_jayanth_demo_change_me"
+              value: "REPLACE_WITH_CLUSTER_TOKEN"
           volumeMounts:
             - name: config
               mountPath: /etc/alertmanager

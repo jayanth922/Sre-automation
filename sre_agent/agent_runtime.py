@@ -175,6 +175,10 @@ app.include_router(chat_router.router, prefix="/api/v1")
 from sre_agent.api.v1 import recommendations as recommendations_router
 app.include_router(recommendations_router.router, prefix="/api/v1")
 
+# Organization member management (list roster, assign roles, deactivate)
+from sre_agent.api.v1 import members as members_router
+app.include_router(members_router.router, prefix="/api/v1")
+
 
 # Simple request/response models
 class InvocationRequest(BaseModel):

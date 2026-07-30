@@ -1,6 +1,7 @@
 # =============================================================================
-# Sentinel API — control plane + agent runtime. Runs DB migrations + seed on
-# start, then serves FastAPI/uvicorn. Talks to everything over in-cluster DNS.
+# Sentinel API — control plane + agent runtime. Runs DB migrations on start,
+# then serves FastAPI/uvicorn. Talks to everything over in-cluster DNS.
+# No seeding: the first person to register creates the org and becomes its admin.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +24,6 @@ spec:
           args:
             - >
               uv run alembic upgrade head &&
-              uv run python backend/seed.py &&
               exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080
           ports:
             - containerPort: 8080

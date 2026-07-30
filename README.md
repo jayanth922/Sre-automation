@@ -86,15 +86,15 @@ Build the images once, then pick one:
 # Helm
 helm install sentinel deploy/helm/sentinel -n sentinel --create-namespace \
   --set secrets.secretKey=$(openssl rand -hex 32) \
-  --set secrets.postgresPassword=$(openssl rand -hex 16) \
-  --set secrets.seedAdminPassword='choose-a-password'
+  --set secrets.postgresPassword=$(openssl rand -hex 16)
 
 # Terraform (installs the chart)
 cd deploy/terraform && terraform init && terraform apply
 ```
 
-Then port-forward the console (`:3002`) and the API (`:8080`) and log in as the
-seed admin. Connect a cluster in Settings (its Prometheus/Loki endpoints, metric
+Then port-forward the console (`:3002`) and the API (`:8080`) and open the
+console to **register** — the first sign-up creates the organization and becomes
+its admin (manage teammates and roles under Team). Connect a cluster in Settings (its Prometheus/Loki endpoints, metric
 conventions, GitHub repo, Notion runbook database) and point Alertmanager at
 `POST /api/v1/alerts/webhook` with the cluster token.
 

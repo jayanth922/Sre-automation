@@ -102,8 +102,9 @@ cd dashboard && npm ci && npm run build && npm run start   # or: npm run dev
 - [ ] Prometheus 9090 · Grafana 3001 · Loki 3100 · Alertmanager 9093
 - [ ] `curl http://localhost:4005/` (executor MCP) and check `executor_health` reports your allowed namespaces.
 
-Log in to the dashboard with the seeded admin (from `SEED_ADMIN_EMAIL` /
-`SEED_ADMIN_PASSWORD`, defaults `admin@example.com` / `admin`).
+Open the dashboard and **register**. The first person to sign up creates the
+organization and becomes its admin; add teammates by having them register with
+the same organization name, then manage their roles under Team.
 
 ---
 

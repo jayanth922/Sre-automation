@@ -54,10 +54,6 @@ resource "helm_release" "sentinel" {
     value = var.postgres_password
   }
   set_sensitive {
-    name  = "secrets.seedAdminPassword"
-    value = var.seed_admin_password
-  }
-  set_sensitive {
     name  = "secrets.groqApiKey"
     value = var.groq_api_key
   }

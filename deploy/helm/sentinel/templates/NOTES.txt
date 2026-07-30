@@ -17,7 +17,9 @@ No ingress configured. Port-forward the console and the API (the browser needs b
 Then open http://localhost:3002
 {{- end }}
 
-Log in as {{ .Values.seed.adminEmail }} with the seed admin password from your secret.
+First run: open the console and register. The first person to sign up creates the
+organization and becomes its admin — from there, invite teammates (they register
+with the same organization name) and manage roles under Team.
 
 Model provider: {{ .Values.llm.provider }}
 {{- if eq .Values.llm.provider "openai_compatible" }}  →  {{ .Values.llm.baseUrl }} (set secrets.llmApiKey if it needs a key){{ end }}

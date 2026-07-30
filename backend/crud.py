@@ -59,6 +59,52 @@ async def create_user(db: AsyncSession, user: schemas.UserCreate):
     await db.refresh(db_user)
     return db_user
 
+async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID):
+    result = await db.execute(select(models.User).filter(models.User.id == user_id))
+    return result.scalars().first()
+
+
+async def get_users_for_org(db: AsyncSession, org_id: uuid.UUID):
+    """All users in an org, newest first."""
+    result = await db.execute(
+        select(models.User)
+        .filter(models.User.org_id == org_id)
+        .order_by(models.User.created_at.asc())
+    )
+    return result.scalars().all()
+
+
+async def count_active_admins(db: AsyncSession, org_id: uuid.UUID) -> int:
+    """How many active admins the org has — used to prevent lockout."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(models.User)
+        .filter(
+            models.User.org_id == org_id,
+            models.User.role == models.UserRole.ADMIN,
+            models.User.is_active == True,  # noqa: E712
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def update_user_role(db: AsyncSession, user: models.User, role: models.UserRole):
+    user.role = role
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def set_user_active(db: AsyncSession, user: models.User, is_active: bool):
+    user.is_active = is_active
+    if not is_active:
+        # Revoke all refresh sessions so a deactivated user is logged out.
+        await revoke_all_user_refresh_sessions(db, user.id)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 async def get_clusters_for_org(db: AsyncSession, org_id: uuid.UUID):
     result = await db.execute(select(models.Cluster).filter(models.Cluster.org_id == org_id))
     return result.scalars().all()
@@ -437,6 +483,18 @@ async def get_refresh_session_by_hash(db: AsyncSession, token_hash: str):
 async def revoke_refresh_session(db: AsyncSession, session: "models.RefreshSession") -> None:
     session.revoked = True
     await db.commit()
+
+
+async def revoke_all_user_refresh_sessions(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Revoke every active refresh session for a user (no commit — caller commits)."""
+    result = await db.execute(
+        select(models.RefreshSession).filter(
+            models.RefreshSession.user_id == user_id,
+            models.RefreshSession.revoked == False,  # noqa: E712
+        )
+    )
+    for s in result.scalars().all():
+        s.revoked = True
 
 
 async def revoke_refresh_family(db: AsyncSession, family_id: uuid.UUID) -> None:
