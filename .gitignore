@@ -118,3 +118,9 @@ gha-creds-*.json
 
 # Kubernetes rendered secret (never commit)
 deploy/k8s/secret.yaml
+
+# Terraform
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/terraform.tfvars
