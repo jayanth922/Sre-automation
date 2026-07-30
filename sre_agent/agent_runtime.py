@@ -293,6 +293,13 @@ async def startup_event():
     except Exception as monitor_err:
         logger.warning(f"Could not start platform monitor: {monitor_err}")
 
+    # Slack bot in the on-call channel (no-op unless Slack tokens are set).
+    try:
+        from sre_agent.war_room_service import run_slack_bot
+        asyncio.create_task(run_slack_bot())
+    except Exception as slack_err:
+        logger.warning(f"Could not start Slack bot: {slack_err}")
+
     # Always initialize the AI graph if we are managing a cluster
     if agent_mode != "api" or cluster_token:
         logger.info("🧠 Initializing SRE Agent Graph for automated investigations...")
