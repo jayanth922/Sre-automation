@@ -46,6 +46,8 @@ data:
 
   # Remediation + feature flags
   EXECUTOR_LIVE: {{ .Values.features.executorLive | quote }}
+  EXECUTOR_ALLOWED_NAMESPACES: {{ .Values.features.executorAllowedNamespaces | quote }}
+  EXECUTOR_MIN_REPLICAS: {{ .Values.features.executorMinReplicas | quote }}
   CHECKPOINTER_ENABLED: {{ .Values.features.checkpointerEnabled | quote }}
   CHECKPOINTER_BACKEND: {{ .Values.features.checkpointerBackend | quote }}
   LIVE_BUS_BACKEND: {{ .Values.features.liveBusBackend | quote }}

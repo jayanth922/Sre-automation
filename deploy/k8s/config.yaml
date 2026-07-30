@@ -67,6 +67,11 @@ data:
   # cluster autonomously. Read-only by default (industry standard); higher
   # severities always require human approval regardless.
   EXECUTOR_LIVE: "false"
+  # Namespaces the executor is allowed to act on (comma-separated). This is the
+  # client's Kubernetes blast-radius control — set it to the namespace(s) your
+  # workloads run in. Empty = the executor refuses every action.
+  EXECUTOR_ALLOWED_NAMESPACES: "demo-app"
+  EXECUTOR_MIN_REPLICAS: "1"
 
   # --- Agent observability / tracing ---
   # Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY (in the Secret) to export every

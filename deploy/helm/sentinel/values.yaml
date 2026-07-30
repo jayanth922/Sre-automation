@@ -76,7 +76,7 @@ mcp:
     servers:
       - { name: mcp-k8s, image: mcp-k8s, serviceAccount: observer }
       - { name: mcp-executor, image: mcp-executor, serviceAccount: actuator,
-          env: [ { name: EXECUTOR_ALLOWED_NAMESPACES, value: "" }, { name: EXECUTOR_MIN_REPLICAS, value: "1" } ] }
+          configEnv: [ EXECUTOR_ALLOWED_NAMESPACES, EXECUTOR_MIN_REPLICAS ] }
       - { name: mcp-prometheus, image: mcp-prometheus, configEnv: [ PROMETHEUS_URL ] }
       - { name: mcp-loki, image: mcp-loki, configEnv: [ LOKI_URL ] }
       - { name: mcp-github, image: mcp-github, secretEnv: [ GITHUB_TOKEN ] }
@@ -110,6 +110,10 @@ features:
   # EXECUTION of gate-approved reversible actions on the live cluster. Read-only
   # by default; high severities always require human approval.
   executorLive: "false"
+  # Namespaces the executor may act on (comma-separated) — the client's blast
+  # radius. Empty means the executor refuses every action.
+  executorAllowedNamespaces: "demo-app"
+  executorMinReplicas: "1"
   # Durability on by default (enables human-approval resume + interrupted-run
   # continuation). "memory" = in-process; "redis" = cross-crash (needs the
   # langgraph-checkpoint-redis package).

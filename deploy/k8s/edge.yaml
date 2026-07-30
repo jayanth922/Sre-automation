@@ -58,8 +58,10 @@ spec:
           env:
             - { name: HOST, value: "0.0.0.0" }
             - { name: HTTP_PORT, value: "3000" }
-            - { name: EXECUTOR_ALLOWED_NAMESPACES, value: "" }
-            - { name: EXECUTOR_MIN_REPLICAS, value: "1" }
+            - name: EXECUTOR_ALLOWED_NAMESPACES
+              valueFrom: { configMapKeyRef: { name: sentinel-config, key: EXECUTOR_ALLOWED_NAMESPACES } }
+            - name: EXECUTOR_MIN_REPLICAS
+              valueFrom: { configMapKeyRef: { name: sentinel-config, key: EXECUTOR_MIN_REPLICAS } }
           readinessProbe:
             tcpSocket: { port: 3000 }
             initialDelaySeconds: 5

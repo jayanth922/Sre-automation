@@ -21,6 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+# Anthropic (Claude) client. Kept as a separate image layer instead of in the
+# locked graph so `uv sync --frozen` stays reproducible; only needed when
+# LLM_PROVIDER=anthropic. Groq / openai_compatible work without it.
+RUN uv pip install --no-cache "langchain-anthropic>=0.2.0"
+
 # Copy application code — only platform-relevant modules
 COPY sre_agent/ ./sre_agent/
 COPY backend/   ./backend/
