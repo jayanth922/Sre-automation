@@ -18,7 +18,7 @@ async def _generate_recommendations(summary: Dict[str, Any]) -> str:
     from sre_agent.llm_utils import create_llm_with_error_handling
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    llm = create_llm_with_error_handling(os.getenv("LLM_PROVIDER", "ollama"))
+    llm = create_llm_with_error_handling(os.getenv("LLM_PROVIDER", "groq"))
 
     system = (
         "You are a senior SRE advisor. Given a cluster's 30-day incident data, "

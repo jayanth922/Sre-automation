@@ -297,14 +297,6 @@ class SREConstants:
         Returns:
             Dictionary with model configuration
         """
-        if provider == "ollama":
-            return {
-                "model_id": kwargs.get("model_id", cls.model.ollama_model),
-                "base_url": kwargs.get("base_url", cls.model.ollama_base_url),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-                "num_ctx": kwargs.get("num_ctx", cls.model.ollama_num_ctx),
-            }
-        
         if provider == "openai_compatible":
             # Bring-your-own LLM: any OpenAI-compatible endpoint (vLLM, Ollama's
             # /v1, LiteLLM proxy, LocalAI, on-prem gateways). Client configures
@@ -327,23 +319,8 @@ class SREConstants:
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
 
-        if provider == "gemini":
-            return {
-                "model_id": kwargs.get("model_id", cls.model.gemini_model),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-            }
-
-        if provider == "nvidia":
-            return {
-                "model_id": kwargs.get("model_id", cls.model.nvidia_model),
-                "api_key": kwargs.get("api_key", cls.model.nvidia_api_key),
-                "base_url": kwargs.get("base_url", cls.model.nvidia_base_url),
-                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-            }
-
         if provider != "groq":
-            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia', 'anthropic', 'openai_compatible'.")
+            raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'groq', 'openai_compatible'.")
 
         return {
             "model_id": kwargs.get("model_id", cls.model.groq_model_id),

@@ -206,12 +206,12 @@ async def initialize_agent():
         logger.info("Initializing SRE Agent system...")
 
         # Get provider from environment variable with ollama as default
-        provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+        provider = os.getenv("LLM_PROVIDER", "groq").lower()
 
-        # Validate provider
-        if provider not in ["groq", "ollama", "gemini", "nvidia"]:
-            logger.warning(f"Invalid provider '{provider}', defaulting to 'ollama'")
-            provider = "ollama"
+        # Validate provider (curated to reliable structured-output providers)
+        if provider not in ["groq", "anthropic", "openai_compatible"]:
+            logger.warning(f"Invalid provider '{provider}', defaulting to 'groq'")
+            provider = "groq"
 
         logger.info(f"Environment LLM_PROVIDER: {os.getenv('LLM_PROVIDER', 'NOT_SET')}")
         logger.info(f"Using LLM provider: {provider}")
@@ -941,7 +941,7 @@ async def _run_graph_impl(
                 f"Investigate alert: {alert_name} ({hints_text})"
             ),
             "metadata": {
-                "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
+                "llm_provider": os.getenv("LLM_PROVIDER", "groq"),
                 "tools": tools,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
@@ -1215,7 +1215,7 @@ async def webhook_alert(
             incident_id_str = f"incident-{enriched_context.alert_name}-{session_id}"
             
             from .agent_state import AgentState, AlertContext
-            llm_provider = os.getenv("LLM_PROVIDER", "ollama")
+            llm_provider = os.getenv("LLM_PROVIDER", "groq")
             
             initial_state: AgentState = {
                 "messages": [HumanMessage(content=f"Alert: {enriched_context.alert_name}")],
@@ -1307,7 +1307,7 @@ async def webhook_alert(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
+async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
     """
     Programmatic interface to invoke SRE agent.
 
@@ -1352,7 +1352,7 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
         raise
 
 
-def invoke_sre_agent(prompt: str, provider: str = "ollama") -> str:
+def invoke_sre_agent(prompt: str, provider: str = "groq") -> str:
     """
     Synchronous wrapper for invoke_sre_agent_async.
 
@@ -1374,7 +1374,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SRE Agent Runtime")
     parser.add_argument(
         "--provider",
-        default=os.getenv("LLM_PROVIDER", "ollama"),
+        default=os.getenv("LLM_PROVIDER", "groq"),
         help="LLM provider to use (default: ollama)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")

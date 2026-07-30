@@ -159,7 +159,7 @@ def create_mcp_client() -> MultiServerMCPClient:
 
 
 async def create_multi_agent_system(
-    provider: str = "ollama",
+    provider: str = "groq",
     checkpointer=None,
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
@@ -168,8 +168,8 @@ async def create_multi_agent_system(
     """Create multi-agent system with MCP tools."""
     logger.info(f"Creating multi-agent system with provider: {provider}")
 
-    if provider not in ["groq", "ollama", "gemini", "nvidia"]:
-        raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'.")
+    if provider not in ["groq", "anthropic", "openai_compatible"]:
+        raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'groq', 'openai_compatible'.")
 
     # Create MCP client and get tools with retry logic
     mcp_tools = []

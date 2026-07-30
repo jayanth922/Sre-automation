@@ -50,23 +50,16 @@ secrets:
   langfusePublicKey: ""
   langfuseSecretKey: ""
 
-# ── Model provider (bring your own) ───────────────────────────────────────────
+# ── Model provider ────────────────────────────────────────────────────────────
+# Curated to reliable structured-output providers: anthropic | groq | openai_compatible.
 llm:
-  # groq | gemini | nvidia | ollama | openai_compatible
-  provider: "openai_compatible"
-  # For openai_compatible: point at your on-site endpoint (vLLM, Ollama /v1,
-  # LiteLLM proxy, LocalAI, on-prem gateway). Key (if any) goes in secrets.llmApiKey.
-  baseUrl: "http://vllm.your-infra:8000/v1"
-  model: "your-model-name"
-  # provider-specific extras
-  anthropicModel: "claude-3-5-sonnet-latest"
+  provider: "groq"
   groqModel: "llama-3.3-70b-versatile"
-  geminiModel: "gemini-2.0-flash"
-  nvidiaBaseUrl: "https://integrate.api.nvidia.com/v1"
-  nvidiaModel: "meta/llama-3.3-70b-instruct"
-  ollamaBaseUrl: "http://ollama:11434"
-  ollamaModel: "qwen2.5:3b"
-  ollamaNumCtx: "8192"
+  anthropicModel: "claude-3-5-sonnet-latest"
+  # openai_compatible = run your OWN model on the machine (local Ollama /v1, vLLM,
+  # LiteLLM, LocalAI). Key (if any) in secrets.llmApiKey. Use a tool-capable model.
+  baseUrl: "http://host.docker.internal:11434/v1"
+  model: "qwen2.5:7b-instruct"
 
 # ── MCP tool servers ──────────────────────────────────────────────────────────
 mcp:

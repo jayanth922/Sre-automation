@@ -61,7 +61,7 @@ async def run_graph_background_saas(
         await initialize_agent()
         
         from langchain_core.messages import HumanMessage
-        llm_provider = os.getenv("LLM_PROVIDER", "ollama")
+        llm_provider = os.getenv("LLM_PROVIDER", "groq")
         
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],

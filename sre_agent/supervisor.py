@@ -311,7 +311,7 @@ class SupervisorAgent:
 
     def __init__(
         self,
-        llm_provider: str = "ollama",
+        llm_provider: str = "groq",
         **llm_kwargs,
     ):
         self.llm_provider = llm_provider

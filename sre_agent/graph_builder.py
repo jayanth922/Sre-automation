@@ -241,7 +241,7 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
 
     # Get llm_provider from existing metadata or use default
     existing_metadata = state.get("metadata", {})
-    llm_provider = existing_metadata.get("llm_provider", "ollama")
+    llm_provider = existing_metadata.get("llm_provider", "groq")
 
     return {
         "current_query": current_query,
@@ -471,7 +471,7 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     # Create LLM for reflection via the model router (REFLECTION → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
-    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "ollama")
+    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "groq")
     from .model_router import TaskType, route_llm
     llm = route_llm(TaskType.REFLECTION, provider=llm_provider, use_fallback=False)
 
@@ -718,7 +718,7 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     # Create LLM for planning via the model router (PLANNING → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
-    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "ollama")
+    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "groq")
     from .model_router import TaskType, route_llm
     llm = route_llm(TaskType.PLANNING, provider=llm_provider, use_fallback=False)
 
@@ -844,7 +844,7 @@ def _observed(node_name: str, fn):
 
 def build_multi_agent_graph(
     tools: List[BaseTool],
-    llm_provider: str = "ollama",
+    llm_provider: str = "groq",
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
     checkpointer: Any = None,

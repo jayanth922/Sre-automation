@@ -10,12 +10,6 @@ data:
   LLM_MODEL: {{ .Values.llm.model | quote }}
   ANTHROPIC_MODEL: {{ .Values.llm.anthropicModel | quote }}
   GROQ_MODEL: {{ .Values.llm.groqModel | quote }}
-  GEMINI_MODEL: {{ .Values.llm.geminiModel | quote }}
-  NVIDIA_BASE_URL: {{ .Values.llm.nvidiaBaseUrl | quote }}
-  NVIDIA_MODEL: {{ .Values.llm.nvidiaModel | quote }}
-  OLLAMA_BASE_URL: {{ .Values.llm.ollamaBaseUrl | quote }}
-  OLLAMA_MODEL: {{ .Values.llm.ollamaModel | quote }}
-  OLLAMA_NUM_CTX: {{ .Values.llm.ollamaNumCtx | quote }}
 
   # Datastores
   POSTGRES_USER: {{ .Values.postgres.user | quote }}
