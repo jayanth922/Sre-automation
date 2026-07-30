@@ -33,11 +33,14 @@ async def seed_default_user():
         seed_cluster_token = os.getenv("SEED_CLUSTER_TOKEN")
         seed_cluster_name = os.getenv("SEED_CLUSTER_NAME", "SRE Demo Cluster")
         seed_cluster_status = os.getenv("SEED_CLUSTER_STATUS", "offline")
-        
+        seed_cluster_prometheus = os.getenv("SEED_CLUSTER_PROMETHEUS_URL")
+        seed_cluster_loki = os.getenv("SEED_CLUSTER_LOKI_URL")
+        seed_cluster_github = os.getenv("SEED_CLUSTER_GITHUB_REPO")
+
         if seed_cluster_token:
             clusters = await get_clusters_for_org(db, user.org_id)
             existing_cluster = next((c for c in clusters if c.token == seed_cluster_token), None)
-            
+
             if not existing_cluster:
                 print(f"Seeding cluster: {seed_cluster_name}")
                 from backend.models import Cluster
@@ -47,6 +50,9 @@ async def seed_default_user():
                     org_id=user.org_id,
                     token=seed_cluster_token,
                     status=seed_cluster_status,
+                    prometheus_url=seed_cluster_prometheus,
+                    loki_url=seed_cluster_loki,
+                    github_repo=seed_cluster_github,
                     last_heartbeat=datetime.now(timezone.utc) if seed_cluster_status == "online" else None
                 )
                 db.add(db_cluster)

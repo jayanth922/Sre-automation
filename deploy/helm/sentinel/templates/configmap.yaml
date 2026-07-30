@@ -52,6 +52,13 @@ data:
   DEBUG: {{ .Values.features.debug | quote }}
   LANGCHAIN_TRACING_V2: "false"
 
-  # Seed admin
+  # Seed admin + cluster
   SEED_ADMIN_EMAIL: {{ .Values.seed.adminEmail | quote }}
   SEED_ADMIN_ORG: {{ .Values.seed.adminOrg | quote }}
+  {{- if .Values.seed.clusterToken }}
+  SEED_CLUSTER_NAME: {{ .Values.seed.clusterName | quote }}
+  SEED_CLUSTER_STATUS: {{ .Values.seed.clusterStatus | quote }}
+  SEED_CLUSTER_TOKEN: {{ .Values.seed.clusterToken | quote }}
+  SEED_CLUSTER_PROMETHEUS_URL: {{ .Values.seed.clusterPrometheusUrl | quote }}
+  SEED_CLUSTER_LOKI_URL: {{ .Values.seed.clusterLokiUrl | quote }}
+  {{- end }}

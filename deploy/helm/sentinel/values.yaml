@@ -119,10 +119,17 @@ features:
   liveBusBackend: "memory"
   debug: "false"
 
-# ── Seed admin (first login) ──────────────────────────────────────────────────
+# ── Seed admin + cluster (first login) ────────────────────────────────────────
 seed:
-  adminEmail: "admin@example.com"
-  adminOrg: "Sentinel"
+  adminEmail: "jayanth.kalyanam@sjsu.edu"
+  adminOrg: "sjsu"
+  # Seed a cluster on first boot. Token also authenticates the target's
+  # Alertmanager webhook. Leave clusterToken empty to skip seeding a cluster.
+  clusterName: "jayanth"
+  clusterStatus: "online"
+  clusterToken: "cl_jayanth_demo_change_me"
+  clusterPrometheusUrl: "http://prometheus.demo-app.svc.cluster.local:9090"
+  clusterLokiUrl: "http://loki.demo-app.svc.cluster.local:3100"
 
 # ── API (control plane + agent runtime) ───────────────────────────────────────
 api:
