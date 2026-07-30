@@ -3,6 +3,7 @@
 Reads the same runbook documents the runbooks MCP server indexes, so the
 console shows the real source-of-truth catalog (id, title, service, type).
 """
+import logging
 import os
 import re
 import uuid
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import crud, database, models
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/clusters", tags=["runbooks"])
 
 _CANDIDATE_DIRS = [
@@ -51,10 +53,19 @@ async def list_runbooks(
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db),
 ) -> List[Dict[str, Any]]:
-    """List runbook documents from the local corpus."""
+    """List runbook documents from the cluster's Notion database, or the local corpus."""
     cluster = await crud.get_cluster_by_id(db, cluster_id)
     if not cluster or cluster.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Client runbooks on Notion take precedence when configured.
+    if cluster.notion_api_key and cluster.notion_database_id:
+        try:
+            from sre_agent.notion_runbooks import list_notion_runbooks
+
+            return await list_notion_runbooks(cluster.notion_api_key, cluster.notion_database_id)
+        except Exception as e:
+            logger.warning(f"Notion runbooks fetch failed, falling back to local: {e}")
 
     root = _runbooks_dir()
     if not root:
@@ -92,6 +103,16 @@ async def get_runbook(
     cluster = await crud.get_cluster_by_id(db, cluster_id)
     if not cluster or cluster.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Notion-backed runbook (runbook_id is the Notion page id).
+    if cluster.notion_api_key and cluster.notion_database_id:
+        try:
+            from sre_agent.notion_runbooks import get_notion_runbook
+
+            return await get_notion_runbook(cluster.notion_api_key, runbook_id)
+        except Exception as e:
+            logger.warning(f"Notion runbook fetch failed: {e}")
+            raise HTTPException(status_code=404, detail="Runbook not found in Notion")
 
     root = _runbooks_dir()
     if not root:

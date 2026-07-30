@@ -99,6 +99,8 @@ class ClusterUpdate(BaseModel):
     k8s_api_server: Optional[str] = None
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
+    notion_api_key: Optional[str] = None
+    notion_database_id: Optional[str] = None
     metrics_config: Optional[Dict[str, str]] = None
 
 class ClusterResponse(BaseModel):
@@ -111,6 +113,7 @@ class ClusterResponse(BaseModel):
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
+    notion_database_id: Optional[str] = None
     metrics_config: Optional[str] = None
 
     class Config:

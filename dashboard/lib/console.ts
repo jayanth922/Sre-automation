@@ -11,6 +11,7 @@ export interface Cluster {
   loki_url: string | null
   k8s_api_server: string | null
   github_repo: string | null
+  notion_database_id: string | null
 }
 
 export type Severity = "critical" | "high" | "medium" | "low"

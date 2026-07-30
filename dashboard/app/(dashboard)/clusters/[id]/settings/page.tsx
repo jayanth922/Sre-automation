@@ -25,7 +25,7 @@ export default function SettingsPage() {
   const { user } = useAuth()
   const isAdmin = (user?.role ?? "member") === "admin"
 
-  const [endpoints, setEndpoints] = useState({ name: "", prometheus_url: "", loki_url: "", github_repo: "" })
+  const [endpoints, setEndpoints] = useState({ name: "", prometheus_url: "", loki_url: "", github_repo: "", notion_database_id: "", notion_api_key: "" })
   const [metrics, setMetrics] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -38,6 +38,8 @@ export default function SettingsPage() {
       prometheus_url: cluster.prometheus_url ?? "",
       loki_url: cluster.loki_url ?? "",
       github_repo: cluster.github_repo ?? "",
+      notion_database_id: cluster.notion_database_id ?? "",
+      notion_api_key: "",
     })
     try {
       setMetrics(cluster.metrics_config ? (JSON.parse(cluster.metrics_config) as Record<string, string>) : {})
@@ -61,6 +63,8 @@ export default function SettingsPage() {
         prometheus_url: endpoints.prometheus_url || undefined,
         loki_url: endpoints.loki_url || undefined,
         github_repo: endpoints.github_repo || undefined,
+        notion_database_id: endpoints.notion_database_id || undefined,
+        notion_api_key: endpoints.notion_api_key || undefined,
         metrics_config: cleanMetrics,
       })
       setSaved(true)
@@ -93,6 +97,21 @@ export default function SettingsPage() {
           <div>
             <label className="sx-label">GitHub repo</label>
             <input className="sx-input" placeholder="org/repo" value={endpoints.github_repo} onChange={(e) => setEndpoints({ ...endpoints, github_repo: e.target.value })} />
+          </div>
+        </div>
+
+        <SectionTitle title="Runbooks" meta="Notion (optional — falls back to the local corpus)" />
+        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+          Point Sentinel at your team&apos;s runbook database in Notion. Share the database with a Notion integration and paste its token + the database ID.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+          <div>
+            <label className="sx-label">Notion database ID</label>
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="32-char database id" value={endpoints.notion_database_id} onChange={(e) => setEndpoints({ ...endpoints, notion_database_id: e.target.value })} />
+          </div>
+          <div>
+            <label className="sx-label">Notion integration token</label>
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.notion_database_id ? "•••••• (set — leave blank to keep)" : "secret_..."} value={endpoints.notion_api_key} onChange={(e) => setEndpoints({ ...endpoints, notion_api_key: e.target.value })} />
           </div>
         </div>
 

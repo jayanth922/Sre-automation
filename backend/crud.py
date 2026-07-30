@@ -95,7 +95,7 @@ async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.U
     if not cluster or cluster.org_id != org_id:
         return None
     data = update.model_dump(exclude_unset=True)
-    for field in ("name", "prometheus_url", "loki_url", "k8s_api_server", "github_token", "github_repo"):
+    for field in ("name", "prometheus_url", "loki_url", "k8s_api_server", "github_token", "github_repo", "notion_api_key", "notion_database_id"):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
     if "metrics_config" in data:
