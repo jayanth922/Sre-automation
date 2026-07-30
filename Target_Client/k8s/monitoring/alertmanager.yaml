@@ -30,7 +30,7 @@ data:
     receivers:
       - name: sre-platform-webhook
         webhook_configs:
-          - url: "http://host.docker.internal:8080/api/v1/alerts/webhook"
+          - url: "http://sentinel-api.sentinel.svc.cluster.local:8080/api/v1/alerts/webhook"
             http_config:
               authorization:
                 type: Bearer
@@ -60,7 +60,7 @@ spec:
             - containerPort: 9093
           env:
             - name: CLUSTER_TOKEN
-              value: "cl_58f71c23a54e4b5ab1d10c8defccfc6d"
+              value: "cl_jayanth_demo_change_me"
           volumeMounts:
             - name: config
               mountPath: /etc/alertmanager
