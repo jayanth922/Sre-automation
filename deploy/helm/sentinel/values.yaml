@@ -112,7 +112,7 @@ features:
   executorLive: "false"
   # Namespaces the executor may act on (comma-separated) — the client's blast
   # radius. Empty means the executor refuses every action.
-  executorAllowedNamespaces: "demo-app"
+  executorAllowedNamespaces: "meridian"
   executorMinReplicas: "1"
   # Durability on by default (enables human-approval resume + interrupted-run
   # continuation). "memory" = in-process; "redis" = cross-crash (needs the

@@ -66,5 +66,5 @@ This is why the edge layer matters. Without it, the agent would be forced to rea
 ## Related Docs
 
 - [mcp_servers/README.md](mcp_servers/README.md)
-- [../Target_Client/README.md](../Target_Client/README.md)
+- Reference client environment: `../meridian-shop` (separate repo)
 - [../README.md](../README.md)

@@ -12,7 +12,8 @@ across `RUNS_PER_SCENARIO` repeats (pass^k consistency), then prints a
 leaderboard-style report.
 
 Prerequisites (runs against the LIVE platform, not in CI):
-- Platform + edge + Target_Client up (`./main_start.sh`).
+- Platform + edge up (`./main_start.sh`) and a client environment connected
+  (e.g. the reference client `../meridian-shop`).
 - For the remediation/severity/safety columns, enable the ACT phase:
   `ACT_PHASE_ENABLED=true` (and optionally `EXECUTOR_LIVE=true`).
 
