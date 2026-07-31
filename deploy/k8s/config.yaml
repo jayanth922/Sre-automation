@@ -36,7 +36,8 @@ data:
   # Bring your own tools: add client-run MCP servers as a JSON object, merged
   # with the defaults below. Example:
   #   MCP_SERVERS_JSON: '{"my-tool":{"url":"http://my-tool.ns:9000/sse","transport":"sse"}}'
-  MCP_SERVERS_JSON: ""
+  # Registered: the Meridian client's app-aware signals server (runs in its ns).
+  MCP_SERVERS_JSON: '{"meridian-signals":{"url":"http://meridian-signals.meridian.svc.cluster.local:3000/sse","transport":"sse"}}'
   MCP_K8S_URI: "http://mcp-k8s:3000/sse"
   MCP_METRICS_URI: "http://mcp-prometheus:3000/sse"
   MCP_LOGS_URI: "http://mcp-loki:3000/sse"
