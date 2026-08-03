@@ -149,14 +149,43 @@ def build_act_report(
 
     aggregate, per_action = decide_plan(actions, assessment, env, risk_score, evaluate_fn)
 
+    # Per-cluster blast radius: when this cluster is namespace-scoped, remediation
+    # may only touch its own namespace. Missing namespaces default to it; anything
+    # targeting a different namespace is hard-blocked before any (even dry-run)
+    # execution — the enforcement point that actually knows the cluster's scope.
+    cluster_ns = str(_get(_get(state, "metadata", {}) or {}, "cluster_namespace") or "").strip()
+
     executor = Executor(actor=actor, incident_id=incident_id)
     action_reports: List[Dict[str, Any]] = []
     executed: List[Dict[str, Any]] = []
+    blocked_out_of_scope = 0
 
     for action, gd in zip(actions, per_action):
+        params = getattr(action, "parameters", None)
+        action_ns = str((params or {}).get("namespace", "") or "").strip()
+
+        if cluster_ns:
+            if not action_ns:
+                # Default an unscoped action to the cluster's namespace.
+                if isinstance(params, dict):
+                    params["namespace"] = cluster_ns
+                action_ns = cluster_ns
+            elif action_ns != cluster_ns:
+                blocked_out_of_scope += 1
+                action_reports.append({
+                    "action_type": str(_get(action, "action_type", "")),
+                    "target": str(_get(action, "target", "")),
+                    "namespace": action_ns,
+                    "decision": AutonomyDecision.BLOCKED.value,
+                    "reversibility": gd.reversibility.value,
+                    "reason": f"blocked: targets namespace '{action_ns}', outside this cluster's scope '{cluster_ns}'",
+                })
+                continue
+
         rep: Dict[str, Any] = {
             "action_type": str(_get(action, "action_type", "")),
             "target": str(_get(action, "target", "")),
+            "namespace": action_ns or (cluster_ns or "default"),
             "decision": gd.decision.value,
             "reversibility": gd.reversibility.value,
             "reason": gd.reason,
@@ -169,10 +198,11 @@ def build_act_report(
             executed.append(rep)
         action_reports.append(rep)
 
+    scope_note = f", {blocked_out_of_scope} blocked out-of-namespace" if blocked_out_of_scope else ""
     summary = (
         f"{assessment.severity.name}: plan {aggregate.value}; "
         f"{len(executed)}/{len(actions)} action(s) dry-run-executed, "
-        f"{len(actions) - len(executed)} held for approval/blocked."
+        f"{len(actions) - len(executed)} held for approval/blocked{scope_note}."
     )
     logger.info(f"⚙️  ACT: {summary}")
 
