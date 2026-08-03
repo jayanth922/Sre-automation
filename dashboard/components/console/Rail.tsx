@@ -8,6 +8,7 @@ import { clusterStatusTone, type Cluster } from "@/lib/console"
 interface RailProps {
   cluster: Cluster
   openIncidents: number
+  awaitingApproval?: number
 }
 
 const MONITOR = [
@@ -25,7 +26,7 @@ const RECORDS = [
   { n: "10", label: "Settings", seg: "settings" },
 ]
 
-export function Rail({ cluster, openIncidents }: RailProps) {
+export function Rail({ cluster, openIncidents, awaitingApproval = 0 }: RailProps) {
   const pathname = usePathname()
   const { user, logout } = useAuth()
   const base = `/clusters/${cluster.id}`
@@ -45,6 +46,9 @@ export function Rail({ cluster, openIncidents }: RailProps) {
     >
       <span className="n">{it.n}</span>
       {it.label}
+      {it.seg === "incidents" && awaitingApproval > 0 && (
+        <span className="ct approve" title={`${awaitingApproval} awaiting your approval`}>{awaitingApproval} ⏸</span>
+      )}
       {it.seg === "incidents" && openIncidents > 0 && <span className="ct">{openIncidents}</span>}
     </Link>
   )

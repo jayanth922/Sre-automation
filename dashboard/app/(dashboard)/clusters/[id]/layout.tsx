@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Rail } from "@/components/console/Rail"
 import { ClusterContext } from "@/components/console/ClusterContext"
+import { IncidentToasts } from "@/components/console/IncidentToasts"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { api } from "@/lib/auth-context"
 import type { Cluster, Incident } from "@/lib/console"
@@ -16,6 +17,7 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
   const { events } = useLiveStream(undefined, { channel: "incidents" })
   const [cluster, setCluster] = useState<Cluster | null>(null)
   const [openIncidents, setOpenIncidents] = useState(0)
+  const [awaitingApproval, setAwaitingApproval] = useState(0)
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading")
   const lastLen = useRef(0)
 
@@ -51,21 +53,37 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
     }
   }, [id])
 
+  const refreshApproval = useCallback(async () => {
+    try {
+      const { data } = await api.get<{ count: number }>(`/clusters/${id}/incidents/awaiting-approval`)
+      setAwaitingApproval(data.count ?? 0)
+    } catch {
+      /* ignore */
+    }
+  }, [id])
+
   useEffect(() => {
     if (state !== "ready") return
     refreshCount()
+    refreshApproval()
     const t = setInterval(refreshCount, 15000)
-    return () => clearInterval(t)
-  }, [state, refreshCount])
+    // Approval state has no push event, so poll it a bit more eagerly.
+    const t2 = setInterval(refreshApproval, 10000)
+    return () => {
+      clearInterval(t)
+      clearInterval(t2)
+    }
+  }, [state, refreshCount, refreshApproval])
 
-  // Update the badge immediately on any incident lifecycle event.
+  // Update badges immediately on any incident lifecycle event.
   useEffect(() => {
     if (state !== "ready") return
     if (events.length && events.length !== lastLen.current) {
       lastLen.current = events.length
       refreshCount()
+      refreshApproval()
     }
-  }, [events.length, state, refreshCount])
+  }, [events.length, state, refreshCount, refreshApproval])
 
   if (state === "loading") {
     return (
@@ -86,8 +104,9 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
   return (
     <ClusterContext.Provider value={cluster}>
       <div className="sx-app">
-        <Rail cluster={cluster} openIncidents={openIncidents} />
+        <Rail cluster={cluster} openIncidents={openIncidents} awaitingApproval={awaitingApproval} />
         <main className="sx-main sx-scroll">{children}</main>
+        <IncidentToasts />
       </div>
     </ClusterContext.Provider>
   )
