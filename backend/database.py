@@ -1,4 +1,5 @@
 import os
+import re
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -12,7 +13,21 @@ POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "sre_platform")
 
-DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+def _clean_port(value: str) -> str:
+    """Kubernetes injects POSTGRES_PORT as 'tcp://<ip>:5432' whenever a Service is
+    named 'postgres', which poisons a plain-port assumption. Recover the numeric
+    port from either form."""
+    m = re.search(r"(\d+)\s*$", value or "")
+    return m.group(1) if m else "5432"
+
+
+# Prefer an explicit DATABASE_URL (the deployment sets a correct one); only build
+# it from parts as a fallback, tolerating the k8s tcp:// port form.
+DATABASE_URL = os.getenv("DATABASE_URL") or (
+    f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+    f"@{POSTGRES_HOST}:{_clean_port(POSTGRES_PORT)}/{POSTGRES_DB}"
+)
 
 # Create Async Engine
 engine = create_async_engine(
