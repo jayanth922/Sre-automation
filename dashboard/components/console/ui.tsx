@@ -1,7 +1,24 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { sparkPoints } from "@/lib/console"
+
+/**
+ * Live "updated Ns ago" label that ticks every second, so the header always
+ * shows how fresh the data is. Pass the ms timestamp of the last successful load.
+ */
+export function useFreshness(updatedAtMs: number): string {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const secs = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000))
+  if (secs < 2) return "updated just now"
+  if (secs < 60) return `updated ${secs}s ago`
+  const m = Math.floor(secs / 60)
+  return `updated ${m}m ago`
+}
 
 const TONE: Record<string, string> = {
   ok: "#3f6b46",

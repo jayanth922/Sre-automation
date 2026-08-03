@@ -133,6 +133,15 @@ async def ws_insights(websocket: WebSocket):
     await _stream(websocket, INSIGHTS_CHANNEL)
 
 
+@app.websocket("/ws/incidents")
+async def ws_incidents(websocket: WebSocket):
+    """Live stream of incident lifecycle events (opened / status change / resolved)
+    for the cluster. Lets the incidents list and overview update the instant an
+    incident opens, instead of waiting for the next poll."""
+    from .war_room import INCIDENTS_CHANNEL
+    await _stream(websocket, INCIDENTS_CHANNEL)
+
+
 @app.get("/agent/metrics")
 async def agent_metrics():
     """Agent self-observability: per-node run counts, avg latency, errors, and

@@ -1,27 +1,32 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { Spinner, Empty } from "@/components/console/ui"
+import { Spinner, Empty, useFreshness } from "@/components/console/ui"
 import { type Incident, sev, statusBadge, timeAgo, elapsed } from "@/lib/console"
 
 type Tab = "open" | "all" | "resolved"
 
 export default function IncidentsPage() {
   const { id } = useParams<{ id: string }>()
-  const { connected } = useLiveStream()
+  // Live incident lifecycle feed — opens/resolves push here so the list reflects
+  // them within ~1s instead of waiting for the fallback poll.
+  const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [loading, setLoading] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const [tab, setTab] = useState<Tab>("open")
+  const lastLen = useRef(0)
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<Incident[]>(`/clusters/${id}/incidents`)
       setIncidents(data)
+      setUpdatedAt(Date.now())
     } finally {
       setLoading(false)
     }
@@ -29,16 +34,26 @@ export default function IncidentsPage() {
 
   useEffect(() => {
     load()
-    const t = setInterval(load, 15000)
+    // Live push covers real-time; the interval is just a slow safety net.
+    const t = setInterval(load, 30000)
     return () => clearInterval(t)
   }, [load])
+
+  // Refetch the instant an incident opens or resolves.
+  useEffect(() => {
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      load()
+    }
+  }, [events.length, load])
 
   const open = incidents.filter((i) => i.status !== "resolved")
   const resolved = incidents.filter((i) => i.status === "resolved")
   const shown = tab === "open" ? open : tab === "resolved" ? resolved : incidents
+  const freshness = useFreshness(updatedAt)
 
   return (
-    <ConsolePage title="Incidents" live={connected}>
+    <ConsolePage title="Incidents" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
       ) : (

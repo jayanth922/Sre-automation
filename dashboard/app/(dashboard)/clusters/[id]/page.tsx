@@ -1,12 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
 import {
   type Incident,
   type SLO,
@@ -31,7 +31,7 @@ interface BudgetRow {
 
 export default function OverviewPage() {
   const { id } = useParams<{ id: string }>()
-  const { connected } = useLiveStream()
+  const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
   const [metricsErr, setMetricsErr] = useState(false)
   const [incidents, setIncidents] = useState<Incident[]>([])
@@ -40,7 +40,8 @@ export default function OverviewPage() {
   const [audit, setAudit] = useState<AuditEvent[]>([])
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [loading, setLoading] = useState(true)
-  const [updated, setUpdated] = useState<string>("")
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  const lastLen = useRef(0)
 
   const load = useCallback(async () => {
     const [m, inc, svc, slos, aud, ana] = await Promise.allSettled([
@@ -76,7 +77,7 @@ export default function OverviewPage() {
       )
       setBudgets(rows)
     }
-    setUpdated(`updated ${new Date().toLocaleTimeString()}`)
+    setUpdatedAt(Date.now())
     setLoading(false)
   }, [id])
 
@@ -86,7 +87,17 @@ export default function OverviewPage() {
     return () => clearInterval(t)
   }, [load])
 
+  // Refetch the moment an incident opens or resolves, so the open-incident count
+  // and the affected service surface without waiting for the interval.
+  useEffect(() => {
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      load()
+    }
+  }, [events.length, load])
+
   const openIncidents = incidents.filter((i) => i.status !== "resolved")
+  const freshness = useFreshness(updatedAt)
 
   const signal = (k: string, value: string, unit: string | null, detail: string, tone?: "alert" | "warn") => (
     <div className={`sx-sig${tone ? ` ${tone}` : ""}`}>
@@ -100,7 +111,7 @@ export default function OverviewPage() {
   )
 
   return (
-    <ConsolePage title="Fleet overview" live={connected} updated={updated}>
+    <ConsolePage title="Fleet overview" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
       ) : (

@@ -23,12 +23,18 @@ function wsUrl(path: string): string {
     return `${proto}//${window.location.host}/agent${path}`
 }
 
+export type LiveChannel = "insights" | "incidents"
+
 /**
  * Subscribe to a live stream. Pass an incident id for that incident's conversation,
- * or omit it for the global insights stream. Returns the rolling list of events
- * (newest last) and the live connection state. Auto-reconnects with backoff.
+ * a channel ("incidents" for the cluster-wide incident lifecycle feed, "insights"
+ * for global health insights), or nothing (defaults to insights). Returns the
+ * rolling list of events (newest last) and the live connection state.
+ * Auto-reconnects with backoff.
  */
-export function useLiveStream(incidentId?: string, maxEvents = 200) {
+export function useLiveStream(incidentId?: string, opts?: { channel?: LiveChannel; maxEvents?: number }) {
+    const channel: LiveChannel = opts?.channel ?? "insights"
+    const maxEvents = opts?.maxEvents ?? 200
     const [events, setEvents] = useState<LiveEvent[]>([])
     const [connected, setConnected] = useState(false)
     const wsRef = useRef<WebSocket | null>(null)
@@ -40,7 +46,11 @@ export function useLiveStream(incidentId?: string, maxEvents = 200) {
 
         const connect = () => {
             if (closed) return
-            const path = incidentId ? `/ws/incidents/${incidentId}` : "/ws/insights"
+            const path = incidentId
+                ? `/ws/incidents/${incidentId}`
+                : channel === "incidents"
+                    ? "/ws/incidents"
+                    : "/ws/insights"
             const ws = new WebSocket(wsUrl(path))
             wsRef.current = ws
 
@@ -71,7 +81,7 @@ export function useLiveStream(incidentId?: string, maxEvents = 200) {
             clearTimeout(timer)
             wsRef.current?.close()
         }
-    }, [incidentId, maxEvents])
+    }, [incidentId, channel, maxEvents])
 
     return { events, connected }
 }

@@ -225,7 +225,22 @@ async def run_graph_background_saas(
                     )
                 )
             await db.commit()
-            
+
+        # Push a lifecycle event so the incidents list / overview reflect the
+        # resolution live, without waiting for their next poll.
+        try:
+            from .live_events import LiveEvent, get_event_bus
+            from .war_room import INCIDENTS_CHANNEL
+
+            await get_event_bus().publish(INCIDENTS_CHANNEL, LiveEvent(
+                "resolved",
+                {"incident_id": str(incident_id), "alert_name": alert_name,
+                 "summary": final_response},
+                str(incident_id),
+            ).to_dict())
+        except Exception as _bus_err:
+            logger.debug(f"incident-resolved publish skipped: {_bus_err}")
+
     except Exception as e:
         logger.error(f"SaaS Background execution failed: {e}")
         async with database.AsyncSessionLocal() as db:

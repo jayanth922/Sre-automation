@@ -1,26 +1,29 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { Spinner, Empty, ErrorNote } from "@/components/console/ui"
+import { Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import { type ServiceHealth, round, errCls } from "@/lib/console"
 
 export default function ServicesPage() {
   const { id } = useParams<{ id: string }>()
-  const { connected } = useLiveStream()
+  const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [services, setServices] = useState<ServiceHealth[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  const lastLen = useRef(0)
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<ServiceHealth[]>(`/clusters/${id}/services`)
       setServices(data)
       setErr(false)
+      setUpdatedAt(Date.now())
     } catch {
       setErr(true)
     } finally {
@@ -34,8 +37,19 @@ export default function ServicesPage() {
     return () => clearInterval(t)
   }, [load])
 
+  // An incident opening/resolving usually means a service just changed health —
+  // refresh right away so the red service shows without waiting for the interval.
+  useEffect(() => {
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      load()
+    }
+  }, [events.length, load])
+
+  const freshness = useFreshness(updatedAt)
+
   return (
-    <ConsolePage title="Services" live={connected}>
+    <ConsolePage title="Services" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
       ) : err ? (
