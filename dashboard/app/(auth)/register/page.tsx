@@ -1,130 +1,97 @@
 "use client"
 
-import { useState } from "react"
+import { useState, type CSSProperties } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Label } from "@/components/ui/label"
-import { AlertCircle } from "lucide-react"
+
+const shell: CSSProperties = {
+  minHeight: "100vh",
+  background: "var(--paper)",
+  color: "var(--ink)",
+  fontFamily: "var(--font-sans), 'Hanken Grotesk', sans-serif",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "48px 24px",
+}
 
 export default function RegisterPage() {
-    const router = useRouter()
-    const [formData, setFormData] = useState({
-        email: "",
-        password: "",
-        fullName: "",
-        organizationName: "",
-    })
-    const [error, setError] = useState("")
-    const [loading, setLoading] = useState(false)
+  const router = useRouter()
+  const [form, setForm] = useState({ email: "", password: "", fullName: "", organizationName: "" })
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setFormData({ ...formData, [e.target.id]: e.target.value })
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    setError("")
+    try {
+      const res = await fetch("/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: form.email,
+          password: form.password,
+          full_name: form.fullName,
+          org_name: form.organizationName,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || "Registration failed.")
+      }
+      router.push("/login")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed.")
+    } finally {
+      setLoading(false)
     }
+  }
 
-    const handleRegister = async (e: React.FormEvent) => {
-        e.preventDefault()
-        setLoading(true)
-        setError("")
-
-        try {
-            const res = await fetch("/auth/register", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    email: formData.email,
-                    password: formData.password,
-                    full_name: formData.fullName,
-                    org_name: formData.organizationName,
-                }),
-            })
-
-            if (!res.ok) {
-                const data = await res.json()
-                throw new Error(data.detail || "Registration failed")
-            }
-
-            // Redirect to login on success
-            router.push("/login?registered=true")
-        } catch (err: any) {
-            setError(err.message || "Registration failed")
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    return (
-        <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900">
-            <Card className="w-[400px]">
-                <CardHeader>
-                    <CardTitle>Create an Account</CardTitle>
-                    <CardDescription>Get started with your SRE Platform</CardDescription>
-                </CardHeader>
-                <form onSubmit={handleRegister}>
-                    <CardContent>
-                        <div className="grid w-full items-center gap-4">
-                            {error && (
-                                <div className="flex items-center gap-2 text-sm text-red-500 bg-red-50 p-2 rounded">
-                                    <AlertCircle size={16} /> {error}
-                                </div>
-                            )}
-                            <div className="flex flex-col space-y-1.5">
-                                <Label htmlFor="organizationName">Organization Name</Label>
-                                <Input
-                                    id="organizationName"
-                                    placeholder="Acme Corp"
-                                    value={formData.organizationName}
-                                    onChange={handleChange}
-                                    required
-                                />
-                            </div>
-                            <div className="flex flex-col space-y-1.5">
-                                <Label htmlFor="fullName">Full Name</Label>
-                                <Input
-                                    id="fullName"
-                                    placeholder="John Doe"
-                                    value={formData.fullName}
-                                    onChange={handleChange}
-                                />
-                            </div>
-                            <div className="flex flex-col space-y-1.5">
-                                <Label htmlFor="email">Email</Label>
-                                <Input
-                                    id="email"
-                                    type="email"
-                                    placeholder="admin@example.com"
-                                    value={formData.email}
-                                    onChange={handleChange}
-                                    required
-                                />
-                            </div>
-                            <div className="flex flex-col space-y-1.5">
-                                <Label htmlFor="password">Password</Label>
-                                <Input
-                                    id="password"
-                                    type="password"
-                                    value={formData.password}
-                                    onChange={handleChange}
-                                    required
-                                    minLength={8}
-                                />
-                            </div>
-                        </div>
-                    </CardContent>
-                    <CardFooter className="flex flex-col gap-4">
-                        <Button className="w-full" type="submit" disabled={loading}>
-                            {loading ? "Creating Account..." : "Register"}
-                        </Button>
-                        <div className="text-sm text-center text-gray-500">
-                            Already have an account? <Link href="/login" className="text-primary hover:underline">Login</Link>
-                        </div>
-                    </CardFooter>
-                </form>
-            </Card>
+  return (
+    <div style={shell}>
+      <div style={{ width: "100%", maxWidth: 420 }}>
+        <div className="sx-wordmark" style={{ fontSize: 22, marginBottom: 4 }}>
+          <span className="tick" /> Sentinel
         </div>
-    )
+        <h1 style={{ fontSize: 24, fontWeight: 600, margin: "18px 0 6px" }}>Create your account</h1>
+        <p style={{ color: "var(--ink2)", fontSize: 13.5, marginTop: 0, marginBottom: 24, lineHeight: 1.6 }}>
+          The first person to register an organization becomes its admin. Others join by registering with the same organization name.
+        </p>
+
+        <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <label className="sx-label">Organization name</label>
+            <input className="sx-input" placeholder="sjsu" value={form.organizationName} onChange={(e) => set("organizationName", e.target.value)} required />
+          </div>
+          <div>
+            <label className="sx-label">Full name</label>
+            <input className="sx-input" placeholder="optional" value={form.fullName} onChange={(e) => set("fullName", e.target.value)} />
+          </div>
+          <div>
+            <label className="sx-label">Email</label>
+            <input className="sx-input" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} required />
+          </div>
+          <div>
+            <label className="sx-label">Password</label>
+            <input className="sx-input" type="password" minLength={8} value={form.password} onChange={(e) => set("password", e.target.value)} required />
+          </div>
+          {error && (
+            <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", padding: 12, textAlign: "left" }}>
+              {error}
+            </div>
+          )}
+          <button className="sx-btn primary" type="submit" disabled={loading} style={{ maxWidth: 180 }}>
+            {loading ? "Creating…" : "Create account"}
+          </button>
+        </form>
+
+        <div style={{ marginTop: 24, fontSize: 13, color: "var(--ink2)" }}>
+          Already have an account? <Link href="/login" style={{ textDecoration: "underline", color: "var(--ink)" }}>Sign in</Link>
+        </div>
+      </div>
+    </div>
+  )
 }
