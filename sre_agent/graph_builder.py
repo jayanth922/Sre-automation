@@ -285,6 +285,21 @@ async def _investigation_swarm(state: AgentState, config: Optional[Dict[str, Any
     else:
         investigation_query = current_query or "Investigate system health and identify issues."
 
+    # Per-cluster scope: when this cluster is limited to one namespace, tell every
+    # specialist to confine its queries to it — so a scoped cluster investigates
+    # only its own app, not the neighbours sharing the same Prometheus/Loki/K8s.
+    _meta = state.get("metadata", {}) or {}
+    cluster_namespace = str(_meta.get("cluster_namespace") or "").strip()
+    if cluster_namespace:
+        investigation_query += (
+            f"\n\nSCOPE: This cluster is limited to the Kubernetes namespace "
+            f"'{cluster_namespace}'. Investigate only resources in this namespace. "
+            f"Pass namespace=\"{cluster_namespace}\" to any Kubernetes, Prometheus, or "
+            f"Loki tool that accepts a namespace argument, add "
+            f"{{namespace=\"{cluster_namespace}\"}} to every PromQL selector, and use "
+            f"{{namespace=\"{cluster_namespace}\"}} in every LogQL stream selector."
+        )
+
     # Get agent instances from metadata (passed from graph builder)
     metadata = state.get("metadata", {})
     kubernetes_agent = metadata.get("kubernetes_agent")
