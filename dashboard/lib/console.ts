@@ -12,6 +12,11 @@ export interface Cluster {
   k8s_api_server: string | null
   github_repo: string | null
   notion_database_id: string | null
+  metrics_config: string | null
+  namespace: string | null
+  llm_provider: string | null
+  llm_model: string | null
+  llm_base_url: string | null
 }
 
 export type Severity = "critical" | "high" | "medium" | "low"

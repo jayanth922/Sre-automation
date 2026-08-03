@@ -32,7 +32,7 @@ export default function SettingsPage() {
   const { user } = useAuth()
   const isAdmin = (user?.role ?? "member") === "admin"
 
-  const [endpoints, setEndpoints] = useState({ name: "", prometheus_url: "", loki_url: "", github_repo: "", notion_database_id: "", notion_api_key: "" })
+  const [endpoints, setEndpoints] = useState({ name: "", prometheus_url: "", loki_url: "", github_repo: "", notion_database_id: "", notion_api_key: "", namespace: "", llm_provider: "", llm_model: "", llm_base_url: "", llm_api_key: "" })
   const [metrics, setMetrics] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -65,6 +65,11 @@ export default function SettingsPage() {
       github_repo: cluster.github_repo ?? "",
       notion_database_id: cluster.notion_database_id ?? "",
       notion_api_key: "",
+      namespace: cluster.namespace ?? "",
+      llm_provider: cluster.llm_provider ?? "",
+      llm_model: cluster.llm_model ?? "",
+      llm_base_url: cluster.llm_base_url ?? "",
+      llm_api_key: "",
     })
     try {
       setMetrics(cluster.metrics_config ? (JSON.parse(cluster.metrics_config) as Record<string, string>) : {})
@@ -91,6 +96,13 @@ export default function SettingsPage() {
         notion_database_id: endpoints.notion_database_id || undefined,
         notion_api_key: endpoints.notion_api_key || undefined,
         metrics_config: cleanMetrics,
+        // Sent even when blank so they can be cleared (revert to whole-cluster /
+        // platform default). The API key is write-only: only sent when entered.
+        namespace: endpoints.namespace,
+        llm_provider: endpoints.llm_provider,
+        llm_model: endpoints.llm_model,
+        llm_base_url: endpoints.llm_base_url,
+        llm_api_key: endpoints.llm_api_key || undefined,
       })
       setSaved(true)
       setTimeout(() => window.location.reload(), 700)
@@ -164,6 +176,45 @@ export default function SettingsPage() {
           <div>
             <label className="sx-label">GitHub repo</label>
             <input className="sx-input" placeholder="org/repo" value={endpoints.github_repo} onChange={(e) => setEndpoints({ ...endpoints, github_repo: e.target.value })} />
+          </div>
+        </div>
+
+        <SectionTitle title="Scope" meta="what this cluster monitors" />
+        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+          Leave blank to monitor the whole cluster (infra-level). Set a namespace to scope this cluster to one application — its metrics, service view, and remediation blast radius are limited to that namespace. That&apos;s how multiple apps on the same Kubernetes each become their own cluster.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 320 }}>
+          <div>
+            <label className="sx-label">Namespace</label>
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(whole cluster)" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
+          </div>
+        </div>
+
+        <SectionTitle title="Agent brain" meta="per-cluster LLM override (optional)" />
+        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+          Leave the provider blank to use the platform default. Override it to tune the brain for this cluster&apos;s use case. The provider takes effect now; model, base URL, and key overrides are stored and honored as the router adds per-cluster support.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 420 }}>
+          <div>
+            <label className="sx-label">Provider</label>
+            <select className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
+              <option value="">Platform default</option>
+              <option value="anthropic">anthropic (Claude)</option>
+              <option value="groq">groq</option>
+              <option value="openai_compatible">openai_compatible (self-hosted)</option>
+            </select>
+          </div>
+          <div>
+            <label className="sx-label">Model</label>
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(provider default)" value={endpoints.llm_model} onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })} />
+          </div>
+          <div>
+            <label className="sx-label">Base URL (self-hosted)</label>
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="http://host:11434/v1" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
+          </div>
+          <div>
+            <label className="sx-label">API key</label>
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "optional"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
           </div>
         </div>
 

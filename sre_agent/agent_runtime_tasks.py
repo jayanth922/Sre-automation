@@ -61,8 +61,21 @@ async def run_graph_background_saas(
         await initialize_agent()
         
         from langchain_core.messages import HumanMessage
-        llm_provider = os.getenv("LLM_PROVIDER", "groq")
-        
+
+        # Resolve the agent "brain" per-cluster: a cluster may override the
+        # provider (and later model/endpoint/key); otherwise the platform default
+        # applies. Only the provider takes effect end-to-end today — model/base_url/
+        # api_key are carried in metadata for the router to honor.
+        from .cluster_context import resolve_llm, resolve_namespace
+        cluster_obj = None
+        try:
+            async with database.AsyncSessionLocal() as _db:
+                cluster_obj = await _db.get(models.Cluster, cluster_id)
+        except Exception as _ce:
+            logger.debug(f"cluster context lookup skipped: {_ce}")
+        llm_ctx = resolve_llm(cluster_obj)
+        llm_provider = llm_ctx["provider"]
+
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
             "ooda_phase": "OBSERVE",
@@ -71,6 +84,8 @@ async def run_graph_background_saas(
             "current_query": f"Investigate alert: {alert_name}",
             "metadata": {
                 "llm_provider": llm_provider,
+                "llm_overrides": llm_ctx,
+                "cluster_namespace": resolve_namespace(cluster_obj),
                 "tools": tools,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
