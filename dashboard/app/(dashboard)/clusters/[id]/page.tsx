@@ -6,7 +6,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, Sparkline, useFreshness } from "@/components/console/ui"
 import {
   type Incident,
   type SLO,
@@ -41,6 +41,9 @@ export default function OverviewPage() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [loading, setLoading] = useState(true)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  // Rolling client-side history so the golden signals show a live trend, not just
+  // a current value — captures a spike as it happens while you watch.
+  const [hist, setHist] = useState<{ errors: number[]; latency: number[]; cpu: number[] }>({ errors: [], latency: [], cpu: [] })
   const lastLen = useRef(0)
 
   const load = useCallback(async () => {
@@ -54,8 +57,14 @@ export default function OverviewPage() {
     ])
 
     if (m.status === "fulfilled") {
-      setMetrics(m.value.data)
+      const md = m.value.data
+      setMetrics(md)
       setMetricsErr(false)
+      setHist((h) => ({
+        errors: [...h.errors, md.errors ?? 0].slice(-30),
+        latency: [...h.latency, md.latency ?? 0].slice(-30),
+        cpu: [...h.cpu, md.cpu ?? 0].slice(-30),
+      }))
     } else setMetricsErr(true)
     if (inc.status === "fulfilled") setIncidents(inc.value.data)
     if (svc.status === "fulfilled") setServices(svc.value.data)
@@ -99,13 +108,18 @@ export default function OverviewPage() {
   const openIncidents = incidents.filter((i) => i.status !== "resolved")
   const freshness = useFreshness(updatedAt)
 
-  const signal = (k: string, value: string, unit: string | null, detail: string, tone?: "alert" | "warn") => (
+  const signal = (k: string, value: string, unit: string | null, detail: string, tone?: "alert" | "warn", series?: number[]) => (
     <div className={`sx-sig${tone ? ` ${tone}` : ""}`}>
       <div className="k">{k}</div>
       <div className="v">
         {value}
         {unit && <span className="u">{unit}</span>}
       </div>
+      {series && series.length >= 2 && (
+        <div style={{ margin: "4px 0 2px" }}>
+          <Sparkline series={series} tone={tone === "alert" ? "crit" : tone === "warn" ? "warn" : "neutral"} width={104} height={20} />
+        </div>
+      )}
       <div className="d">{detail}</div>
     </div>
   )
@@ -123,6 +137,7 @@ export default function OverviewPage() {
               metricsErr ? null : "%",
               metricsErr ? "prometheus unreachable" : "5xx / total · 5m",
               !metricsErr && (metrics?.errors ?? 0) >= 5 ? "alert" : (metrics?.errors ?? 0) >= 1 ? "warn" : undefined,
+              hist.errors,
             )}
             {signal(
               "p95 latency",
@@ -130,6 +145,7 @@ export default function OverviewPage() {
               metricsErr ? null : "ms",
               "request duration · 5m",
               !metricsErr && (metrics?.latency ?? 0) >= 1000 ? "alert" : (metrics?.latency ?? 0) >= 500 ? "warn" : undefined,
+              hist.latency,
             )}
             {signal(
               "CPU saturation",
@@ -137,6 +153,7 @@ export default function OverviewPage() {
               metricsErr ? null : "%",
               "avg container · 5m",
               !metricsErr && (metrics?.cpu ?? 0) >= 85 ? "alert" : undefined,
+              hist.cpu,
             )}
             {signal("Open incidents", String(openIncidents.length), null, openIncidents.length ? "needs attention" : "all clear", openIncidents.length ? "alert" : undefined)}
             {signal("MTTR · all time", analytics ? String(analytics.stats.mttr_minutes) : "—", analytics ? "min" : null, analytics ? `${analytics.stats.resolution_rate_pct}% resolved` : "no data")}
