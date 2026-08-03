@@ -297,14 +297,10 @@ async def startup_event():
     # Keep cluster status fresh in the dashboard
     asyncio.create_task(_heartbeat_loop())
 
-    # Continuous, proactive monitoring: sweeps every connected cluster's
-    # per-service health and opens incidents on breach (drives the same
-    # investigation pipeline as the alert webhook).
-    try:
-        from sre_agent.monitor_service import run_platform_monitor
-        asyncio.create_task(run_platform_monitor())
-    except Exception as monitor_err:
-        logger.warning(f"Could not start platform monitor: {monitor_err}")
+    # Incidents are opened by the client's own Alertmanager (their tuned SLO /
+    # burn-rate / business rules) via the /alerts/webhook — Sentinel receives and
+    # investigates, it does not impose platform-side fixed thresholds. There is
+    # deliberately no built-in polling monitor.
 
     # Slack bot in the on-call channel (no-op unless Slack tokens are set).
     try:
