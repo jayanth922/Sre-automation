@@ -7,9 +7,10 @@ import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
 import { Spinner, Empty, useFreshness } from "@/components/console/ui"
-import { type Incident, sev, statusBadge, timeAgo, elapsed } from "@/lib/console"
+import { type Incident, type Severity, sev, statusBadge, timeAgo, elapsed } from "@/lib/console"
 
 type Tab = "open" | "all" | "resolved"
+type SevFilter = "all" | Severity
 
 export default function IncidentsPage() {
   const { id } = useParams<{ id: string }>()
@@ -20,6 +21,8 @@ export default function IncidentsPage() {
   const [loading, setLoading] = useState(true)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const [tab, setTab] = useState<Tab>("open")
+  const [q, setQ] = useState("")
+  const [sevFilter, setSevFilter] = useState<SevFilter>("all")
   const lastLen = useRef(0)
 
   const load = useCallback(async () => {
@@ -50,6 +53,13 @@ export default function IncidentsPage() {
   const open = incidents.filter((i) => i.status !== "resolved")
   const resolved = incidents.filter((i) => i.status === "resolved")
   const shown = tab === "open" ? open : tab === "resolved" ? resolved : incidents
+  const ql = q.trim().toLowerCase()
+  const filtered = shown.filter((i) => {
+    if (sevFilter !== "all" && i.severity !== sevFilter) return false
+    if (ql && !`${i.title} ${i.id} ${i.description ?? ""}`.toLowerCase().includes(ql)) return false
+    return true
+  })
+  const filtersActive = ql !== "" || sevFilter !== "all"
   const freshness = useFreshness(updatedAt)
 
   return (
@@ -70,10 +80,33 @@ export default function IncidentsPage() {
             </button>
           </div>
 
-          {shown.length === 0 ? (
-            <Empty>{tab === "open" ? "No open incidents. Telemetry is quiet." : "No incidents here."}</Empty>
+          <div style={{ display: "flex", gap: 10, margin: "10px 0 6px", flexWrap: "wrap", alignItems: "center" }}>
+            <input
+              className="sx-input"
+              style={{ maxWidth: 280 }}
+              placeholder="Search title, service, or id…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <div className="sx-tabs" style={{ marginBottom: 0 }}>
+              {(["all", "critical", "high", "medium", "low"] as SevFilter[]).map((s) => (
+                <button key={s} className={sevFilter === s ? "on" : ""} onClick={() => setSevFilter(s)}>
+                  {s === "all" ? "All sev" : sev(s).label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <Empty>
+              {filtersActive
+                ? "No incidents match your filters."
+                : tab === "open"
+                  ? "No open incidents. Telemetry is quiet."
+                  : "No incidents here."}
+            </Empty>
           ) : (
-            shown
+            filtered
               .slice()
               .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
               .map((i) => {
