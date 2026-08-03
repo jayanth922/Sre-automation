@@ -127,6 +127,11 @@ async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_i
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
         metrics_config=_json.dumps(cluster.metrics_config) if cluster.metrics_config else None,
+        namespace=cluster.namespace or None,
+        llm_provider=cluster.llm_provider or None,
+        llm_model=cluster.llm_model or None,
+        llm_base_url=cluster.llm_base_url or None,
+        llm_api_key=cluster.llm_api_key or None,
     )
     db.add(db_cluster)
     await db.commit()
@@ -144,6 +149,11 @@ async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.U
     for field in ("name", "prometheus_url", "loki_url", "k8s_api_server", "github_token", "github_repo", "notion_api_key", "notion_database_id"):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
+    # Scope + LLM override: an explicitly-sent empty string clears the field
+    # (revert to whole-cluster / platform-default), so honor blanks here.
+    for field in ("namespace", "llm_provider", "llm_model", "llm_base_url", "llm_api_key"):
+        if field in data:
+            setattr(cluster, field, data[field] or None)
     if "metrics_config" in data:
         cluster.metrics_config = _json.dumps(data["metrics_config"]) if data["metrics_config"] else None
     await db.commit()

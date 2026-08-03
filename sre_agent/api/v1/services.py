@@ -80,7 +80,7 @@ async def fetch_service_health(cluster: models.Cluster) -> List[Dict[str, Any]]:
     if not base:
         return []
 
-    cfg = mp.resolve(cluster.metrics_config)
+    cfg = mp.resolve(cluster.metrics_config, cluster.namespace)
     label = cfg["service_label"]
 
     async with httpx.AsyncClient(timeout=6.0) as client:
@@ -241,7 +241,7 @@ async def get_cluster_metrics(
     if not base:
         raise HTTPException(status_code=503, detail="No Prometheus endpoint configured for this cluster.")
 
-    cfg = mp.resolve(cluster.metrics_config)
+    cfg = mp.resolve(cluster.metrics_config, cluster.namespace)
     async with httpx.AsyncClient(timeout=6.0) as client:
         errors = await _query_scalar(client, base, mp.q_error_rate(cfg))
         latency = await _query_scalar(client, base, mp.q_latency_p95(cfg))

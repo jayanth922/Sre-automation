@@ -21,13 +21,16 @@ DEFAULTS: Dict[str, str] = {
     "latency_histogram": "http_request_duration_seconds",  # `_bucket` appended
     "cpu_query": "avg(rate(container_cpu_usage_seconds_total[5m])) * 100",
     "mem_query": "sum(container_memory_usage_bytes) / (1024*1024*1024)",
+    # Which Prometheus label carries the namespace (for scoped clusters).
+    "namespace_label": "namespace",
 }
 
 CONFIGURABLE_KEYS = list(DEFAULTS.keys())
 
 
-def resolve(raw: Optional[str]) -> Dict[str, str]:
-    """Merge a cluster's stored JSON config over the defaults."""
+def resolve(raw: Optional[str], namespace: Optional[str] = None) -> Dict[str, str]:
+    """Merge a cluster's stored JSON config over the defaults, and record the
+    cluster's namespace scope (if any) so queries can be filtered to it."""
     cfg = dict(DEFAULTS)
     if raw:
         try:
@@ -39,36 +42,51 @@ def resolve(raw: Optional[str]) -> Dict[str, str]:
                         cfg[key] = val.strip()
         except (json.JSONDecodeError, TypeError):
             pass
+    cfg["namespace"] = (namespace or "").strip()
     return cfg
+
+
+def _ns_matcher(c: Dict[str, str]) -> str:
+    """`namespace="x"` when the cluster is namespace-scoped, else empty."""
+    ns = c.get("namespace") or ""
+    return f'{c.get("namespace_label", "namespace")}="{ns}"' if ns else ""
+
+
+def _sel(c: Dict[str, str], *extra: str) -> str:
+    """Build a `{...}` label selector, always including the namespace scope."""
+    parts = [p for p in (_ns_matcher(c), *extra) if p]
+    return "{" + ",".join(parts) + "}" if parts else ""
 
 
 # ── Per-service (RED) ────────────────────────────────────────────────────────
 def q_service_rps(c: Dict[str, str]) -> str:
-    return f"sum by ({c['service_label']}) (rate({c['request_metric']}[1m]))"
+    return f"sum by ({c['service_label']}) (rate({c['request_metric']}{_sel(c)}[1m]))"
 
 
 def q_service_total(c: Dict[str, str]) -> str:
-    return f"sum by ({c['service_label']}) (rate({c['request_metric']}[5m]))"
+    return f"sum by ({c['service_label']}) (rate({c['request_metric']}{_sel(c)}[5m]))"
 
 
 def q_service_errors(c: Dict[str, str]) -> str:
-    return f'sum by ({c["service_label"]}) (rate({c["request_metric"]}{{{c["status_label"]}=~"{c["error_regex"]}"}}[5m]))'
+    sel = _sel(c, f'{c["status_label"]}=~"{c["error_regex"]}"')
+    return f'sum by ({c["service_label"]}) (rate({c["request_metric"]}{sel}[5m]))'
 
 
 def q_service_latency(c: Dict[str, str], quantile: float) -> str:
-    return f"histogram_quantile({quantile}, sum by ({c['service_label']}, le) (rate({c['latency_histogram']}_bucket[5m]))) * 1000"
+    return f"histogram_quantile({quantile}, sum by ({c['service_label']}, le) (rate({c['latency_histogram']}_bucket{_sel(c)}[5m]))) * 1000"
 
 
 # ── Cluster-wide golden signals ──────────────────────────────────────────────
 def q_error_rate(c: Dict[str, str]) -> str:
+    err = _sel(c, f'{c["status_label"]}=~"{c["error_regex"]}"')
     return (
-        f'sum(rate({c["request_metric"]}{{{c["status_label"]}=~"{c["error_regex"]}"}}[5m]))'
-        f" / sum(rate({c['request_metric']}[5m])) * 100"
+        f'sum(rate({c["request_metric"]}{err}[5m]))'
+        f" / sum(rate({c['request_metric']}{_sel(c)}[5m])) * 100"
     )
 
 
 def q_latency_p95(c: Dict[str, str]) -> str:
-    return f"histogram_quantile(0.95, sum(rate({c['latency_histogram']}_bucket[5m])) by (le)) * 1000"
+    return f"histogram_quantile(0.95, sum(rate({c['latency_histogram']}_bucket{_sel(c)}[5m])) by (le)) * 1000"
 
 
 def q_cpu(c: Dict[str, str]) -> str:

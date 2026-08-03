@@ -115,6 +115,13 @@ class ClusterCreate(BaseModel):
     notion_database_id: Optional[str] = None
     # Observability query conventions (service label, metric names, error selector).
     metrics_config: Optional[Dict[str, str]] = None
+    # Scope: namespace this cluster represents. Empty = whole cluster (infra).
+    namespace: Optional[str] = None
+    # Per-cluster LLM override (null = platform default).
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
 
 class ClusterUpdate(BaseModel):
     name: Optional[str] = None
@@ -126,6 +133,11 @@ class ClusterUpdate(BaseModel):
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
     metrics_config: Optional[Dict[str, str]] = None
+    namespace: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
 
 class ClusterResponse(BaseModel):
     id: uuid.UUID
@@ -139,6 +151,11 @@ class ClusterResponse(BaseModel):
     github_repo: Optional[str] = None
     notion_database_id: Optional[str] = None
     metrics_config: Optional[str] = None
+    namespace: Optional[str] = None
+    # LLM override — provider/model/base_url are safe to echo; the key is write-only.
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
 
     class Config:
         from_attributes = True

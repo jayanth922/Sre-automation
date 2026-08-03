@@ -112,6 +112,17 @@ class Cluster(Base):
     # Observability query conventions (JSON). Null = platform defaults. Lets the
     # platform work against any workload's metric schema, not one demo's.
     metrics_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Scope: the Kubernetes namespace this cluster represents. Null/empty = the
+    # whole cluster (infra-level). When set, metric queries, the service view, and
+    # the executor's blast radius are all scoped to it — so one physical cluster
+    # can host many apps, each registered as its own scoped Sentinel cluster.
+    namespace: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Per-cluster LLM override for the agent's "brain". Null = platform default.
+    # Lets each cluster tune the model to its use case (provider/model/endpoint/key).
+    llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    llm_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    llm_base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    llm_api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="clusters")
