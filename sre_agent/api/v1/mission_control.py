@@ -649,6 +649,20 @@ async def get_incident_status(
         # State might not exist yet
         return {"status": "NOT_STARTED", "error": str(e)}
 
+
+@router.get("/{incident_id}/agent-metrics")
+async def get_incident_agent_metrics(
+    incident_id: str,
+    user: models.User = Depends(get_current_user_and_org),
+):
+    """Per-incident agent run telemetry — node timings, step count, total agent
+    wall-time, provider fallbacks, and errors — from the in-process recorder.
+    Token/cost accounting lives in Langfuse (when configured); this covers the
+    trajectory/latency view that's always available."""
+    from sre_agent.observability import get_recorder
+    return get_recorder().summary(incident_id)
+
+
 @router.post("/{incident_id}/approve")
 async def approve_incident_action(
     incident_id: str,

@@ -22,6 +22,14 @@ interface GraphStatus {
   values?: Record<string, unknown>
 }
 
+interface AgentMetrics {
+  nodes: Record<string, { runs: number; errors: number; total_ms: number; avg_ms: number }>
+  provider_switches: { node: string; detail: string }[]
+  total_runs: number
+  total_errors: number
+  total_ms: number
+}
+
 function sourceTag(ev: TimelineEvent): { cls: string; label: string } | null {
   const hay = `${ev.event_type} ${ev.title ?? ""} ${JSON.stringify(ev.payload ?? {})}`.toLowerCase()
   if (/prometheus|metric|latency|error rate|p95|p99/.test(hay)) return { cls: "metric", label: "metric" }
@@ -43,6 +51,7 @@ export default function IncidentConsolePage() {
   const { events: liveEvents, connected } = useLiveStream(incidentId)
   const [tx, setTx] = useState<Transcript | null>(null)
   const [status, setStatus] = useState<GraphStatus | null>(null)
+  const [agent, setAgent] = useState<AgentMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
@@ -69,12 +78,22 @@ export default function IncidentConsolePage() {
     }
   }, [incidentId])
 
+  const loadAgent = useCallback(async () => {
+    try {
+      const { data } = await api.get<AgentMetrics>(`/incidents/${incidentId}/agent-metrics`)
+      setAgent(data)
+    } catch {
+      /* recorder may be empty */
+    }
+  }, [incidentId])
+
   useEffect(() => {
     loadTranscript()
     loadStatus()
+    loadAgent()
     const t = setInterval(loadStatus, 8000)
     return () => clearInterval(t)
-  }, [loadTranscript, loadStatus])
+  }, [loadTranscript, loadStatus, loadAgent])
 
   // A new WebSocket frame for this incident → refetch canonical transcript.
   useEffect(() => {
@@ -82,8 +101,9 @@ export default function IncidentConsolePage() {
       lastLive.current = liveEvents.length
       loadTranscript()
       loadStatus()
+      loadAgent()
     }
-  }, [liveEvents.length, loadTranscript, loadStatus])
+  }, [liveEvents.length, loadTranscript, loadStatus, loadAgent])
 
   const freshness = useFreshness(updatedAt)
 
@@ -314,6 +334,34 @@ export default function IncidentConsolePage() {
                   {!isAdmin && <div className="sx-dry">Only admins can approve remediations.</div>}
                 </>
               )}
+            </div>
+          )}
+
+          {agent && agent.total_runs > 0 && (
+            <div className="sx-remedy">
+              <div className="h">◆ Agent run</div>
+              <div className="sx-kv"><span className="k">Total agent time</span><span className="v">{(agent.total_ms / 1000).toFixed(1)}s</span></div>
+              <div className="sx-kv"><span className="k">Reasoning steps</span><span className="v">{agent.total_runs}</span></div>
+              {agent.total_errors > 0 && (
+                <div className="sx-kv"><span className="k">Errors</span><span className="v" style={{ color: "var(--crit)" }}>{agent.total_errors}</span></div>
+              )}
+              {Object.entries(agent.nodes)
+                .sort((a, b) => b[1].total_ms - a[1].total_ms)
+                .slice(0, 5)
+                .map(([name, n]) => (
+                  <div className="sx-kv" key={name}>
+                    <span className="k">{name}</span>
+                    <span className="v">{n.runs}× · {(n.avg_ms / 1000).toFixed(1)}s avg</span>
+                  </div>
+                ))}
+              {agent.provider_switches.length > 0 && (
+                <div className="sx-dry" style={{ textAlign: "left", marginTop: 8 }}>
+                  provider fallback: {agent.provider_switches.map((s) => s.detail).join(", ")}
+                </div>
+              )}
+              <div className="sx-dry" style={{ textAlign: "left", marginTop: 8, color: "var(--ink3)" }}>
+                Token &amp; cost accounting in Langfuse when enabled.
+              </div>
             </div>
           )}
         </div>

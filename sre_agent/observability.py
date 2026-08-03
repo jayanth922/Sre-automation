@@ -53,12 +53,15 @@ class ObservabilityRecorder:
     def events(self) -> List[AgentEvent]:
         return list(self._events)
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self, incident_id: Optional[str] = None) -> Dict[str, Any]:
+        """Roll up recorded events. Pass an incident_id to scope the rollup to a
+        single investigation (per-node timings, steps, provider switches, errors)."""
         nodes: Dict[str, Dict[str, Any]] = {}
         failures: List[Dict[str, Any]] = []
         switches: List[Dict[str, Any]] = []
 
-        for ev in self._events:
+        source = [e for e in self._events if e.incident_id == incident_id] if incident_id else self._events
+        for ev in source:
             n = nodes.setdefault(ev.node, {"runs": 0, "errors": 0, "total_ms": 0.0})
             if ev.event == "end":
                 n["runs"] += 1
@@ -70,16 +73,19 @@ class ObservabilityRecorder:
                 switches.append({"node": ev.node, "detail": ev.detail, "at": ev.timestamp})
 
         for n in nodes.values():
+            n["total_ms"] = round(n["total_ms"], 1)
             n["avg_ms"] = round(n["total_ms"] / n["runs"], 1) if n["runs"] else 0.0
 
         total_runs = sum(n["runs"] for n in nodes.values())
         total_errors = sum(n["errors"] for n in nodes.values())
+        total_ms = round(sum(n["total_ms"] for n in nodes.values()), 1)
         return {
             "nodes": nodes,
             "failures": failures,
             "provider_switches": switches,
             "total_runs": total_runs,
             "total_errors": total_errors,
+            "total_ms": total_ms,
             "error_rate": round(total_errors / total_runs, 3) if total_runs else 0.0,
         }
 
