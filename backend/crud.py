@@ -185,20 +185,25 @@ async def find_duplicate_incident(
     db: AsyncSession,
     cluster_id: uuid.UUID,
     title: str,
-    window_minutes: int = 30
+    window_minutes: Optional[int] = None,
 ) -> Optional[models.Incident]:
-    """Check for existing open/investigating incident with same title within time window."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    """Return an existing OPEN/INVESTIGATING incident with the same title, if any.
+
+    Dedup collapses a re-firing alert into the incident already tracking it for as
+    long as that incident stays open — not just within a short window — so a
+    long-running condition never spawns duplicates. Resolved incidents don't
+    match, so a genuinely new occurrence after resolution opens a fresh incident.
+    (window_minutes is optional and only narrows the lookback if explicitly set.)
+    """
+    filters = [
+        models.Incident.cluster_id == cluster_id,
+        models.Incident.title == title,
+        models.Incident.status.in_([models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]),
+    ]
+    if window_minutes:
+        filters.append(models.Incident.created_at >= datetime.now(timezone.utc) - timedelta(minutes=window_minutes))
     result = await db.execute(
-        select(models.Incident)
-        .filter(
-            models.Incident.cluster_id == cluster_id,
-            models.Incident.title == title,
-            models.Incident.status.in_([models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]),
-            models.Incident.created_at >= cutoff
-        )
-        .order_by(models.Incident.created_at.desc())
-        .limit(1)
+        select(models.Incident).filter(*filters).order_by(models.Incident.created_at.desc()).limit(1)
     )
     return result.scalars().first()
 
