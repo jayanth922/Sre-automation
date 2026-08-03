@@ -1,11 +1,18 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 import { api, useAuth } from "@/lib/auth-context"
 import { useCluster } from "@/components/console/ClusterContext"
 import { ConsolePage } from "@/components/console/ConsolePage"
 import { SectionTitle } from "@/components/console/ui"
+
+interface ConnCheck {
+  name: string
+  configured: boolean
+  ok: boolean | null
+  detail: string
+}
 
 // Mirrors backend defaults (sre_agent/metrics_profile.DEFAULTS). Shown as
 // placeholders so a blank field means "use the platform default".
@@ -30,6 +37,24 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [conns, setConns] = useState<ConnCheck[] | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const checkConnections = useCallback(async () => {
+    setChecking(true)
+    try {
+      const { data } = await api.get<{ checks: ConnCheck[] }>(`/clusters/${id}/connections`)
+      setConns(data.checks)
+    } catch {
+      setConns(null)
+    } finally {
+      setChecking(false)
+    }
+  }, [id])
+
+  useEffect(() => {
+    checkConnections()
+  }, [checkConnections])
 
   useEffect(() => {
     if (!cluster) return
@@ -80,6 +105,48 @@ export default function SettingsPage() {
   return (
     <ConsolePage title="Settings">
       <div style={{ maxWidth: 620 }}>
+        <SectionTitle
+          title="Connections"
+          meta="is this cluster actually wired up?"
+          action={
+            <button
+              className="sx-btn"
+              style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
+              onClick={checkConnections}
+              disabled={checking}
+            >
+              {checking ? "Checking…" : "Re-check"}
+            </button>
+          }
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 10, marginBottom: 26 }}>
+          {conns === null ? (
+            <div className="sx-dry" style={{ textAlign: "left" }}>
+              {checking ? "Checking connections…" : "Could not run the connection check."}
+            </div>
+          ) : (
+            conns.map((c) => {
+              const color = c.ok === true ? "var(--ok)" : c.ok === false ? "var(--crit)" : "var(--ink3)"
+              const label = c.ok === true ? "OK" : c.ok === false ? "FAILING" : "not set"
+              return (
+                <div
+                  key={c.name}
+                  style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--rule)" }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, flex: "none", transform: "translateY(2px)" }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>
+                      {c.name}
+                      <span className="sx-mono" style={{ fontSize: 10.5, color, marginLeft: 8, letterSpacing: ".06em" }}>{label}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--ink2)", marginTop: 1 }}>{c.detail}</div>
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+
         <SectionTitle title="Endpoints" meta="how the platform reaches your infrastructure" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
           <div>

@@ -126,6 +126,109 @@ async def get_cluster_services(
     return await fetch_service_health(cluster)
 
 
+@router.get("/{cluster_id}/connections")
+async def get_cluster_connections(
+    cluster_id: uuid.UUID,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+) -> Dict[str, Any]:
+    """Preflight for a cluster's integrations — actively checks whether Prometheus,
+    Loki, GitHub, and Notion are reachable/authorized, and whether Alertmanager has
+    delivered anything. Lets a new user see at a glance if their setup is wired,
+    instead of discovering it's broken only when an incident fails to open."""
+    import os
+    import asyncio
+    from datetime import datetime, timezone
+
+    cluster = await _load_cluster(cluster_id, user, db)
+    prom = _prom_base(cluster)
+    loki = (cluster.loki_url or os.getenv("LOKI_URL") or "").rstrip("/")
+    repo = cluster.github_repo
+    gh_token = os.getenv("GITHUB_TOKEN")
+    notion_db = cluster.notion_database_id
+    notion_key = cluster.notion_api_key
+
+    def _row(name, configured, ok, detail):
+        return {"name": name, "configured": configured, "ok": ok, "detail": detail}
+
+    async def check_prometheus(client):
+        if not prom:
+            return _row("Prometheus", False, None, "Not set — add the URL in Settings (metrics won't be available).")
+        try:
+            r = await client.get(f"{prom}/api/v1/query", params={"query": "vector(1)"})
+            if r.status_code == 200 and r.json().get("status") == "success":
+                return _row("Prometheus", True, True, "Reachable and answering queries.")
+            return _row("Prometheus", True, False, f"Responded {r.status_code}.")
+        except Exception as e:
+            return _row("Prometheus", True, False, f"Unreachable: {type(e).__name__}.")
+
+    async def check_loki(client):
+        if not loki:
+            return _row("Loki (logs)", False, None, "Not set — the agent will investigate without logs.")
+        try:
+            r = await client.get(f"{loki}/ready")
+            if r.status_code == 200:
+                return _row("Loki (logs)", True, True, "Ready.")
+            return _row("Loki (logs)", True, False, f"Responded {r.status_code}.")
+        except Exception as e:
+            return _row("Loki (logs)", True, False, f"Unreachable: {type(e).__name__}.")
+
+    async def check_github(client):
+        if not repo:
+            return _row("GitHub", False, None, "No repo set — code context and revert PRs are off.")
+        headers = {"Authorization": f"Bearer {gh_token}"} if gh_token else {}
+        try:
+            r = await client.get(f"https://api.github.com/repos/{repo}", headers=headers)
+            if r.status_code == 200:
+                return _row("GitHub", True, True, "Repo accessible.")
+            if r.status_code in (401, 403):
+                return _row("GitHub", True, False, "Token missing or invalid.")
+            if r.status_code == 404:
+                return _row("GitHub", True, False, "Repo not found — check the name or the token's scope.")
+            return _row("GitHub", True, False, f"Responded {r.status_code}.")
+        except Exception as e:
+            return _row("GitHub", True, False, f"Unreachable: {type(e).__name__}.")
+
+    async def check_notion(client):
+        if not (notion_db and notion_key):
+            return _row("Notion runbooks", False, None, "Not set — using the local runbook corpus.")
+        try:
+            r = await client.get(
+                f"https://api.notion.com/v1/databases/{notion_db}",
+                headers={"Authorization": f"Bearer {notion_key}", "Notion-Version": "2022-06-28"},
+            )
+            if r.status_code == 200:
+                return _row("Notion runbooks", True, True, "Database accessible.")
+            if r.status_code in (401, 403):
+                return _row("Notion runbooks", True, False, "Token invalid, or the database isn't shared with the integration.")
+            if r.status_code == 404:
+                return _row("Notion runbooks", True, False, "Database not found — check the ID.")
+            return _row("Notion runbooks", True, False, f"Responded {r.status_code}.")
+        except Exception as e:
+            return _row("Notion runbooks", True, False, f"Unreachable: {type(e).__name__}.")
+
+    def check_alerts():
+        hb = cluster.last_heartbeat
+        if not hb:
+            return _row("Alerts (Alertmanager)", True, None,
+                        "No alerts received yet — point Alertmanager at the webhook with this cluster's token.")
+        if hb.tzinfo is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        secs = max(0, int((datetime.now(timezone.utc) - hb).total_seconds()))
+        human = f"{secs}s" if secs < 60 else f"{secs // 60}m" if secs < 3600 else f"{secs // 3600}h"
+        return _row("Alerts (Alertmanager)", True, True, f"Last alert received {human} ago.")
+
+    async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+        prom_r, loki_r, gh_r, notion_r = await asyncio.gather(
+            check_prometheus(client), check_loki(client), check_github(client), check_notion(client)
+        )
+
+    return {
+        "checks": [prom_r, loki_r, check_alerts(), gh_r, notion_r],
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.get("/{cluster_id}/metrics")
 async def get_cluster_metrics(
     cluster_id: uuid.UUID,
