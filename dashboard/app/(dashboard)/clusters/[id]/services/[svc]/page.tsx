@@ -1,20 +1,22 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
 import { type ServiceHealth, type Incident, sev, statusBadge, timeAgo, elapsed, round } from "@/lib/console"
 
 export default function ServiceDetailPage() {
   const { id, svc } = useParams<{ id: string; svc: string }>()
-  const { connected } = useLiveStream()
+  const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [service, setService] = useState<ServiceHealth | null>(null)
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [loading, setLoading] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  const lastLen = useRef(0)
 
   const load = useCallback(async () => {
     const [s, inc] = await Promise.allSettled([
@@ -23,6 +25,7 @@ export default function ServiceDetailPage() {
     ])
     if (s.status === "fulfilled") setService(s.value.data.find((x) => x.name === svc) ?? null)
     if (inc.status === "fulfilled") setIncidents(inc.value.data)
+    setUpdatedAt(Date.now())
     setLoading(false)
   }, [id, svc])
 
@@ -31,6 +34,15 @@ export default function ServiceDetailPage() {
     const t = setInterval(load, 12000)
     return () => clearInterval(t)
   }, [load])
+
+  useEffect(() => {
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      load()
+    }
+  }, [events.length, load])
+
+  const freshness = useFreshness(updatedAt)
 
   const related = incidents.filter((i) => `${i.title} ${i.description ?? ""}`.toLowerCase().includes(svc.toLowerCase()))
 
@@ -54,6 +66,7 @@ export default function ServiceDetailPage() {
       }
       title={svc}
       live={connected}
+      updated={freshness}
     >
       <Link href={`/clusters/${id}/services`} className="sx-back">
         ← Services

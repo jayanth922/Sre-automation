@@ -1,26 +1,37 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
+import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
 import type { Analytics, Recommendations } from "@/lib/console"
 
 export default function AnalyticsPage() {
   const { id } = useParams<{ id: string }>()
+  const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [a, setA] = useState<Analytics | null>(null)
   const [loading, setLoading] = useState(true)
   const [recs, setRecs] = useState<Recommendations | null>(null)
   const [recsLoading, setRecsLoading] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  const lastLen = useRef(0)
 
-  const load = useCallback(async () => {
+  // Aggregate stats only — cheap, safe to refetch on every incident event.
+  const reloadAnalytics = useCallback(async () => {
     try {
       const { data } = await api.get<Analytics>(`/clusters/${id}/analytics`)
       setA(data)
+      setUpdatedAt(Date.now())
     } finally {
       setLoading(false)
     }
+  }, [id])
+
+  const load = useCallback(async () => {
+    await reloadAnalytics()
+    // Recommendations are an LLM call — load once, not on every live event.
     try {
       const { data } = await api.get<Recommendations>(`/clusters/${id}/recommendations`)
       setRecs(data)
@@ -29,11 +40,21 @@ export default function AnalyticsPage() {
     } finally {
       setRecsLoading(false)
     }
-  }, [id])
+  }, [id, reloadAnalytics])
 
   useEffect(() => {
     load()
   }, [load])
+
+  // Refresh the stats the moment an incident opens or resolves.
+  useEffect(() => {
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      reloadAnalytics()
+    }
+  }, [events.length, reloadAnalytics])
+
+  const freshness = useFreshness(updatedAt)
 
   const maxWeek = a ? Math.max(1, ...a.weekly_incidents.map((w) => w.count)) : 1
   const maxSev = a ? Math.max(1, ...a.severity_distribution.map((s) => s.count)) : 1
@@ -49,7 +70,7 @@ export default function AnalyticsPage() {
   )
 
   return (
-    <ConsolePage title="Analytics">
+    <ConsolePage title="Analytics" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
       ) : !a || a.stats.total_incidents === 0 ? (

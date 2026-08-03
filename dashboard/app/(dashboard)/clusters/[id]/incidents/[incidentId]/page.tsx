@@ -6,7 +6,7 @@ import { useParams } from "next/navigation"
 import { api, useAuth } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { Spinner } from "@/components/console/ui"
+import { Spinner, useFreshness } from "@/components/console/ui"
 import {
   type Transcript,
   type TimelineEvent,
@@ -47,12 +47,14 @@ export default function IncidentConsolePage() {
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [approving, setApproving] = useState(false)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLive = useRef(0)
 
   const loadTranscript = useCallback(async () => {
     try {
       const { data } = await api.get<Transcript>(`/incidents/${incidentId}/transcript`)
       setTx(data)
+      setUpdatedAt(Date.now())
     } finally {
       setLoading(false)
     }
@@ -82,6 +84,8 @@ export default function IncidentConsolePage() {
       loadStatus()
     }
   }, [liveEvents.length, loadTranscript, loadStatus])
+
+  const freshness = useFreshness(updatedAt)
 
   const sendMessage = async () => {
     const msg = draft.trim()
@@ -152,6 +156,7 @@ export default function IncidentConsolePage() {
       }
       title={inc.title}
       live={connected}
+      updated={freshness}
     >
       <Link href={`/clusters/${id}/incidents`} className="sx-back">
         ← Incidents

@@ -1,10 +1,11 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
+import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
 import { type SLO, type SLOStatus, round } from "@/lib/console"
 
 interface Row {
@@ -16,8 +17,11 @@ interface Row {
 
 export default function SlosPage() {
   const { id } = useParams<{ id: string }>()
+  const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  const lastLen = useRef(0)
 
   const load = useCallback(async () => {
     try {
@@ -35,6 +39,7 @@ export default function SlosPage() {
         }),
       )
       setRows(built)
+      setUpdatedAt(Date.now())
     } finally {
       setLoading(false)
     }
@@ -46,8 +51,19 @@ export default function SlosPage() {
     return () => clearInterval(t)
   }, [load])
 
+  // A firing/clearing incident often coincides with an error-budget change —
+  // refresh burn rates immediately rather than on the next 20s tick.
+  useEffect(() => {
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      load()
+    }
+  }, [events.length, load])
+
+  const freshness = useFreshness(updatedAt)
+
   return (
-    <ConsolePage title="Service level objectives">
+    <ConsolePage title="Service level objectives" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
       ) : rows.length === 0 ? (

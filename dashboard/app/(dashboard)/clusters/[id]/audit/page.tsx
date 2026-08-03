@@ -1,21 +1,28 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
+import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
 import { type AuditEvent, fmtTimeUTC } from "@/lib/console"
 
 export default function AuditPage() {
   const { id } = useParams<{ id: string }>()
+  // Audit rows are written as the agent acts, so an incident lifecycle event is a
+  // reliable cue that new entries exist — refetch on it.
+  const { events: liveEvents, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [events, setEvents] = useState<AuditEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
+  const lastLen = useRef(0)
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<AuditEvent[]>(`/clusters/${id}/audit`, { params: { limit: 100 } })
       setEvents(data)
+      setUpdatedAt(Date.now())
     } finally {
       setLoading(false)
     }
@@ -23,12 +30,21 @@ export default function AuditPage() {
 
   useEffect(() => {
     load()
-    const t = setInterval(load, 15000)
+    const t = setInterval(load, 30000)
     return () => clearInterval(t)
   }, [load])
 
+  useEffect(() => {
+    if (liveEvents.length && liveEvents.length !== lastLen.current) {
+      lastLen.current = liveEvents.length
+      load()
+    }
+  }, [liveEvents.length, load])
+
+  const freshness = useFreshness(updatedAt)
+
   return (
-    <ConsolePage title="Audit trail">
+    <ConsolePage title="Audit trail" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
       ) : events.length === 0 ? (

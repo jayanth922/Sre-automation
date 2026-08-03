@@ -1,18 +1,23 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Rail } from "@/components/console/Rail"
 import { ClusterContext } from "@/components/console/ClusterContext"
+import { useLiveStream } from "@/lib/useLiveStream"
 import { api } from "@/lib/auth-context"
 import type { Cluster, Incident } from "@/lib/console"
 
 export default function ClusterLayout({ children }: { children: React.ReactNode }) {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
+  // Live incident feed so the rail's open-incident badge updates the instant one
+  // opens or resolves, not on the next 15s poll.
+  const { events } = useLiveStream(undefined, { channel: "incidents" })
   const [cluster, setCluster] = useState<Cluster | null>(null)
   const [openIncidents, setOpenIncidents] = useState(0)
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading")
+  const lastLen = useRef(0)
 
   useEffect(() => {
     let alive = true
@@ -37,24 +42,30 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
     }
   }, [id])
 
+  const refreshCount = useCallback(async () => {
+    try {
+      const { data } = await api.get<Incident[]>(`/clusters/${id}/incidents`)
+      setOpenIncidents(data.filter((i) => i.status !== "resolved").length)
+    } catch {
+      /* ignore */
+    }
+  }, [id])
+
   useEffect(() => {
     if (state !== "ready") return
-    let alive = true
-    const poll = async () => {
-      try {
-        const { data } = await api.get<Incident[]>(`/clusters/${id}/incidents`)
-        if (alive) setOpenIncidents(data.filter((i) => i.status !== "resolved").length)
-      } catch {
-        /* ignore */
-      }
+    refreshCount()
+    const t = setInterval(refreshCount, 15000)
+    return () => clearInterval(t)
+  }, [state, refreshCount])
+
+  // Update the badge immediately on any incident lifecycle event.
+  useEffect(() => {
+    if (state !== "ready") return
+    if (events.length && events.length !== lastLen.current) {
+      lastLen.current = events.length
+      refreshCount()
     }
-    poll()
-    const t = setInterval(poll, 15000)
-    return () => {
-      alive = false
-      clearInterval(t)
-    }
-  }, [id, state])
+  }, [events.length, state, refreshCount])
 
   if (state === "loading") {
     return (
