@@ -62,9 +62,15 @@ export default function ServicesPage() {
       {loading ? (
         <Spinner />
       ) : err ? (
-        <ErrorNote>Prometheus is unreachable for this cluster, so per-service signals aren’t available.</ErrorNote>
+        <ErrorNote>
+          Prometheus is unreachable for this cluster, so per-service signals aren’t available.{" "}
+          <Link href={`/clusters/${id}/settings`} style={{ textDecoration: "underline" }}>Check this cluster’s connections →</Link>
+        </ErrorNote>
       ) : services.length === 0 ? (
-        <Empty>No service-labelled metrics found in Prometheus.</Empty>
+        <Empty>
+          No service-labelled metrics found in Prometheus. If your workloads emit different metric names,{" "}
+          <Link href={`/clusters/${id}/settings`} style={{ textDecoration: "underline" }}>map them under Settings → Observability profile</Link>.
+        </Empty>
       ) : (
         <table className="sx-tbl">
           <thead>

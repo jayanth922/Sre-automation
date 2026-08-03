@@ -130,6 +130,12 @@ export default function OverviewPage() {
         <Spinner />
       ) : (
         <>
+          {metricsErr && (
+            <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", marginBottom: 14, textAlign: "left" }}>
+              Prometheus is unreachable for this cluster — metrics below may be blank.{" "}
+              <Link href={`/clusters/${id}/settings`} style={{ textDecoration: "underline" }}>Check connections →</Link>
+            </div>
+          )}
           <div className="sx-signals">
             {signal(
               "Error rate",
@@ -169,7 +175,10 @@ export default function OverviewPage() {
             }
           />
           {services.length === 0 ? (
-            <Empty>No service metrics yet. Prometheus reports no service-labelled samples for this cluster.</Empty>
+            <Empty>
+              No service metrics yet. Prometheus reports no service-labelled samples.{" "}
+              <Link href={`/clusters/${id}/settings`} style={{ textDecoration: "underline" }}>Review connections &amp; metric names →</Link>
+            </Empty>
           ) : (
             <table className="sx-tbl">
               <thead>
