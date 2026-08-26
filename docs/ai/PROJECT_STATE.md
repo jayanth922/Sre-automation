@@ -7,7 +7,8 @@ prerequisite. The verified plan is
 
 ## Current milestone
 Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
-`codex/p0-trust-safety-hardening`, pending publication as a GitHub PR.
+`codex/p0-trust-safety-hardening` and published for review as
+[GitHub PR #1](https://github.com/jayanth922/Sre-automation/pull/1).
 
 ## Current architecture and invariants
 - `sre_agent/incident_status.py::compute_incident_status` is the sole decision
@@ -79,7 +80,8 @@ Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
   outcomes with honest audit/verification status.
 
 ## Active problem
-The complete hardening stack is ready for GitHub review.
+PR #1 is open, automatically mergeable, and awaiting user review. It includes
+the 48 previously unpublished baseline commits plus the hardening commit.
 
 ## Relevant files
 - Review fixes: `execution_context.py`, `executor.py`, `act_phase.py`,
@@ -105,4 +107,4 @@ Scratch Python environment:
 - The dependency stack remains intentionally combined for one full review.
 
 ## Next bounded task
-Publish the review branch and open its PR; do not merge without user approval.
+Monitor PR #1 checks and review feedback; do not merge without user approval.
