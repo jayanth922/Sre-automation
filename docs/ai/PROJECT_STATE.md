@@ -7,7 +7,8 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 Phase 4. **T01–T10, R01, security-review fixes, and P03 routing are merged to
 `master`** through [PR #1](https://github.com/jayanth922/Sre-automation/pull/1)
 and [PR #2](https://github.com/jayanth922/Sre-automation/pull/2). A01 immutable
-run provenance is implemented on `codex/a01-run-manifest`.
+run provenance is published in
+[PR #3](https://github.com/jayanth922/Sre-automation/pull/3).
 
 ## Current architecture and invariants
 - `sre_agent/incident_status.py::compute_incident_status` is the sole decision
@@ -76,7 +77,7 @@ run provenance is implemented on `codex/a01-run-manifest`.
   drift; image builds carry their source SHA and CI applies migrations.
 
 ## Active problem
-A01 awaits review and full CI on `codex/a01-run-manifest`. P03's production
+A01 awaits review and full CI in PR #3. P03's production
 dashboard build, readiness, and authenticated browser smoke criteria remain
 separate work.
 
