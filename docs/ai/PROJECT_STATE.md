@@ -6,11 +6,11 @@ bounded operational risks. The verified P0 plan is
 `/Users/jayan/.claude/plans/fluttering-inventing-lerdorf.md`.
 
 ## Current milestone
-Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
-`codex/p0-trust-safety-hardening` and published for review as
-[GitHub PR #1](https://github.com/jayanth922/Sre-automation/pull/1).
-P03 routing is published on `codex/p03-websocket-proxy` as stacked
-[GitHub PR #2](https://github.com/jayanth922/Sre-automation/pull/2).
+Phase 3. **T01–T10, R01, and security-review fixes are merged to `master`**
+through [GitHub PR #1](https://github.com/jayanth922/Sre-automation/pull/1).
+P03 routing is published on `codex/p03-websocket-proxy` in
+[GitHub PR #2](https://github.com/jayanth922/Sre-automation/pull/2), now based
+directly on `master`.
 
 ## Current architecture and invariants
 - `sre_agent/incident_status.py::compute_incident_status` is the sole decision
@@ -84,8 +84,9 @@ P03 routing is published on `codex/p03-websocket-proxy` as stacked
   directly to the API, and explicit split-origin overrides remain supported.
 
 ## Active problem
-PR #1 awaits user review. PR #2 is conflict-free and project CI is green; it
-must stay stacked until PR #1 merges.
+PR #2 awaits user review. It is based on `master`, conflict-free, and contains
+only the intended 10-file P03 routing change. P03's production dashboard build,
+readiness, and authenticated browser smoke criteria remain separate work.
 
 ## Relevant files
 - P03: `dashboard/lib/useLiveStream.ts`, Helm web/ingress configuration,
@@ -98,6 +99,7 @@ Scratch Python environment:
 - Focused T01–T10/R01 security, policy, and executor suite: 231 passed, 3
   dependency-based skips (LangGraph is absent from the scratch environment).
 - Independent security review suite: 102 passed, 1 dependency-based skip.
+- PR #1 merged at 2026-08-26 04:38 UTC.
 - GitHub CI run #4: backend 408 passed; frontend type-check, namespace-scoped
   RBAC manifest verification, and both container image builds passed.
 - P03: 12 WebSocket tests and dashboard type-check passed locally; GitHub CI
@@ -111,4 +113,5 @@ Scratch Python environment:
 - The dependency stack remains intentionally combined for one full review.
 
 ## Next bounded task
-After PR #1 merges, retarget PR #2 to `master`, rerun checks, and await review.
+Await PR #2 review while beginning A01: add an immutable, reproducible run
+manifest as the foundation for the AI-rigor phase.
