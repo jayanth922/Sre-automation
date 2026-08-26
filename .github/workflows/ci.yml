@@ -35,7 +35,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Sync dependencies (validates the lockfile)
-        run: uv sync --frozen --no-dev
+        run: uv sync --frozen --extra dev
       - name: Byte-compile (fast fail on syntax errors)
         run: uv run python -m compileall backend sre_agent
       - name: Tests

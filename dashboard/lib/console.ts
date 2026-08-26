@@ -144,6 +144,7 @@ export interface Runbook {
   title: string
   service: string
   incident_type: string
+  severity: string
   path: string
 }
 
