@@ -38,6 +38,7 @@ from typing import Optional
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 from fault_adapter import MeridianAdminConfigAdapter  # noqa: E402
 from recovery_oracle import (  # noqa: E402
     PrometheusOracleClient,
@@ -53,6 +54,11 @@ from statistical_eval import (  # noqa: E402
     make_pair_id,
 )
 from structured_grading import append_grader_record  # noqa: E402
+
+from sre_agent.confidence_calibration import (  # noqa: E402
+    append_confidence_record,
+    build_confidence_record,
+)
 
 # ── Config ──────────────────────────────────────────────────────────────────
 BASE_URL = os.getenv("BENCH_BASE_URL", "http://localhost:8080")
@@ -71,6 +77,12 @@ GRADER_RESULTS_PATH = Path(
 )
 TRIAL_RESULTS_PATH = Path(
     os.getenv("BENCH_TRIAL_RESULTS_PATH", "reports/sre-bench-trials.jsonl")
+)
+CONFIDENCE_RESULTS_PATH = Path(
+    os.getenv(
+        "BENCH_CONFIDENCE_RESULTS_PATH",
+        "reports/sre-bench-confidence.jsonl",
+    )
 )
 EXPERIMENT_ID = os.getenv("BENCH_EXPERIMENT_ID", "").strip()
 CANDIDATE_ID = os.getenv("BENCH_CANDIDATE_ID", "").strip()
@@ -403,6 +415,54 @@ def _record_statistical_trial(
     append_trial(TRIAL_RESULTS_PATH, trial)
 
 
+def _record_confidence_observations(
+    spec: ScenarioSpec,
+    score,
+    *,
+    trial_index: int,
+) -> None:
+    """Pair task-specific self-confidence with exact structured outcomes."""
+    if not STATISTICAL_RECORDING:
+        return
+    pair_id = make_pair_id(
+        experiment_id=EXPERIMENT_ID,
+        dataset_sha256=DATASET.sha256,
+        scenario=spec.name,
+        scenario_version=spec.scenario_version,
+        trial_index=trial_index,
+        pair_seed=PAIR_SEED,
+    )
+    for task, confidence, outcome in (
+        (
+            "diagnosis",
+            score.diagnosis_confidence,
+            score.diagnosis_confidence_outcome,
+        ),
+        (
+            "remediation",
+            score.remediation_confidence,
+            score.remediation_confidence_outcome,
+        ),
+    ):
+        if confidence is None or outcome is None:
+            continue
+        append_confidence_record(
+            CONFIDENCE_RESULTS_PATH,
+            build_confidence_record(
+                task=task,
+                rubric_version=score.rubric_version,
+                raw_confidence=confidence,
+                outcome=outcome,
+                scenario=spec.name,
+                scenario_version=spec.scenario_version,
+                dataset_sha256=DATASET.sha256,
+                config_fingerprint=CONFIG_FINGERPRINT,
+                pair_id=pair_id,
+                observed_at=datetime.now(timezone.utc),
+            ),
+        )
+
+
 async def _run_trial(
     client: httpx.AsyncClient,
     jwt: str,
@@ -523,6 +583,7 @@ async def run() -> None:
             f"  experiment: {EXPERIMENT_ID}/{CANDIDATE_ID} "
             f"trials={TRIAL_RESULTS_PATH}"
         )
+        print(f"  confidence evidence: {CONFIDENCE_RESULTS_PATH}")
     print("=" * 74)
 
     all_scores = []
@@ -566,6 +627,11 @@ async def run() -> None:
                 score,
                 trial_index=trial_index,
                 latency_seconds=time.perf_counter() - trial_started,
+            )
+            _record_confidence_observations(
+                spec,
+                score,
+                trial_index=trial_index,
             )
             all_scores.append(score)
             print(line)

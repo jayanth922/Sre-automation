@@ -176,6 +176,7 @@ def _normalize_specialist_finding(
         "evidence": evidence,
         "conclusion": conclusion,
         "confidence": _confidence_from_response(raw_response),
+        "confidence_kind": "response_heuristic_qualitative_uncalibrated",
         "recommended_next_step": _infer_next_step(agent_name),
     }
 
@@ -340,7 +341,8 @@ def build_specialist_finding_content(
                 f"- objective: {objective}",
                 f"- evidence: {normalized['evidence']}",
                 f"- conclusion: {normalized['conclusion']}",
-                f"- confidence: {normalized['confidence']}",
+                "- response-confidence heuristic "
+                f"(qualitative, uncalibrated): {normalized['confidence']}",
                 f"- recommended next step: {normalized['recommended_next_step']}",
             ]
         )

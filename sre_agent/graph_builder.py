@@ -883,6 +883,9 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     3. Rollback plans
     4. Risk assessment
     5. Verification metrics (Golden Signals)
+    6. A task-specific confidence from 0.0 to 1.0 that the proposed remediation
+       is correct and safe. Do not copy diagnosis confidence; lower it for
+       missing evidence, uncertain targets, or unverified rollback behavior.
 
     CRITICAL INSTRUCTIONS:
     1. IF A RUNBOOK IS FOUND ABOVE: You MUST follow its steps exactly. Do not improvise.

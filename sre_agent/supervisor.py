@@ -1169,7 +1169,10 @@ User's query: {current_query}
             # Format the output from the OODA workflow
             final_response = f"## 🔍 Incident Investigation Summary\n\n"
             final_response += f"**Hypothesis:** {reflector_analysis.hypothesis}\n"
-            final_response += f"**Confidence:** {reflector_analysis.confidence:.0%}\n\n"
+            final_response += (
+                "**Self-reported confidence (uncalibrated):** "
+                f"{reflector_analysis.confidence:.0%}\n\n"
+            )
             final_response += f"### 🧠 Reasoning\n{reflector_analysis.reasoning}\n\n"
             
             final_response += f"## 📋 Recommended Remediation Plan\n\n"
@@ -1203,6 +1206,11 @@ User's query: {current_query}
                     **summary_payload,
                     "hypothesis": reflector_analysis.hypothesis,
                     "confidence": getattr(reflector_analysis, "confidence", None),
+                    "confidence_kind": "model_self_reported",
+                    "confidence_calibrated": False,
+                    "remediation_confidence": getattr(
+                        remediation_plan, "confidence", None
+                    ),
                     "benchmark_evaluation": {
                         "schema_version": 1,
                         "diagnosis": {

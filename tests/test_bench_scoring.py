@@ -34,7 +34,13 @@ def _spec_bad_deploy():
     )
 
 
-def _act_event(action_types, severity="SEV2", executed=None, target="checkout-service"):
+def _act_event(
+    action_types,
+    severity="SEV2",
+    executed=None,
+    target="checkout-service",
+    remediation_confidence=0.7,
+):
     return {
         "event_type": "act",
         "payload": {
@@ -49,6 +55,7 @@ def _act_event(action_types, severity="SEV2", executed=None, target="checkout-se
                     for a in action_types
                 ],
                 "executed": executed or [],
+                "raw_action_confidence": remediation_confidence,
             }
         },
     }
@@ -146,11 +153,31 @@ def test_score_run_end_to_end():
     assert score.severity_hit and score.safety_ok and score.mttr_seconds == 42.0
     assert score.rubric_version == "sre-structured-v1"
     assert score.grader_status == "INCOMPLETE"
+    assert score.diagnosis_confidence == 0.8
+    assert score.remediation_confidence == 0.7
 
 
 def test_score_run_unresolved():
     score = scoring.score_run(_spec_bad_deploy(), "UNRESOLVED", "investigated", "", [])
     assert score.resolved is False and score.root_cause_hit is None
+
+
+def test_unresolved_run_preserves_confidence_outcomes_without_quality_credit():
+    score = scoring.score_run(
+        _spec_bad_deploy(),
+        "UNRESOLVED",
+        "investigated",
+        "",
+        [_summary_event(), _act_event(["rollback"])],
+        incident_severity="SEV1",
+    )
+
+    assert score.root_cause_hit is None
+    assert score.remediation_hit is None
+    assert score.diagnosis_confidence == 0.8
+    assert score.diagnosis_confidence_outcome is True
+    assert score.remediation_confidence == 0.7
+    assert score.remediation_confidence_outcome is True
 
 
 def test_score_run_rejects_application_resolved_without_oracle_recovery():

@@ -11,8 +11,8 @@ run provenance is review-ready in
 [PR #3](https://github.com/jayanth922/Sre-automation/pull/3), which is mergeable
 with all four CI checks green. A02 independent recovery-oracle work is in the
 committed `a734f01` stacked branch. A03 is committed as `1a4edda`. A04
-is committed as `bc22c13`. A05 statistical-evaluation work is on
-`codex/a05-statistical-eval`, stacked on A04.
+is committed as `bc22c13`. A05 is committed as `c9f60ee`. A06 confidence
+calibration work is on `codex/a06-confidence-calibration`, stacked on A05.
 
 ## Current architecture and invariants
 - In the canonical API runner, `compute_incident_status` in
@@ -106,6 +106,12 @@ is committed as `bc22c13`. A05 statistical-evaluation work is on
   Reports include per-scenario distributions, Wilson and paired bootstrap
   intervals, pass@k/pass^k, paired deltas/effect sizes, critical-risk slices,
   and fail-closed non-inferiority/uncertainty/safety/structured-grade gates.
+- A06 first slice: strict rubric/config/scenario-pinned confidence/outcome
+  records feed reliability bins, Brier/log-loss/ECE/MCE metrics, monotonic
+  calibration artifacts, Wilson-supported autonomy thresholds, and reference
+  drift reports. Runtime and dashboard label raw confidence as uncalibrated;
+  the last-mile mutation gateway reloads operator-configured artifacts instead
+  of trusting a prior gate result.
 
 ## Active problem
 A02/A03 need a live chaos-backed run. Automatic and manual fault modes now
@@ -120,6 +126,9 @@ criteria as `REQUIRES_CALIBRATION` instead of quality scores.
 A05 has no live paired baseline/candidate trial artifact. Cost remains unknown
 until A08 supplies trace-complete accounting, and the promotion gate blocks
 while A04 structured grades are incomplete.
+A06 has no real diagnosis or remediation calibration artifact, no measured
+threshold, and no reference/current production drift window. The runtime
+therefore intentionally requires approval for mutating actions.
 
 ## Relevant files
 - A01: `sre_agent/run_manifest.py`, `backend/models.py`, the run-manifest
@@ -137,6 +146,10 @@ while A04 structured grades are incomplete.
 - A05: `benchmarks/statistical_eval.py`, `benchmarks/evaluation/v1/`,
   `tests/test_statistical_eval.py`, and A05 recording in
   `benchmarks/sre_bench.py`.
+- A06: `sre_agent/confidence_calibration.py`,
+  `benchmarks/confidence_eval.py`, `benchmarks/confidence/v1/`,
+  `tests/test_confidence_calibration.py`, `tests/test_confidence_eval.py`,
+  plus runtime policy/gateway and incident UI wiring.
 
 ## Verification commands and latest results
 Scratch Python environment:
@@ -149,7 +162,7 @@ Scratch Python environment:
   passed backend, frontend, rendered Helm routing/RBAC, and image builds.
 - A01: full local suite 415 passed; focused suite 75 passed; GitHub backend,
   frontend, manifests, and image-build checks pass.
-- A02–A05: 62 focused tests pass; evaluator files pass Black/Ruff and all
+- A02–A06: 117 focused tests pass; new evaluator files pass Black/Ruff and all
   changed Python compiles. A new full-suite attempt could not collect five
   unrelated modules because the available scratch environment lacks project
   dependencies (`pydantic`, `PyYAML`, `langchain-core`, and `python-jose`).
@@ -168,6 +181,9 @@ Scratch Python environment:
   8002, so an end-to-end run was not attempted.
 - V1 holdout is frozen and CI-protected but stored in the public repository; a
   truly hidden external holdout and controlled evaluator remain future work.
+- A06 artifacts require real A04 outcomes and the exact A01 configuration
+  fingerprint. No synthetic artifact is checked in or accepted as production
+  evidence; this keeps autonomy fail-closed until live support exists.
 - T01 has residual non-canonical drift: `agent_runtime_tasks.py` still writes
   RESOLVED unconditionally, the follow-up closure heuristic can treat any
   summary as closed, and Qdrant/skill learning can occur before objective
@@ -175,7 +191,8 @@ Scratch Python environment:
   canonical recovery evidence.
 
 ## Next bounded task
-Run two live candidate configurations with the same A05 experiment/pair seed
-and at least the policy minimum trials, then preserve the comparison report.
-This remains blocked on the live Meridian/Sentinel stack and genuine A04
-calibration labels; do not weaken either gate to manufacture promotion.
+Implement A07 adversarial and prompt-injection evaluation: define untrusted
+evidence boundaries and add executable cases for indirect injection, forged
+approval text, malicious runbooks/tool results, exfiltration, and cross-tenant
+bait. The separate live A02–A06 evidence run remains blocked on the stack and
+real labels; do not manufacture fixtures to enable autonomy.

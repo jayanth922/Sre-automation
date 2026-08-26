@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-from structured_grading import grade_structured_output
+from structured_grading import extract_structured_output, grade_structured_output
 
 
 @dataclass
@@ -63,6 +63,10 @@ class RunScore:
     grader_status: str = "NOT_APPLICABLE"
     rubric_version: Optional[str] = None
     structured_grade: Optional[Dict[str, Any]] = None
+    diagnosis_confidence: Optional[float] = None
+    remediation_confidence: Optional[float] = None
+    diagnosis_confidence_outcome: Optional[bool] = None
+    remediation_confidence_outcome: Optional[bool] = None
     notes: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -91,6 +95,13 @@ def _criterion_bool(grade: Any, name: str) -> Optional[bool]:
     return None
 
 
+def _confidence(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if 0 <= parsed <= 1 else None
+
+
 def score_run(
     spec: ScenarioSpec,
     oracle_status: str,
@@ -107,6 +118,31 @@ def score_run(
     }
     resolved = oracle_status == "VERIFIED_RECOVERED" and not platform_failed
     false_resolved = application_status.lower() == "resolved" and not resolved
+    act_report = extract_act_report(events)
+    structured_output = extract_structured_output(events)
+    uncertainty = (
+        structured_output.get("uncertainty", {})
+        if isinstance(structured_output, dict)
+        else {}
+    )
+    diagnosis_confidence = _confidence(
+        uncertainty.get("confidence")
+        if isinstance(uncertainty, dict)
+        else None
+    )
+    remediation_confidence = _confidence(
+        act_report.get("raw_action_confidence")
+        if isinstance(act_report, dict)
+        else None
+    )
+    grade = grade_structured_output(
+        spec,
+        events,
+        act_report=act_report,
+        incident_severity=incident_severity,
+    )
+    diagnosis_outcome = _criterion_bool(grade, "diagnosis")
+    remediation_outcome = _criterion_bool(grade, "remediation")
     if not resolved:
         return RunScore(
             scenario=spec.name,
@@ -114,6 +150,11 @@ def score_run(
             oracle_status=oracle_status,
             application_status=application_status,
             false_resolved=false_resolved,
+            diagnosis_confidence=diagnosis_confidence,
+            remediation_confidence=remediation_confidence,
+            diagnosis_confidence_outcome=diagnosis_outcome,
+            remediation_confidence_outcome=remediation_outcome,
+            rubric_version=grade.rubric_version,
             notes=(
                 f"platform outcome: {application_status}"
                 if platform_failed
@@ -121,13 +162,6 @@ def score_run(
             ),
         )
 
-    act_report = extract_act_report(events)
-    grade = grade_structured_output(
-        spec,
-        events,
-        act_report=act_report,
-        incident_severity=incident_severity,
-    )
     return RunScore(
         scenario=spec.name,
         resolved=True,
@@ -135,13 +169,17 @@ def score_run(
         application_status=application_status,
         false_resolved=False,
         mttr_seconds=mttr_seconds,
-        root_cause_hit=_criterion_bool(grade, "diagnosis"),
-        remediation_hit=_criterion_bool(grade, "remediation"),
+        root_cause_hit=diagnosis_outcome,
+        remediation_hit=remediation_outcome,
         severity_hit=_criterion_bool(grade, "severity"),
         safety_ok=_criterion_bool(grade, "safety") is True,
         grader_status=grade.overall_status,
         rubric_version=grade.rubric_version,
         structured_grade=grade.to_dict(),
+        diagnosis_confidence=diagnosis_confidence,
+        remediation_confidence=remediation_confidence,
+        diagnosis_confidence_outcome=diagnosis_outcome,
+        remediation_confidence_outcome=remediation_outcome,
         notes=(
             ""
             if grade.overall_status == "PASS"

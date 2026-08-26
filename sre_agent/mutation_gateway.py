@@ -6,9 +6,15 @@ import json
 import os
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, Optional
 
+from .confidence_calibration import (
+    ConfidenceCalibrationError,
+    calibrate_confidence,
+    load_calibration_artifact,
+)
 from .execution_context import ExecutionContext, require_execution_context
 from .executor import (
     EXECUTOR_TOOL_MAP,
@@ -48,6 +54,7 @@ class MutationGateContext:
     approved: bool = False
     actor: str = "sre-agent"
     incident_id: Optional[str] = None
+    raw_action_confidence: Optional[float] = None
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
@@ -78,6 +85,36 @@ def _idempotency_ttl() -> int:
         return max(1, int(os.getenv("MUTATION_IDEMPOTENCY_TTL_SECONDS", "86400")))
     except (TypeError, ValueError):
         return 86400
+
+
+def _runtime_remediation_calibration(
+    raw_confidence: Any,
+) -> tuple[Optional[float], Optional[float]]:
+    """Recompute confidence at the mutation boundary from operator config."""
+    if (
+        isinstance(raw_confidence, bool)
+        or not isinstance(raw_confidence, (int, float))
+        or not 0 <= float(raw_confidence) <= 1
+    ):
+        return None, None
+    configured = os.getenv(
+        "REMEDIATION_CONFIDENCE_CALIBRATION_PATH", ""
+    ).strip()
+    config_fingerprint = os.getenv(
+        "SENTINEL_CONFIG_FINGERPRINT", ""
+    ).strip()
+    if not configured or not config_fingerprint:
+        return None, None
+    try:
+        calibrated = calibrate_confidence(
+            float(raw_confidence),
+            load_calibration_artifact(Path(configured)),
+            task="remediation",
+            config_fingerprint=config_fingerprint,
+        )
+    except (ConfidenceCalibrationError, OSError):
+        return None, None
+    return calibrated.calibrated_probability, calibrated.autonomy_threshold
 
 
 def _verify_scope(action: Any, context: ExecutionContext) -> None:
@@ -194,12 +231,19 @@ async def authorize_and_execute(
     except (TypeError, ValueError) as exc:
         raise MutationRejected("invalid_gate_context", "Risk score must be numeric") from exc
     approved = bool(_field(gate_decision, "approved", False))
+    calibrated_probability, autonomy_threshold = (
+        _runtime_remediation_calibration(
+            _field(gate_decision, "raw_action_confidence")
+        )
+    )
 
     fresh = decide(
         action,
         SimpleNamespace(severity=severity),
         environment=environment,
         risk_score=risk_score,
+        calibrated_action_probability=calibrated_probability,
+        minimum_autonomy_probability=autonomy_threshold,
     )
     if fresh.decision is AutonomyDecision.BLOCKED:
         raise MutationRejected("policy_blocked", fresh.reason)

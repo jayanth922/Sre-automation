@@ -41,8 +41,9 @@ false-resolved.
 
 Requires the live stack with a connected cluster. The full OODA loop (which
 produces the `act_report` used by the remediation/severity/safety columns) runs
-by default — no flag. Set `EXECUTOR_LIVE=true` only if you want autonomous fixes
-actually applied during the run.
+by default — no flag. `EXECUTOR_LIVE=true` permits live execution only after
+all policy gates pass, including a valid task-specific remediation calibration
+artifact or explicit human approval.
 
 ```bash
 # 1. bring the platform up (deploy/k8s/install.sh or terraform apply)
@@ -65,6 +66,17 @@ randomizes the shared trial schedule and appends strict records to
 `BENCH_TRIAL_RESULTS_PATH` (default `reports/sre-bench-trials.jsonl`). Compare
 candidate runs with `statistical_eval.py`; see
 `benchmarks/evaluation/README.md`.
+
+The same paired run writes exact confidence/outcome observations to
+`BENCH_CONFIDENCE_RESULTS_PATH` (default
+`reports/sre-bench-confidence.jsonl`). Use `confidence_eval.py` for A06
+reliability metrics, content-addressed monotonic calibration artifacts, measured
+autonomy thresholds, and reference drift checks. Runtime diagnosis and
+remediation artifacts are configured separately with
+`DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH` and
+`REMEDIATION_CONFIDENCE_CALIBRATION_PATH`; `SENTINEL_CONFIG_FINGERPRINT` must
+match the artifact configuration. Absent, invalid, or mismatched artifacts fail
+closed. See `benchmarks/confidence/README.md`.
 
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped

@@ -149,6 +149,15 @@ class RemediationPlan(BaseModel):
     risk_level: Literal["low", "medium", "high"] = Field(
         ..., description="Overall risk level of the plan"
     )
+    confidence: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Self-reported probability that the proposed remediation is correct "
+            "and safe; calibration is required before it can affect autonomy"
+        ),
+    )
     requires_approval: bool = Field(
         True, description="Whether this plan requires human approval"
     )

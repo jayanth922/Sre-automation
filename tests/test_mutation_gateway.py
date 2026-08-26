@@ -88,6 +88,44 @@ async def _no_audit(*args, **kwargs):
     return None
 
 
+def test_gateway_does_not_trust_prior_self_confidence(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.delenv(
+        "REMEDIATION_CONFIDENCE_CALIBRATION_PATH", raising=False
+    )
+    observed = {}
+
+    def fresh_decision(*args, **kwargs):
+        observed.update(kwargs)
+        return _fresh(AutonomyDecision.REQUIRES_APPROVAL)
+
+    monkeypatch.setattr(gateway, "decide", fresh_decision)
+    planned = MutationGateContext(
+        decision="autonomous",
+        severity=Severity.SEV3,
+        raw_action_confidence=1.0,
+    )
+
+    with pytest.raises(MutationRejected, match="approval_required"):
+        asyncio.run(
+            authorize_and_execute(
+                FakeAction(),
+                planned,
+                CONTEXT,
+                lambda *args: None,
+                None,
+                "uncalibrated-confidence",
+            )
+        )
+
+    assert observed["calibrated_action_probability"] is None
+    assert observed["minimum_autonomy_probability"] is None
+    assert store.claims == set()
+
+
 def test_lock_between_plan_and_execute_hard_blocks(monkeypatch):
     import sre_agent.mutation_gateway as gateway
 

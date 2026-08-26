@@ -34,6 +34,8 @@ def test_minor_contained_blip_is_low_severity():
     signals = IncidentSignals(
         affected_services=1, user_facing=False, error_rate=0.02, slo_breached=False,
         slo_burn_rate=0.5, saturation=0.1, still_escalating=False,
+        hypothesis_confidence=1.0,
+        hypothesis_confidence_calibrated=True,
     )
     a = classify_severity(signals)
     assert a.severity is Severity.SEV4
@@ -46,6 +48,8 @@ def test_high_impact_low_urgency_is_mid():
         affected_services=5, user_facing=True, revenue_impacting=True,
         error_rate=0.8, slo_breached=True,
         slo_burn_rate=0.0, saturation=0.0, still_escalating=False,
+        hypothesis_confidence=1.0,
+        hypothesis_confidence_calibrated=True,
     )
     a = classify_severity(signals)
     assert a.impact_bucket == "high"
@@ -59,6 +63,7 @@ def test_low_confidence_rounds_severity_up():
         affected_services=2, error_rate=0.3, slo_breached=False,
         slo_burn_rate=5.0, saturation=0.4,
         hypothesis_confidence=1.0,
+        hypothesis_confidence_calibrated=True,
     )
     confident = classify_severity(base_signals)
 
@@ -67,6 +72,22 @@ def test_low_confidence_rounds_severity_up():
     )
     assert unsure.rounded_up is True
     assert int(unsure.severity) == int(confident.severity) - 1  # one level more critical
+
+
+def test_uncalibrated_high_self_confidence_still_rounds_up():
+    assessment = classify_severity(
+        IncidentSignals(
+            affected_services=1,
+            error_rate=0.02,
+            slo_burn_rate=0.5,
+            hypothesis_confidence=1.0,
+            hypothesis_confidence_calibrated=False,
+        )
+    )
+
+    assert assessment.severity is Severity.SEV3
+    assert assessment.confidence_calibrated is False
+    assert "uncalibrated" in assessment.rationale
 
 
 def test_roundup_clamps_at_sev1():
