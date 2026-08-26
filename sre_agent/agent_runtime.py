@@ -966,6 +966,7 @@ async def _run_graph_impl(
 
         await db.commit()
 
+    runtime = None
     try:
         runtime = await initialize_agent(cluster_id)
         agent_graph, tools = runtime.graph, runtime.tools
@@ -1038,6 +1039,53 @@ async def _run_graph_impl(
                 starts_at=alert_starts_at,
             )
 
+        if job_id is None:
+            raise RuntimeError(
+                "incident investigations require a persisted job for run provenance"
+            )
+
+        # A01: establish immutable provenance before the graph can make any
+        # model or tool call. A retry reuses the original manifest/root trace;
+        # it never rewrites configuration history.
+        from sre_agent.run_manifest import build_run_manifest, persist_run_manifest
+
+        async with database.AsyncSessionLocal() as db:
+            existing_manifest = await crud.get_run_manifest_for_job(
+                db, cluster_id, job_id
+            )
+            if existing_manifest is None:
+                built_manifest = build_run_manifest(
+                    execution_context=runtime.context,
+                    tools=tools,
+                    incident_id=incident_id,
+                    job_id=job_id,
+                    input_payload={
+                        "alert_name": alert_name,
+                        "labels": effective_labels,
+                        "annotations": effective_annotations,
+                        "starts_at": alert_starts_at,
+                        "severity": normalised_severity,
+                    },
+                )
+                existing_manifest = await persist_run_manifest(
+                    db,
+                    built=built_manifest,
+                    job_id=job_id,
+                    incident_id=incident_id,
+                    cluster_id=cluster_id,
+                    organization_id=uuid.UUID(str(runtime.context.organization_id)),
+                )
+                await db.commit()
+                if not built_manifest.comparable:
+                    logger.warning(
+                        "Run %s is non-comparable: %s",
+                        job_id,
+                        "; ".join(built_manifest.non_comparable_reasons),
+                    )
+
+            run_manifest_id = str(existing_manifest.id)
+            root_trace_id = existing_manifest.root_trace_id
+
         # Build a one-line, searchable summary the specialists can use as a
         # focused query — including the most actionable label hints.
         actionable_label_hints: List[str] = []
@@ -1066,6 +1114,8 @@ async def _run_graph_impl(
                 "incident_id": str(incident_id),
                 "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
+                "run_manifest_id": run_manifest_id,
+                "root_trace_id": root_trace_id,
             },
             "requires_collaboration": True,
             "agents_invoked": [],
@@ -1091,9 +1141,21 @@ async def _run_graph_impl(
         current_execution_state = initial_state
         
         from .checkpointer import thread_config, thread_id_from_state
+        graph_config = thread_config(
+            thread_id_from_state(initial_state),
+            {
+                "callbacks": [callback_handler],
+                "metadata": {
+                    "run_manifest_id": run_manifest_id,
+                    "root_trace_id": root_trace_id,
+                    "incident_id": str(incident_id),
+                    "job_id": str(job_id),
+                },
+            },
+        )
         async for event in agent_graph.astream(
             initial_state,
-            config=thread_config(thread_id_from_state(initial_state), {"callbacks": [callback_handler]}),
+            config=graph_config,
         ):
             for node_name, node_output in event.items():
                 logger.info(f"SaaS Background processing node: {node_name}")
@@ -1232,6 +1294,63 @@ async def _run_graph_impl(
         logger.error(f"SaaS Background execution failed: {e}")
         error_log = f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}"
         state_store.append_log(session_id, error_log)
+
+        # Even startup failures need durable provenance. If initialization
+        # failed before tool discovery, persist a deliberately non-comparable
+        # manifest (empty tool schema set) rather than leaving no record.
+        if job_id is not None:
+            try:
+                async with database.AsyncSessionLocal() as manifest_db:
+                    failed_manifest = await crud.get_run_manifest_for_job(
+                        manifest_db, cluster_id, job_id
+                    )
+                    if failed_manifest is None:
+                        cluster_row = await manifest_db.get(models.Cluster, cluster_id)
+                        if cluster_row is None:
+                            raise RuntimeError(
+                                "cluster missing while recording failed run"
+                            )
+                        failure_context = (
+                            runtime.context
+                            if runtime is not None
+                            else ExecutionContext.from_cluster(cluster_row)
+                        )
+                        from sre_agent.run_manifest import (
+                            build_run_manifest,
+                            persist_run_manifest,
+                        )
+
+                        built_failure_manifest = build_run_manifest(
+                            execution_context=failure_context,
+                            tools=runtime.tools if runtime is not None else [],
+                            incident_id=incident_id,
+                            job_id=job_id,
+                            input_payload={
+                                "alert_name": alert_name,
+                                "labels": alert_labels or {},
+                                "annotations": alert_annotations or {},
+                                "starts_at": alert_starts_at,
+                                "severity": alert_severity,
+                                "run_stage": "startup_failed",
+                            },
+                        )
+                        await persist_run_manifest(
+                            manifest_db,
+                            built=built_failure_manifest,
+                            job_id=job_id,
+                            incident_id=incident_id,
+                            cluster_id=cluster_id,
+                            organization_id=uuid.UUID(
+                                str(failure_context.organization_id)
+                            ),
+                        )
+                        await manifest_db.commit()
+            except Exception as manifest_error:
+                logger.error(
+                    "Failed to persist provenance for failed job %s: %s",
+                    job_id,
+                    manifest_error,
+                )
 
         async with database.AsyncSessionLocal() as db:
             try:

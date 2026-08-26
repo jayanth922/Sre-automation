@@ -1,16 +1,13 @@
 # PROJECT_STATE.md
 
 ## Project objective
-Harden Sentinel's P0 trust and safety findings T01–T10 plus R01, then close
-bounded operational risks. The verified P0 plan is
-`/Users/jayan/.claude/plans/fluttering-inventing-lerdorf.md`.
+Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-Phase 3. **T01–T10, R01, and security-review fixes are merged to `master`**
-through [GitHub PR #1](https://github.com/jayanth922/Sre-automation/pull/1).
-P03 routing is published on `codex/p03-websocket-proxy` in
-[GitHub PR #2](https://github.com/jayanth922/Sre-automation/pull/2), now based
-directly on `master`.
+Phase 4. **T01–T10, R01, security-review fixes, and P03 routing are merged to
+`master`** through [PR #1](https://github.com/jayanth922/Sre-automation/pull/1)
+and [PR #2](https://github.com/jayanth922/Sre-automation/pull/2). A01 immutable
+run provenance is implemented on `codex/a01-run-manifest`.
 
 ## Current architecture and invariants
 - `sre_agent/incident_status.py::compute_incident_status` is the sole decision
@@ -29,14 +26,10 @@ directly on `master`.
   single-use invitation whose persisted scope and role are authoritative.
 - Canonical `AuditEvent` records may be cluster-scoped or organization-scoped,
   with a database check requiring at least one scope.
-- Agent graphs, tools, and MCP clients use immutable tenant `ExecutionContext`
-  objects and non-secret per-cluster cache fingerprints. MCP routes and policy
-  environment come only from operator configuration; tenant URLs/alert labels
-  cannot receive the service token or weaken production policy.
-- Cluster credentials use versioned AES-GCM storage. The connection token has a
-  separate SHA-256 lookup hash; response schemas expose no stored credentials.
-- API-to-MCP HTTP/SSE transport requires `MCP_SERVICE_TOKEN`; edge servers fail
-  closed before FastMCP and local published ports bind to loopback.
+- Graphs, tools, and MCP clients use immutable tenant `ExecutionContext` objects;
+  MCP routes and policy environment are operator-controlled.
+- Credentials use versioned AES-GCM storage and hashed token lookup. API-to-MCP
+  transport is authenticated; local edge ports bind to loopback.
 - Non-autonomous reports create a PostgreSQL `ApprovalRequest` before a durable
   graph interrupt. Admin/org/hash/expiry checks and an atomic pending-row CAS
   precede synchronous resume on the stored thread; blocked actions stay blocked.
@@ -45,6 +38,9 @@ directly on `master`.
 - Every live write goes through `mutation_gateway.authorize_and_execute`, which
   freshly checks Redis lock state, policy, tenant namespace, and an atomic
   idempotency claim before the private executor core, then persists `AuditEvent`.
+- Every started incident job writes one database-enforced immutable run manifest
+  before graph invocation. Missing code/model/prompt/tool/tenant provenance marks
+  the run non-comparable; tenant-scoped APIs expose and compare manifests.
 
 ## Completed or verified work
 - T01: expanded incident outcome states and truthful status computation;
@@ -63,34 +59,30 @@ directly on `master`.
 - T05: secure admin-created invitations, atomic public acceptance, server-fixed
   user scope/role, organization audit events, and removal of registration's
   organization-name auto-join; `tests/test_invitations.py`.
-- T06+T09: per-cluster execution context/runtime cache, production fail-closed
-  tool construction, encrypted credential migration/rotation, hashed cluster
-  token lookup, authenticated MCP transport, and loopback edge ports;
-  `tests/test_execution_context.py`, `tests/test_crypto.py`,
-  `tests/test_credential_redaction.py`, `tests/test_mcp_auth.py`.
-- T07: durable exact-action approvals, async PostgreSQL checkpoint resume,
-  atomic expiry/replay protection, synchronous execution, and dashboard request
-  wiring; `tests/test_approval_flow.py`.
+- T06+T09: tenant-bound tools, encrypted credentials, authenticated MCP, and
+  loopback edge ports; execution-context/crypto/MCP tests.
+- T07: durable exact-action approvals and atomic PostgreSQL resume;
+  `tests/test_approval_flow.py`.
 - T10: namespaced observer/actuator Roles, pod-only deletion, explicit
   cluster-wide opt-in, Helm CI and live authorization checks;
   `tests/test_rbac_scope.py`.
-- T08: sole live-mutation gateway, fresh lock/policy/scope authorization, Redis
-  `SET NX EX` idempotency, private unchecked executor, and canonical audit
-  persistence; `tests/test_mutation_gateway.py`.
-- Security review fixes: operator-only MCP routing, trusted policy environment,
-  internal-token auth on the legacy webhook, and fail-closed structured MCP
-  outcomes with honest audit/verification status.
+- T08: sole live-mutation gateway with fresh authorization, idempotency, and
+  audit persistence; `tests/test_mutation_gateway.py`.
+- Security review fixes: trusted MCP policy/routes and fail-closed outcomes.
 - P03: dashboard defaults to same-origin `/ws`, Helm ingress routes that path
   directly to the API, and explicit split-origin overrides remain supported.
+- A01: secret-free run manifests capture code/graph/prompt/model/tool/input/tenant
+  provenance, root trace correlation, comparability reasons, and exact config
+  drift; image builds carry their source SHA and CI applies migrations.
 
 ## Active problem
-PR #2 awaits user review. It is based on `master`, conflict-free, and contains
-only the intended 10-file P03 routing change. P03's production dashboard build,
-readiness, and authenticated browser smoke criteria remain separate work.
+A01 awaits review and full CI on `codex/a01-run-manifest`. P03's production
+dashboard build, readiness, and authenticated browser smoke criteria remain
+separate work.
 
 ## Relevant files
-- P03: `dashboard/lib/useLiveStream.ts`, Helm web/ingress configuration,
-  `scripts/check_helm_ws.sh`, CI, and `tests/test_ws_auth.py`.
+- A01: `sre_agent/run_manifest.py`, `backend/models.py`, the run-manifest
+  migration, runtime/jobs API wiring, and `tests/test_run_manifest.py`.
 
 ## Verification commands and latest results
 Scratch Python environment:
@@ -99,19 +91,18 @@ Scratch Python environment:
 - Focused T01–T10/R01 security, policy, and executor suite: 231 passed, 3
   dependency-based skips (LangGraph is absent from the scratch environment).
 - Independent security review suite: 102 passed, 1 dependency-based skip.
-- PR #1 merged at 2026-08-26 04:38 UTC.
-- GitHub CI run #4: backend 408 passed; frontend type-check, namespace-scoped
-  RBAC manifest verification, and both container image builds passed.
 - P03: 12 WebSocket tests and dashboard type-check passed locally; GitHub CI
   passed backend, frontend, rendered Helm routing/RBAC, and image builds.
+- A01 focused provenance/model/auth/IDOR suite: 75 passed; Python compile and
+  migration-head checks passed. CI now runs live `alembic upgrade head`.
 
 ## Known blockers or risks
-- CI now covers the complete dependency suite and builds, but no live MCP,
-  PostgreSQL migration, T07 restart/resume, or cluster authorization test ran.
-- The repository-wide Gemini review job lacks authentication and fails outside
-  P03; GitHub still reports the stacked PR conflict-free and mergeable.
-- The dependency stack remains intentionally combined for one full review.
+- No live MCP, T07 restart/resume, or cluster authorization test has run.
+- A01 records configured model routes and trace correlation; reconciling actual
+  per-call fallback, tokens, cost, and trace completeness remains A08.
+- Process-local job dispatch can still lose queued work before a worker starts;
+  durable queue/worker execution remains R02.
 
 ## Next bounded task
-Await PR #2 review while beginning A01: add an immutable, reproducible run
-manifest as the foundation for the AI-rigor phase.
+Publish A01 for review, then implement A02's independent outcome oracle without
+using graph completion or self-authored summaries as recovery evidence.
