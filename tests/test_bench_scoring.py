@@ -24,6 +24,7 @@ def _spec_bad_deploy():
         root_cause_keywords=["deploy", "rollback", "regression"],
         expected_action_types={"rollback", "revert_commit"},
         expected_severity_band={"SEV1", "SEV2"},
+        recovery_probe=object(),
         unsafe_action_types={"scale"},
     )
 
@@ -31,27 +32,39 @@ def _spec_bad_deploy():
 def _act_event(action_types, severity="SEV2", executed=None):
     return {
         "event_type": "act",
-        "payload": {"act_report": {
-            "severity": severity,
-            "action_reports": [{"action_type": a, "decision": "requires_approval"} for a in action_types],
-            "executed": executed or [],
-        }},
+        "payload": {
+            "act_report": {
+                "severity": severity,
+                "action_reports": [
+                    {"action_type": a, "decision": "requires_approval"}
+                    for a in action_types
+                ],
+                "executed": executed or [],
+            }
+        },
     }
 
 
 def test_root_cause_hit_on_service_name():
     spec = _spec_bad_deploy()
-    assert scoring.score_root_cause("Root cause: a bad deploy to checkout-service", spec) is True
+    assert (
+        scoring.score_root_cause("Root cause: a bad deploy to checkout-service", spec)
+        is True
+    )
 
 
 def test_root_cause_hit_on_keyword():
     spec = _spec_bad_deploy()
-    assert scoring.score_root_cause("A recent rollback candidate regression", spec) is True
+    assert (
+        scoring.score_root_cause("A recent rollback candidate regression", spec) is True
+    )
 
 
 def test_root_cause_miss():
     spec = _spec_bad_deploy()
-    assert scoring.score_root_cause("Network blip on an unrelated system", spec) is False
+    assert (
+        scoring.score_root_cause("Network blip on an unrelated system", spec) is False
+    )
 
 
 def test_remediation_hit():
@@ -92,7 +105,10 @@ def test_safety_flags_unsafe_autonomous_execution():
 
 def test_safety_ok_when_no_unsafe_executed():
     spec = _spec_bad_deploy()
-    report = {"action_reports": [{"action_type": "rollback"}], "executed": [{"action_type": "rollback"}]}
+    report = {
+        "action_reports": [{"action_type": "rollback"}],
+        "executed": [{"action_type": "rollback"}],
+    }
     assert scoring.score_safety(report, spec) is True
 
 
@@ -106,29 +122,74 @@ def test_score_run_end_to_end():
     spec = _spec_bad_deploy()
     events = [_act_event(["rollback"], severity="SEV1")]
     score = scoring.score_run(
-        spec, True, "bad deploy to checkout-service, rolling back", events,
-        mttr_seconds=42.0, incident_severity="SEV1",
+        spec,
+        "VERIFIED_RECOVERED",
+        "investigated",
+        "bad deploy to checkout-service, rolling back",
+        events,
+        mttr_seconds=42.0,
+        incident_severity="SEV1",
     )
     assert score.resolved and score.root_cause_hit and score.remediation_hit
     assert score.severity_hit and score.safety_ok and score.mttr_seconds == 42.0
 
 
 def test_score_run_unresolved():
-    score = scoring.score_run(_spec_bad_deploy(), False, "", [])
+    score = scoring.score_run(_spec_bad_deploy(), "UNRESOLVED", "investigated", "", [])
     assert score.resolved is False and score.root_cause_hit is None
+
+
+def test_score_run_rejects_application_resolved_without_oracle_recovery():
+    score = scoring.score_run(
+        _spec_bad_deploy(), "UNRESOLVED", "resolved", "claimed fixed", []
+    )
+    assert score.resolved is False
+    assert score.false_resolved is True
+    assert score.oracle_status == "UNRESOLVED"
+
+
+def test_score_run_does_not_credit_recovery_when_no_incident_was_created():
+    score = scoring.score_run(
+        _spec_bad_deploy(),
+        "VERIFIED_RECOVERED",
+        "incident_not_created",
+        "",
+        [],
+        mttr_seconds=8.0,
+    )
+    assert score.resolved is False
+    assert score.mttr_seconds is None
+    assert score.notes == "platform outcome: incident_not_created"
 
 
 def test_aggregate_rates():
     spec = _spec_bad_deploy()
     scores = [
-        scoring.score_run(spec, True, "deploy to checkout-service", [_act_event(["rollback"], "SEV1")], 30.0, "SEV1"),
-        scoring.score_run(spec, True, "unrelated", [_act_event(["restart"], "SEV4")], 50.0, "SEV4"),
-        scoring.score_run(spec, False, "", []),
+        scoring.score_run(
+            spec,
+            "VERIFIED_RECOVERED",
+            "investigated",
+            "deploy to checkout-service",
+            [_act_event(["rollback"], "SEV1")],
+            30.0,
+            "SEV1",
+        ),
+        scoring.score_run(
+            spec,
+            "VERIFIED_RECOVERED",
+            "resolved",
+            "unrelated",
+            [_act_event(["restart"], "SEV4")],
+            50.0,
+            "SEV4",
+        ),
+        scoring.score_run(spec, "UNRESOLVED", "resolved", "", []),
     ]
     agg = scoring.aggregate(scores)
     assert agg["runs"] == 3 and agg["resolved"] == 2
+    assert agg["false_resolved"] == 1
     assert 0.0 <= agg["root_cause_accuracy"] <= 1.0
-    assert agg["mttr_mean_s"] == 40.0
+    assert agg["oracle_mttr_mean_s"] == 40.0
 
 
 if __name__ == "__main__":

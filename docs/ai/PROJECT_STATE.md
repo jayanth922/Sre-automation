@@ -7,12 +7,15 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 Phase 4. **T01–T10, R01, security-review fixes, and P03 routing are merged to
 `master`** through [PR #1](https://github.com/jayanth922/Sre-automation/pull/1)
 and [PR #2](https://github.com/jayanth922/Sre-automation/pull/2). A01 immutable
-run provenance is published in
-[PR #3](https://github.com/jayanth922/Sre-automation/pull/3).
+run provenance is review-ready in
+[PR #3](https://github.com/jayanth922/Sre-automation/pull/3), which is mergeable
+with all four CI checks green. A02 independent recovery-oracle work is in the
+uncommitted `codex/a02-recovery-oracle` working tree stacked on A01.
 
 ## Current architecture and invariants
-- `sre_agent/incident_status.py::compute_incident_status` is the sole decision
-  point for RESOLVED; graph completion alone does not mean recovery.
+- In the canonical API runner, `compute_incident_status` in
+  `sre_agent/incident_status.py` is the sole RESOLVED decision point; graph
+  completion alone does not mean recovery.
 - Canonical user auth is in `sre_agent/api/v1/auth_deps.py`. Authenticated v1
   routers use router-level `get_current_user_and_org`; legacy global runtime
   routes require `INTERNAL_API_TOKEN` and fail closed when it is unset.
@@ -75,15 +78,25 @@ run provenance is published in
 - A01: secret-free run manifests capture code/graph/prompt/model/tool/input/tenant
   provenance, root trace correlation, comparability reasons, and exact config
   drift; image builds carry their source SHA and CI applies migrations.
+- A02 implementation: benchmark scenarios own deterministic Prometheus probes;
+  recovery requires a healthy baseline, a failing observation, then consecutive
+  healthy observations; ambiguous/missing evidence fails closed. Application
+  status is comparison context only, false-resolved claims are explicit, and
+  append-only JSONL evidence is stored outside incident/job output.
 
 ## Active problem
-A01 awaits review and full CI in PR #3. P03's production
-dashboard build, readiness, and authenticated browser smoke criteria remain
-separate work.
+A02 needs a live chaos-backed run. The repository's benchmark emits synthetic
+alerts but does not inject workload faults, so healthy telemetry now produces
+`INVALID_SCENARIO` rather than fake recovery/MTTR. Automated, versioned fault
+injection belongs with A03 scenario manifests. P03's production dashboard
+build, readiness, and authenticated browser smoke remain separate work.
 
 ## Relevant files
 - A01: `sre_agent/run_manifest.py`, `backend/models.py`, the run-manifest
   migration, runtime/jobs API wiring, and `tests/test_run_manifest.py`.
+- A02: `benchmarks/recovery_oracle.py`, `benchmarks/sre_bench.py`,
+  `benchmarks/scoring.py`, `tests/test_recovery_oracle.py`, and
+  `tests/test_bench_scoring.py`.
 
 ## Verification commands and latest results
 Scratch Python environment:
@@ -94,18 +107,30 @@ Scratch Python environment:
 - Independent security review suite: 102 passed, 1 dependency-based skip.
 - P03: 12 WebSocket tests and dashboard type-check passed locally; GitHub CI
   passed backend, frontend, rendered Helm routing/RBAC, and image builds.
-- A01: full local suite 415 passed; focused suite 75 passed; new files pass
-  Ruff/Black, Python compile, migration-head, shell, and Compose checks.
+- A01: full local suite 415 passed; focused suite 75 passed; GitHub backend,
+  frontend, manifests, and image-build checks pass.
+- A02: 32 focused tests pass; changed Python files pass Black, Ruff, and
+  compileall. A new full-suite attempt could not collect five unrelated modules
+  because the available scratch environment lacks project dependencies
+  (`pydantic`, `PyYAML`, `langchain-core`, and `python-jose`).
 
 ## Known blockers or risks
 - No live MCP, T07 restart/resume, or cluster authorization test has run.
-- GitHub has not attached a CI event to PR #3; its live PostgreSQL migration
-  check remains pending despite the complete local suite passing.
+- PR #3 has green CI, but its live PostgreSQL migration behavior has not been
+  exercised outside GitHub's migration job.
 - A01 records configured model routes and trace correlation; reconciling actual
   per-call fallback, tokens, cost, and trace completeness remains A08.
 - Process-local job dispatch can still lose queued work before a worker starts;
   durable queue/worker execution remains R02.
+- No live A02 oracle artifact exists yet; Prometheus label/query compatibility
+  and real fault-to-recovery timing remain unverified.
+- T01 has residual non-canonical drift: `agent_runtime_tasks.py` still writes
+  RESOLVED unconditionally, the follow-up closure heuristic can treat any
+  summary as closed, and Qdrant/skill learning can occur before objective
+  verification. These belong to R05/A10 cleanup and must not be treated as
+  canonical recovery evidence.
 
 ## Next bounded task
-Publish A01 for review, then implement A02's independent outcome oracle without
-using graph completion or self-authored summaries as recovery evidence.
+Review the A02 diff, run one real chaos scenario against direct Prometheus, and
+capture its JSONL evidence. Fix any probe-label drift, then commit/publish A02;
+after that, begin A03 with versioned fault-injection/scenario manifests.

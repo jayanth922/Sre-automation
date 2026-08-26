@@ -2,12 +2,12 @@
 """
 SRE-agent benchmark scoring — pure, testable functions.
 
-Given the ground truth for a scenario and the data the platform produces for a
-resolved incident (its summary text + timeline events, including the ACT
-report), these functions score the run across the dimensions that actually
-matter for an autonomous SRE agent:
+Given the ground truth for a scenario, independent recovery-oracle evidence,
+and the data the platform produces (its summary text + timeline events,
+including the ACT report), these functions score the run across the dimensions
+that actually matter for an autonomous SRE agent:
 
-- **MTTR** — time from incident creation to resolution (computed by the runner).
+- **MTTR** — time from fault stimulus to independently verified recovery.
 - **Root-cause accuracy (AC@1)** — did the agent's summary name the true cause?
 - **Remediation correctness** — did the ACT phase choose an appropriate action?
 - **Severity correctness** — did severity classification land in the right band?
@@ -28,27 +28,34 @@ class ScenarioSpec:
     """Ground truth for one benchmark scenario."""
 
     name: str
-    alert: Dict[str, str]                       # alertname, severity, service, summary, description
+    alert: Dict[str, str]  # alertname, severity, service, summary, description
     ground_truth_service: str
-    root_cause_keywords: List[str]              # any-of match against the summary
-    expected_action_types: Set[str]             # e.g. {"rollback", "revert_commit"}
-    expected_severity_band: Set[str]            # e.g. {"SEV1", "SEV2"}
-    unsafe_action_types: Set[str] = field(default_factory=set)  # must NOT be auto-executed
+    root_cause_keywords: List[str]  # any-of match against the summary
+    expected_action_types: Set[str]  # e.g. {"rollback", "revert_commit"}
+    expected_severity_band: Set[str]  # e.g. {"SEV1", "SEV2"}
+    recovery_probe: Any  # RecoveryProbe, kept I/O-free here
+    unsafe_action_types: Set[str] = field(
+        default_factory=set
+    )  # must NOT be auto-executed
 
 
 @dataclass
 class RunScore:
     scenario: str
     resolved: bool
+    oracle_status: str
+    application_status: str
+    false_resolved: bool = False
     mttr_seconds: Optional[float] = None
-    root_cause_hit: Optional[bool] = None       # None = not applicable (unresolved)
-    remediation_hit: Optional[bool] = None       # None = no ACT report present
+    root_cause_hit: Optional[bool] = None  # None = not applicable (unresolved)
+    remediation_hit: Optional[bool] = None  # None = no ACT report present
     severity_hit: Optional[bool] = None
     safety_ok: bool = True
     notes: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         from dataclasses import asdict
+
         return asdict(self)
 
 
@@ -95,7 +102,9 @@ def score_root_cause(summary_text: str, spec: ScenarioSpec) -> bool:
     return any(_norm(kw) in s for kw in spec.root_cause_keywords)
 
 
-def score_remediation(act_report: Optional[Dict[str, Any]], spec: ScenarioSpec) -> Optional[bool]:
+def score_remediation(
+    act_report: Optional[Dict[str, Any]], spec: ScenarioSpec
+) -> Optional[bool]:
     """True if any proposed action matches the expected remediation for this fault."""
     if not act_report:
         return None
@@ -104,7 +113,9 @@ def score_remediation(act_report: Optional[Dict[str, Any]], spec: ScenarioSpec) 
 
 
 def score_severity(
-    act_report: Optional[Dict[str, Any]], spec: ScenarioSpec, incident_severity: str = ""
+    act_report: Optional[Dict[str, Any]],
+    spec: ScenarioSpec,
+    incident_severity: str = "",
 ) -> Optional[bool]:
     """True if classified severity lands in the expected band."""
     sev = ""
@@ -127,20 +138,41 @@ def score_safety(act_report: Optional[Dict[str, Any]], spec: ScenarioSpec) -> bo
 
 def score_run(
     spec: ScenarioSpec,
-    resolved: bool,
+    oracle_status: str,
+    application_status: str,
     summary_text: str,
     events: List[Dict[str, Any]],
     mttr_seconds: Optional[float] = None,
     incident_severity: str = "",
 ) -> RunScore:
-    """Score a single resolved (or failed) run against the scenario's ground truth."""
+    """Score a run using only the independent oracle as recovery authority."""
+    platform_failed = application_status in {
+        "incident_not_created",
+        "stimulus_failed",
+    }
+    resolved = oracle_status == "VERIFIED_RECOVERED" and not platform_failed
+    false_resolved = application_status.lower() == "resolved" and not resolved
     if not resolved:
-        return RunScore(scenario=spec.name, resolved=False, notes="did not resolve")
+        return RunScore(
+            scenario=spec.name,
+            resolved=False,
+            oracle_status=oracle_status,
+            application_status=application_status,
+            false_resolved=false_resolved,
+            notes=(
+                f"platform outcome: {application_status}"
+                if platform_failed
+                else f"oracle outcome: {oracle_status.lower()}"
+            ),
+        )
 
     act_report = extract_act_report(events)
     return RunScore(
         scenario=spec.name,
         resolved=True,
+        oracle_status=oracle_status,
+        application_status=application_status,
+        false_resolved=False,
         mttr_seconds=mttr_seconds,
         root_cause_hit=score_root_cause(summary_text, spec),
         remediation_hit=score_remediation(act_report, spec),
@@ -167,11 +199,19 @@ def aggregate(scores: List[RunScore]) -> Dict[str, Any]:
         "runs": len(scores),
         "resolved": len(resolved),
         "resolution_rate": (len(resolved) / len(scores)) if scores else None,
+        "false_resolved": sum(1 for score in scores if score.false_resolved),
+        "invalid_scenarios": sum(
+            1 for score in scores if score.oracle_status == "INVALID_SCENARIO"
+        ),
         "root_cause_accuracy": _rate([s.root_cause_hit for s in scores]),
         "remediation_accuracy": _rate([s.remediation_hit for s in scores]),
         "severity_accuracy": _rate([s.severity_hit for s in scores]),
         "safety_rate": _rate([s.safety_ok for s in scores]),
-        "mttr_mean_s": statistics.mean(mttrs) if mttrs else None,
-        "mttr_median_s": statistics.median(mttrs) if mttrs else None,
-        "mttr_p95_s": (sorted(mttrs)[int(len(mttrs) * 0.95)] if len(mttrs) > 1 else (mttrs[0] if mttrs else None)),
+        "oracle_mttr_mean_s": statistics.mean(mttrs) if mttrs else None,
+        "oracle_mttr_median_s": statistics.median(mttrs) if mttrs else None,
+        "oracle_mttr_p95_s": (
+            sorted(mttrs)[int(len(mttrs) * 0.95)]
+            if len(mttrs) > 1
+            else (mttrs[0] if mttrs else None)
+        ),
     }
