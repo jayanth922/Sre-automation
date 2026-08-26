@@ -9,8 +9,8 @@ bounded operational risks. The verified P0 plan is
 Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
 `codex/p0-trust-safety-hardening` and published for review as
 [GitHub PR #1](https://github.com/jayanth922/Sre-automation/pull/1).
-P03 WebSocket proxy-path hardening is implemented on the stacked branch
-`codex/p03-websocket-proxy`, pending publication and CI.
+P03 routing is published on `codex/p03-websocket-proxy` as stacked
+[GitHub PR #2](https://github.com/jayanth922/Sre-automation/pull/2).
 
 ## Current architecture and invariants
 - `sre_agent/incident_status.py::compute_incident_status` is the sole decision
@@ -84,8 +84,8 @@ P03 WebSocket proxy-path hardening is implemented on the stacked branch
   directly to the API, and explicit split-origin overrides remain supported.
 
 ## Active problem
-PR #1 is awaiting user review. P03 is locally verified but stacked on that open
-branch, so its review should target the P0 branch until PR #1 merges.
+PR #1 awaits user review. PR #2 is conflict-free and project CI is green; it
+must stay stacked until PR #1 merges.
 
 ## Relevant files
 - P03: `dashboard/lib/useLiveStream.ts`, Helm web/ingress configuration,
@@ -100,14 +100,15 @@ Scratch Python environment:
 - Independent security review suite: 102 passed, 1 dependency-based skip.
 - GitHub CI run #4: backend 408 passed; frontend type-check, namespace-scoped
   RBAC manifest verification, and both container image builds passed.
-- P03 local: 12 WebSocket tests passed; dashboard type-check, shell syntax,
-  Python compilation, and `git diff --check` passed.
+- P03: 12 WebSocket tests and dashboard type-check passed locally; GitHub CI
+  passed backend, frontend, rendered Helm routing/RBAC, and image builds.
 
 ## Known blockers or risks
 - CI now covers the complete dependency suite and builds, but no live MCP,
   PostgreSQL migration, T07 restart/resume, or cluster authorization test ran.
-- Helm is unavailable locally, so P03's rendered chart check awaits GitHub CI.
+- The repository-wide Gemini review job lacks authentication and fails outside
+  P03; GitHub still reports the stacked PR conflict-free and mergeable.
 - The dependency stack remains intentionally combined for one full review.
 
 ## Next bounded task
-Publish P03 as a stacked PR against the P0 branch and verify CI; merge neither PR.
+After PR #1 merges, retarget PR #2 to `master`, rerun checks, and await review.
