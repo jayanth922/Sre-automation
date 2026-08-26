@@ -8,12 +8,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from .agent_state import AgentState
@@ -24,11 +23,16 @@ from .logging_config import configure_logging
 from .multi_agent_langgraph import create_multi_agent_system
 
 # SaaS API Imports
-from sre_agent.api.v1 import clusters, incidents
+from sre_agent.api.v1 import clusters, incidents, invitations
 from backend import crud, database, models
 from backend.routers import auth as auth_router
 from backend.models import IncidentStatus, JobStatus
-from sqlalchemy import func
+from .incident_status import compute_incident_status
+from .execution_context import ExecutionContext, require_execution_context
+from .runtime_cache import AgentRuntimeCache, RuntimeBundle
+from .ws_auth import event_visible_to_org, org_id_matches, validate_ws_ticket
+from sre_agent.api.v1.auth_deps import require_internal_token
+from sqlalchemy import func, select
 import uuid
 
 # Configure logging based on DEBUG environment variable
@@ -83,6 +87,8 @@ except ImportError:
 # Mount SaaS API Routers
 app.include_router(clusters.router, prefix="/api/v1")
 app.include_router(incidents.router, prefix="/api/v1")
+app.include_router(invitations.organization_router, prefix="/api/v1")
+app.include_router(invitations.router, prefix="/api/v1")
 app.include_router(auth_router.router)
 
 # Job Queue Router
@@ -102,7 +108,52 @@ app.include_router(slos_router.router, prefix="/api/v1")
 # Subscribers (the dashboard) receive incident-conversation events and global
 # app/cluster health insights in real time via the live event bus. See
 # sre_agent/live_events.py.
-async def _stream(websocket: WebSocket, channel: str) -> None:
+WS_CLOSE_UNAUTHORIZED = 4401
+WS_CLOSE_FORBIDDEN = 4403
+
+
+async def _authenticate_websocket(websocket: WebSocket) -> Optional[Dict[str, Any]]:
+    """Validate the short-lived ticket before accepting a WebSocket."""
+    claims = validate_ws_ticket(websocket.query_params.get("ticket"))
+    if claims is None:
+        await websocket.close(code=WS_CLOSE_UNAUTHORIZED, reason="Invalid WebSocket ticket")
+        return None
+    return claims
+
+
+async def _incident_org_id(incident_id: Any) -> Optional[Any]:
+    """Resolve an incident's owning organization without loading its payload."""
+    try:
+        parsed_id = uuid.UUID(str(incident_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.Cluster.org_id)
+            .join(models.Incident, models.Incident.cluster_id == models.Cluster.id)
+            .where(models.Incident.id == parsed_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _cluster_org_id(cluster_id: Any) -> Optional[Any]:
+    """Resolve a cluster's owning organization for global-feed filtering."""
+    try:
+        parsed_id = uuid.UUID(str(cluster_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.Cluster.org_id).where(models.Cluster.id == parsed_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _stream(
+    websocket: WebSocket,
+    channel: str,
+    event_filter: Optional[Callable[[Dict[str, Any]], Awaitable[bool]]] = None,
+) -> None:
     from .live_events import get_event_bus
 
     await websocket.accept()
@@ -110,6 +161,8 @@ async def _stream(websocket: WebSocket, channel: str) -> None:
     try:
         while True:
             event = await sub.get()
+            if event_filter is not None and not await event_filter(event):
+                continue
             await websocket.send_json(event)
     except WebSocketDisconnect:
         pass
@@ -123,14 +176,67 @@ async def _stream(websocket: WebSocket, channel: str) -> None:
 async def ws_incident(websocket: WebSocket, incident_id: str):
     """Live stream of one incident's conversation/act events."""
     from .live_events import incident_channel
+
+    claims = await _authenticate_websocket(websocket)
+    if claims is None:
+        return
+    if not org_id_matches(await _incident_org_id(incident_id), claims["org_id"]):
+        await websocket.close(code=WS_CLOSE_FORBIDDEN, reason="Incident not found")
+        return
     await _stream(websocket, incident_channel(incident_id))
 
 
 @app.websocket("/ws/insights")
 async def ws_insights(websocket: WebSocket):
-    """Live stream of global app/cluster health insights."""
+    """Live stream of health insights visible to the ticket holder's org."""
     from .live_events import INSIGHTS_CHANNEL
-    await _stream(websocket, INSIGHTS_CHANNEL)
+
+    claims = await _authenticate_websocket(websocket)
+    if claims is None:
+        return
+    org_id = claims["org_id"]
+    await _stream(
+        websocket,
+        INSIGHTS_CHANNEL,
+        event_filter=lambda event: event_visible_to_org(
+            event, org_id, _incident_org_id, _cluster_org_id
+        ),
+    )
+
+
+@app.websocket("/ws/incidents")
+async def ws_incidents(websocket: WebSocket):
+    """Live stream of incident lifecycle events (opened / status change / resolved)
+    for the cluster. Lets the incidents list and overview update the instant an
+    incident opens, instead of waiting for the next poll."""
+    from .war_room import INCIDENTS_CHANNEL
+
+    claims = await _authenticate_websocket(websocket)
+    if claims is None:
+        return
+    org_id = claims["org_id"]
+    await _stream(
+        websocket,
+        INCIDENTS_CHANNEL,
+        event_filter=lambda event: event_visible_to_org(
+            event, org_id, _incident_org_id, _cluster_org_id
+        ),
+    )
+
+
+@app.get("/agent/metrics", dependencies=[Depends(require_internal_token)])
+async def agent_metrics():
+    """Agent self-observability: per-node run counts, avg latency, errors, and
+    provider switches, plus whether full distributed tracing is active."""
+    from .observability import get_recorder
+    from .tracing import langfuse_enabled
+
+    summary = get_recorder().summary()
+    summary["tracing"] = {
+        "langfuse": langfuse_enabled(),
+        "note": "LLM/tool/chain spans (tokens, cost, latency) exported to Langfuse when enabled.",
+    }
+    return summary
 
 # Alert Webhook Router (receives Alertmanager webhooks)
 from sre_agent.api.v1 import alerts as alerts_router
@@ -144,6 +250,14 @@ app.include_router(metrics_router.router, prefix="/metrics")
 from sre_agent.api.v1 import analytics as analytics_router
 app.include_router(analytics_router.router, prefix="/api/v1")
 
+# Services Router (per-service RED signals)
+from sre_agent.api.v1 import services as services_router
+app.include_router(services_router.router, prefix="/api/v1")
+
+# Runbooks Router (markdown corpus catalog)
+from sre_agent.api.v1 import runbooks as runbooks_router
+app.include_router(runbooks_router.router, prefix="/api/v1")
+
 # General Chat Router
 from sre_agent.api.v1 import chat as chat_router
 app.include_router(chat_router.router, prefix="/api/v1")
@@ -151,6 +265,14 @@ app.include_router(chat_router.router, prefix="/api/v1")
 # Recommendations Router
 from sre_agent.api.v1 import recommendations as recommendations_router
 app.include_router(recommendations_router.router, prefix="/api/v1")
+
+# Organization member management (list roster, assign roles, deactivate)
+from sre_agent.api.v1 import members as members_router
+app.include_router(members_router.router, prefix="/api/v1")
+
+# WebSocket ticket minting (see sre_agent/ws_auth.py)
+from sre_agent.api.v1 import ws_tickets as ws_tickets_router
+app.include_router(ws_tickets_router.router, prefix="/api/v1")
 
 
 # Simple request/response models
@@ -162,9 +284,10 @@ class InvocationResponse(BaseModel):
     output: Dict[str, Any]
 
 
-# Global variables for agent state
-agent_graph = None
-tools: list[BaseTool] = []
+# Agent runtimes are tenant-bound and cached by a non-secret context fingerprint.
+_runtime_cache = AgentRuntimeCache(
+    max_size=int(os.getenv("AGENT_RUNTIME_CACHE_SIZE", "32"))
+)
 
 # Redis state store for pending approvals (replaces in-memory dict)
 from .redis_state_store import get_state_store
@@ -172,38 +295,38 @@ from .redis_state_store import get_state_store
 state_store = get_state_store()
 
 
-async def initialize_agent():
-    """Initialize the SRE agent system using the same method as CLI."""
-    global agent_graph, tools
-
-    if agent_graph is not None:
-        return  # Already initialized
-
+async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
     try:
-        logger.info("Initializing SRE Agent system...")
+        logger.info("Initializing SRE Agent system for cluster %s", context.cluster_id)
 
-        # Get provider from environment variable with ollama as default
-        provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+        provider = (context.llm_provider or os.getenv("LLM_PROVIDER", "groq")).lower()
 
-        # Validate provider
-        if provider not in ["groq", "ollama", "gemini", "nvidia"]:
-            logger.warning(f"Invalid provider '{provider}', defaulting to 'ollama'")
-            provider = "ollama"
+        # Validate provider (curated to reliable structured-output providers)
+        if provider not in ["groq", "anthropic", "openai_compatible"]:
+            logger.warning(f"Invalid provider '{provider}', defaulting to 'groq'")
+            provider = "groq"
 
-        logger.info(f"Environment LLM_PROVIDER: {os.getenv('LLM_PROVIDER', 'NOT_SET')}")
         logger.info(f"Using LLM provider: {provider}")
-        logger.info(f"Calling create_multi_agent_system with provider: {provider}")
 
-        # Initialize persistence (MemorySaver for now, but could be Postgres)
-        from langgraph.checkpoint.memory import MemorySaver
-        checkpointer = MemorySaver()
+        # Initialize persistence using the configured checkpointer backend
+        # (CHECKPOINTER_BACKEND=redis/postgres for crash-durability across API
+        # restarts; falls back to an in-process MemorySaver when unset/unavailable).
+        from .checkpointer import get_checkpointer
+        checkpointer = await get_checkpointer()
 
-        # Create multi-agent system using the same function as CLI
-        agent_graph, tools = await create_multi_agent_system(provider, checkpointer=checkpointer)
+        graph, tools, client = await create_multi_agent_system(
+            provider,
+            checkpointer=checkpointer,
+            execution_context=context,
+            return_client=True,
+        )
 
         logger.info(
-            f"SRE Agent system initialized successfully with {len(tools)} tools"
+            "SRE Agent system initialized for cluster %s with %s tools",
+            context.cluster_id,
+            len(tools),
         )
+        return RuntimeBundle(context, graph, tools, client)
 
     except Exception as e:
         from .llm_utils import LLMAccessError, LLMAuthenticationError, LLMProviderError
@@ -219,17 +342,30 @@ async def initialize_agent():
         raise
 
 
-# Global MCP client for metrics queries
-mcp_client_global = None
+async def get_agent_runtime(
+    cluster_id: Optional[uuid.UUID | str] = None,
+) -> RuntimeBundle:
+    if cluster_id is None:
+        context = require_execution_context(None)
+    else:
+        async with database.AsyncSessionLocal() as db:
+            cluster = await db.get(models.Cluster, uuid.UUID(str(cluster_id)))
+        if cluster is None:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+        context = ExecutionContext.from_cluster(cluster)
+    return await _runtime_cache.get_or_create(context, _build_runtime)
 
 
-async def get_mcp_client():
-    """Get or create MCP client for metrics queries."""
-    global mcp_client_global
-    if mcp_client_global is None:
-        from .multi_agent_langgraph import create_mcp_client
-        mcp_client_global = create_mcp_client()
-    return mcp_client_global
+async def initialize_agent(
+    cluster_id: Optional[uuid.UUID | str] = None,
+) -> RuntimeBundle:
+    """Initialize or reuse the tenant-bound runtime for a cluster."""
+    return await get_agent_runtime(cluster_id)
+
+
+async def get_mcp_client(cluster_id: Optional[uuid.UUID | str] = None):
+    """Return the MCP client owned by a tenant-bound runtime bundle."""
+    return (await get_agent_runtime(cluster_id)).mcp_client
 
 
 async def _heartbeat_loop():
@@ -261,34 +397,51 @@ async def startup_event():
     # Keep cluster status fresh in the dashboard
     asyncio.create_task(_heartbeat_loop())
 
-    # Always initialize the AI graph if we are managing a cluster
-    if agent_mode != "api" or cluster_token:
+    # Incidents are opened by the client's own Alertmanager (their tuned SLO /
+    # burn-rate / business rules) via the /alerts/webhook — Sentinel receives and
+    # investigates, it does not impose platform-side fixed thresholds. There is
+    # deliberately no built-in polling monitor.
+
+    # Slack bot in the on-call channel (no-op unless Slack tokens are set).
+    try:
+        from sre_agent.war_room_service import run_slack_bot
+        asyncio.create_task(run_slack_bot())
+    except Exception as slack_err:
+        logger.warning(f"Could not start Slack bot: {slack_err}")
+
+    # Initialize only a tenant-bound graph in API mode. Standalone development
+    # may use the explicit local environment context.
+    if cluster_token:
         logger.info("🧠 Initializing SRE Agent Graph for automated investigations...")
+        async with database.AsyncSessionLocal() as db:
+            cluster = await crud.get_cluster_by_token(db, cluster_token)
+        if cluster is None:
+            raise RuntimeError("CLUSTER_TOKEN does not identify a cluster")
+        await initialize_agent(cluster.id)
+    elif agent_mode != "api":
         await initialize_agent()
     else:
         logger.info("ℹ️ Running in Control Plane mode without local AI brain.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await _runtime_cache.close_all()
     
 
 
-@app.post("/invocations", response_model=InvocationResponse)
+@app.post(
+    "/invocations",
+    response_model=InvocationResponse,
+    dependencies=[Depends(require_internal_token)],
+)
 async def invoke_agent(request: InvocationRequest):
     """Main agent invocation endpoint."""
-    global agent_graph, tools
-
     logger.info("Received invocation request")
 
     try:
-        # Ensure agent is initialized
-        await initialize_agent()
-
-        # Check if agent is enabled (It might be disabled in API Mode)
-        if agent_graph is None:
-            logger.info("Agent Graph is None (API Mode). Returning informational message.")
-            return InvocationResponse(output={
-                "message": "ℹ️ You are talking to the SaaS Control Plane. The Agent logic runs on your connected cluster. Please check the 'Active Investigations' or 'Logs' tab for real-time updates from your infrastructure.",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "model": "ControlPlane",
-            })
+        runtime = await initialize_agent(request.input.get("cluster_id"))
+        agent_graph, tools = runtime.graph, runtime.tools
 
         # Extract user prompt
         user_prompt = request.input.get("prompt", "")
@@ -314,6 +467,9 @@ async def invoke_agent(request: InvocationRequest):
             "current_query": user_prompt,
             "metadata": {
                 "tools": tools,
+                "cluster_id": runtime.context.cluster_id,
+                "cluster_namespace": runtime.context.namespace,
+                "cluster_environment": runtime.context.environment,
             },
             "requires_collaboration": False,
             "agents_invoked": [],
@@ -398,7 +554,7 @@ async def ping():
 
 
 
-@app.get("/agent/state")
+@app.get("/agent/state", dependencies=[Depends(require_internal_token)])
 async def get_agent_state():
     """
     Get current agent state including thought traces and pending approvals.
@@ -481,7 +637,7 @@ async def get_agent_state():
         }
 
 
-@app.get("/agent/state/{session_id}")
+@app.get("/agent/state/{session_id}", dependencies=[Depends(require_internal_token)])
 async def get_agent_state_by_session(session_id: str):
     """
     Get live agent state, including running logs and approval status.
@@ -511,7 +667,7 @@ async def get_agent_state_by_session(session_id: str):
         return {"status": "ERROR", "error": str(e)}
 
 
-@app.post("/approve/{session_id}")
+@app.post("/approve/{session_id}", dependencies=[Depends(require_internal_token)])
 async def approve_remediation(session_id: str):
     """
     Human approval endpoint for remediation plans.
@@ -524,8 +680,6 @@ async def approve_remediation(session_id: str):
     Returns:
         Status of approval and resumed execution
     """
-    global agent_graph
-
     logger.info(f"Received approval request for session: {session_id}")
 
     # Get pending state from Redis
@@ -559,6 +713,10 @@ async def approve_remediation(session_id: str):
     # For now, we'll keep approval synchronous-ish but the graph execution helps
     # Ideally this would also be async converted
     try:
+        cluster_id = (current_state.get("metadata") or {}).get("cluster_id")
+        runtime = await initialize_agent(cluster_id)
+        agent_graph, tools = runtime.graph, runtime.tools
+
         # Ensure we have all required state fields
         from .agent_state import AgentState
         from langchain_core.messages import HumanMessage
@@ -615,11 +773,12 @@ async def run_graph_background(
     """
     Background task to run the agent graph and update Redis state.
     """
-    global agent_graph
-    
     logger.info(f"▶️ Starting background graph execution for session: {session_id}")
     
     try:
+        cluster_id = (initial_state.get("metadata") or {}).get("cluster_id")
+        runtime = await initialize_agent(cluster_id)
+        agent_graph = runtime.graph
         # Initial status update
         state_store.set(session_id, {
             "status": "RUNNING",
@@ -629,6 +788,7 @@ async def run_graph_background(
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
+        initial_state = await _maybe_compact(initial_state)
         current_execution_state = initial_state
         # Log initial message to Redis list
         state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Investigation started...")
@@ -693,7 +853,61 @@ async def run_graph_background(
 
 
 
+async def _maybe_compact(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact the input message history before invoking the graph when it's over
+    the token budget (keeps recent turns + one summary). Safe: operates on the
+    input state before the reducer runs, and only triggers above the budget."""
+    try:
+        from sre_agent.context_compaction import compact_state_messages, make_llm_summarizer, should_compact
+
+        if should_compact(state.get("messages", [])):
+            from sre_agent.model_router import TaskType, route_llm
+
+            llm = route_llm(TaskType.NARRATION, use_fallback=False)
+            new_msgs, did = await compact_state_messages(state, make_llm_summarizer(llm))
+            if did:
+                state["messages"] = new_msgs
+    except Exception as e:
+        logger.warning(f"context compaction skipped (non-fatal): {e}")
+    return state
+
+
 async def run_graph_background_saas(
+    incident_id: uuid.UUID,
+    cluster_id: uuid.UUID,
+    alert_name: str,
+    job_id: Optional[uuid.UUID] = None,
+    alert_labels: Optional[Dict[str, str]] = None,
+    alert_annotations: Optional[Dict[str, str]] = None,
+    alert_starts_at: Optional[str] = None,
+    alert_severity: str = "warning",
+):
+    """Concurrency-bounded entry point: reserve an investigation slot (bounded
+    wait so bursts serialize instead of stampeding the LLM/rate limits), run the
+    investigation, then always release the slot."""
+    from sre_agent.concurrency import get_limiter
+
+    limiter = get_limiter()
+    sid = str(incident_id)
+    acquired = False
+    for _ in range(24):  # ~2 min bounded wait
+        if limiter.try_acquire(sid):
+            acquired = True
+            break
+        await asyncio.sleep(5)
+    if not acquired:
+        logger.warning(f"investigation limiter at capacity; running {sid} without a slot")
+    try:
+        return await _run_graph_impl(
+            incident_id, cluster_id, alert_name, job_id,
+            alert_labels, alert_annotations, alert_starts_at, alert_severity,
+        )
+    finally:
+        if acquired:
+            limiter.release(sid)
+
+
+async def _run_graph_impl(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
     alert_name: str,
@@ -714,10 +928,16 @@ async def run_graph_background_saas(
     """
     # Use incident ID as session ID for internal state
     session_id = str(incident_id)
-    global agent_graph, tools
-    
     logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id} (Job: {job_id})")
-    
+
+    # Mirror this incident into a Slack war-room thread (no-op unless Slack is
+    # configured). Fire-and-forget; never blocks or breaks the investigation.
+    try:
+        from sre_agent.war_room_service import maybe_open_war_room
+        asyncio.create_task(maybe_open_war_room(session_id, alert_name))
+    except Exception as war_err:
+        logger.debug(f"war-room start skipped: {war_err}")
+
     # Update Incident Status to INVESTIGATING and Job to RUNNING
     async with database.AsyncSessionLocal() as db:
         # Update Incident
@@ -747,8 +967,8 @@ async def run_graph_background_saas(
         await db.commit()
 
     try:
-        # Initialize Agent System if needed
-        await initialize_agent()
+        runtime = await initialize_agent(cluster_id)
+        agent_graph, tools = runtime.graph, runtime.tools
         
         # Initialize State
         from .agent_state import AgentState, AlertContext
@@ -839,10 +1059,13 @@ async def run_graph_background_saas(
                 f"Investigate alert: {alert_name} ({hints_text})"
             ),
             "metadata": {
-                "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
+                "llm_provider": runtime.context.llm_provider
+                or os.getenv("LLM_PROVIDER", "groq"),
                 "tools": tools,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
+                "cluster_namespace": runtime.context.namespace,
+                "cluster_environment": runtime.context.environment,
             },
             "requires_collaboration": True,
             "agents_invoked": [],
@@ -864,6 +1087,7 @@ async def run_graph_background_saas(
         from .callbacks import RedisLogCallbackHandler
         callback_handler = RedisLogCallbackHandler(session_id)
         
+        initial_state = await _maybe_compact(initial_state)
         current_execution_state = initial_state
         
         from .checkpointer import thread_config, thread_id_from_state
@@ -955,18 +1179,29 @@ async def run_graph_background_saas(
         except Exception as me:
             logger.warning(f"Failed to store incident in Qdrant: {me}")
 
+        # Derive the incident's real status from the ACT report + live
+        # verification outcome, rather than assuming every completed run
+        # resolved the incident (see sre_agent/incident_status.py).
+        act_report = (current_execution_state.get("metadata") or {}).get("act_report")
+        verification_outcome = (act_report or {}).get("verification")
+        computed_status = compute_incident_status(
+            current_execution_state, act_report, verification_outcome
+        )
+
         # Update Incident and Job in Postgres with RICH DATA
         async with database.AsyncSessionLocal() as db:
             # Update Incident
+            incident_values = {
+                "status": computed_status,
+                "summary": final_response,
+            }
+            if computed_status == IncidentStatus.RESOLVED:
+                incident_values["resolved_at"] = datetime.now(timezone.utc)
             await db.execute(
                 models.Incident.__table__
                 .update()
                 .where(models.Incident.id == incident_id)
-                .values(
-                    status=IncidentStatus.RESOLVED,
-                    summary=final_response,
-                    resolved_at=datetime.now(timezone.utc)
-                )
+                .values(**incident_values)
             )
 
             # Update Job with structured results for the Dashboard "Action Deck"
@@ -1044,7 +1279,11 @@ async def run_graph_background_saas(
 
              await db.commit()
 
-@app.post("/webhook/alert", status_code=202)
+@app.post(
+    "/webhook/alert",
+    status_code=202,
+    dependencies=[Depends(require_internal_token)],
+)
 async def webhook_alert(
     alert_payload: Dict[str, Any], 
     background_tasks: BackgroundTasks
@@ -1059,14 +1298,9 @@ async def webhook_alert(
     
     Returns 202 Accepted immediately with incident_id.
     """
-    global agent_graph, tools
-
     logger.info("🚨 [SELF-DEFENSE MODE] Received Prometheus alert webhook")
 
     try:
-        # Ensure agent is initialized
-        await initialize_agent()
-
         # Extract alert
         alerts = alert_payload.get("alerts", [])
         if not alerts:
@@ -1104,6 +1338,8 @@ async def webhook_alert(
             logger.warning("⚠️ No CLUSTER_TOKEN set - running in local mode (no SaaS visibility)")
             
             # Build context and run old-style background execution
+            runtime = await initialize_agent()
+            tools = runtime.tools
             from .context_builder import ContextBuilder
             context_builder = ContextBuilder(tools)
             enriched_context = await context_builder.enrich_alert_context(alert)
@@ -1112,7 +1348,7 @@ async def webhook_alert(
             incident_id_str = f"incident-{enriched_context.alert_name}-{session_id}"
             
             from .agent_state import AgentState, AlertContext
-            llm_provider = os.getenv("LLM_PROVIDER", "ollama")
+            llm_provider = os.getenv("LLM_PROVIDER", "groq")
             
             initial_state: AgentState = {
                 "messages": [HumanMessage(content=f"Alert: {enriched_context.alert_name}")],
@@ -1204,7 +1440,7 @@ async def webhook_alert(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
+async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
     """
     Programmatic interface to invoke SRE agent.
 
@@ -1216,8 +1452,8 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
         The agent's response as a string
     """
     try:
-        # Create the multi-agent system
-        graph, tools = await create_multi_agent_system(provider=provider)
+        runtime = await initialize_agent()
+        graph, tools = runtime.graph, runtime.tools
 
         # Create initial state
         initial_state: AgentState = {
@@ -1249,7 +1485,7 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "ollama") -> str:
         raise
 
 
-def invoke_sre_agent(prompt: str, provider: str = "ollama") -> str:
+def invoke_sre_agent(prompt: str, provider: str = "groq") -> str:
     """
     Synchronous wrapper for invoke_sre_agent_async.
 
@@ -1271,7 +1507,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SRE Agent Runtime")
     parser.add_argument(
         "--provider",
-        default=os.getenv("LLM_PROVIDER", "ollama"),
+        default=os.getenv("LLM_PROVIDER", "groq"),
         help="LLM provider to use (default: ollama)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")

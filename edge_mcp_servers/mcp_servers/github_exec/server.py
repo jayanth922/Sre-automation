@@ -114,4 +114,5 @@ async def comment_on_pr(pr_number: int, body: str, dry_run: bool = True) -> str:
 
 if __name__ == "__main__":
     logger.info("Starting GitHub-exec MCP server...")
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

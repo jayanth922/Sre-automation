@@ -609,4 +609,5 @@ if __name__ == "__main__":
     logger.info("Starting Local Runbooks MCP Server on %s:%s", host, port)
     logger.info("Using runbooks directory: %s", RUNBOOKS_DIR)
     _ensure_runbook_index()
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

@@ -10,7 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import database, models
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
 
-router = APIRouter(prefix="/clusters", tags=["analytics"])
+router = APIRouter(
+    prefix="/clusters",
+    tags=["analytics"],
+    dependencies=[Depends(get_current_user_and_org)],
+)
 
 
 @router.get("/{cluster_id}/analytics")

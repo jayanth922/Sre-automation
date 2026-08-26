@@ -1,208 +1,128 @@
-# SRE Agent Intermediate
+# Sentinel — self-hosted, multi-agent SRE reliability console
 
-SRE Agent Intermediate is a full-stack incident-response system. It is intentionally split into layers so you can reason about the product as an operating model instead of a single application:
+Sentinel is an autonomous Site Reliability Engineering platform you run on **your
+own Kubernetes cluster**. It watches your services, opens incidents from real
+telemetry, and runs a multi-agent investigation — Observe → Orient → Decide →
+Act — that correlates metrics, logs, Kubernetes state, code changes, and
+runbooks into a root-cause hypothesis, then proposes severity-gated remediation
+with a human in the loop. It is not a SaaS: the platform, the datastores, the
+agent runtime, and the tool servers all deploy together into one namespace, and
+no telemetry leaves the client's infrastructure.
 
-1. The platform control plane manages identities, clusters, incidents, jobs, and the agent runtime.
-2. The dashboard gives operators a stable UI for clusters, incident transcripts, audit trails, and account state.
-3. The edge MCP servers expose live infrastructure, logs, metrics, GitHub history, and runbooks to the agent.
-4. The Target_Client stack generates the traffic, failures, and observability signals that make the demo meaningful.
+Design principle throughout: **orchestrate, don't override.** Clients bring their
+own LLM, their own MCP tool servers, their own runbooks (Notion or local), and
+their own metric conventions — Sentinel adapts to them.
 
-The point of the repository is not only to show code; it is to show a complete feedback loop. The target client produces symptoms, the edge layer exposes evidence, the agent reasons about that evidence, the backend persists state, and the dashboard lets a human read and steer the result.
+## What it does
 
-## System Architecture
+- **Proactive detection.** A continuous monitor sweeps every connected cluster's
+  per-service health and opens incidents on breach; Prometheus Alertmanager
+  webhooks feed the same pipeline.
+- **Multi-agent investigation (OODA).** A LangGraph supervisor coordinates
+  metrics / logs / Kubernetes / GitHub / runbooks specialists over the Model
+  Context Protocol, then a reflector forms a hypothesis and a planner decides a
+  remediation.
+- **Severity-gated remediation.** A policy gate classifies severity and
+  reversibility; low-risk reversible actions can run autonomously, everything
+  else requires human approval. Live actions are verified against the metrics
+  afterward. Read-only by default.
+- **Memory + runbooks.** Skill memory recalls what resolved similar incidents;
+  runbooks come from the client's Notion database or a local corpus and feed RAG.
+- **Two front doors.** A live web console and a Slack on-call bot both write to
+  the same incident conversation.
 
-### Layer Architecture
+## Architecture
 
-![System Topology](docs/architecture/images/system-topology.svg)
+One namespace, in-cluster service DNS, no external networking required:
 
-The dashboard talks to the backend through Next.js rewrites, which keeps the browser origin simple. The agent runtime mounts the versioned SaaS API and the auth router, then uses the MCP layer to gather live evidence from the target side. The backend owns persistence and identity, not the reasoning flow itself.
+- **API / agent runtime** — FastAPI + LangGraph; the control plane and the AI brain.
+- **Web console** — Next.js; live incident timeline, service health, SLOs,
+  analytics, runbooks, settings.
+- **Postgres** — users, orgs, clusters, incidents, timeline, SLOs, audit, refresh sessions.
+- **Redis** — live event bus (`/ws`), cache, graph checkpointer.
+- **Qdrant** — vector store for runbook / skill memory.
+- **Seven edge MCP tool servers** — the agent's hands: k8s, prometheus, loki,
+  github, runbooks, executor (scale/restart), github-exec (revert PRs). The k8s
+  and executor servers use in-cluster ServiceAccounts (RBAC), not a mounted kubeconfig.
 
-**Key semantics:**
-- Arrows show request and evidence flow, not startup dependency order
-- Dashboard is a client of the API; no reverse dependency
-- Target_Client produces incidents and observability signals  
-- Edge MCP servers expose infrastructure as tools to the agent  
-- Agent reasoning and persistence happen in the platform layer
+## The agent (OODA loop)
 
-### Request-to-Investigation Flow
+`supervisor → specialists → reflector (orient) → planner (decide) → act_gate`
 
-![Agent Runtime Flow](docs/architecture/images/agent-runtime-flow.svg)
+The full reasoning loop runs on every investigation — severity classification,
+policy-gate decision, a dry-run remediation proposal, skill-memory recall/record,
+a generative runbook, and a human-readable resolution report. Live cluster
+mutation is governed by the policy gate + human approval (surfaced as
+`EXECUTOR_LIVE`), which is a deliberate safety control, not a feature flag.
 
-When an incident arrives or the user sends a follow-up question, the agent runtime orchestrates specialist agents to gather evidence in parallel, aggregates findings through a supervisor step, decides if more investigation is needed, and persists the final summary to the timeline.
+**Model routing.** Each task type is routed to a model tier (fast / balanced /
+strong) — cheap models for narration/routing, strong models for
+reflection/planning — with complexity bump-up, budget-aware downgrade,
+off-policy blocking, and a provider fallback chain. Per-tier provider overrides
+let you split, e.g., reflection/planning on Claude and chatter on Groq.
 
-### Backend Data Model
+## Observability, security, production engineering
 
-![Backend Data Model](docs/architecture/images/backend-data-model.svg)
+- **Agent observability** — layered: the live incident timeline (transparency),
+  `/agent/metrics` (per-node runs/latency/errors, always on), and full Langfuse
+  span tracing of every LLM/tool/chain call with tokens & cost when configured
+  (self-hostable).
+- **Auth / sessions** — short-lived access token in memory + rotating refresh
+  token in an httpOnly cookie, with reuse detection and server-side revocation.
+- **Guardrails** — prompt-injection defense on untrusted telemetry entering
+  prompts; action guardrails on the executor / github-exec tools; the policy
+  gate + approval as the real safety net.
+- **Durability** — graph state checkpointed per incident (human-approval resume
+  + interrupted-run continuation); Redis backend for cross-crash durability.
 
-The backend persists organizations, users, clusters, incidents, timeline events, jobs, audit trails, and SLOs. The incident timeline event table is the core: each event represents a step in the investigation, and `pending_supervisor` marks events that are eligible for follow-up handling.
+## Deploy (same-machine Kubernetes)
 
-For implementation details and diagram maintenance, see [docs/architecture/README.md](docs/architecture/README.md).
-
-## Screenshots
-
-### Dashboard — Login
-
-![Login Page](docs/Screenshot%20(632).png)
-
-### Dashboard — Cluster Overview
-
-![Cluster Overview](docs/Screenshot%20(631).png)
-
-### Dashboard — Incident List
-
-![Incident List](docs/Screenshot%20(620).png)
-
-### Dashboard — Multi-Agent Incident Investigation
-
-The incident dashboard shows a conversational view where the Supervisor agent orchestrates specialist agents (Performance Metrics, Application Logs, Code Change Intelligence, Operational Runbooks) to investigate and resolve a critical `CheckoutHighErrorRate` alert.
-
-![Incident Investigation — Supervisor kicks off and Prometheus + Loki agents respond](docs/Screenshot%20(624).png)
-
-![Incident Investigation — Loki, GitHub, and Code Change agents provide findings](docs/Screenshot%20(625).png)
-
-![Incident Investigation — Runbooks agent responds and Supervisor begins summary](docs/Screenshot%20(626).png)
-
-![Incident Investigation — Final TL;DR, root cause analysis, and next steps](docs/Screenshot%20(627).png)
-
-### Target Client — Chaos Control Panel
-
-![Chaos Control Panel](docs/Screenshot%20(619).png)
-
-### Infrastructure — Startup and Teardown
-
-#### Target Client startup (`./main_start.sh`)
-
-![Target Client Startup](docs/Screenshot%202026-05-07%20203306.png)
-
-#### Platform startup (Docker Compose)
-
-![Platform Startup](docs/Screenshot%202026-05-07%20203332.png)
-
-#### Full system teardown (`./main_Stop.sh`)
-
-![System Teardown](docs/Screenshot%202026-05-07%20203404.png)
-
-## Repository Map
-
-| Path | What It Teaches |
-| --- | --- |
-| [platform/README.md](platform/README.md) | How the control plane is started and what services it depends on |
-| [backend/README.md](backend/README.md) | How data, auth, models, and seeding work |
-| [sre_agent/README.md](sre_agent/README.md) | How the LangGraph runtime and SaaS API are assembled |
-| [dashboard/README.md](dashboard/README.md) | How the operator UI is structured and how it authenticates |
-| [edge_mcp_servers/README.md](edge_mcp_servers/README.md) | How evidence is exposed from the edge and why MCP is used |
-| [Target_Client/README.md](Target_Client/README.md) | How incidents are generated in the demo environment |
-| [tests/README.md](tests/README.md) | Which behaviors are validated in code |
-
-## Quick Start
-
-### 1. Set up environment values
-
-Create a root `.env` from the template and verify the values that matter for your run mode:
+Build the images once, then pick one:
 
 ```bash
-cp .env.example .env
+# Plain manifests
+./deploy/k8s/install.sh
+
+# Helm
+helm install sentinel deploy/helm/sentinel -n sentinel --create-namespace \
+  --set secrets.secretKey=$(openssl rand -hex 32) \
+  --set secrets.postgresPassword=$(openssl rand -hex 16)
+
+# Terraform (installs the chart)
+cd deploy/terraform && terraform init && terraform apply
 ```
 
-Minimum values to review:
+Then port-forward the console (`:3002`) and the API (`:8080`) and open the
+console to **register** — the first sign-up creates the organization and becomes
+its admin (manage teammates and roles under Team). Connect a cluster in Settings (its Prometheus/Loki endpoints, metric
+conventions, GitHub repo, Notion runbook database) and point Alertmanager at
+`POST /api/v1/alerts/webhook` with the cluster token.
 
-- `SECRET_KEY` for signing JWTs.
-- `LLM_PROVIDER` to select `ollama`, `groq`, `gemini`, or `nvidia` (see [.env.example](.env.example) for the matching API keys and base URLs).
-- `OLLAMA_BASE_URL` if you are using a local model.
-- `GROQ_API_KEY` if you are using Groq.
-- `GOOGLE_API_KEY` / `GEMINI_MODEL` if you are using Gemini; `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_MODEL` if you are using NVIDIA NIM.
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`.
-- `PROMETHEUS_URL` and `LOKI_URL` when the platform or dashboard should reach a real observability stack.
-- For the GitHub MCP server, set `GITHUB_TOKEN` and `GITHUB_REPO` in [edge_mcp_servers/.env](edge_mcp_servers/.env) (from `edge_mcp_servers/.env.example`). Use `K8S_TOKEN` / `K8S_API_SERVER` in the root `.env` only if you bypass the edge relay for Kubernetes calls.
+## Configure (bring your own)
 
-### 2. Start the platform stack
+- **LLM** — `anthropic` (Claude), `groq`, or `openai_compatible`. Run your **own
+  model on the machine** with `openai_compatible` + `LLM_BASE_URL` (local Ollama
+  `/v1`, vLLM, or LiteLLM). Providers are curated to ones that reliably support
+  tool/function-calling structured output.
+- **MCP tools** — register your own servers via `MCP_SERVERS_JSON`, merged with
+  the built-ins.
+- **Runbooks** — a cluster's Notion database, or the local markdown corpus.
+- **Slack** — set the bot + app tokens to mirror incidents into your on-call
+  channel and let engineers steer via `@mention`.
+- **Datastores** — deploy the bundled Postgres/Redis/Qdrant, or bring your own
+  (`*.deploy=false` + external endpoints).
 
-Use the platform compose file for the control plane and dashboard:
+## Testing & benchmarks
 
-```bash
-cd platform
-docker compose up -d --build
-```
+- **CI** (`.github/workflows/ci.yml`): lockfile validation, byte-compile,
+  `pytest` (against a Postgres service), frontend type-check, image builds.
+- **Benchmarks** (`benchmarks/`): `sre_bench.py` fires scenarios at the live
+  platform and scores resolution rate, MTTR, root-cause / remediation / severity
+  accuracy, and safety against per-scenario ground truth (adapters for
+  ITBench / AIOpsLab). Scoring is pure-function and unit-tested.
 
-This path is the fastest way to validate the backend, auth flow, database bootstrap, and dashboard rendering without the customer simulation. The helper script [platform/start.sh](platform/start.sh) does the same work and also guards against missing `.env` files.
+## Tech stack
 
-### 3. Start the full demo path
-
-To bring up the simulated customer workload, the SaaS platform, and the edge MCP relay in one shot:
-
-```bash
-./main_start.sh
-```
-
-That script runs, in order:
-
-1. [Target_Client/start.sh](Target_Client/start.sh) — builds and applies the demo Kubernetes stack (gateway, services, monitoring, chaos panel).
-2. [platform/start.sh](platform/start.sh) — starts Postgres, Redis, Qdrant, the agent API, and the dashboard via Docker Compose.
-3. **Edge MCP servers** — `docker compose` in [edge_mcp_servers/](edge_mcp_servers/) (ensure `edge_mcp_servers/.env` exists; copy from `edge_mcp_servers/.env.example`).
-
-For a **platform-only** smoke test (no Target_Client, no edge), use **Start the platform stack** (step 2 above) instead.
-
-On Windows, run these shell scripts from Git Bash or WSL.
-
-### 4. Open the main surfaces
-
-- Dashboard: http://localhost:3002
-- Agent/API docs: http://localhost:8080/docs
-- Target client gateway: http://localhost:8000
-
-## Development Workflows
-
-### Platform-only smoke test
-
-Use this when you want to validate the SaaS control plane without the noisy customer simulation:
-
-```bash
-cd platform
-docker compose up -d --build
-```
-
-### Dashboard development
-
-```bash
-cd dashboard
-npm ci
-npm run dev
-```
-
-The dashboard proxies `/api`, `/auth`, `/metrics`, and `/agent` to the backend URL. That means the browser only needs the Next.js origin, while the backend handles the service split.
-
-### Backend and agent development
-
-The Python environment is defined by [pyproject.toml](pyproject.toml) and targets Python 3.12. The platform container uses `uv run` to apply Alembic migrations, seed the database, and launch the FastAPI runtime. If you are iterating locally, keep the same environment variables in sync with the compose stack so the runtime and the migration scripts see the same database settings.
-
-## Operational Notes
-
-- [\.env.example](.env.example) is the source of truth for root environment values.
-- [backend/seed.py](backend/seed.py) refreshes the default admin password when the admin user already exists.
-- [platform/docker-compose.yaml](platform/docker-compose.yaml) is the authoritative service topology for the platform stack.
-- [dashboard/next.config.ts](dashboard/next.config.ts) is the source of API rewrite behavior for the browser.
-- [Target_Client/start.sh](Target_Client/start.sh) is the authoritative bootstrap path for the customer simulation when you want incidents and noisy traffic.
-
-## Testing
-
-Run the tests in layers so you know what failed:
-
-- `pytest` for the Python repository tests.
-- `cd dashboard && npm run lint` for UI-level validation.
-- `python Target_Client/testing/test_layer0.py` for gateway and service reachability.
-- `python Target_Client/testing/test_layer1.py` for observability health and scrape-target validation.
-
-## Troubleshooting
-
-- If the dashboard loads but API requests fail, confirm that `API_URL` in the platform compose file still points to `http://sre-agent-api:8080`.
-- If the agent starts but cannot reason over incidents, check the LLM provider variables and confirm that the selected backend is reachable.
-- If the target client starts but the platform sees no metrics, verify that Prometheus and Loki are listening on the host ports used by the MCP servers.
-- If the admin login fails on a clean setup, confirm that the seed script ran and that `SEED_ADMIN_PASSWORD` matches the current `.env` value.
-
-## What To Read Next
-
-- [backend/README.md](backend/README.md) for the persistence and auth story.
-- [sre_agent/README.md](sre_agent/README.md) for the runtime and LangGraph story.
-- [dashboard/README.md](dashboard/README.md) for the UI story.
-- [edge_mcp_servers/README.md](edge_mcp_servers/README.md) for the MCP evidence layer.
-- [Target_Client/README.md](Target_Client/README.md) for the simulated customer system.
+Python 3.12 · FastAPI · LangGraph / LangChain · Model Context Protocol ·
+Postgres · Redis · Qdrant · Next.js 16 / React 19 · Docker · Kubernetes ·
+Helm · Terraform · Langfuse.

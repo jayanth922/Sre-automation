@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func
-from backend import models, schemas, auth
+from backend import auth, crypto, models, schemas
 import uuid
 
 async def get_user_by_email(db: AsyncSession, email: str):
@@ -30,28 +30,28 @@ async def get_org_by_id(db: AsyncSession, org_id: uuid.UUID):
     return result.scalars().first()
 
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
-    # Check if org already exists — reuse if found, otherwise create new
-    db_org = await get_org_by_name(db, user.org_name)
-    if not db_org:
-        org_data = schemas.OrgCreate(name=user.org_name)
-        db_org = await create_org(db, org_data)
+    """Register a founding admin in a new organization.
 
-    # Check for duplicate email
+    Registration never joins an organization by a caller-supplied name. Joining
+    an existing organization is exclusively handled by invitation acceptance.
+    """
     existing = await get_user_by_email(db, user.email)
     if existing:
         raise ValueError(f"User with email {user.email} already exists")
 
+    db_org = models.Organization(
+        name=user.org_name,
+        api_key=f"org_{uuid.uuid4().hex}",
+    )
+    db.add(db_org)
+    await db.flush()
+
     hashed_password = auth.get_password_hash(user.password)
-
-    # First user in org becomes ADMIN, subsequent users are MEMBER
-    result = await db.execute(select(models.User).filter(models.User.org_id == db_org.id).limit(1))
-    is_first_user = result.scalars().first() is None
-
     db_user = models.User(
         email=user.email,
         hashed_password=hashed_password,
         full_name=user.full_name,
-        role=models.UserRole.ADMIN if is_first_user else models.UserRole.MEMBER,
+        role=models.UserRole.ADMIN,
         org_id=db_org.id
     )
     db.add(db_user)
@@ -59,16 +59,67 @@ async def create_user(db: AsyncSession, user: schemas.UserCreate):
     await db.refresh(db_user)
     return db_user
 
+async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID):
+    result = await db.execute(select(models.User).filter(models.User.id == user_id))
+    return result.scalars().first()
+
+
+async def get_users_for_org(db: AsyncSession, org_id: uuid.UUID):
+    """All users in an org, newest first."""
+    result = await db.execute(
+        select(models.User)
+        .filter(models.User.org_id == org_id)
+        .order_by(models.User.created_at.asc())
+    )
+    return result.scalars().all()
+
+
+async def count_active_admins(db: AsyncSession, org_id: uuid.UUID) -> int:
+    """How many active admins the org has — used to prevent lockout."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(models.User)
+        .filter(
+            models.User.org_id == org_id,
+            models.User.role == models.UserRole.ADMIN,
+            models.User.is_active == True,  # noqa: E712
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def update_user_role(db: AsyncSession, user: models.User, role: models.UserRole):
+    user.role = role
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def set_user_active(db: AsyncSession, user: models.User, is_active: bool):
+    user.is_active = is_active
+    if not is_active:
+        # Revoke all refresh sessions so a deactivated user is logged out.
+        await revoke_all_user_refresh_sessions(db, user.id)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 async def get_clusters_for_org(db: AsyncSession, org_id: uuid.UUID):
     result = await db.execute(select(models.Cluster).filter(models.Cluster.org_id == org_id))
     return result.scalars().all()
 
 async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_id: uuid.UUID):
+    import json as _json
+
     cluster_token = f"cl_{uuid.uuid4().hex}"
     db_cluster = models.Cluster(
         name=cluster.name,
         org_id=org_id,
         token=cluster_token,
+        token_hash=crypto.credential_lookup_hash(cluster_token),
+        key_version=crypto.current_key_version(),
+        execution_context_version=1,
         status=models.ClusterStatus.ONLINE,
         prometheus_url=cluster.prometheus_url,
         loki_url=cluster.loki_url,
@@ -78,14 +129,74 @@ async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_i
         github_repo=cluster.github_repo,
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
+        metrics_config=_json.dumps(cluster.metrics_config) if cluster.metrics_config else None,
+        namespace=cluster.namespace or None,
+        llm_provider=cluster.llm_provider or None,
+        llm_model=cluster.llm_model or None,
+        llm_base_url=cluster.llm_base_url or None,
+        llm_api_key=cluster.llm_api_key or None,
     )
     db.add(db_cluster)
     await db.commit()
     await db.refresh(db_cluster)
     return db_cluster, cluster_token
 
+
+async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.UUID, update: "schemas.ClusterUpdate"):
+    import json as _json
+
+    cluster = await get_cluster_by_id(db, cluster_id)
+    if not cluster or cluster.org_id != org_id:
+        return None
+    data = update.model_dump(exclude_unset=True)
+    credential_fields = {
+        "k8s_token",
+        "github_token",
+        "notion_api_key",
+        "llm_api_key",
+    }
+    for field in (
+        "name",
+        "prometheus_url",
+        "loki_url",
+        "k8s_api_server",
+        "k8s_token",
+        "github_token",
+        "github_repo",
+        "notion_api_key",
+        "notion_database_id",
+    ):
+        if field in data and data[field] is not None:
+            setattr(cluster, field, data[field])
+    # Scope + LLM override: an explicitly-sent empty string clears the field
+    # (revert to whole-cluster / platform-default), so honor blanks here.
+    for field in ("namespace", "llm_provider", "llm_model", "llm_base_url", "llm_api_key"):
+        if field in data:
+            setattr(cluster, field, data[field] or None)
+    context_fields = credential_fields | {
+        "prometheus_url",
+        "loki_url",
+        "k8s_api_server",
+        "namespace",
+        "llm_provider",
+        "llm_model",
+        "llm_base_url",
+    }
+    if credential_fields.intersection(data):
+        cluster.key_version = crypto.current_key_version()
+    if context_fields.intersection(data):
+        cluster.execution_context_version = (cluster.execution_context_version or 0) + 1
+    if "metrics_config" in data:
+        cluster.metrics_config = _json.dumps(data["metrics_config"]) if data["metrics_config"] else None
+    await db.commit()
+    await db.refresh(cluster)
+    return cluster
+
 async def get_cluster_by_token(db: AsyncSession, token: str):
-    result = await db.execute(select(models.Cluster).filter(models.Cluster.token == token))
+    token_hash = crypto.credential_lookup_hash(token)
+    result = await db.execute(
+        select(models.Cluster).filter(models.Cluster.token_hash == token_hash)
+    )
     return result.scalars().first()
 
 async def get_cluster_by_id(db: AsyncSession, cluster_id: uuid.UUID):
@@ -109,20 +220,25 @@ async def find_duplicate_incident(
     db: AsyncSession,
     cluster_id: uuid.UUID,
     title: str,
-    window_minutes: int = 30
+    window_minutes: Optional[int] = None,
 ) -> Optional[models.Incident]:
-    """Check for existing open/investigating incident with same title within time window."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    """Return an existing OPEN/INVESTIGATING incident with the same title, if any.
+
+    Dedup collapses a re-firing alert into the incident already tracking it for as
+    long as that incident stays open — not just within a short window — so a
+    long-running condition never spawns duplicates. Resolved incidents don't
+    match, so a genuinely new occurrence after resolution opens a fresh incident.
+    (window_minutes is optional and only narrows the lookback if explicitly set.)
+    """
+    filters = [
+        models.Incident.cluster_id == cluster_id,
+        models.Incident.title == title,
+        models.Incident.status.in_([models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]),
+    ]
+    if window_minutes:
+        filters.append(models.Incident.created_at >= datetime.now(timezone.utc) - timedelta(minutes=window_minutes))
     result = await db.execute(
-        select(models.Incident)
-        .filter(
-            models.Incident.cluster_id == cluster_id,
-            models.Incident.title == title,
-            models.Incident.status.in_([models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]),
-            models.Incident.created_at >= cutoff
-        )
-        .order_by(models.Incident.created_at.desc())
-        .limit(1)
+        select(models.Incident).filter(*filters).order_by(models.Incident.created_at.desc()).limit(1)
     )
     return result.scalars().first()
 
@@ -394,3 +510,50 @@ async def delete_slo(db: AsyncSession, slo_id: uuid.UUID) -> bool:
     await db.delete(slo)
     await db.commit()
     return True
+
+
+# ── Refresh sessions ─────────────────────────────────────────────────────────
+async def create_refresh_session(db: AsyncSession, user_id: uuid.UUID, token_hash: str, family_id: uuid.UUID, expires_at: datetime):
+    session = models.RefreshSession(
+        user_id=user_id, token_hash=token_hash, family_id=family_id, expires_at=expires_at
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+async def get_refresh_session_by_hash(db: AsyncSession, token_hash: str):
+    result = await db.execute(
+        select(models.RefreshSession).filter(models.RefreshSession.token_hash == token_hash)
+    )
+    return result.scalars().first()
+
+
+async def revoke_refresh_session(db: AsyncSession, session: "models.RefreshSession") -> None:
+    session.revoked = True
+    await db.commit()
+
+
+async def revoke_all_user_refresh_sessions(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Revoke every active refresh session for a user (no commit — caller commits)."""
+    result = await db.execute(
+        select(models.RefreshSession).filter(
+            models.RefreshSession.user_id == user_id,
+            models.RefreshSession.revoked == False,  # noqa: E712
+        )
+    )
+    for s in result.scalars().all():
+        s.revoked = True
+
+
+async def revoke_refresh_family(db: AsyncSession, family_id: uuid.UUID) -> None:
+    result = await db.execute(
+        select(models.RefreshSession).filter(
+            models.RefreshSession.family_id == family_id,
+            models.RefreshSession.revoked == False,  # noqa: E712
+        )
+    )
+    for s in result.scalars().all():
+        s.revoked = True
+    await db.commit()

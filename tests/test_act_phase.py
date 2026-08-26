@@ -23,9 +23,46 @@ from sre_agent.act_phase import (  # noqa: E402
     extract_incident_signals,
     verify_live,
 )
+from sre_agent.approval_flow import compute_action_hash  # noqa: E402
+from sre_agent.execution_context import ExecutionContext  # noqa: E402
 from sre_agent.skill_store import InMemorySkillStore  # noqa: E402
 
 ALLOW = lambda a, e, r: (True, "allowed")  # noqa: E731
+
+LIVE_CONTEXT = ExecutionContext(
+    organization_id="11111111-1111-1111-1111-111111111111",
+    cluster_id="22222222-2222-2222-2222-222222222222",
+    namespace="demo-app",
+    allowlist=("demo-app",),
+)
+
+
+@pytest.fixture(autouse=True)
+def _live_gateway_dependencies(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    class Store:
+        def __init__(self):
+            self.claims = set()
+
+        def is_available(self):
+            return True
+
+        def is_cluster_locked(self, cluster_id):
+            return False
+
+        def set_idempotency(self, key, ttl):
+            if key in self.claims:
+                return False
+            self.claims.add(key)
+            return True
+
+    async def persist(*args, **kwargs):
+        return None
+
+    store = Store()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "_persist_audit_event", persist)
 
 
 @dataclass
@@ -92,6 +129,16 @@ def test_critical_incident_requires_approval():
     assert len(report.executed) == 0
 
 
+def test_alert_namespace_cannot_downgrade_production_policy():
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "dev"})
+    plan = FakePlan(
+        [FakeAction("restart", "inventory-service", {"namespace": "demo-app"})],
+        risk_level="medium",
+    )
+    report = build_act_report(_state(alert, plan))
+    assert report.aggregate_decision == "blocked"
+
+
 def test_mixed_plan_executes_autonomous_holds_the_rest():
     alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
     plan = FakePlan([
@@ -119,6 +166,25 @@ def test_report_is_serializable():
     report = build_act_report(_state(alert, plan), evaluate_fn=ALLOW)
     d = report.to_dict()
     assert isinstance(d, dict) and d["plan_present"] is True
+    assert d["action_reports"][0]["parameters"] == {}
+
+
+def test_rebuilt_dry_run_report_has_stable_approval_hash():
+    state = _state(
+        FakeAlert("warning", {"service": "inventory-service"}),
+        FakePlan([
+            FakeAction(
+                "scale",
+                parameters={"replicas": 3},
+                rollback_plan="restore previous replica count",
+            )
+        ]),
+    )
+    first = build_act_report(state, evaluate_fn=ALLOW).to_dict()
+    second = build_act_report(state, evaluate_fn=ALLOW).to_dict()
+    second["action_reports"][0]["audit_hash"] = "different-dry-run-audit"
+    second["executed"][0]["audit_hash"] = "different-dry-run-audit"
+    assert compute_action_hash(first) == compute_action_hash(second)
 
 
 def test_execute_autonomous_live_only_applies_autonomous_actions():
@@ -137,8 +203,38 @@ def test_execute_autonomous_live_only_applies_autonomous_actions():
         applied.append(tool_name)
         return {"status": "OK", "tool": tool_name}
 
-    results = asyncio.run(execute_autonomous_live(state, report, fake_caller))
+    results = asyncio.run(
+        execute_autonomous_live(state, report, fake_caller, context=LIVE_CONTEXT)
+    )
     # Only the restart (autonomous) is applied; the held config_change is not.
+    assert applied == ["restart_deployment"]
+    assert len(results) == 1 and results[0]["status"] == "EXECUTED"
+
+
+def test_approved_live_applies_held_but_never_blocked_actions():
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    plan = FakePlan([
+        FakeAction("restart", "checkout-service", {"namespace": "demo-app"}),
+        FakeAction("scale", "checkout-service", {"namespace": "demo-app", "replicas": 0}),
+    ])
+    state = _state(alert, plan)
+    report = build_act_report(state, evaluate_fn=ALLOW)
+    # Critical restart is held for approval; scale-to-zero is also held by the
+    # reversibility gate and may be approved. A hard policy block is covered by
+    # the decision filter below by changing the report to the gate's BLOCKED value.
+    report.action_reports[1]["decision"] = "blocked"
+
+    applied = []
+
+    async def fake_caller(tool_name, args):
+        applied.append(tool_name)
+        return {"status": "OK", "tool": tool_name}
+
+    results = asyncio.run(
+        execute_autonomous_live(
+            state, report, fake_caller, approved=True, context=LIVE_CONTEXT
+        )
+    )
     assert applied == ["restart_deployment"]
     assert len(results) == 1 and results[0]["status"] == "EXECUTED"
 
@@ -180,11 +276,19 @@ def test_execute_autonomous_live_routes_code_change_to_github():
 
     async def github_caller(tool, args):
         github.append((tool, args))
-        return {"status": "DRY_RUN"}
+        return {"status": "REVERT_REQUESTED", "applied": True}
 
     # Only run live if the gate cleared it autonomous (low sev + revert has rollback).
     if report.aggregate_decision == "autonomous":
-        results = asyncio.run(execute_autonomous_live(state, report, infra_caller, github_caller=github_caller))
+        results = asyncio.run(
+            execute_autonomous_live(
+                state,
+                report,
+                infra_caller,
+                github_caller=github_caller,
+                context=LIVE_CONTEXT,
+            )
+        )
         assert github and github[0][0] == "create_revert_pr"
         assert github[0][1]["identifier"] == "deadbeef"
         assert not infra  # code change did not touch the infra backend

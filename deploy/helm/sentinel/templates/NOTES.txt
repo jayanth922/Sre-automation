@@ -1,0 +1,29 @@
+Sentinel is installing into namespace "{{ .Release.Namespace }}" (release "{{ .Release.Name }}").
+
+Watch it come up:
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+{{- if .Values.ingress.enabled }}
+
+Console:
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+Make sure web.wsBase points at the same host, e.g.:
+  --set web.wsBase=wss://{{ .Values.ingress.host }}
+{{- else }}
+
+No ingress configured. Port-forward the console and the API (the browser needs both):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/sentinel-web 3002:3000 &
+  kubectl -n {{ .Release.Namespace }} port-forward svc/sentinel-api 8080:8080 &
+Then open http://localhost:3002
+{{- end }}
+
+First run: open the console and register. The first person to sign up creates the
+organization and becomes its admin — from there, invite teammates (they register
+with the same organization name) and manage roles under Team.
+
+Model provider: {{ .Values.llm.provider }}
+{{- if eq .Values.llm.provider "openai_compatible" }}  →  {{ .Values.llm.baseUrl }} (set secrets.llmApiKey if it needs a key){{ end }}
+
+Next: connect a cluster in the console (Settings) — its Prometheus/Loki endpoints
+and metric conventions — and point your Alertmanager webhook at
+  POST /api/v1/alerts/webhook   with the cluster token.

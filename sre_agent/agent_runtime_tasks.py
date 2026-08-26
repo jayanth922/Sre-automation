@@ -26,7 +26,7 @@ async def run_graph_background_saas(
     SaaS-aware background execution.
     Writes logs/results to the Postgres Database instead of just Redis.
     """
-    from .agent_runtime import agent_graph, tools, initialize_agent
+    from .agent_runtime import initialize_agent
     session_id = str(incident_id)
     state_store = get_state_store()
     
@@ -57,12 +57,25 @@ async def run_graph_background_saas(
         await db.commit()
 
     try:
-        # Ensure Agent System is initialized
-        await initialize_agent()
+        runtime = await initialize_agent(cluster_id)
+        agent_graph, tools = runtime.graph, runtime.tools
         
         from langchain_core.messages import HumanMessage
-        llm_provider = os.getenv("LLM_PROVIDER", "ollama")
-        
+
+        # Resolve the agent "brain" per-cluster: a cluster may override the
+        # provider (and later model/endpoint/key); otherwise the platform default
+        # applies. Only the provider takes effect end-to-end today — model/base_url/
+        # api_key are carried in metadata for the router to honor.
+        from .cluster_context import resolve_llm, resolve_namespace
+        cluster_obj = None
+        try:
+            async with database.AsyncSessionLocal() as _db:
+                cluster_obj = await _db.get(models.Cluster, cluster_id)
+        except Exception as _ce:
+            logger.debug(f"cluster context lookup skipped: {_ce}")
+        llm_ctx = resolve_llm(cluster_obj)
+        llm_provider = llm_ctx["provider"]
+
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
             "ooda_phase": "OBSERVE",
@@ -71,6 +84,9 @@ async def run_graph_background_saas(
             "current_query": f"Investigate alert: {alert_name}",
             "metadata": {
                 "llm_provider": llm_provider,
+                "llm_overrides": llm_ctx,
+                "cluster_namespace": resolve_namespace(cluster_obj),
+                "cluster_environment": runtime.context.environment,
                 "tools": tools,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
@@ -225,7 +241,22 @@ async def run_graph_background_saas(
                     )
                 )
             await db.commit()
-            
+
+        # Push a lifecycle event so the incidents list / overview reflect the
+        # resolution live, without waiting for their next poll.
+        try:
+            from .live_events import LiveEvent, get_event_bus
+            from .war_room import INCIDENTS_CHANNEL
+
+            await get_event_bus().publish(INCIDENTS_CHANNEL, LiveEvent(
+                "resolved",
+                {"incident_id": str(incident_id), "alert_name": alert_name,
+                 "summary": final_response},
+                str(incident_id),
+            ).to_dict())
+        except Exception as _bus_err:
+            logger.debug(f"incident-resolved publish skipped: {_bus_err}")
+
     except Exception as e:
         logger.error(f"SaaS Background execution failed: {e}")
         async with database.AsyncSessionLocal() as db:

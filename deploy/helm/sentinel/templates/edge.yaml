@@ -1,0 +1,61 @@
+{{- if .Values.mcp.edge.enabled }}
+{{- $root := . }}
+{{- range .Values.mcp.edge.servers }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  labels: {{- include "sentinel.labels" $root | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: {{ .name }} }
+  template:
+    metadata:
+      labels: { app: {{ .name }} }
+    spec:
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if eq (.serviceAccount | default "") "observer" }}
+      serviceAccountName: {{ include "sentinel.observerSA" $root }}
+      {{- else if eq (.serviceAccount | default "") "actuator" }}
+      serviceAccountName: {{ include "sentinel.actuatorSA" $root }}
+      {{- end }}
+      containers:
+        - name: {{ .name }}
+          image: {{ include "sentinel.image" (dict "root" $root "name" .image) }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - name: MCP_SERVICE_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ include "sentinel.secretName" $root }}, key: MCP_SERVICE_TOKEN } }
+            {{- range .env }}
+            - { name: {{ .name }}, value: {{ .value | quote }} }
+            {{- end }}
+            {{- range .configEnv }}
+            - name: {{ . }}
+              valueFrom: { configMapKeyRef: { name: {{ include "sentinel.fullname" $root }}-config, key: {{ . }} } }
+            {{- end }}
+            {{- range .secretEnv }}
+            - name: {{ . }}
+              valueFrom: { secretKeyRef: { name: {{ include "sentinel.secretName" $root }}, key: {{ . }} } }
+            {{- end }}
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+          resources: {{- toYaml $root.Values.mcp.edge.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}
+  labels: {{- include "sentinel.labels" $root | nindent 4 }}
+spec:
+  selector: { app: {{ .name }} }
+  ports: [{ port: 3000, targetPort: 3000 }]
+{{- end }}
+{{- end }}

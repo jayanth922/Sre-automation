@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+kube_context        = "orbstack"
+namespace           = "sentinel"
+llm_provider        = "groq"
+secret_key          = "change-me-long-random"
+postgres_password   = "change-me-postgres"
+groq_api_key        = ""

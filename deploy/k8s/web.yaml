@@ -1,0 +1,50 @@
+# =============================================================================
+# Sentinel web console (Next.js). Talks to the API in-cluster for data; the
+# browser reaches the API's WebSocket directly via NEXT_PUBLIC_WS_BASE — set it
+# to however you expose the API (port-forward default below, or your ingress).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-web
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: sentinel-web }
+  template:
+    metadata:
+      labels: { app: sentinel-web }
+    spec:
+      containers:
+        - name: web
+          image: sentinel/web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: API_URL
+              value: "http://sentinel-api:8080"
+            # Must match how the BROWSER reaches the API. Default assumes
+            # `kubectl port-forward svc/sentinel-api 8080:8080`.
+            - name: NEXT_PUBLIC_WS_BASE
+              value: "ws://localhost:8080"
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-web
+  namespace: sentinel
+spec:
+  selector: { app: sentinel-web }
+  ports:
+    - port: 3000
+      targetPort: 3000

@@ -32,7 +32,7 @@ Helper script:
 ./stop.sh
 ```
 
-The startup script requires a `.env` file in this directory. Copy [`.env.example`](.env.example) and fill in observability URLs and GitHub settings before the first run.
+The startup script requires a `.env` file in this directory. Copy [`.env.example`](.env.example), fill in observability URLs and GitHub settings, and set a high-entropy `MCP_SERVICE_TOKEN` that exactly matches the platform value.
 
 ## Ports And Service Roles
 
@@ -42,7 +42,7 @@ The startup script requires a `.env` file in this directory. Copy [`.env.example
 - GitHub MCP: http://localhost:4003
 - Runbooks MCP: http://localhost:4004
 
-Each server container listens on port 3000 internally and is published on a distinct host port by the compose file. The platform chooses which tool to call based on the kind of evidence it needs.
+Each server container listens on port 3000 internally and is published on a distinct loopback-only host port by the compose file. Every HTTP/SSE request must carry `Authorization: Bearer <MCP_SERVICE_TOKEN>`; missing, mismatched, or unset tokens fail closed before the MCP application runs. The platform chooses which tool to call based on the kind of evidence it needs.
 
 ## Configuration Notes
 
@@ -66,5 +66,5 @@ This is why the edge layer matters. Without it, the agent would be forced to rea
 ## Related Docs
 
 - [mcp_servers/README.md](mcp_servers/README.md)
-- [../Target_Client/README.md](../Target_Client/README.md)
+- Reference client environment: `../meridian-shop` (separate repo)
 - [../README.md](../README.md)

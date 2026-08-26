@@ -26,11 +26,13 @@ prior behavior exactly.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+_OPEN_CHECKPOINTER_CONTEXTS = []
 
 
 def checkpointer_enabled() -> bool:
@@ -41,33 +43,56 @@ def select_backend() -> str:
     return os.getenv("CHECKPOINTER_BACKEND", "memory").lower()
 
 
+def durable_checkpointer_configured() -> bool:
+    return checkpointer_enabled() and select_backend() in {"redis", "postgres"}
+
+
+def _production_runtime() -> bool:
+    environment = (
+        os.getenv("SENTINEL_ENV")
+        or os.getenv("APP_ENV")
+        or os.getenv("ENVIRONMENT")
+        or ""
+    ).lower()
+    return os.getenv("AGENT_MODE", "").lower() == "api" or environment in {
+        "prod",
+        "production",
+    }
+
+
 def _memory_saver():
     from langgraph.checkpoint.memory import MemorySaver
     return MemorySaver()
 
 
-def _redis_saver():
-    # Requires `langgraph-checkpoint-redis`. Confirm the exact API against your
-    # installed version; guarded by the caller's try/except → falls back to memory.
-    from langgraph.checkpoint.redis import RedisSaver
+async def _redis_saver():
+    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
     url = os.getenv("CHECKPOINTER_REDIS_URL") or os.getenv("REDIS_URL", "redis://redis:6379")
-    cm = RedisSaver.from_conn_string(url)
-    saver = cm.__enter__()  # hold open for the process lifetime
-    if hasattr(saver, "setup"):
-        saver.setup()
+    cm = AsyncRedisSaver.from_conn_string(url)
+    saver = await cm.__aenter__()  # hold open for the process lifetime
+    setup = getattr(saver, "asetup", None) or getattr(saver, "setup", None)
+    if setup:
+        result = setup()
+        if inspect.isawaitable(result):
+            await result
+    _OPEN_CHECKPOINTER_CONTEXTS.append(cm)
     return saver
 
 
-def _postgres_saver():
-    # Requires `langgraph-checkpoint-postgres`. Guarded → falls back to memory.
-    from langgraph.checkpoint.postgres import PostgresSaver
+async def _postgres_saver():
+    # Async graph execution requires the async saver methods (aget/aput/alist).
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    uri = os.getenv("CHECKPOINTER_POSTGRES_URI") or _build_pg_uri()
-    cm = PostgresSaver.from_conn_string(uri)
-    saver = cm.__enter__()
-    if hasattr(saver, "setup"):
-        saver.setup()
+    uri = (
+        os.getenv("CHECKPOINTER_POSTGRES_URI")
+        or os.getenv("DATABASE_URL")
+        or _build_pg_uri()
+    ).replace("postgresql+asyncpg://", "postgresql://", 1)
+    cm = AsyncPostgresSaver.from_conn_string(uri)
+    saver = await cm.__aenter__()  # hold open for the process lifetime
+    await saver.setup()
+    _OPEN_CHECKPOINTER_CONTEXTS.append(cm)
     return saver
 
 
@@ -80,22 +105,34 @@ def _build_pg_uri() -> str:
     return f"postgresql://{user}:{pw}@{host}:{port}/{db}"
 
 
-def get_checkpointer():
+async def get_checkpointer():
     """Return the configured checkpointer, or None when checkpointing is off.
 
-    External backends fall back to the in-memory saver (with a warning) if their
-    package or connection is unavailable, so enabling the flag never hard-fails.
+    External backends fall back to memory only in local development.
+    API/production runtimes fail closed because a memory fallback would make
+    approval interrupts look durable while losing them on restart.
     """
     if not checkpointer_enabled():
         return None
 
     backend = select_backend()
+    if backend not in {"memory", "redis", "postgres"}:
+        if _production_runtime():
+            raise RuntimeError("Unsupported checkpointer backend")
+        logger.warning("Unknown checkpointer backend '%s'; using memory", backend)
+        return _memory_saver()
     try:
         if backend == "redis":
-            return _redis_saver()
+            return await _redis_saver()
         if backend == "postgres":
-            return _postgres_saver()
+            return await _postgres_saver()
     except Exception as e:
+        if backend in {"redis", "postgres"} and _production_runtime():
+            logger.error(
+                "Configured durable checkpointer backend '%s' is unavailable; refusing memory fallback",
+                backend,
+            )
+            raise RuntimeError("Configured durable checkpointer is unavailable") from e
         logger.warning(
             f"Checkpointer backend '{backend}' unavailable ({e}); "
             f"falling back to in-memory MemorySaver (not crash-durable)."
@@ -122,9 +159,20 @@ def thread_config(thread_id: str, base: Optional[Dict[str, Any]] = None) -> Opti
     existing invoke sites behave exactly as before. When on, adds
     ``configurable.thread_id`` so the checkpointer persists/resumes per thread.
     """
+    # Always attach agent tracing (Langfuse) when configured, so every LLM /
+    # tool / chain span is traced with tokens, cost, latency and the reasoning
+    # trajectory. No-op when tracing is off. This is what makes observability
+    # first-class at every graph invocation site.
+    try:
+        from .tracing import tracing_callbacks
+    except ImportError:  # direct-file unit-test loading has no package context
+        from sre_agent.tracing import tracing_callbacks
+
+    cfg = tracing_callbacks(base)
+
     if not checkpointer_enabled():
-        return base
-    cfg: Dict[str, Any] = dict(base or {})
+        return cfg
+    cfg = dict(cfg or {})
     configurable = dict(cfg.get("configurable", {}))
     configurable["thread_id"] = thread_id
     cfg["configurable"] = configurable

@@ -53,16 +53,17 @@ The default host inside Docker is `postgres`. Local runs can override that with 
 
 The dashboard stores the returned bearer token in both localStorage and a cookie, which keeps the browser middleware and the React auth state aligned.
 
-## Seeding Behavior
+## Onboarding & Roles
 
-[seed.py](seed.py) is the seed entry point used during platform startup. It performs two jobs:
+There is no seeding. A fresh deployment starts with an empty database; the first
+person to register through the console creates their organization and becomes its
+admin (`crud.create_user` assigns `ADMIN` to the first user in an org, `MEMBER`
+thereafter). Teammates join by registering with the same organization name.
 
-1. Creates the default admin user if the account does not exist yet.
-2. Refreshes the seeded admin password from the current environment if the account already exists.
-
-If `SEED_CLUSTER_TOKEN` is set, the same seed script also creates or updates a demo cluster so the dashboard has something to display immediately after a clean bootstrap.
-
-The admin values come from `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_ORG`.
+Organization administration lives in [../sre_agent/api/v1/members.py](../sre_agent/api/v1/members.py):
+admins can list members, assign or revoke the admin role, and activate/deactivate
+accounts. Guardrails prevent demoting or deactivating the last active admin, so an
+organization can never lock itself out.
 
 ## Migrations
 
@@ -74,7 +75,7 @@ Use [alembic/README.md](alembic/README.md) for operational commands and [alembic
 
 - The agent runtime imports the models and session helpers to persist incidents, timeline events, and audit entries.
 - The dashboard relies on the auth router for login, registration, and account display.
-- The seed script is part of the platform startup path, so backend changes can affect whether a fresh deployment is immediately usable.
+- Registration and the org member-management endpoints govern who can access a fresh deployment and with what role.
 
 ## What To Update When Changing The Backend
 

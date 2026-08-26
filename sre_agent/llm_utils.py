@@ -35,7 +35,7 @@ class LLMAccessError(LLMProviderError):
     pass
 
 
-def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
+def create_llm_with_error_handling(provider: str = "groq", **kwargs):
     """Create LLM instance with proper error handling and helpful error messages.
 
     Args:
@@ -51,9 +51,14 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         LLMAccessError: For access/permission failures
         ValueError: For unsupported providers
     """
-    if provider not in ("groq", "ollama", "gemini", "nvidia"):
+    # Curated to providers that reliably support the tool/function-calling
+    # structured-output path the agent depends on. Self-hosted / local models go
+    # through 'openai_compatible' (Ollama /v1, vLLM, LiteLLM) — see LLM_BASE_URL.
+    if provider not in ("groq", "anthropic", "openai_compatible"):
         raise ValueError(
-            f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'."
+            f"Unsupported provider: {provider!r}. Supported: 'anthropic', 'groq', "
+            f"'openai_compatible'. For a self-hosted model on your machine, use "
+            f"'openai_compatible' with LLM_BASE_URL (e.g. Ollama http://host:11434/v1, vLLM, LiteLLM)."
         )
 
     logger.info(f"Creating LLM with provider: {provider}")
@@ -64,15 +69,12 @@ def create_llm_with_error_handling(provider: str = "ollama", **kwargs):
         if provider == "groq":
             logger.info(f"Creating Groq LLM - Model: {config['model_id']}")
             return _create_groq_llm(config)
-        elif provider == "ollama":
-            logger.info(f"Creating Ollama LLM - Model: {config['model_id']} at {config['base_url']}")
-            return _create_ollama_llm(config)
-        elif provider == "gemini":
-            logger.info(f"Creating Gemini LLM - Model: {config['model_id']}")
-            return _create_gemini_llm(config)
-        elif provider == "nvidia":
-            logger.info(f"Creating NVIDIA NIM LLM - Model: {config['model_id']}")
-            return _create_nvidia_llm(config)
+        elif provider == "openai_compatible":
+            logger.info(f"Creating OpenAI-compatible LLM - Model: {config['model_id']} at {config['base_url']}")
+            return _create_openai_compatible_llm(config)
+        elif provider == "anthropic":
+            logger.info(f"Creating Anthropic (Claude) LLM - Model: {config['model_id']}")
+            return _create_anthropic_llm(config)
 
     except Exception as e:
         error_msg = _get_helpful_error_message(provider, e)
@@ -101,6 +103,7 @@ def _create_groq_llm(config: Dict[str, Any]):
     """Create Groq LLM instance."""
     return ChatGroq(
         model=config["model_id"],
+        api_key=config.get("api_key"),
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
     )
@@ -127,6 +130,58 @@ def _create_nvidia_llm(config: Dict[str, Any]):
         base_url=config["base_url"],
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
+    )
+
+
+def _create_anthropic_llm(config: Dict[str, Any]):
+    """Create an Anthropic (Claude) client. Requires ``langchain-anthropic`` and
+    ANTHROPIC_API_KEY. Claude has first-class tool/function calling, so the
+    structured-output paths (with_structured_output) work natively."""
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:
+        raise LLMProviderError(
+            "langchain-anthropic not installed. Add it to the image "
+            "(pip install langchain-anthropic) to use LLM_PROVIDER=anthropic."
+        )
+
+    api_key = config.get("api_key", "")
+    if not api_key:
+        raise LLMAuthenticationError(
+            "ANTHROPIC_API_KEY not set. Get a key at https://console.anthropic.com"
+        )
+
+    return ChatAnthropic(
+        model=config["model_id"],
+        api_key=api_key,
+        temperature=config["temperature"],
+        max_tokens=config.get("max_tokens", 4096),
+    )
+
+
+def _create_openai_compatible_llm(config: Dict[str, Any]):
+    """Create a client for any OpenAI-compatible endpoint (vLLM, Ollama /v1,
+    LiteLLM proxy, LocalAI, on-prem gateway). Bring-your-own LLM."""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        raise LLMProviderError(
+            "langchain-openai not installed. Run 'pip install langchain-openai'"
+        )
+
+    if not config.get("base_url"):
+        raise LLMProviderError(
+            "openai_compatible provider needs a base URL. Set LLM_BASE_URL "
+            "(e.g. http://vllm.your-infra:8000/v1)."
+        )
+
+    return ChatOpenAI(
+        model=config["model_id"],
+        # Many on-prem endpoints are keyless; ChatOpenAI still requires a value.
+        api_key=config.get("api_key") or "not-needed",
+        base_url=config["base_url"],
+        temperature=config["temperature"],
+        max_tokens=config.get("max_tokens"),
     )
 
 
@@ -246,7 +301,7 @@ def _get_helpful_error_message(provider: str, error: Exception) -> str:
     )
 
 
-def validate_provider_access(provider: str = "ollama", **kwargs) -> bool:
+def validate_provider_access(provider: str = "groq", **kwargs) -> bool:
     """Validate if the specified provider is accessible.
 
     Args:
@@ -256,8 +311,8 @@ def validate_provider_access(provider: str = "ollama", **kwargs) -> bool:
     Returns:
         True if provider is accessible, False otherwise
     """
-    if provider not in ["groq", "ollama", "gemini", "nvidia"]:
-        logger.warning(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'.")
+    if provider not in ["groq", "anthropic", "openai_compatible"]:
+        logger.warning(f"Unsupported provider: {provider}. Supported: 'anthropic', 'groq', 'openai_compatible'.")
         return False
 
     try:
@@ -292,7 +347,9 @@ def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
     if primary_provider is None:
         primary_provider = os.getenv("LLM_PROVIDER", "groq")
 
-    fallback_chain = ["nvidia", "gemini", "groq", "ollama"]
+    # Cloud fallbacks with reliable structured output. openai_compatible is
+    # excluded here since it needs an explicit base URL (no blind fallback).
+    fallback_chain = ["groq", "anthropic"]
     ordered = [primary_provider] + [p for p in fallback_chain if p != primary_provider]
 
     last_error = None
@@ -327,7 +384,7 @@ def get_recommended_provider() -> str:
         Recommended provider name
     """
     # Prefer Ollama for local execution if available
-    if validate_provider_access("ollama"):
+    if validate_provider_access("groq"):
         logger.info("Recommended provider: ollama")
         return "ollama"
 

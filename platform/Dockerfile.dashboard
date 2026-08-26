@@ -20,6 +20,10 @@ COPY . .
 
 EXPOSE 3000
 
+# Browser talks to the API's WebSocket directly (Next rewrites don't proxy WS
+# upgrades). The host publishes the API on :8080.
+ENV NEXT_PUBLIC_WS_BASE=ws://localhost:8080
+
 RUN apk add --no-cache curl
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

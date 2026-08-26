@@ -278,4 +278,5 @@ if __name__ == "__main__":
         _initialize_client()
     except Exception as e:
         logger.warning(f"Deferred client init (will retry lazily): {e}")
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

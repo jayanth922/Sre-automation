@@ -30,13 +30,14 @@ The scoring logic lives in `scoring.py` (pure functions, unit-tested in
 
 ### Running
 
-Requires the live stack, and — for the remediation/severity/safety columns — the
-ACT phase enabled:
+Requires the live stack with a connected cluster. The full OODA loop (which
+produces the `act_report` used by the remediation/severity/safety columns) runs
+by default — no flag. Set `EXECUTOR_LIVE=true` only if you want autonomous fixes
+actually applied during the run.
 
 ```bash
-./main_start.sh                 # platform + edge + Target_Client
-export ACT_PHASE_ENABLED=true   # so the act_report is produced
-# optional: export EXECUTOR_LIVE=true   # to actually apply autonomous fixes
+# 1. bring the platform up (deploy/k8s/install.sh or terraform apply)
+# 2. connect a cluster in the console (or seed one) and note BENCH_CLUSTER_*
 uv run python benchmarks/sre_bench.py
 ```
 

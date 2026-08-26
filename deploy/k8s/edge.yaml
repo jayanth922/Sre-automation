@@ -1,0 +1,238 @@
+# =============================================================================
+# Edge MCP tool servers — the agent's hands. Each listens on :3000 (SSE at
+# /sse). The k8s / executor servers talk to the cluster API via their
+# ServiceAccount (in-cluster config); the rest read the cluster's Prometheus /
+# Loki / GitHub as configured.
+# =============================================================================
+
+# ── mcp-k8s (read) ───────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-k8s
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-k8s } }
+  template:
+    metadata: { labels: { app: mcp-k8s } }
+    spec:
+      serviceAccountName: sentinel-observer
+      containers:
+        - name: mcp-k8s
+          image: sentinel/mcp-k8s:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-k8s, namespace: sentinel }
+spec:
+  selector: { app: mcp-k8s }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ── mcp-executor (write: scale/restart) ──────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-executor
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-executor } }
+  template:
+    metadata: { labels: { app: mcp-executor } }
+    spec:
+      serviceAccountName: sentinel-actuator
+      containers:
+        - name: mcp-executor
+          image: sentinel/mcp-executor:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - name: EXECUTOR_ALLOWED_NAMESPACES
+              valueFrom: { configMapKeyRef: { name: sentinel-config, key: EXECUTOR_ALLOWED_NAMESPACES } }
+            - name: EXECUTOR_MIN_REPLICAS
+              valueFrom: { configMapKeyRef: { name: sentinel-config, key: EXECUTOR_MIN_REPLICAS } }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-executor, namespace: sentinel }
+spec:
+  selector: { app: mcp-executor }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ── mcp-prometheus ───────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-prometheus
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-prometheus } }
+  template:
+    metadata: { labels: { app: mcp-prometheus } }
+    spec:
+      containers:
+        - name: mcp-prometheus
+          image: sentinel/mcp-prometheus:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - name: PROMETHEUS_URL
+              valueFrom: { configMapKeyRef: { name: sentinel-config, key: PROMETHEUS_URL } }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-prometheus, namespace: sentinel }
+spec:
+  selector: { app: mcp-prometheus }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ── mcp-loki ─────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-loki
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-loki } }
+  template:
+    metadata: { labels: { app: mcp-loki } }
+    spec:
+      containers:
+        - name: mcp-loki
+          image: sentinel/mcp-loki:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - name: LOKI_URL
+              valueFrom: { configMapKeyRef: { name: sentinel-config, key: LOKI_URL } }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-loki, namespace: sentinel }
+spec:
+  selector: { app: mcp-loki }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ── mcp-github (read) ────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-github
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-github } }
+  template:
+    metadata: { labels: { app: mcp-github } }
+    spec:
+      containers:
+        - name: mcp-github
+          image: sentinel/mcp-github:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - name: GITHUB_TOKEN
+              valueFrom: { secretKeyRef: { name: sentinel-secrets, key: GITHUB_TOKEN } }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-github, namespace: sentinel }
+spec:
+  selector: { app: mcp-github }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ── mcp-github-exec (write: revert PRs) ──────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-github-exec
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-github-exec } }
+  template:
+    metadata: { labels: { app: mcp-github-exec } }
+    spec:
+      containers:
+        - name: mcp-github-exec
+          image: sentinel/mcp-github-exec:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - name: GITHUB_TOKEN
+              valueFrom: { secretKeyRef: { name: sentinel-secrets, key: GITHUB_TOKEN } }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-github-exec, namespace: sentinel }
+spec:
+  selector: { app: mcp-github-exec }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ── mcp-runbooks (corpus baked into image) ───────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-runbooks
+  namespace: sentinel
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: mcp-runbooks } }
+  template:
+    metadata: { labels: { app: mcp-runbooks } }
+    spec:
+      containers:
+        - name: mcp-runbooks
+          image: sentinel/mcp-runbooks:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: HOST, value: "0.0.0.0" }
+            - { name: HTTP_PORT, value: "3000" }
+            - { name: RUNBOOKS_DIR, value: "/app/runbooks" }
+          readinessProbe:
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mcp-runbooks, namespace: sentinel }
+spec:
+  selector: { app: mcp-runbooks }
+  ports: [{ port: 3000, targetPort: 3000 }]

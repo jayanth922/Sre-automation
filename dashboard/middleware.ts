@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 export function middleware(request: NextRequest) {
-    const token = request.cookies.get('token')?.value
+    // Presence of the httpOnly refresh cookie = has a session (the access token
+    // lives in memory client-side, so it can't be checked here). The server
+    // still validates every request; this only drives redirects.
+    const token = request.cookies.get('sentinel_refresh')?.value
     const { pathname } = request.nextUrl
 
     // Define public paths that don't depend on auth

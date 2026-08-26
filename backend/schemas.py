@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from backend.models import UserRole, ClusterStatus, IncidentSeverity, IncidentStatus
 
@@ -59,6 +59,58 @@ class PasswordResetRequest(BaseModel):
     current_password: str
     new_password: str
 
+
+# ----------------------------------------------------------------------
+# Organization member management
+# ----------------------------------------------------------------------
+
+class OrgMemberResponse(BaseModel):
+    id: uuid.UUID
+    email: EmailStr
+    full_name: Optional[str] = None
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MemberRoleUpdate(BaseModel):
+    role: UserRole
+
+
+class MemberStatusUpdate(BaseModel):
+    is_active: bool
+
+
+# ----------------------------------------------------------------------
+# Organization invitations
+# ----------------------------------------------------------------------
+
+class InvitationCreate(BaseModel):
+    email: EmailStr
+    role: UserRole = UserRole.MEMBER
+    expires_in_hours: int = Field(default=72, ge=1, le=720)
+
+
+class InvitationCreateResponse(BaseModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    email: EmailStr
+    role: UserRole
+    expires_at: datetime
+    token: str
+
+
+class InvitationAccept(BaseModel):
+    token: str = Field(min_length=32)
+    password: str = Field(min_length=8)
+    full_name: Optional[str] = None
+    # Accepted for compatibility, but deliberately ignored. Organization and
+    # role always come from the server-side invitation record.
+    role: Optional[UserRole] = None
+
 # ----------------------------------------------------------------------
 # Organization Schemas
 # ----------------------------------------------------------------------
@@ -89,6 +141,32 @@ class ClusterCreate(BaseModel):
     github_repo: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
+    # Observability query conventions (service label, metric names, error selector).
+    metrics_config: Optional[Dict[str, str]] = None
+    # Scope: namespace this cluster represents. Empty = whole cluster (infra).
+    namespace: Optional[str] = None
+    # Per-cluster LLM override (null = platform default).
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
+
+class ClusterUpdate(BaseModel):
+    name: Optional[str] = None
+    prometheus_url: Optional[str] = None
+    loki_url: Optional[str] = None
+    k8s_api_server: Optional[str] = None
+    k8s_token: Optional[str] = None
+    github_token: Optional[str] = None
+    github_repo: Optional[str] = None
+    notion_api_key: Optional[str] = None
+    notion_database_id: Optional[str] = None
+    metrics_config: Optional[Dict[str, str]] = None
+    namespace: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
 
 class ClusterResponse(BaseModel):
     id: uuid.UUID
@@ -100,6 +178,13 @@ class ClusterResponse(BaseModel):
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
+    notion_database_id: Optional[str] = None
+    metrics_config: Optional[str] = None
+    namespace: Optional[str] = None
+    # LLM override — provider/model/base_url are safe to echo; the key is write-only.
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_base_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -154,6 +239,11 @@ class IncidentTranscriptResponse(BaseModel):
 
 class IncidentMessageRequest(BaseModel):
     message: str
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approval_request_id: uuid.UUID
+    action_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
 # ----------------------------------------------------------------------
 # SLO Schemas

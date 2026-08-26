@@ -3,9 +3,23 @@ from datetime import datetime
 from typing import List, Optional
 from enum import Enum
 
-from sqlalchemy import String, ForeignKey, DateTime, Text, Boolean, Float, Integer, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    Index,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+
+from backend.crypto import EncryptedString, current_key_version
 
 # ----------------------------------------------------------------------
 # Enum Definitions
@@ -29,6 +43,11 @@ class IncidentSeverity(str, Enum):
 class IncidentStatus(str, Enum):
     OPEN = "open"
     INVESTIGATING = "investigating"
+    INVESTIGATED = "investigated"
+    AWAITING_APPROVAL = "awaiting_approval"
+    REMEDIATION_IN_PROGRESS = "remediation_in_progress"
+    REMEDIATION_FAILED = "remediation_failed"
+    VERIFICATION_UNKNOWN = "verification_unknown"
     RESOLVED = "resolved"
 
 class JobStatus(str, Enum):
@@ -41,6 +60,13 @@ class JobType(str, Enum):
     TOOL_CALL = "tool_call"
     INVESTIGATION = "investigation"
     REMEDIATION = "remediation"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
 
 # ----------------------------------------------------------------------
 # Base Model
@@ -64,6 +90,12 @@ class Organization(Base):
     # Relationships
     users: Mapped[List["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clusters: Mapped[List["Cluster"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    invitations: Mapped[List["OrgInvitation"]] = relationship(
+        back_populates="organization", cascade="all, delete-orphan"
+    )
+    audit_events: Mapped[List["AuditEvent"]] = relationship(
+        back_populates="organization", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<Organization(name='{self.name}')>"
@@ -84,6 +116,9 @@ class User(Base):
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="users")
     audit_logs: Mapped[List["AuditLog"]] = relationship(back_populates="user")
+    sent_invitations: Mapped[List["OrgInvitation"]] = relationship(
+        back_populates="invited_by"
+    )
 
     def __repr__(self):
         return f"<User(email='{self.email}', role='{self.role}')>"
@@ -95,7 +130,16 @@ class Cluster(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)
-    token: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    token: Mapped[str] = mapped_column(EncryptedString(), nullable=False)
+    token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
+    key_version: Mapped[int] = mapped_column(
+        Integer, default=current_key_version, nullable=False
+    )
+    execution_context_version: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False
+    )
     status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.ONLINE)
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -104,11 +148,25 @@ class Cluster(Base):
     prometheus_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     loki_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     k8s_api_server: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    k8s_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # service account token
-    github_token: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    k8s_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
+    github_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     github_repo: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. org/repo
-    notion_api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    notion_api_key: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     notion_database_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Observability query conventions (JSON). Null = platform defaults. Lets the
+    # platform work against any workload's metric schema, not one demo's.
+    metrics_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Scope: the Kubernetes namespace this cluster represents. Null/empty = the
+    # whole cluster (infra-level). When set, metric queries, the service view, and
+    # the executor's blast radius are all scoped to it — so one physical cluster
+    # can host many apps, each registered as its own scoped Sentinel cluster.
+    namespace: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Per-cluster LLM override for the agent's "brain". Null = platform default.
+    # Lets each cluster tune the model to its use case (provider/model/endpoint/key).
+    llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    llm_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    llm_base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    llm_api_key: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
 
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="clusters")
@@ -216,10 +274,21 @@ class AuditEvent(Base):
     Tracks all remediation actions taken by Agent or User.
     """
     __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "cluster_id IS NOT NULL OR organization_id IS NOT NULL",
+            name="ck_audit_events_has_scope",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    cluster_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clusters.id"), nullable=False)
+    cluster_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("clusters.id"), nullable=True
+    )
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
     
     actor_type: Mapped[str] = mapped_column(String, default="AGENT") # AGENT or USER
     actor_id: Mapped[str] = mapped_column(String) # "sre-agent" or user_uuid
@@ -230,7 +299,10 @@ class AuditEvent(Base):
     details: Mapped[Optional[str]] = mapped_column(Text) # JSON details or error message
     
     # Relationships
-    cluster: Mapped["Cluster"] = relationship(back_populates="audit_events")
+    cluster: Mapped[Optional["Cluster"]] = relationship(back_populates="audit_events")
+    organization: Mapped[Optional["Organization"]] = relationship(
+        back_populates="audit_events"
+    )
 
     def __repr__(self):
         return f"<AuditEvent(action='{self.action_type}', outcome='{self.outcome}')>"
@@ -254,5 +326,107 @@ class SLO(Base):
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="slos")
 
+
+class RefreshSession(Base):
+    """A rotating refresh-token session. The raw token is never stored — only its
+    SHA-256 hash. `family_id` groups a rotation lineage so reuse of a rotated
+    token can revoke the whole family (reuse detection)."""
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
     def __repr__(self):
         return f"<SLO(name='{self.name}', target={self.target}%)>"
+
+
+class OrgInvitation(Base):
+    """Single-use invitation to join an existing organization.
+
+    Only a SHA-256 hash of the opaque invitation token is persisted. The raw
+    token is returned once when an administrator creates the invitation.
+    """
+
+    __tablename__ = "org_invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
+    role: Mapped[UserRole] = mapped_column(
+        String(20), default=UserRole.MEMBER, nullable=False
+    )
+    invited_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    organization: Mapped["Organization"] = relationship(back_populates="invitations")
+    invited_by: Mapped["User"] = relationship(back_populates="sent_invitations")
+
+
+class ApprovalRequest(Base):
+    """Durable, single-use authorization for one exact remediation report."""
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        Index("ix_approval_requests_incident_status", "incident_id", "status"),
+        Index("ix_approval_requests_thread_id", "thread_id"),
+        Index(
+            "uq_approval_requests_pending_action",
+            "thread_id",
+            "action_hash",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    action_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    cluster_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[ApprovalStatus] = mapped_column(
+        String(20), default=ApprovalStatus.PENDING, nullable=False
+    )
+    approver_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

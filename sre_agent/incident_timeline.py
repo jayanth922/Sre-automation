@@ -119,24 +119,108 @@ def _confidence_from_response(response: str) -> str:
     return "medium"
 
 
-def _alert_context_to_text(alert_context: Any) -> str:
-    if not alert_context:
-        return ""
+def _is_low_information_response(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").strip().lower().strip(" .!?:"))
+    low_information_markers = {
+        "",
+        "okay",
+        "ok",
+        "done",
+        "noted",
+        "n/a",
+        "none",
+        "unknown",
+        "unclear",
+        "still investigating",
+        "working on it",
+        "no data",
+        "no data available",
+        "unable to tell",
+    }
+    return normalized in low_information_markers or len(normalized.split()) <= 2
 
-    if isinstance(alert_context, dict):
-        alert_name = alert_context.get("alert_name", "")
-        severity = alert_context.get("severity", "")
-        annotations = alert_context.get("annotations", {}) or {}
+
+def _infer_next_step(agent_name: str) -> str:
+    mapping = {
+        "metrics_agent": "Correlate with logs and code changes.",
+        "logs_agent": "Correlate with metrics and code changes.",
+        "github_agent": "Check whether the suspect change aligns with the symptom window.",
+        "runbooks_agent": "Validate the best runbook path and any safe next actions.",
+    }
+    return mapping.get(
+        agent_name,
+        "Supervisor should correlate this finding with the rest of the thread.",
+    )
+
+
+def _normalize_specialist_finding(
+    agent_name: str, current_query: str, response: str
+) -> Dict[str, str]:
+    visible_label = visible_specialist_label(agent_name)
+    objective = _truncate(
+        _clean_public_query(current_query or f"Investigate {visible_label}"), 180
+    )
+    raw_response = (response or "").strip()
+    if _is_low_information_response(raw_response):
+        evidence = "No concrete evidence was provided."
+        conclusion = "The specialist did not provide a concrete conclusion."
     else:
-        alert_name = getattr(alert_context, "alert_name", "")
-        severity = getattr(alert_context, "severity", "")
-        annotations = getattr(alert_context, "annotations", {}) or {}
+        evidence = _truncate(raw_response, 240)
+        conclusion = _truncate(
+            re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", raw_response))[0],
+            180,
+        )
+    return {
+        "visible_label": visible_label,
+        "objective": objective,
+        "evidence": evidence,
+        "conclusion": conclusion,
+        "confidence": _confidence_from_response(raw_response),
+        "recommended_next_step": _infer_next_step(agent_name),
+    }
 
-    annotation_summary = annotations.get("summary", "") if isinstance(annotations, dict) else ""
-    annotation_description = annotations.get("description", "") if isinstance(annotations, dict) else ""
 
-    parts = [part for part in [alert_name, severity, annotation_summary, annotation_description] if part]
-    return " ".join(parts)
+def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[str]]:
+    patterns = {
+        "error rate": [
+            r"(?:error rate|errors?)\D{0,24}(\d+(?:\.\d+)?%)",
+            r"(\d+(?:\.\d+)?%)\D{0,24}(?:error rate|errors?)",
+        ],
+        "latency": [
+            r"(?:latency|response time|p95|p99)\D{0,24}(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min|mins|minutes))",
+            r"(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min|mins|minutes))\D{0,24}(?:latency|response time|p95|p99)",
+        ],
+        "cpu": [
+            r"(?:cpu(?: usage| utilization)?|cpu)\D{0,24}(\d+(?:\.\d+)?%)",
+            r"(\d+(?:\.\d+)?%)\D{0,24}(?:cpu(?: usage| utilization)?|cpu)",
+        ],
+        "memory": [
+            r"(?:memory(?: usage| utilization)?|memory|mem)\D{0,24}(\d+(?:\.\d+)?%)",
+            r"(\d+(?:\.\d+)?%)\D{0,24}(?:memory(?: usage| utilization)?|memory|mem)",
+        ],
+    }
+    facts: Dict[str, List[str]] = {}
+    for label, label_patterns in patterns.items():
+        values: List[str] = []
+        for pattern in label_patterns:
+            for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
+                value = re.sub(r"\s+", " ", match.group(1).strip().lower())
+                if value not in values:
+                    values.append(value)
+        if values:
+            facts[label] = values
+    return facts
+
+
+def _detect_conflicting_numeric_facts(texts: Sequence[str]) -> Dict[str, List[str]]:
+    combined: Dict[str, List[str]] = {}
+    for text in texts:
+        for label, values in _extract_numeric_fact_mentions(text).items():
+            known = combined.setdefault(label, [])
+            for value in values:
+                if value not in known:
+                    known.append(value)
+    return {label: values for label, values in combined.items() if len(values) > 1}
 
 
 def _alert_context_to_text(alert_context: Any) -> str:
@@ -242,12 +326,24 @@ def build_specialist_finding_content(
     raw response is preserved in the structured payload so downstream consumers
     (e.g. the dashboard's expandable detail view) can still inspect it.
     """
-    visible_label = visible_specialist_label(agent_name)
-    objective = _truncate(_clean_public_query(current_query or f"Investigate {visible_label}"), 180)
+    normalized = _normalize_specialist_finding(agent_name, current_query, response)
+    visible_label = normalized["visible_label"]
+    objective = normalized["objective"]
     raw_response = (response or "").strip()
 
     if narrative and narrative.strip():
         content = narrative.strip()
+    elif _is_low_information_response(raw_response):
+        content = "\n".join(
+            [
+                f"{visible_label} finding",
+                f"- objective: {objective}",
+                f"- evidence: {normalized['evidence']}",
+                f"- conclusion: {normalized['conclusion']}",
+                f"- confidence: {normalized['confidence']}",
+                f"- recommended next step: {normalized['recommended_next_step']}",
+            ]
+        )
     elif raw_response:
         snippet = re.sub(r"\s+", " ", raw_response)[:600].rstrip()
         if len(raw_response) > 600:
@@ -259,10 +355,8 @@ def build_specialist_finding_content(
     payload = {
         "agent_name": agent_name,
         "speaker_role": visible_specialist_role(agent_name),
-        "visible_label": visible_label,
-        "objective": objective,
+        **normalized,
         "raw_response": _truncate(raw_response, 8000) if raw_response else "",
-        "confidence": _confidence_from_response(raw_response),
     }
     return content, payload
 
@@ -288,8 +382,32 @@ def build_supervisor_summary_content(
     """
     objective = _truncate(_clean_public_query(query), 180) if query else "the incident"
     alert_text = _alert_context_to_text(alert_context)
+    normalized_findings = [
+        _normalize_specialist_finding(agent_name, query, str(response))
+        for agent_name, response in agent_results.items()
+        if response
+    ]
+    conflict_sources = ([alert_text] if alert_text else []) + [
+        str(response) for response in agent_results.values() if response
+    ]
+    conflicts = _detect_conflicting_numeric_facts(conflict_sources)
 
-    if narrative and narrative.strip():
+    if conflicts:
+        conflict_text = ", ".join(
+            f"{label}: {', '.join(values)}" for label, values in conflicts.items()
+        )
+        content = "\n".join(
+            [
+                "## Incident Summary",
+                "",
+                f"**Objective:** {objective}",
+                "",
+                "**Conclusion:** The available facts are inconsistent, so no single settled value should be treated as confirmed yet.",
+                f"**Conflicts:** {conflict_text}.",
+                "**Next step:** Reconcile the conflicting source data before closing the incident.",
+            ]
+        )
+    elif narrative and narrative.strip():
         content = narrative.strip()
     elif final_response and final_response.strip():
         content = final_response.strip()
@@ -305,6 +423,8 @@ def build_supervisor_summary_content(
         "specialists_invoked": list(agent_results.keys()),
         "objective": objective,
         "alert_context": alert_text or None,
+        "normalized_findings": normalized_findings,
+        "conflicting_numeric_facts": conflicts,
         "raw_final_response": _truncate(final_response or "", 8000),
     }
     return content, payload

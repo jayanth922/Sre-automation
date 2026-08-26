@@ -269,6 +269,8 @@ def _question_demands_fresh_specialist_run(question: str) -> bool:
         "check now",
         "right now",
         "latest",
+        "recent",
+        "recently",
     )
     return any(marker in normalized for marker in fresh_markers)
 
@@ -311,7 +313,7 @@ class SupervisorAgent:
 
     def __init__(
         self,
-        llm_provider: str = "ollama",
+        llm_provider: str = "groq",
         **llm_kwargs,
     ):
         self.llm_provider = llm_provider

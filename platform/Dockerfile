@@ -18,13 +18,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
     && pip install --no-cache-dir uv
 
 # Copy dependency manifest and install
-COPY pyproject.toml ./
-RUN uv sync --no-dev
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# Anthropic (Claude) client. Kept as a separate image layer instead of in the
+# locked graph so `uv sync --frozen` stays reproducible; only needed when
+# LLM_PROVIDER=anthropic. Groq / openai_compatible work without it.
+RUN uv pip install --no-cache "langchain-anthropic>=0.2.0"
 
 # Copy application code — only platform-relevant modules
 COPY sre_agent/ ./sre_agent/
 COPY backend/   ./backend/
 COPY alembic.ini ./
+# Runbook corpus — the console's runbook catalog reads this at /app/runbooks
+COPY edge_mcp_servers/mcp_servers/runbooks_local/runbooks ./runbooks
 
 ENV PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \

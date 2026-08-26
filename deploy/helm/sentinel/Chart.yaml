@@ -1,0 +1,14 @@
+apiVersion: v2
+name: sentinel
+description: Sentinel — self-hosted, multi-agent SRE reliability console for your own Kubernetes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - sre
+  - observability
+  - incident-response
+  - ai-agent
+home: https://github.com/RM-RAMASAMY/SRE_Agent_Intermediate
+maintainers:
+  - name: Sentinel

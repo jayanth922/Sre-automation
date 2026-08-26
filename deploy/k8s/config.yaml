@@ -1,0 +1,94 @@
+# =============================================================================
+# Non-secret configuration for the Sentinel platform.
+# In-cluster service DNS is used throughout (no host networking).
+# Edit values here; put credentials in secret.example.yaml.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: sentinel
+data:
+  # --- Model provider (bring your own) ---
+  # Curated to providers that reliably do tool/function-calling structured output:
+  #   anthropic | groq | openai_compatible
+  # - Claude:    LLM_PROVIDER=anthropic + ANTHROPIC_MODEL, ANTHROPIC_API_KEY in the
+  #              Secret (image needs langchain-anthropic).
+  # - Groq:      LLM_PROVIDER=groq + GROQ_MODEL, GROQ_API_KEY in the Secret.
+  # - Own model  LLM_PROVIDER=openai_compatible + LLM_BASE_URL + LLM_MODEL. This is
+  #   on your      how you run your OWN LLM on the machine: point it at your local
+  #   machine:     Ollama (http://host:11434/v1), vLLM, LiteLLM, or LocalAI. Use a
+  #                tool-capable model (llama3.1+, qwen2.5, etc.). Key optional.
+  LLM_PROVIDER: "groq"
+  GROQ_MODEL: "llama-3.3-70b-versatile"
+  ANTHROPIC_MODEL: "claude-3-5-sonnet-latest"
+  LLM_BASE_URL: "http://host.docker.internal:11434/v1"
+  LLM_MODEL: "qwen2.5:7b-instruct"
+
+  # --- Database / infra (in-cluster) ---
+  POSTGRES_USER: "sentinel"
+  POSTGRES_DB: "sentinel"
+  REDIS_URL: "redis://redis:6379/0"
+  QDRANT_URL: "http://qdrant:6333"
+  AGENT_MODE: "api"
+
+  # --- Edge MCP tool servers (in-cluster service DNS) ---
+  # Bring your own tools: add client-run MCP servers as a JSON object, merged
+  # with the defaults below. Example:
+  #   MCP_SERVERS_JSON: '{"my-tool":{"url":"http://my-tool.ns:9000/sse","transport":"sse"}}'
+  # Registered: the Meridian client's app-aware signals server (runs in its ns).
+  MCP_SERVERS_JSON: '{"meridian-signals":{"url":"http://meridian-signals.meridian.svc.cluster.local:3000/sse","transport":"sse"}}'
+  MCP_K8S_URI: "http://mcp-k8s:3000/sse"
+  MCP_METRICS_URI: "http://mcp-prometheus:3000/sse"
+  MCP_LOGS_URI: "http://mcp-loki:3000/sse"
+  MCP_GITHUB_URI: "http://mcp-github:3000/sse"
+  MCP_RUNBOOKS_URI: "http://mcp-runbooks:3000/sse"
+  MCP_EXECUTOR_URI: "http://mcp-executor:3000/sse"
+  MCP_GITHUB_EXEC_URI: "http://mcp-github-exec:3000/sse"
+
+  # --- Observability targets ---
+  # Blank by default: connect a cluster in the console and set its Prometheus /
+  # Loki endpoints there (per-cluster). These are only a global fallback.
+  PROMETHEUS_URL: ""
+  LOKI_URL: ""
+
+  # --- Auth / session ---
+  ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+  REFRESH_TOKEN_EXPIRE_DAYS: "7"
+  # Set "true" when serving over TLS (production) so the refresh cookie is Secure.
+  COOKIE_SECURE: "false"
+
+  # --- Slack war-room (optional) ---
+  # Set SLACK_BOT_TOKEN in the Secret to enable; incidents mirror into this channel.
+  SLACK_WAR_ROOM_CHANNEL: "#incidents"
+
+  # --- Remediation authorization ---
+  # The reasoning + dry-run remediation proposal always runs. This governs
+  # whether Sentinel may EXECUTE a gate-approved, reversible action on the live
+  # cluster autonomously. Read-only by default (industry standard); higher
+  # severities always require human approval regardless.
+  EXECUTOR_LIVE: "false"
+  # Namespaces the executor is allowed to act on (comma-separated). This is the
+  # client's Kubernetes blast-radius control — set it to the namespace(s) your
+  # workloads run in. Empty = the executor refuses every action.
+  EXECUTOR_ALLOWED_NAMESPACES: "meridian"
+  EXECUTOR_MIN_REPLICAS: "1"
+
+  # --- Agent observability / tracing ---
+  # Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY (in the Secret) to export every
+  # LLM/tool/chain span (tokens, cost, latency, reasoning trajectory) to Langfuse
+  # (self-hostable). The always-on in-process recorder is at /agent/metrics.
+  LANGFUSE_HOST: "https://cloud.langfuse.com"
+
+  # --- Durability ---
+  # On by default: graph state is checkpointed per incident, so human-approval
+  # resume works and an interrupted investigation can continue. "memory" resumes
+  # within a process; set "redis" (with langgraph-checkpoint-redis installed) for
+  # true cross-crash durability.
+  CHECKPOINTER_ENABLED: "true"
+  CHECKPOINTER_BACKEND: "memory"
+
+  # --- Feature flags ---
+  LIVE_BUS_BACKEND: "memory"
+  DEBUG: "false"
+  LANGCHAIN_TRACING_V2: "false"

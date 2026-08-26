@@ -353,4 +353,5 @@ if __name__ == "__main__":
     # We can try once at startup to warm up
     get_prom_client()
     
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

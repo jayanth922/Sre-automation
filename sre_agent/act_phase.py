@@ -20,12 +20,16 @@ the real ``AgentState`` / ``RemediationPlan`` and with lightweight test doubles.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .executor import Executor
+from .execution_context import ExecutionContext
+from .mutation_gateway import MutationGateContext, authorize_and_execute
 from .policy_gate import AutonomyDecision, decide_plan
 from .severity_engine import IncidentSignals, SeverityAssessment, classify_severity
 
@@ -105,10 +109,22 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
 
 
 def _incident_environment(state: Any) -> str:
-    alert = _get(state, "alert_context")
-    labels = _get(alert, "labels", {}) or {}
-    env = labels.get("environment") or labels.get("env") or labels.get("namespace") or "production"
-    return str(env).lower()
+    # Alert labels are attacker/workload controlled and must never weaken policy.
+    # Runtime construction writes this metadata from the operator-owned context;
+    # missing or unknown values deliberately fail to production.
+    metadata = _get(state, "metadata", {}) or {}
+    raw = str(_get(metadata, "cluster_environment", "production") or "production").lower()
+    aliases = {
+        "prod": "production",
+        "production": "production",
+        "stage": "staging",
+        "staging": "staging",
+        "dev": "development",
+        "development": "development",
+        "test": "testing",
+        "testing": "testing",
+    }
+    return aliases.get(raw, "production")
 
 
 def _plan_actions(plan: Any) -> List[Any]:
@@ -149,14 +165,45 @@ def build_act_report(
 
     aggregate, per_action = decide_plan(actions, assessment, env, risk_score, evaluate_fn)
 
+    # Per-cluster blast radius: when this cluster is namespace-scoped, remediation
+    # may only touch its own namespace. Missing namespaces default to it; anything
+    # targeting a different namespace is hard-blocked before any (even dry-run)
+    # execution — the enforcement point that actually knows the cluster's scope.
+    cluster_ns = str(_get(_get(state, "metadata", {}) or {}, "cluster_namespace") or "").strip()
+
     executor = Executor(actor=actor, incident_id=incident_id)
     action_reports: List[Dict[str, Any]] = []
     executed: List[Dict[str, Any]] = []
+    blocked_out_of_scope = 0
 
     for action, gd in zip(actions, per_action):
+        params = getattr(action, "parameters", None)
+        action_ns = str((params or {}).get("namespace", "") or "").strip()
+
+        if cluster_ns:
+            if not action_ns:
+                # Default an unscoped action to the cluster's namespace.
+                if isinstance(params, dict):
+                    params["namespace"] = cluster_ns
+                action_ns = cluster_ns
+            elif action_ns != cluster_ns:
+                blocked_out_of_scope += 1
+                action_reports.append({
+                    "action_type": str(_get(action, "action_type", "")),
+                    "target": str(_get(action, "target", "")),
+                    "namespace": action_ns,
+                    "parameters": dict(params or {}),
+                    "decision": AutonomyDecision.BLOCKED.value,
+                    "reversibility": gd.reversibility.value,
+                    "reason": f"blocked: targets namespace '{action_ns}', outside this cluster's scope '{cluster_ns}'",
+                })
+                continue
+
         rep: Dict[str, Any] = {
             "action_type": str(_get(action, "action_type", "")),
             "target": str(_get(action, "target", "")),
+            "namespace": action_ns or (cluster_ns or "default"),
+            "parameters": dict(params or {}),
             "decision": gd.decision.value,
             "reversibility": gd.reversibility.value,
             "reason": gd.reason,
@@ -169,10 +216,11 @@ def build_act_report(
             executed.append(rep)
         action_reports.append(rep)
 
+    scope_note = f", {blocked_out_of_scope} blocked out-of-namespace" if blocked_out_of_scope else ""
     summary = (
         f"{assessment.severity.name}: plan {aggregate.value}; "
         f"{len(executed)}/{len(actions)} action(s) dry-run-executed, "
-        f"{len(actions) - len(executed)} held for approval/blocked."
+        f"{len(actions) - len(executed)} held for approval/blocked{scope_note}."
     )
     logger.info(f"⚙️  ACT: {summary}")
 
@@ -193,25 +241,67 @@ async def execute_autonomous_live(
     tool_caller: Callable[[str, Dict[str, Any]], Any],
     actor: str = "sre-agent",
     github_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+    approved: bool = False,
+    context: Optional[ExecutionContext] = None,
 ) -> List[Dict[str, Any]]:
     """Really apply the plan's autonomous actions via the MCP servers.
 
-    Called by the graph node only when ``EXECUTOR_LIVE`` is enabled AND the whole
-    plan was gated AUTONOMOUS (mixed plans never auto-apply). Infra actions go to
-    the executor MCP (``tool_caller``); code-change actions (revert_commit) go to
-    the github-exec MCP (``github_caller``). Returns live result records.
+    Called when ``EXECUTOR_LIVE`` is enabled and the whole plan was autonomous,
+    or after the graph's exact action hash was approved by an administrator.
+    Hard-blocked actions are never applied, including after human approval.
     """
     plan = _get(state, "remediation_plan")
     actions = _plan_actions(plan)
     incident_id = _get(state, "incident_id") or _get(_get(state, "metadata", {}) or {}, "incident_id")
-    executor = Executor(actor=actor, incident_id=incident_id)
+    metadata = _get(state, "metadata", {}) or {}
+    approval = _get(metadata, "approval", {}) or {}
+    approval_hash = str(_get(approval, "action_hash", "") or "")
+    environment = str(getattr(context, "environment", "production") or "production")
+    risk_score = _plan_risk_score(plan)
 
     results: List[Dict[str, Any]] = []
-    for action, arep in zip(actions, report.action_reports):
-        if arep.get("decision") != AutonomyDecision.AUTONOMOUS.value:
+    for index, (action, arep) in enumerate(zip(actions, report.action_reports)):
+        allowed_decisions = {AutonomyDecision.AUTONOMOUS.value}
+        if approved:
+            allowed_decisions.add(AutonomyDecision.REQUIRES_APPROVAL.value)
+        if arep.get("decision") not in allowed_decisions:
             continue
-        res = await executor.aexecute(
-            action, "autonomous", dry_run=False, tool_caller=tool_caller, github_caller=github_caller,
+
+        action_payload = {
+            "organization_id": getattr(context, "organization_id", None),
+            "cluster_id": getattr(context, "cluster_id", None),
+            "incident_id": incident_id,
+            "plan_id": _get(plan, "plan_id"),
+            "action_index": index,
+            "action_type": _get(action, "action_type", ""),
+            "target": _get(action, "target", ""),
+            "parameters": _get(action, "parameters", {}) or {},
+            "approval_hash": approval_hash,
+        }
+        idempotency_key = hashlib.sha256(
+            json.dumps(
+                action_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        gate_context = MutationGateContext(
+            decision=str(arep.get("decision", "")),
+            severity=report.severity,
+            environment=environment,
+            risk_score=risk_score,
+            approved=approved,
+            actor=actor,
+            incident_id=str(incident_id) if incident_id else None,
+        )
+        res = await authorize_and_execute(
+            action,
+            gate_context,
+            context,
+            tool_caller,
+            github_caller,
+            idempotency_key,
         )
         results.append({
             "action_type": res.action_type,

@@ -16,7 +16,13 @@ if not SECRET_KEY:
     )
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+# Short-lived access token (held in memory client-side); refresh handles longevity.
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+# Secure cookie flag — set true when served over TLS (production). Default false
+# so local http (port-forward) still stores the cookie.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+REFRESH_COOKIE_NAME = "sentinel_refresh"
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -43,3 +49,17 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+# ── Refresh tokens (opaque, rotated, hashed at rest) ─────────────────────────
+import hashlib
+import secrets as _secrets
+
+
+def generate_refresh_token() -> str:
+    """A high-entropy opaque token. Only its hash is stored server-side."""
+    return _secrets.token_urlsafe(48)
+
+
+def hash_refresh_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

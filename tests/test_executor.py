@@ -86,7 +86,7 @@ def test_rollback_command_for_scale():
 
 def test_aexecute_dry_run_matches_sync():
     ex = Executor()
-    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=True))
+    res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=True))
     assert res.status == "DRY_RUN"
 
 
@@ -100,7 +100,7 @@ def test_aexecute_live_calls_tool_caller_with_mapped_tool():
 
     ex = Executor()
     action = FakeAction("scale", parameters={"replicas": 3, "namespace": "demo-app"})
-    res = asyncio.run(ex.aexecute(action, "autonomous", dry_run=False, tool_caller=fake_caller))
+    res = asyncio.run(ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=fake_caller))
     assert res.status == "EXECUTED"
     assert calls["tool"] == "scale_deployment"
     assert calls["args"]["replicas"] == 3
@@ -109,7 +109,7 @@ def test_aexecute_live_calls_tool_caller_with_mapped_tool():
 
 def test_aexecute_live_without_caller_is_error_not_silent():
     ex = Executor()
-    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=None))
+    res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=None))
     assert res.status == "ERROR"
 
 
@@ -118,7 +118,7 @@ def test_aexecute_unmapped_action_is_skipped():
         return {}
 
     ex = Executor()
-    res = asyncio.run(ex.aexecute(FakeAction("escalate"), "autonomous", dry_run=False, tool_caller=fake_caller))
+    res = asyncio.run(ex._aexecute_unchecked(FakeAction("escalate"), "autonomous", dry_run=False, tool_caller=fake_caller))
     assert res.status == "SKIPPED"
 
 
@@ -127,8 +127,32 @@ def test_aexecute_tool_error_surfaces_as_error():
         raise RuntimeError("apiserver refused")
 
     ex = Executor()
-    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=boom))
+    res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=boom))
     assert res.status == "ERROR" and "apiserver refused" in res.detail
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"status": "REFUSED", "reason": "namespace denied"}, "REFUSED"),
+        ('{"status":"ERROR","error":"kubectl failed"}', "ERROR"),
+        ({"status": "OK", "applied": False}, "REFUSED"),
+        ({"message": "accepted"}, "ERROR"),
+    ],
+)
+def test_aexecute_propagates_structured_negative_outcomes(response, expected):
+    async def caller(tool_name, args):
+        return response
+
+    result = asyncio.run(
+        Executor()._aexecute_unchecked(
+            FakeAction("restart"),
+            "autonomous",
+            dry_run=False,
+            tool_caller=caller,
+        )
+    )
+    assert result.status == expected
 
 
 # ── Code-change remediation routing (github-exec backend) ───────────────────
@@ -139,15 +163,15 @@ def test_aexecute_revert_commit_routes_to_github_caller():
     async def github_caller(tool_name, args):
         calls["tool"] = tool_name
         calls["args"] = args
-        return {"status": "DRY_RUN", "tool": tool_name}
+        return {"status": "REVERT_REQUESTED", "applied": True, "tool": tool_name}
 
     async def infra_caller(tool_name, args):
         raise AssertionError("infra caller should not be used for a code change")
 
     ex = Executor()
     action = FakeAction("revert_commit", target="checkout-service", parameters={"commit_sha": "abc123"})
-    res = asyncio.run(ex.aexecute(action, "autonomous", dry_run=False,
-                                  tool_caller=infra_caller, github_caller=github_caller))
+    res = asyncio.run(ex._aexecute_unchecked(action, "autonomous", dry_run=False,
+                                             tool_caller=infra_caller, github_caller=github_caller))
     assert res.status == "EXECUTED"
     assert calls["tool"] == "create_revert_pr"
     assert calls["args"]["identifier"] == "abc123"
@@ -156,20 +180,20 @@ def test_aexecute_revert_commit_routes_to_github_caller():
 def test_aexecute_revert_commit_without_github_caller_errors():
     ex = Executor()
     action = FakeAction("revert_commit", parameters={"commit_sha": "abc123"})
-    res = asyncio.run(ex.aexecute(action, "autonomous", dry_run=False, tool_caller=None, github_caller=None))
+    res = asyncio.run(ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=None, github_caller=None))
     assert res.status == "ERROR" and "github-exec" in res.detail
 
 
 def test_infra_action_still_uses_infra_caller():
     async def infra_caller(tool_name, args):
-        return {"tool": tool_name}
+        return {"status": "OK", "applied": True, "tool": tool_name}
 
     async def github_caller(tool_name, args):
         raise AssertionError("github caller should not be used for an infra action")
 
     ex = Executor()
-    res = asyncio.run(ex.aexecute(FakeAction("restart"), "autonomous", dry_run=False,
-                                  tool_caller=infra_caller, github_caller=github_caller))
+    res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=False,
+                                             tool_caller=infra_caller, github_caller=github_caller))
     assert res.status == "EXECUTED"
 
 

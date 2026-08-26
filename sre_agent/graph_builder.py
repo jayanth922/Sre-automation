@@ -3,12 +3,14 @@
 import asyncio
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
+from langgraph.types import interrupt
 
 from .agent_nodes import (
     create_github_agent,
@@ -43,15 +45,96 @@ logger = logging.getLogger(__name__)
 
 
 def _act_phase_enabled() -> bool:
-    """ACT phase (severity gate + dry-run executor) is opt-in via env flag.
+    """The full OODA reasoning loop is the default, unconditional path:
+    supervisor → reflector (orient) → planner (decide) → aggregate →
+    act_gate (severity → policy gate → dry-run proposal → skill memory →
+    resolution report). No flag — this is the product, not an advisor mode.
 
-    Default False so the existing advisor flow (supervisor → specialists →
-    aggregate → END) is completely unchanged unless explicitly enabled.
+    Live cluster *mutation* is a separate concern, governed by the policy gate
+    and human approval (see _act_gate_node), not by this switch.
     """
-    return os.getenv("ACT_PHASE_ENABLED", "false").lower() in ("true", "1", "yes")
+    return True
 
 
-async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
+async def _prepare_approval_node(
+    state: AgentState,
+    execution_context: Any = None,
+) -> Dict[str, Any]:
+    """Persist an exact remediation proposal before checkpointing its interrupt."""
+    from .act_phase import build_act_report
+    from .approval_flow import compute_action_hash, create_or_reuse_pending_approval
+    from .checkpointer import durable_checkpointer_configured, thread_id_from_state
+
+    report_payload = build_act_report(
+        state,
+        environment=str(getattr(execution_context, "environment", "production")),
+    ).to_dict()
+    metadata = {
+        **(state.get("metadata", {}) or {}),
+        "act_report": report_payload,
+    }
+    if not report_payload.get("plan_present") or report_payload.get("aggregate_decision") in {
+        None,
+        "autonomous",
+    }:
+        metadata.pop("pending_approval", None)
+        return {"metadata": metadata}
+
+    if execution_context is None:
+        raise RuntimeError("Tenant execution context is required for durable approval")
+    if not durable_checkpointer_configured():
+        raise RuntimeError("A durable checkpointer is required for approval")
+
+    incident_id = state.get("incident_id") or metadata.get("incident_id")
+    if not incident_id:
+        raise RuntimeError("Persisted incident_id is required for durable approval")
+
+    action_hash = compute_action_hash(report_payload)
+    pending = await create_or_reuse_pending_approval(
+        incident_id=str(incident_id),
+        thread_id=thread_id_from_state(state),
+        organization_id=str(execution_context.organization_id),
+        cluster_id=str(execution_context.cluster_id),
+        action_hash=action_hash,
+    )
+    metadata["pending_approval"] = pending.interrupt_payload(report_payload)
+    return {"metadata": metadata, "approval_status": "PENDING"}
+
+
+async def _approval_gate_node(state: AgentState) -> Dict[str, Any]:
+    """Pause non-autonomous remediation until the exact persisted action is approved."""
+    metadata = state.get("metadata", {}) or {}
+    pending = metadata.get("pending_approval")
+    if not isinstance(pending, dict):
+        return {}
+
+    resume = interrupt(pending)
+    if not isinstance(resume, dict):
+        raise PermissionError("Invalid approval resume payload")
+    if resume.get("approved") is not True:
+        raise PermissionError("Remediation was not approved")
+    if not secrets.compare_digest(
+        str(resume.get("action_hash", "")), str(pending.get("action_hash", ""))
+    ) or str(resume.get("approval_request_id", "")) != str(
+        pending.get("approval_request_id", "")
+    ):
+        raise PermissionError("Approval does not match the pending remediation")
+
+    approved = {
+        "status": "approved",
+        "approval_request_id": str(pending["approval_request_id"]),
+        "action_hash": str(pending["action_hash"]),
+    }
+    return {
+        "approval_status": "APPROVED",
+        "metadata": {**metadata, "approval": approved},
+    }
+
+
+async def _act_gate_node(
+    state: AgentState,
+    execution_context: Any = None,
+) -> Dict[str, Any]:
     """Graph node: run the severity-gated ACT phase after aggregation.
 
     Thin wrapper over ``act_phase.build_act_report`` (the pure, tested core).
@@ -61,31 +144,58 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
     """
     try:
         from .act_phase import build_act_report
+        from .approval_flow import compute_action_hash
 
-        report = build_act_report(state)  # dry-run; uses real policy_engine
+        report = build_act_report(
+            state,
+            environment=str(getattr(execution_context, "environment", "production")),
+        )
         report_payload = report.to_dict()
         incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
 
-        # Live remediation is a SECOND opt-in flag beyond ACT_PHASE_ENABLED, and
-        # only fires when the ENTIRE plan was gated AUTONOMOUS (mixed plans never
-        # auto-apply). Any failure here is non-fatal to the transcript.
+        approval = (state.get("metadata", {}) or {}).get("approval", {}) or {}
+        current_action_hash = compute_action_hash(report_payload)
+        human_approved = (
+            approval.get("status") == "approved"
+            and secrets.compare_digest(
+                str(approval.get("action_hash", "")), current_action_hash
+            )
+        )
+        if human_approved:
+            report_payload["approval"] = approval
+
+        # Live remediation is a separate opt-in. Autonomous plans proceed
+        # directly; held actions proceed only when this exact report hash was
+        # resumed through the durable approval gate.
         live_on = os.getenv("EXECUTOR_LIVE", "false").lower() in ("true", "1", "yes")
-        if live_on and report.aggregate_decision == "autonomous" and report.plan_present:
+        if live_on and (
+            report.aggregate_decision == "autonomous" or human_approved
+        ) and report.plan_present:
+            caller = github_caller = metrics_caller = None
             try:
                 from .executor import build_executor_tool_caller
                 from .act_phase import execute_autonomous_live
 
-                caller = await build_executor_tool_caller()
+                caller = await build_executor_tool_caller(execution_context)
                 # Code-change remediation (revert PR) goes to the github-exec MCP;
                 # best-effort so an infra-only plan still runs if it's not configured.
                 github_caller = None
                 try:
                     from .executor import build_github_exec_tool_caller
 
-                    github_caller = await build_github_exec_tool_caller()
+                    github_caller = await build_github_exec_tool_caller(
+                        execution_context
+                    )
                 except Exception:
                     github_caller = None
-                live_results = await execute_autonomous_live(state, report, caller, github_caller=github_caller)
+                live_results = await execute_autonomous_live(
+                    state,
+                    report,
+                    caller,
+                    github_caller=github_caller,
+                    approved=human_approved,
+                    context=execution_context,
+                )
                 report_payload["live_results"] = live_results
                 logger.info(f"⚙️  ACT: applied {len(live_results)} live remediation(s)")
 
@@ -94,15 +204,28 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                     from .act_phase import verify_live
                     from .executor import build_metrics_tool_caller
 
-                    metrics_caller = await build_metrics_tool_caller()
-                    wait = int(os.getenv("VERIFICATION_WAIT_SECONDS", "0"))
-                    report_payload["verification"] = await verify_live(state, metrics_caller, wait_seconds=wait)
-                    logger.info(f"⚙️  ACT: verification → {report_payload['verification']['status']}")
+                    if any(
+                        item.get("status") == "EXECUTED"
+                        for item in live_results
+                    ):
+                        metrics_caller = await build_metrics_tool_caller(
+                            execution_context
+                        )
+                        wait = int(os.getenv("VERIFICATION_WAIT_SECONDS", "0"))
+                        report_payload["verification"] = await verify_live(state, metrics_caller, wait_seconds=wait)
+                        logger.info(f"⚙️  ACT: verification → {report_payload['verification']['status']}")
                 except Exception as verify_err:
                     logger.warning(f"Verification failed (non-fatal): {verify_err}")
             except Exception as live_err:
                 logger.error(f"Live remediation failed (non-fatal): {live_err}")
                 report_payload["live_error"] = str(live_err)
+            finally:
+                from .multi_agent_langgraph import close_mcp_client
+
+                for tool_caller in (caller, github_caller, metrics_caller):
+                    await close_mcp_client(
+                        getattr(tool_caller, "mcp_client", None)
+                    )
 
         # Self-improving loop (project #2): propose prior skills for this incident
         # class and record the remediation that was applied as a reusable skill.
@@ -118,27 +241,26 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
             logger.warning(f"Skill learning failed (non-fatal): {skill_err}")
             learning = {}
 
-        # Generative runbook (project #5): auto-write a runbook/postmortem for this
-        # incident into the runbooks corpus so future RAG finds it. Opt-in
-        # (RUNBOOK_AUTOGEN) since it writes files. Non-fatal.
-        if os.getenv("RUNBOOK_AUTOGEN", "false").lower() in ("true", "1", "yes"):
+        # Generative runbook: auto-write a runbook/postmortem for this incident so
+        # future RAG can find it. Runs unconditionally; entirely non-fatal (a
+        # failed write or LLM call never breaks the transcript).
+        try:
+            from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
+
+            skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
+            rb_input = input_from_act(state, report, skill_id=skill_id)
+            # Prefer LLM-authored (generative) runbooks; fall back to template.
             try:
-                from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
+                from .model_router import TaskType, route_llm
 
-                skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
-                rb_input = input_from_act(state, report, skill_id=skill_id)
-                # Prefer LLM-authored (generative) runbooks; fall back to template.
-                try:
-                    from .model_router import TaskType, route_llm
-
-                    rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
-                    path = await write_runbook_generative(rb_input, rb_llm)
-                except Exception:
-                    path = write_runbook(rb_input)
-                report_payload["generated_runbook"] = path.name
-                logger.info(f"📝 ACT: generated runbook {path.name}")
-            except Exception as rb_err:
-                logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
+                rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
+                path = await write_runbook_generative(rb_input, rb_llm)
+            except Exception:
+                path = write_runbook(rb_input)
+            report_payload["generated_runbook"] = path.name
+            logger.info(f"📝 ACT: generated runbook {path.name}")
+        except Exception as rb_err:
+            logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
 
         # Resolution report: a detailed, human-readable "here's what happened and
         # how we fixed it" posted into the incident conversation. Code-level causes
@@ -239,7 +361,7 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
 
     # Get llm_provider from existing metadata or use default
     existing_metadata = state.get("metadata", {})
-    llm_provider = existing_metadata.get("llm_provider", "ollama")
+    llm_provider = existing_metadata.get("llm_provider", "groq")
 
     return {
         "current_query": current_query,
@@ -282,6 +404,21 @@ async def _investigation_swarm(state: AgentState, config: Optional[Dict[str, Any
         """
     else:
         investigation_query = current_query or "Investigate system health and identify issues."
+
+    # Per-cluster scope: when this cluster is limited to one namespace, tell every
+    # specialist to confine its queries to it — so a scoped cluster investigates
+    # only its own app, not the neighbours sharing the same Prometheus/Loki/K8s.
+    _meta = state.get("metadata", {}) or {}
+    cluster_namespace = str(_meta.get("cluster_namespace") or "").strip()
+    if cluster_namespace:
+        investigation_query += (
+            f"\n\nSCOPE: This cluster is limited to the Kubernetes namespace "
+            f"'{cluster_namespace}'. Investigate only resources in this namespace. "
+            f"Pass namespace=\"{cluster_namespace}\" to any Kubernetes, Prometheus, or "
+            f"Loki tool that accepts a namespace argument, add "
+            f"{{namespace=\"{cluster_namespace}\"}} to every PromQL selector, and use "
+            f"{{namespace=\"{cluster_namespace}\"}} in every LogQL stream selector."
+        )
 
     # Get agent instances from metadata (passed from graph builder)
     metadata = state.get("metadata", {})
@@ -469,9 +606,17 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     # Create LLM for reflection via the model router (REFLECTION → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
-    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "ollama")
+    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "groq")
     from .model_router import TaskType, route_llm
     llm = route_llm(TaskType.REFLECTION, provider=llm_provider, use_fallback=False)
+
+    # Wrap attacker-influenceable telemetry so it's treated as data, not instructions.
+    from .prompt_guard import wrap_untrusted
+
+    alert_block = wrap_untrusted("alert", alert_context.model_dump_json()) if alert_context else "No alert context"
+    infra_block = wrap_untrusted("infra_metrics", infra_findings) if infra_findings else "No infrastructure findings available"
+    code_block = wrap_untrusted("github", code_findings) if code_findings else "No code change findings available"
+    logs_block = wrap_untrusted("logs", logs_findings) if logs_findings else "No logs findings available"
 
     # Reflection prompt
     reflection_prompt = f"""
@@ -480,16 +625,16 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     hypotheses, and determine if deeper investigation is needed.
     {tool_status}
     Alert Context:
-    {alert_context.model_dump_json() if alert_context else "No alert context"}
+    {alert_block}
 
     Infrastructure Findings:
-    {infra_findings if infra_findings else "No infrastructure findings available"}
+    {infra_block}
 
     Code Change Findings (GitHub):
-    {code_findings if code_findings else "No code change findings available"}
+    {code_block}
 
     Logs Findings:
-    {logs_findings if logs_findings else "No logs findings available"}
+    {logs_block}
 
     Analyze these findings and:
     1. Identify any discrepancies between infrastructure and code findings
@@ -708,7 +853,7 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     # Create LLM for planning via the model router (PLANNING → strong tier).
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
-    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "ollama")
+    llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "groq")
     from .model_router import TaskType, route_llm
     llm = route_llm(TaskType.PLANNING, provider=llm_provider, use_fallback=False)
 
@@ -818,12 +963,27 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
+def _observed(node_name: str, fn):
+    """Wrap a graph node so every run is timed and any failure captured by the
+    observability recorder (surfaced at /agent/metrics)."""
+    async def wrapped(state: AgentState) -> Dict[str, Any]:
+        from .observability import get_recorder, track
+
+        incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
+        with track(get_recorder(), node_name, incident_id):
+            return await fn(state)
+
+    wrapped.__name__ = f"observed_{node_name}"
+    return wrapped
+
+
 def build_multi_agent_graph(
     tools: List[BaseTool],
-    llm_provider: str = "ollama",
+    llm_provider: str = "groq",
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
     checkpointer: Any = None,
+    execution_context: Any = None,
     **llm_kwargs,
 ) -> StateGraph:
     """
@@ -927,21 +1087,35 @@ def build_multi_agent_graph(
     # the full OODA loop:
     #
     #   supervisor(done) → reflector (ORIENT) → planner (DECIDE)
-    #                    → aggregate (rich OODA summary) → act_gate (ACT, dry-run) → END
+    #                    → aggregate → approval_prepare → approval_gate
+    #                    → act_gate (ACT, dry-run/live) → END
     #
     # Reflector's own "deeper investigation" loop-back is intentionally collapsed
     # to a single forward pass in v1 (fixed reflector → planner edge); wiring the
     # investigation_swarm loop is a later enhancement.
     if _act_phase_enabled():
         logger.info(
-            "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → act_gate → END"
+            "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → approval_gate → act_gate → END"
         )
-        workflow.add_node("reflector", _reflector_node)
-        workflow.add_node("planner", _planner_node)
-        workflow.add_node("act_gate", _act_gate_node)
+        workflow.add_node("reflector", _observed("reflector", _reflector_node))
+        workflow.add_node("planner", _observed("planner", _planner_node))
+        async def context_act_gate(state: AgentState) -> Dict[str, Any]:
+            return await _act_gate_node(state, execution_context)
+
+        async def context_prepare_approval(state: AgentState) -> Dict[str, Any]:
+            return await _prepare_approval_node(state, execution_context)
+
+        workflow.add_node(
+            "approval_prepare",
+            _observed("approval_prepare", context_prepare_approval),
+        )
+        workflow.add_node("approval_gate", _observed("approval_gate", _approval_gate_node))
+        workflow.add_node("act_gate", _observed("act_gate", context_act_gate))
         workflow.add_edge("reflector", "planner")
         workflow.add_edge("planner", "aggregate")
-        workflow.add_edge("aggregate", "act_gate")
+        workflow.add_edge("aggregate", "approval_prepare")
+        workflow.add_edge("approval_prepare", "approval_gate")
+        workflow.add_edge("approval_gate", "act_gate")
         workflow.add_edge("act_gate", END)
     else:
         workflow.add_edge("aggregate", END)

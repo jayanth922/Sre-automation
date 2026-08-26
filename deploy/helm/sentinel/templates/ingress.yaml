@@ -1,0 +1,35 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tlsSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # Browser WebSocket goes straight to the API (Next can't proxy upgrades).
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: sentinel-api
+                port: { number: 8080 }
+          # Everything else to the web console (it proxies /api, /metrics server-side).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sentinel-web
+                port: { number: 3000 }
+{{- end }}

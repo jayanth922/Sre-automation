@@ -874,4 +874,5 @@ if __name__ == "__main__":
     
     # Try initial connection to warm up
     get_k8s_api()
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

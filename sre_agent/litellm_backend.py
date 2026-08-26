@@ -38,6 +38,7 @@ def tier_litellm_model(tier_value: str) -> Optional[str]:
 def build_litellm_llm(model: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> Any:
     """Build a LangChain-compatible LLM backed by LiteLLM. Guarded import."""
     try:
+        import litellm  # noqa: F401 - validates the optional runtime dependency
         from langchain_community.chat_models import ChatLiteLLM  # lazy; optional dep
     except Exception as e:
         raise RuntimeError(

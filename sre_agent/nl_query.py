@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Allow-listed metrics (from the Target_Client services) and PromQL functions.
+# Allow-listed metrics (common app service metrics) and PromQL functions.
 _ALLOWED_METRICS = {
     "http_requests_total", "http_errors_total", "http_request_duration_seconds_bucket",
     "payment_failures_total", "payment_provider_up", "process_memory_bytes_simulated",
@@ -242,7 +242,7 @@ async def answer_metric_question(question: str, metrics_uri: Optional[str] = Non
     """End-to-end: run an NL query against the live Prometheus MCP server."""
     from .executor import build_metrics_tool_caller  # lazy (MCP adapter)
 
-    caller = await build_metrics_tool_caller(metrics_uri)
+    caller = await build_metrics_tool_caller(uri=metrics_uri)
     return await run_nl_query(question, tool_caller=caller)
 
 

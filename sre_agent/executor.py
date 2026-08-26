@@ -22,10 +22,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
+
+from .execution_context import (
+    ExecutionContext,
+    require_execution_context,
+    require_operator_mcp_endpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,12 +171,69 @@ def _live_args(action: Any) -> Dict[str, Any]:
     return args
 
 
+_REFUSAL_STATUSES = {"REFUSED", "DENIED", "MANUAL_REQUIRED", "DRY_RUN"}
+_ERROR_STATUSES = {"ERROR", "FAILED", "FAILURE", "UNHEALTHY"}
+_SUCCESS_STATUSES = {"OK", "SUCCESS", "EXECUTED", "REVERT_REQUESTED"}
+
+
+def _structured_payload(value: Any) -> Optional[Dict[str, Any]]:
+    """Extract a structured MCP tool payload from common adapter wrappers."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return _structured_payload(decoded)
+    if isinstance(value, Mapping):
+        payload = dict(value)
+        if "status" in payload or "applied" in payload:
+            return payload
+        for key in ("result", "data", "content"):
+            if key in payload:
+                nested = _structured_payload(payload[key])
+                if nested is not None:
+                    return nested
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            nested = _structured_payload(item)
+            if nested is not None:
+                return nested
+        return None
+    text = getattr(value, "text", None)
+    return _structured_payload(text) if text is not None else None
+
+
+def classify_live_response(response: Any) -> tuple[str, str]:
+    """Map an MCP response to an honest execution outcome, failing closed."""
+    payload = _structured_payload(response)
+    detail = (
+        json.dumps(payload, sort_keys=True, default=str)
+        if payload is not None
+        else str(response)
+    )
+    if payload is None:
+        return "ERROR", f"Unstructured MCP response; execution not confirmed: {detail}"
+
+    remote_status = str(payload.get("status", "")).strip().upper()
+    applied = payload.get("applied")
+    if remote_status in _ERROR_STATUSES:
+        return "ERROR", detail
+    if remote_status in _REFUSAL_STATUSES or applied is False:
+        return "REFUSED", detail
+    if applied is True or remote_status in _SUCCESS_STATUSES:
+        return "EXECUTED", detail
+    return "ERROR", f"MCP response did not confirm execution: {detail}"
+
+
 class Executor:
     """Executes cleared remediation actions.
 
     - ``execute(...)`` is synchronous and dry-run only (local preview + audit).
-    - ``aexecute(..., dry_run=False, tool_caller=...)`` performs live remediation
-      by calling the executor MCP server through an injected async ``tool_caller``.
+    - Live remediation is private and may only be reached through
+      ``mutation_gateway.authorize_and_execute``.
     """
 
     def __init__(self, actor: str = "sre-agent", incident_id: Optional[str] = None):
@@ -219,7 +281,7 @@ class Executor:
             # goes through the executor MCP server, which is async.
             raise NotImplementedError(
                 "Synchronous live execution is not supported. Use "
-                "'await Executor.aexecute(..., dry_run=False, tool_caller=...)'."
+                "'await mutation_gateway.authorize_and_execute(...)'."
             )
 
         audit = self._audit(action, command, gate_decision, mode)
@@ -235,7 +297,7 @@ class Executor:
             detail="Dry-run only; no cluster mutation performed.",
         )
 
-    async def aexecute(
+    async def _aexecute_unchecked(
         self,
         action: Any,
         gate_decision: str,
@@ -243,7 +305,7 @@ class Executor:
         tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         github_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
     ) -> "ExecutionResult":
-        """Async execution. Dry-run mirrors ``execute``; live routes to a backend.
+        """Unchecked execution core; live callers must use the mutation gateway.
 
         Infra actions (restart/scale/…) go to the executor MCP via ``tool_caller``;
         code-change actions (revert_commit/…) go to the github-exec MCP via
@@ -278,25 +340,47 @@ class Executor:
 
         try:
             resp = await caller(tool_name, args)
-            logger.info(f"⚙️  Executor[live/{backend}]: {tool_name} → applied ({command})")
-            return _result("EXECUTED", str(resp))
+            status, detail = classify_live_response(resp)
+            if status == "EXECUTED":
+                logger.info(
+                    f"⚙️  Executor[live/{backend}]: {tool_name} → applied ({command})"
+                )
+            else:
+                logger.warning(
+                    f"⛔ Executor[live/{backend}]: {tool_name} → {status.lower()}"
+                )
+            return _result(status, detail)
         except Exception as e:
             logger.error(f"❌ Executor[live/{backend}]: {tool_name} failed: {e}")
             return _result("ERROR", f"{backend} MCP call failed: {e}")
 
 
-async def build_mcp_tool_caller(uri: str, server_name: str = "server"):
+async def build_mcp_tool_caller(
+    context: Optional[ExecutionContext],
+    server_name: str = "server",
+    *,
+    uri: Optional[str] = None,
+):
     """Build a generic async tool_caller bound to any MCP (SSE) server.
 
     Lazily imports the MCP adapter so importing this module stays dependency-light.
     Returns an async ``(tool_name, args) -> result`` callable.
     """
-    if not uri:
-        raise RuntimeError("MCP URI not set")
+    execution_context = require_execution_context(context)
+    endpoint = uri or execution_context.endpoint(server_name)
+    endpoint = require_operator_mcp_endpoint(server_name, endpoint)
 
     from langchain_mcp_adapters.client import MultiServerMCPClient  # lazy
 
-    client = MultiServerMCPClient({server_name: {"url": uri, "transport": "sse"}})
+    client = MultiServerMCPClient(
+        {
+            server_name: {
+                "url": endpoint,
+                "transport": "sse",
+                "headers": execution_context.transport_headers(),
+            }
+        }
+    )
     tools = await client.get_tools()
     by_name = {getattr(t, "name", ""): t for t in tools}
 
@@ -308,28 +392,32 @@ async def build_mcp_tool_caller(uri: str, server_name: str = "server"):
             return await tool.ainvoke(args)
         return tool.invoke(args)
 
+    _caller.mcp_client = client
     return _caller
 
 
-async def build_executor_tool_caller(uri: Optional[str] = None):
-    """Tool caller bound to the executor MCP server (MCP_EXECUTOR_URI)."""
-    uri = uri or os.getenv("MCP_EXECUTOR_URI")
-    if not uri:
-        raise RuntimeError("MCP_EXECUTOR_URI is not set; cannot reach the executor server")
-    return await build_mcp_tool_caller(uri, "executor")
+async def build_executor_tool_caller(
+    context: Optional[ExecutionContext] = None,
+    *,
+    uri: Optional[str] = None,
+):
+    """Tool caller bound to this tenant's executor MCP server."""
+    return await build_mcp_tool_caller(context, "executor", uri=uri)
 
 
-async def build_metrics_tool_caller(uri: Optional[str] = None):
-    """Tool caller bound to the Prometheus MCP server (MCP_METRICS_URI)."""
-    uri = uri or os.getenv("MCP_METRICS_URI")
-    if not uri:
-        raise RuntimeError("MCP_METRICS_URI is not set; cannot reach the metrics server")
-    return await build_mcp_tool_caller(uri, "metrics")
+async def build_metrics_tool_caller(
+    context: Optional[ExecutionContext] = None,
+    *,
+    uri: Optional[str] = None,
+):
+    """Tool caller bound to this tenant's Prometheus MCP server."""
+    return await build_mcp_tool_caller(context, "metrics", uri=uri)
 
 
-async def build_github_exec_tool_caller(uri: Optional[str] = None):
-    """Tool caller bound to the github-exec MCP server (MCP_GITHUB_EXEC_URI)."""
-    uri = uri or os.getenv("MCP_GITHUB_EXEC_URI")
-    if not uri:
-        raise RuntimeError("MCP_GITHUB_EXEC_URI is not set; cannot reach the github-exec server")
-    return await build_mcp_tool_caller(uri, "github_exec")
+async def build_github_exec_tool_caller(
+    context: Optional[ExecutionContext] = None,
+    *,
+    uri: Optional[str] = None,
+):
+    """Tool caller bound to this tenant's GitHub executor MCP server."""
+    return await build_mcp_tool_caller(context, "github_exec", uri=uri)

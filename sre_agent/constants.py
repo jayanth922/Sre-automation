@@ -297,34 +297,34 @@ class SREConstants:
         Returns:
             Dictionary with model configuration
         """
-        if provider == "ollama":
+        if provider == "openai_compatible":
+            # Bring-your-own LLM: any OpenAI-compatible endpoint (vLLM, Ollama's
+            # /v1, LiteLLM proxy, LocalAI, on-prem gateways). Client configures
+            # the base URL, key, and model — we don't dictate the model.
+            import os as _os
             return {
-                "model_id": kwargs.get("model_id", cls.model.ollama_model),
-                "base_url": kwargs.get("base_url", cls.model.ollama_base_url),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-                "num_ctx": kwargs.get("num_ctx", cls.model.ollama_num_ctx),
-            }
-        
-        if provider == "gemini":
-            return {
-                "model_id": kwargs.get("model_id", cls.model.gemini_model),
+                "model_id": kwargs.get("model_id", _os.getenv("LLM_MODEL") or _os.getenv("OPENAI_MODEL") or "gpt-4o-mini"),
+                "api_key": kwargs.get("api_key", _os.getenv("LLM_API_KEY") or _os.getenv("OPENAI_API_KEY") or ""),
+                "base_url": kwargs.get("base_url", _os.getenv("LLM_BASE_URL") or _os.getenv("OPENAI_BASE_URL") or "http://localhost:8000/v1"),
+                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
 
-        if provider == "nvidia":
+        if provider == "anthropic":
+            import os as _os
             return {
-                "model_id": kwargs.get("model_id", cls.model.nvidia_model),
-                "api_key": kwargs.get("api_key", cls.model.nvidia_api_key),
-                "base_url": kwargs.get("base_url", cls.model.nvidia_base_url),
+                "model_id": kwargs.get("model_id", _os.getenv("ANTHROPIC_MODEL") or "claude-3-5-sonnet-latest"),
+                "api_key": kwargs.get("api_key", _os.getenv("ANTHROPIC_API_KEY", "")),
                 "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
 
         if provider != "groq":
-            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama', 'gemini', 'nvidia'.")
+            raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'groq', 'openai_compatible'.")
 
         return {
             "model_id": kwargs.get("model_id", cls.model.groq_model_id),
+            "api_key": kwargs.get("api_key"),
             "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
             "temperature": kwargs.get("temperature", cls.model.default_temperature),
         }
