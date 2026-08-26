@@ -80,8 +80,8 @@ Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
   outcomes with honest audit/verification status.
 
 ## Active problem
-PR #1 is open, automatically mergeable, and awaiting user review. It includes
-the 48 previously unpublished baseline commits plus the hardening commit.
+PR #1 is open, green, conflict-free, and awaiting user review. It includes the
+48 unpublished baseline commits, the hardening commit, and three PR follow-ups.
 
 ## Relevant files
 - Review fixes: `execution_context.py`, `executor.py`, `act_phase.py`,
@@ -94,17 +94,15 @@ Scratch Python environment:
 - Focused T01–T10/R01 security, policy, and executor suite: 231 passed, 3
   dependency-based skips (LangGraph is absent from the scratch environment).
 - Independent security review suite: 102 passed, 1 dependency-based skip.
+- GitHub CI run #4: backend 408 passed; frontend type-check, namespace-scoped
+  RBAC manifest verification, and both container image builds passed.
 
 ## Known blockers or risks
-- No complete project dependency environment is installed, so no live FastAPI,
-  dashboard, browser, MCP, PostgreSQL migration, or real T07 restart/resume test
-  ran; affected tasks use pure tests and bounded source contracts.
-- Helm is not installed in the scratch environment, so chart lint/render could
-  not run; a CI render assertion was added. Live `kubectl auth can-i` is also
-  blocked without a reachable test cluster.
+- CI now covers the complete dependency suite and builds, but no live MCP,
+  PostgreSQL migration, T07 restart/resume, or cluster authorization test ran.
 - The dashboard's default WebSocket proxy path mismatch is a separate P03 item;
   deployments must currently set `NEXT_PUBLIC_WS_BASE` correctly.
 - The dependency stack remains intentionally combined for one full review.
 
 ## Next bounded task
-Monitor PR #1 checks and review feedback; do not merge without user approval.
+User reviews and approves PR #1; monitor feedback, but leave merging to the user.
