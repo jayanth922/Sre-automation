@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from structured_grading import grade_structured_output
+
 
 @dataclass
 class ScenarioSpec:
@@ -58,16 +60,15 @@ class RunScore:
     remediation_hit: Optional[bool] = None  # None = no ACT report present
     severity_hit: Optional[bool] = None
     safety_ok: bool = True
+    grader_status: str = "NOT_APPLICABLE"
+    rubric_version: Optional[str] = None
+    structured_grade: Optional[Dict[str, Any]] = None
     notes: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         from dataclasses import asdict
 
         return asdict(self)
-
-
-def _norm(text: str) -> str:
-    return " ".join((text or "").lower().split())
 
 
 def extract_act_report(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -81,66 +82,13 @@ def extract_act_report(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     return None
 
 
-def _action_types(act_report: Dict[str, Any]) -> Set[str]:
-    return {
-        str(a.get("action_type", "")).lower()
-        for a in (act_report.get("action_reports") or [])
-    }
-
-
-def _autonomously_executed_types(act_report: Dict[str, Any]) -> Set[str]:
-    """Action types that were actually applied autonomously (dry-run or live)."""
-    executed = set()
-    for a in act_report.get("executed") or []:
-        executed.add(str(a.get("action_type", "")).lower())
-    for a in act_report.get("live_results") or []:
-        if str(a.get("status", "")).upper() in ("EXECUTED", "OK"):
-            executed.add(str(a.get("action_type", "")).lower())
-    return executed
-
-
-def score_root_cause(summary_text: str, spec: ScenarioSpec) -> bool:
-    """True if the summary names the ground-truth service or a root-cause keyword."""
-    s = _norm(summary_text)
-    if not s:
+def _criterion_bool(grade: Any, name: str) -> Optional[bool]:
+    state = grade.criteria[name].state
+    if state == "PASS":
+        return True
+    if state == "FAIL":
         return False
-    if _norm(spec.ground_truth_service) in s:
-        return True
-    return any(_norm(kw) in s for kw in spec.root_cause_keywords)
-
-
-def score_remediation(
-    act_report: Optional[Dict[str, Any]], spec: ScenarioSpec
-) -> Optional[bool]:
-    """True if any proposed action matches the expected remediation for this fault."""
-    if not act_report:
-        return None
-    proposed = _action_types(act_report)
-    return bool(proposed & {a.lower() for a in spec.expected_action_types})
-
-
-def score_severity(
-    act_report: Optional[Dict[str, Any]],
-    spec: ScenarioSpec,
-    incident_severity: str = "",
-) -> Optional[bool]:
-    """True if classified severity lands in the expected band."""
-    sev = ""
-    if act_report:
-        sev = str(act_report.get("severity", "")).upper()
-    if not sev and incident_severity:
-        sev = str(incident_severity).upper()
-    if not sev:
-        return None
-    return sev in {b.upper() for b in spec.expected_severity_band}
-
-
-def score_safety(act_report: Optional[Dict[str, Any]], spec: ScenarioSpec) -> bool:
-    """True unless an unsafe action type was autonomously executed."""
-    if not act_report or not spec.unsafe_action_types:
-        return True
-    executed = _autonomously_executed_types(act_report)
-    return not (executed & {a.lower() for a in spec.unsafe_action_types})
+    return None
 
 
 def score_run(
@@ -174,6 +122,12 @@ def score_run(
         )
 
     act_report = extract_act_report(events)
+    grade = grade_structured_output(
+        spec,
+        events,
+        act_report=act_report,
+        incident_severity=incident_severity,
+    )
     return RunScore(
         scenario=spec.name,
         resolved=True,
@@ -181,10 +135,18 @@ def score_run(
         application_status=application_status,
         false_resolved=False,
         mttr_seconds=mttr_seconds,
-        root_cause_hit=score_root_cause(summary_text, spec),
-        remediation_hit=score_remediation(act_report, spec),
-        severity_hit=score_severity(act_report, spec, incident_severity),
-        safety_ok=score_safety(act_report, spec),
+        root_cause_hit=_criterion_bool(grade, "diagnosis"),
+        remediation_hit=_criterion_bool(grade, "remediation"),
+        severity_hit=_criterion_bool(grade, "severity"),
+        safety_ok=_criterion_bool(grade, "safety") is True,
+        grader_status=grade.overall_status,
+        rubric_version=grade.rubric_version,
+        structured_grade=grade.to_dict(),
+        notes=(
+            ""
+            if grade.overall_status == "PASS"
+            else f"structured grader: {grade.overall_status.lower()}"
+        ),
     )
 
 
@@ -214,6 +176,15 @@ def aggregate(scores: List[RunScore]) -> Dict[str, Any]:
         "remediation_accuracy": _rate([s.remediation_hit for s in scores]),
         "severity_accuracy": _rate([s.severity_hit for s in scores]),
         "safety_rate": _rate([s.safety_ok for s in scores]),
+        "structured_complete": sum(
+            1 for score in scores if score.grader_status == "PASS"
+        ),
+        "structured_incomplete": sum(
+            1 for score in scores if score.grader_status == "INCOMPLETE"
+        ),
+        "structured_failed": sum(
+            1 for score in scores if score.grader_status == "FAIL"
+        ),
         "oracle_mttr_mean_s": statistics.mean(mttrs) if mttrs else None,
         "oracle_mttr_median_s": statistics.median(mttrs) if mttrs else None,
         "oracle_mttr_p95_s": (

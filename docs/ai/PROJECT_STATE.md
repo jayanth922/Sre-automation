@@ -10,8 +10,8 @@ and [PR #2](https://github.com/jayanth922/Sre-automation/pull/2). A01 immutable
 run provenance is review-ready in
 [PR #3](https://github.com/jayanth922/Sre-automation/pull/3), which is mergeable
 with all four CI checks green. A02 independent recovery-oracle work is in the
-committed `a734f01` stacked branch. A03 dataset-contract work is on
-`codex/a03-versioned-scenarios`, stacked on A02.
+committed `a734f01` stacked branch. A03 is committed as `1a4edda`. A04
+structured-grader work is on `codex/a04-structured-graders`, stacked on A03.
 
 ## Current architecture and invariants
 - In the canonical API runner, `compute_incident_status` in
@@ -91,6 +91,13 @@ committed `a734f01` stacked branch. A03 dataset-contract work is on
   the live benchmark; evidence records dataset/scenario versions and split SHA.
   The Meridian adapter verifies healthy `/admin/config`, applies typed faults,
   confirms values, and restores the original snapshot in a `finally` path.
+- A04 first slice: pinned `sre-structured-v1` schemas replace keyword diagnosis
+  and action-type-only remediation credit with exact typed service/fault/action/
+  target checks. Runtime summaries expose a dedicated structured evaluator
+  payload; raw outputs, hashes, rubric versions, and judgments are stored
+  together. Semantic causal/evidence criteria remain fail-closed pending blinded
+  calibration. The label loader enforces opaque case IDs, independent raters,
+  rationales, Cohen's kappa, and configurable release thresholds.
 
 ## Active problem
 A02/A03 need a live chaos-backed run. Automatic and manual fault modes now
@@ -99,6 +106,9 @@ Alertmanager delivery, and cleanup have not run against Meridian. Only the four
 existing evidence-backed scenarios were migrated; clean, noisy, multi-fault,
 capacity, security, partial-outage, and no-action fixtures remain. P03's
 production dashboard build/readiness/browser smoke remain separate work.
+A04 has no real human-labeled calibration set, adjudicated labels, measured
+judge agreement, or calibrated model judge. It therefore reports semantic
+criteria as `REQUIRES_CALIBRATION` instead of quality scores.
 
 ## Relevant files
 - A01: `sre_agent/run_manifest.py`, `backend/models.py`, the run-manifest
@@ -109,6 +119,10 @@ production dashboard build/readiness/browser smoke remain separate work.
 - A03: `benchmarks/scenario_dataset.py`, `benchmarks/fault_adapter.py`,
   `benchmarks/datasets/v1/`, `tests/test_scenario_dataset.py`, and
   `tests/test_fault_adapter.py`.
+- A04: `benchmarks/structured_grading.py`,
+  `benchmarks/grader_calibration.py`, `benchmarks/graders/v1/`,
+  `tests/test_structured_grading.py`, and
+  `tests/test_grader_calibration.py`.
 
 ## Verification commands and latest results
 Scratch Python environment:
@@ -121,10 +135,10 @@ Scratch Python environment:
   passed backend, frontend, rendered Helm routing/RBAC, and image builds.
 - A01: full local suite 415 passed; focused suite 75 passed; GitHub backend,
   frontend, manifests, and image-build checks pass.
-- A02/A03: 43 focused tests pass; changed Python files pass Black, Ruff, and
-  compileall. A new full-suite attempt could not collect five unrelated modules
-  because the available scratch environment lacks project dependencies
-  (`pydantic`, `PyYAML`, `langchain-core`, and `python-jose`).
+- A02–A04: 50 focused tests pass; evaluator files pass Black/Ruff and all
+  changed Python compiles. A new full-suite attempt could not collect five
+  unrelated modules because the available scratch environment lacks project
+  dependencies (`pydantic`, `PyYAML`, `langchain-core`, and `python-jose`).
 
 ## Known blockers or risks
 - No live MCP, T07 restart/resume, or cluster authorization test has run.
@@ -147,6 +161,7 @@ Scratch Python environment:
   canonical recovery evidence.
 
 ## Next bounded task
-Run the v1 dev scenario with `BENCH_FAULT_MODE=automatic`, including verified
-cleanup and JSONL evidence. Fix real service/probe drift, then add only
-fixture-backed missing taxonomy cases; do not fabricate coverage.
+Create a genuinely blinded, independently double-labeled A04 calibration set
+and run the agreement gate. Do not install or release-gate a model judge until
+both semantic criteria meet the configured agreement threshold. The separate
+A02/A03 live Meridian run remains required when the stack is available.

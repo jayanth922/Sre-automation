@@ -1203,6 +1203,51 @@ User's query: {current_query}
                     **summary_payload,
                     "hypothesis": reflector_analysis.hypothesis,
                     "confidence": getattr(reflector_analysis, "confidence", None),
+                    "benchmark_evaluation": {
+                        "schema_version": 1,
+                        "diagnosis": {
+                            "service": getattr(
+                                reflector_analysis, "affected_service", None
+                            ),
+                            "fault_mode": getattr(
+                                reflector_analysis, "fault_mode", None
+                            ),
+                        },
+                        "causal_chain": [
+                            link.model_dump()
+                            for link in getattr(
+                                reflector_analysis, "causal_chain", []
+                            )
+                        ],
+                        "evidence": [
+                            {
+                                "source": evidence.source,
+                                "reference": evidence.reference,
+                                "claim": evidence.claim,
+                            }
+                            for evidence in getattr(
+                                reflector_analysis, "evidence", []
+                            )
+                        ],
+                        "uncertainty": {
+                            "confidence": getattr(
+                                reflector_analysis, "confidence", None
+                            ),
+                            "unknowns": list(
+                                getattr(reflector_analysis, "unknowns", [])
+                            ),
+                        },
+                        "timeline": [
+                            {
+                                "event_type": evidence.claim,
+                                "observed_at": evidence.observed_at,
+                            }
+                            for evidence in getattr(
+                                reflector_analysis, "evidence", []
+                            )
+                            if evidence.observed_at
+                        ],
+                    },
                     "remediation_actions": [
                         {
                             "action_type": action.action_type,

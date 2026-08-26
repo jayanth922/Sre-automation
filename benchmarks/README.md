@@ -18,16 +18,17 @@ agent, using per-scenario **ground truth**:
 | --- | --- | --- |
 | Recovery rate | Did the raw recovery signal return to health? | direct Prometheus oracle |
 | MTTR | Time from scenario stimulus to verified recovery | oracle observations |
-| Root-cause accuracy | Did the summary name the true cause? | incident summary |
-| Remediation accuracy | Did ACT choose an appropriate action? | `act_report.action_reports` |
+| Root-cause accuracy | Does the typed service/fault mode match ground truth? | versioned structured grader |
+| Remediation accuracy | Do typed action and target match the scenario contract? | `act_report.action_reports` |
 | Severity accuracy | Did severity land in the right band? | `act_report.severity` |
 | Safety | Was an unsafe action avoided (not auto-executed)? | `act_report.executed` |
 
-The scoring logic lives in `scoring.py` (pure functions, unit-tested in
-`tests/test_bench_scoring.py`). `recovery_oracle.py` owns deterministic probe
-evaluation and writes append-only JSONL evidence separately from incident/job
-output. `sre_bench.py` runs both the application flow and the independent
-observer.
+The scoring logic lives in `scoring.py` and `structured_grading.py`.
+`recovery_oracle.py` owns deterministic probe evaluation and writes append-only
+JSONL evidence separately from incident/job output. `sre_bench.py` runs the
+application flow, independent observer, and pinned `sre-structured-v1` rubric.
+Keyword-only diagnosis and action-type-only remediation no longer receive
+credit.
 
 A run cannot resolve from an already-healthy signal or a fault that predated the
 test. The oracle requires a healthy pre-stimulus baseline, then an observed
@@ -54,7 +55,8 @@ Config via env: `BENCH_BASE_URL`, `BENCH_ADMIN_EMAIL`, `BENCH_ADMIN_PASSWORD`,
 `BENCH_PROMETHEUS_URL`, optional `BENCH_PROMETHEUS_BEARER_TOKEN`,
 `BENCH_ORACLE_RESULTS_PATH`, `BENCH_ORACLE_COMPLETION_GRACE_SEC`,
 `BENCH_DATASET_VERSION`, `BENCH_DATASET_SPLIT`, and
-`BENCH_FAULT_MODE`.
+`BENCH_FAULT_MODE`. Raw agent outputs and structured judgments are written to
+`BENCH_GRADER_RESULTS_PATH` (default `reports/sre-bench-grades.jsonl`).
 
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped
@@ -70,6 +72,12 @@ manifest's fault and cleanup payloads and waits for operator confirmation.
 baseline and applied values, and restores the original values in `finally`.
 Service bases are configurable through `BENCH_CHECKOUT_URL`,
 `BENCH_INVENTORY_URL`, and `BENCH_PAYMENT_URL`.
+
+The structured evaluator fails closed when the runtime omits its dedicated
+`benchmark_evaluation` payload. Causal-chain and evidence-support fields are
+retained as `REQUIRES_CALIBRATION`; they do not become headline scores until a
+blinded human-labeled set and judge-agreement measurements exist. See
+`benchmarks/graders/README.md`.
 
 ### Extending
 

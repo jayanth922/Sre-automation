@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blind_case_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "criterion_labels": {
+      "additionalProperties": false,
+      "properties": {
+        "causal_chain": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "evidence_support": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        }
+      },
+      "required": [
+        "causal_chain",
+        "evidence_support"
+      ],
+      "type": "object"
+    },
+    "labeled_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "labeler_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "rationales": {
+      "additionalProperties": false,
+      "properties": {
+        "causal_chain": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evidence_support": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "causal_chain",
+        "evidence_support"
+      ],
+      "type": "object"
+    },
+    "rubric_version": {
+      "const": "sre-structured-v1"
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "rubric_version",
+    "blind_case_id",
+    "labeler_id",
+    "labeled_at",
+    "criterion_labels",
+    "rationales"
+  ],
+  "type": "object"
+}

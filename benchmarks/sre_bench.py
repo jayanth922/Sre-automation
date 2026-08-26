@@ -45,6 +45,7 @@ from recovery_oracle import (  # noqa: E402
 )
 from scenario_dataset import load_dataset  # noqa: E402
 from scoring import ScenarioSpec, aggregate, score_run  # noqa: E402
+from structured_grading import append_grader_record  # noqa: E402
 
 # ── Config ──────────────────────────────────────────────────────────────────
 BASE_URL = os.getenv("BENCH_BASE_URL", "http://localhost:8080")
@@ -57,6 +58,9 @@ PROMETHEUS_URL = os.getenv("BENCH_PROMETHEUS_URL", "http://localhost:9090")
 PROMETHEUS_TOKEN = os.getenv("BENCH_PROMETHEUS_BEARER_TOKEN")
 ORACLE_RESULTS_PATH = Path(
     os.getenv("BENCH_ORACLE_RESULTS_PATH", "reports/sre-bench-oracle.jsonl")
+)
+GRADER_RESULTS_PATH = Path(
+    os.getenv("BENCH_GRADER_RESULTS_PATH", "reports/sre-bench-grades.jsonl")
 )
 DATASET_ROOT = Path(
     os.getenv(
@@ -295,6 +299,24 @@ def _score_without_output(spec: ScenarioSpec, result):
     )
 
 
+def _record_grade(
+    spec: ScenarioSpec,
+    result,
+    summary_text: str,
+    events: list[dict],
+    score,
+) -> None:
+    append_grader_record(
+        GRADER_RESULTS_PATH,
+        spec=spec,
+        oracle_status=result.status,
+        application_status=result.application_status,
+        summary_text=summary_text,
+        events=events,
+        score=score,
+    )
+
+
 async def _run_trial(
     client: httpx.AsyncClient,
     jwt: str,
@@ -333,7 +355,9 @@ async def _run_trial(
                 application_status="stimulus_failed",
             )
             append_oracle_result(ORACLE_RESULTS_PATH, result)
-            return _score_without_output(spec, result), f"FAILED (stimulus: {exc})"
+            score = _score_without_output(spec, result)
+            _record_grade(spec, result, "", [], score)
+            return score, f"FAILED (stimulus: {exc})"
 
         incident = await _wait_new_incident(client, jwt, known)
         if not incident:
@@ -344,7 +368,9 @@ async def _run_trial(
                 application_status="incident_not_created",
             )
             append_oracle_result(ORACLE_RESULTS_PATH, result)
-            return _score_without_output(spec, result), "FAILED (no incident)"
+            score = _score_without_output(spec, result)
+            _record_grade(spec, result, "", [], score)
+            return score, "FAILED (no incident)"
 
         latest_incident = await _wait_for_recovery(
             client, jwt, incident, oracle_client, tracker
@@ -368,6 +394,7 @@ async def _run_trial(
             mttr_seconds=result.mttr_seconds,
             incident_severity=latest_incident.get("severity", ""),
         )
+        _record_grade(spec, result, summary_text, events, score)
         if score.resolved:
             line = (
                 f"MTTR={score.mttr_seconds:.0f}s "
@@ -404,6 +431,7 @@ async def run() -> None:
     )
     print(f"  fault mode: {FAULT_MODE}")
     print(f"  oracle evidence: {ORACLE_RESULTS_PATH}")
+    print(f"  grader evidence: {GRADER_RESULTS_PATH}")
     print("=" * 74)
 
     all_scores = []
@@ -464,6 +492,12 @@ def _report(scores) -> None:
     print(f"  Remediation accuracy : {pct(agg['remediation_accuracy'])}")
     print(f"  Severity accuracy    : {pct(agg['severity_accuracy'])}")
     print(f"  Safety rate          : {pct(agg['safety_rate'])}")
+    print(
+        "  Structured grades   : "
+        f"{agg['structured_complete']} complete / "
+        f"{agg['structured_incomplete']} incomplete / "
+        f"{agg['structured_failed']} failed"
+    )
     print(
         "  Oracle MTTR mean/med.: "
         f"{sec(agg['oracle_mttr_mean_s'])} / "

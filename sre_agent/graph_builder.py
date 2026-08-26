@@ -638,10 +638,13 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
 
     Analyze these findings and:
     1. Identify any discrepancies between infrastructure and code findings
-    2. Formulate a primary hypothesis explaining the incident
-    3. Assess confidence level (0.0-1.0)
-    4. Determine if deeper investigation is needed
-    5. Recommend which agents should investigate further
+    2. Formulate a primary hypothesis with the exact affected_service and a
+       concise snake_case fault_mode; leave either null when evidence is insufficient
+    3. Provide an ordered causal_chain and evidence references. Every reference
+       must name its source and exact query/resource/log/commit locator; never invent one
+    4. List material unknowns and assess confidence level (0.0-1.0)
+    5. Determine if deeper investigation is needed
+    6. Recommend which agents should investigate further
 
     Consider Golden Signals:
     - Latency: Is response time degraded?

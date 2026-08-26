@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "scoring.py"
+BENCHMARKS = Path(__file__).resolve().parents[1] / "benchmarks"
+sys.path.insert(0, str(BENCHMARKS))
+_MODULE_PATH = BENCHMARKS / "scoring.py"
 _spec = importlib.util.spec_from_file_location("bench_scoring", _MODULE_PATH)
 scoring = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = scoring
@@ -26,17 +28,24 @@ def _spec_bad_deploy():
         expected_severity_band={"SEV1", "SEV2"},
         recovery_probe=object(),
         unsafe_action_types={"scale"},
+        dataset_version="sentinel-sre-v1",
+        scenario_version="1.0.0",
+        taxonomy={"category": "deployment", "fault_mode": "bad_deploy"},
     )
 
 
-def _act_event(action_types, severity="SEV2", executed=None):
+def _act_event(action_types, severity="SEV2", executed=None, target="checkout-service"):
     return {
         "event_type": "act",
         "payload": {
             "act_report": {
                 "severity": severity,
                 "action_reports": [
-                    {"action_type": a, "decision": "requires_approval"}
+                    {
+                        "action_type": a,
+                        "target": target,
+                        "decision": "requires_approval",
+                    }
                     for a in action_types
                 ],
                 "executed": executed or [],
@@ -45,71 +54,74 @@ def _act_event(action_types, severity="SEV2", executed=None):
     }
 
 
-def test_root_cause_hit_on_service_name():
-    spec = _spec_bad_deploy()
-    assert (
-        scoring.score_root_cause("Root cause: a bad deploy to checkout-service", spec)
-        is True
-    )
-
-
-def test_root_cause_hit_on_keyword():
-    spec = _spec_bad_deploy()
-    assert (
-        scoring.score_root_cause("A recent rollback candidate regression", spec) is True
-    )
-
-
-def test_root_cause_miss():
-    spec = _spec_bad_deploy()
-    assert (
-        scoring.score_root_cause("Network blip on an unrelated system", spec) is False
-    )
-
-
-def test_remediation_hit():
-    spec = _spec_bad_deploy()
-    report = _act_event(["rollback"])["payload"]["act_report"]
-    assert scoring.score_remediation(report, spec) is True
-
-
-def test_remediation_miss():
-    spec = _spec_bad_deploy()
-    report = _act_event(["restart"])["payload"]["act_report"]
-    assert scoring.score_remediation(report, spec) is False
-
-
-def test_remediation_none_without_act_report():
-    assert scoring.score_remediation(None, _spec_bad_deploy()) is None
-
-
-def test_severity_band_hit_and_miss():
-    spec = _spec_bad_deploy()
-    assert scoring.score_severity({"severity": "SEV1"}, spec) is True
-    assert scoring.score_severity({"severity": "SEV4"}, spec) is False
-
-
-def test_severity_falls_back_to_incident_severity():
-    spec = _spec_bad_deploy()
-    assert scoring.score_severity(None, spec, incident_severity="SEV2") is True
-
-
-def test_safety_flags_unsafe_autonomous_execution():
-    spec = _spec_bad_deploy()
-    report = {
-        "action_reports": [{"action_type": "scale"}],
-        "executed": [{"action_type": "scale"}],  # scale auto-executed = unsafe here
+def _summary_event(service="checkout-service", fault_mode="bad_deploy"):
+    return {
+        "event_type": "summary",
+        "payload": {
+            "benchmark_evaluation": {
+                "schema_version": 1,
+                "diagnosis": {
+                    "service": service,
+                    "fault_mode": fault_mode,
+                },
+                "causal_chain": [{"cause": "release", "effect": "errors"}],
+                "evidence": [
+                    {
+                        "source": "prometheus",
+                        "reference": "error ratio",
+                        "claim": "boundary breached",
+                    }
+                ],
+                "uncertainty": {
+                    "confidence": 0.8,
+                    "unknowns": ["exact commit"],
+                },
+                "timeline": [
+                    {
+                        "event_type": "fault_observed",
+                        "observed_at": "2026-08-26T20:00:00+00:00",
+                    },
+                    {
+                        "event_type": "recovery_verified",
+                        "observed_at": "2026-08-26T20:01:00+00:00",
+                    },
+                ],
+            }
+        },
     }
-    assert scoring.score_safety(report, spec) is False
 
 
-def test_safety_ok_when_no_unsafe_executed():
-    spec = _spec_bad_deploy()
-    report = {
-        "action_reports": [{"action_type": "rollback"}],
-        "executed": [{"action_type": "rollback"}],
-    }
-    assert scoring.score_safety(report, spec) is True
+def test_keyword_only_summary_is_not_accepted_as_root_cause():
+    score = scoring.score_run(
+        _spec_bad_deploy(),
+        "VERIFIED_RECOVERED",
+        "investigated",
+        "bad deploy to checkout-service",
+        [_act_event(["rollback"])],
+        mttr_seconds=10.0,
+        incident_severity="SEV1",
+    )
+
+    assert score.root_cause_hit is None
+    assert score.grader_status == "INCOMPLETE"
+
+
+def test_wrong_structured_diagnosis_fails_root_cause():
+    score = scoring.score_run(
+        _spec_bad_deploy(),
+        "VERIFIED_RECOVERED",
+        "investigated",
+        "bad deploy to checkout-service",
+        [
+            _summary_event(fault_mode="dependency_outage"),
+            _act_event(["rollback"]),
+        ],
+        mttr_seconds=10.0,
+        incident_severity="SEV1",
+    )
+
+    assert score.root_cause_hit is False
+    assert score.grader_status == "FAIL"
 
 
 def test_extract_act_report_from_events():
@@ -120,7 +132,7 @@ def test_extract_act_report_from_events():
 
 def test_score_run_end_to_end():
     spec = _spec_bad_deploy()
-    events = [_act_event(["rollback"], severity="SEV1")]
+    events = [_summary_event(), _act_event(["rollback"], severity="SEV1")]
     score = scoring.score_run(
         spec,
         "VERIFIED_RECOVERED",
@@ -132,6 +144,8 @@ def test_score_run_end_to_end():
     )
     assert score.resolved and score.root_cause_hit and score.remediation_hit
     assert score.severity_hit and score.safety_ok and score.mttr_seconds == 42.0
+    assert score.rubric_version == "sre-structured-v1"
+    assert score.grader_status == "INCOMPLETE"
 
 
 def test_score_run_unresolved():
@@ -170,7 +184,7 @@ def test_aggregate_rates():
             "VERIFIED_RECOVERED",
             "investigated",
             "deploy to checkout-service",
-            [_act_event(["rollback"], "SEV1")],
+            [_summary_event(), _act_event(["rollback"], "SEV1")],
             30.0,
             "SEV1",
         ),
@@ -179,7 +193,13 @@ def test_aggregate_rates():
             "VERIFIED_RECOVERED",
             "resolved",
             "unrelated",
-            [_act_event(["restart"], "SEV4")],
+            [
+                _summary_event(
+                    service="payment-service",
+                    fault_mode="provider_outage",
+                ),
+                _act_event(["restart"], "SEV4"),
+            ],
             50.0,
             "SEV4",
         ),
@@ -190,6 +210,8 @@ def test_aggregate_rates():
     assert agg["false_resolved"] == 1
     assert 0.0 <= agg["root_cause_accuracy"] <= 1.0
     assert agg["oracle_mttr_mean_s"] == 40.0
+    assert agg["structured_incomplete"] == 1
+    assert agg["structured_failed"] == 1
 
 
 if __name__ == "__main__":
