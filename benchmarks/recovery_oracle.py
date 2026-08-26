@@ -121,12 +121,20 @@ class OracleRunResult:
     false_resolved: bool
     probe: RecoveryProbe
     observations: tuple[OracleObservation, ...]
+    dataset_version: str = "legacy"
+    scenario_version: str = "unversioned"
+    dataset_split: str = "unspecified"
+    dataset_sha256: str = ""
     schema_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "scenario": self.scenario,
+            "dataset_version": self.dataset_version,
+            "scenario_version": self.scenario_version,
+            "dataset_split": self.dataset_split,
+            "dataset_sha256": self.dataset_sha256,
             "incident_id": self.incident_id,
             "application_status": self.application_status,
             "status": self.status,
@@ -255,6 +263,10 @@ class RecoveryOracleTracker:
         scenario: str,
         incident_id: Optional[str],
         application_status: str,
+        dataset_version: str = "legacy",
+        scenario_version: str = "unversioned",
+        dataset_split: str = "unspecified",
+        dataset_sha256: str = "",
     ) -> OracleRunResult:
         if self.baseline_healthy is not True:
             status: OracleStatus = "INVALID_SCENARIO"
@@ -285,6 +297,10 @@ class RecoveryOracleTracker:
             ),
             probe=self.probe,
             observations=tuple(self.observations),
+            dataset_version=dataset_version,
+            scenario_version=scenario_version,
+            dataset_split=dataset_split,
+            dataset_sha256=dataset_sha256,
         )
 
 

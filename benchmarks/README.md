@@ -52,7 +52,9 @@ uv run python benchmarks/sre_bench.py
 Config via env: `BENCH_BASE_URL`, `BENCH_ADMIN_EMAIL`, `BENCH_ADMIN_PASSWORD`,
 `BENCH_CLUSTER_ID`, `BENCH_CLUSTER_TOKEN`, `BENCH_RUNS_PER_SCENARIO`,
 `BENCH_PROMETHEUS_URL`, optional `BENCH_PROMETHEUS_BEARER_TOKEN`,
-`BENCH_ORACLE_RESULTS_PATH`, and `BENCH_ORACLE_COMPLETION_GRACE_SEC`.
+`BENCH_ORACLE_RESULTS_PATH`, `BENCH_ORACLE_COMPLETION_GRACE_SEC`,
+`BENCH_DATASET_VERSION`, `BENCH_DATASET_SPLIT`, and
+`BENCH_FAULT_MODE`.
 
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped
@@ -60,17 +62,19 @@ observations, application status for comparison, and the oracle MTTR.
 Aggregate timing keys are explicitly named `oracle_mttr_*`; they are not
 historically comparable with the legacy incident-row MTTR.
 
-The current runner still sends a synthetic Alertmanager stimulus; it does not
-inject workload faults. A healthy signal that never crosses the failure
-boundary is therefore `INVALID_SCENARIO`, never a successful recovery. For a
-real MTTR experiment, activate the named fault in the chaos panel immediately
-before the run so the oracle observes the failing state. A versioned automated
-fault-injection contract belongs in the dataset/scenario work (A03).
+The runner sends a synthetic Alertmanager stimulus after the scenario fault.
+`BENCH_FAULT_MODE=none` never mutates the workload; a healthy signal that never
+crosses the failure boundary is `INVALID_SCENARIO`. `manual` displays the
+manifest's fault and cleanup payloads and waits for operator confirmation.
+`automatic` calls the Meridian `/admin/config` contract, verifies the healthy
+baseline and applied values, and restores the original values in `finally`.
+Service bases are configurable through `BENCH_CHECKOUT_URL`,
+`BENCH_INVENTORY_URL`, and `BENCH_PAYMENT_URL`.
 
 ### Extending
 
-Add a `ScenarioSpec` to `SCENARIOS` in `sre_bench.py` with its ground truth,
-including one aggregate `RecoveryProbe` that returns exactly one scalar. The
-probe must define a deterministic healthy comparator/threshold and must not
-depend on agent-authored output. Keep scenarios aligned with the failure
-taxonomy in `docs/ACT_PHASE_DESIGN.md` §6 so the benchmark tracks real coverage.
+Add scenarios through a new content-addressed dataset version under
+`benchmarks/datasets/`; do not add inline Python fixtures. The strict loader
+requires provenance, taxonomy, risk, expected evidence, allowed/forbidden
+actions, and one aggregate recovery probe returning exactly one scalar. See
+`benchmarks/datasets/README.md` for split and holdout rules.

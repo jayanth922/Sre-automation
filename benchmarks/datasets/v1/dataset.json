@@ -1,0 +1,22 @@
+{
+  "dataset_version": "sentinel-sre-v1",
+  "description": "Content-addressed Sentinel reference-client scenarios for development and independent recovery evaluation.",
+  "schema_version": 1,
+  "splits": {
+    "dev": {
+      "file": "dev.json",
+      "frozen": false,
+      "sha256": "3f0127686f6637f7e2e8be8344c6eb145e83ed403b613f88ed3861a8fff9dc1e"
+    },
+    "holdout": {
+      "file": "holdout.json",
+      "frozen": true,
+      "sha256": "b2547a3a0f4e0317dfa06185be635a6f4e925eef5b3ebd94c34c2a945f5a0c91"
+    },
+    "train": {
+      "file": "train.json",
+      "frozen": false,
+      "sha256": "a96e94d7eb613b094c6e09780801b8135b4b6cdcc3c18ce21209c001704dbfac"
+    }
+  }
+}

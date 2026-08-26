@@ -10,7 +10,8 @@ and [PR #2](https://github.com/jayanth922/Sre-automation/pull/2). A01 immutable
 run provenance is review-ready in
 [PR #3](https://github.com/jayanth922/Sre-automation/pull/3), which is mergeable
 with all four CI checks green. A02 independent recovery-oracle work is in the
-uncommitted `codex/a02-recovery-oracle` working tree stacked on A01.
+committed `a734f01` stacked branch. A03 dataset-contract work is on
+`codex/a03-versioned-scenarios`, stacked on A02.
 
 ## Current architecture and invariants
 - In the canonical API runner, `compute_incident_status` in
@@ -83,13 +84,21 @@ uncommitted `codex/a02-recovery-oracle` working tree stacked on A01.
   healthy observations; ambiguous/missing evidence fails closed. Application
   status is comparison context only, false-resolved claims are explicit, and
   append-only JSONL evidence is stored outside incident/job output.
+- A03 first slice: content-addressed v1 train/dev/frozen-holdout manifests carry
+  versions, taxonomy, risk, provenance, expected evidence, allowed/forbidden
+  actions, declarative fault operations, and recovery probes. A strict loader
+  validates schema/digests, protects holdout from CI/default access, and feeds
+  the live benchmark; evidence records dataset/scenario versions and split SHA.
+  The Meridian adapter verifies healthy `/admin/config`, applies typed faults,
+  confirms values, and restores the original snapshot in a `finally` path.
 
 ## Active problem
-A02 needs a live chaos-backed run. The repository's benchmark emits synthetic
-alerts but does not inject workload faults, so healthy telemetry now produces
-`INVALID_SCENARIO` rather than fake recovery/MTTR. Automated, versioned fault
-injection belongs with A03 scenario manifests. P03's production dashboard
-build, readiness, and authenticated browser smoke remain separate work.
+A02/A03 need a live chaos-backed run. Automatic and manual fault modes now
+exist, but service URL reachability, Prometheus label/query compatibility,
+Alertmanager delivery, and cleanup have not run against Meridian. Only the four
+existing evidence-backed scenarios were migrated; clean, noisy, multi-fault,
+capacity, security, partial-outage, and no-action fixtures remain. P03's
+production dashboard build/readiness/browser smoke remain separate work.
 
 ## Relevant files
 - A01: `sre_agent/run_manifest.py`, `backend/models.py`, the run-manifest
@@ -97,6 +106,9 @@ build, readiness, and authenticated browser smoke remain separate work.
 - A02: `benchmarks/recovery_oracle.py`, `benchmarks/sre_bench.py`,
   `benchmarks/scoring.py`, `tests/test_recovery_oracle.py`, and
   `tests/test_bench_scoring.py`.
+- A03: `benchmarks/scenario_dataset.py`, `benchmarks/fault_adapter.py`,
+  `benchmarks/datasets/v1/`, `tests/test_scenario_dataset.py`, and
+  `tests/test_fault_adapter.py`.
 
 ## Verification commands and latest results
 Scratch Python environment:
@@ -109,7 +121,7 @@ Scratch Python environment:
   passed backend, frontend, rendered Helm routing/RBAC, and image builds.
 - A01: full local suite 415 passed; focused suite 75 passed; GitHub backend,
   frontend, manifests, and image-build checks pass.
-- A02: 32 focused tests pass; changed Python files pass Black, Ruff, and
+- A02/A03: 43 focused tests pass; changed Python files pass Black, Ruff, and
   compileall. A new full-suite attempt could not collect five unrelated modules
   because the available scratch environment lacks project dependencies
   (`pydantic`, `PyYAML`, `langchain-core`, and `python-jose`).
@@ -123,7 +135,11 @@ Scratch Python environment:
 - Process-local job dispatch can still lose queued work before a worker starts;
   durable queue/worker execution remains R02.
 - No live A02 oracle artifact exists yet; Prometheus label/query compatibility
-  and real fault-to-recovery timing remain unverified.
+  and real fault-to-recovery timing remain unverified. Local readiness checks
+  found no listeners on Sentinel 8080, Prometheus 9090, or Meridian inventory
+  8002, so an end-to-end run was not attempted.
+- V1 holdout is frozen and CI-protected but stored in the public repository; a
+  truly hidden external holdout and controlled evaluator remain future work.
 - T01 has residual non-canonical drift: `agent_runtime_tasks.py` still writes
   RESOLVED unconditionally, the follow-up closure heuristic can treat any
   summary as closed, and Qdrant/skill learning can occur before objective
@@ -131,6 +147,6 @@ Scratch Python environment:
   canonical recovery evidence.
 
 ## Next bounded task
-Review the A02 diff, run one real chaos scenario against direct Prometheus, and
-capture its JSONL evidence. Fix any probe-label drift, then commit/publish A02;
-after that, begin A03 with versioned fault-injection/scenario manifests.
+Run the v1 dev scenario with `BENCH_FAULT_MODE=automatic`, including verified
+cleanup and JSONL evidence. Fix real service/probe drift, then add only
+fixture-backed missing taxonomy cases; do not fabricate coverage.

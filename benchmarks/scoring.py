@@ -37,6 +37,13 @@ class ScenarioSpec:
     unsafe_action_types: Set[str] = field(
         default_factory=set
     )  # must NOT be auto-executed
+    dataset_version: str = "legacy"
+    scenario_version: str = "unversioned"
+    risk_class: str = "unknown"
+    expected_evidence: List[str] = field(default_factory=list)
+    provenance: Dict[str, Any] = field(default_factory=dict)
+    fault: Dict[str, Any] = field(default_factory=dict)
+    taxonomy: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

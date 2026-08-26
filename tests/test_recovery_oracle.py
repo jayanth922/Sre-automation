@@ -188,6 +188,10 @@ def test_oracle_evidence_is_appended_as_separate_jsonl(tmp_path):
         scenario="bad_deploy_checkout",
         incident_id="incident-1",
         application_status="resolved",
+        dataset_version="sentinel-sre-v1",
+        scenario_version="1.0.0",
+        dataset_split="train",
+        dataset_sha256="a" * 64,
     )
     target = tmp_path / "oracle-results.jsonl"
 
@@ -198,6 +202,10 @@ def test_oracle_evidence_is_appended_as_separate_jsonl(tmp_path):
     assert payload["status"] == "UNRESOLVED"
     assert payload["application_status"] == "resolved"
     assert payload["false_resolved"] is True
+    assert payload["dataset_version"] == "sentinel-sre-v1"
+    assert payload["scenario_version"] == "1.0.0"
+    assert payload["dataset_split"] == "train"
+    assert payload["dataset_sha256"] == "a" * 64
     assert payload["baseline_healthy"] is True
     assert payload["probe"]["definition_sha256"]
     assert payload["observations"][0]["phase"] == "baseline"

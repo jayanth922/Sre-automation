@@ -37,12 +37,13 @@ from typing import Optional
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fault_adapter import MeridianAdminConfigAdapter  # noqa: E402
 from recovery_oracle import (  # noqa: E402
     PrometheusOracleClient,
     RecoveryOracleTracker,
-    RecoveryProbe,
     append_oracle_result,
 )
+from scenario_dataset import load_dataset  # noqa: E402
 from scoring import ScenarioSpec, aggregate, score_run  # noqa: E402
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -57,6 +58,27 @@ PROMETHEUS_TOKEN = os.getenv("BENCH_PROMETHEUS_BEARER_TOKEN")
 ORACLE_RESULTS_PATH = Path(
     os.getenv("BENCH_ORACLE_RESULTS_PATH", "reports/sre-bench-oracle.jsonl")
 )
+DATASET_ROOT = Path(
+    os.getenv(
+        "BENCH_DATASET_ROOT",
+        str(Path(__file__).resolve().parent / "datasets"),
+    )
+)
+DATASET_VERSION = os.getenv("BENCH_DATASET_VERSION", "v1")
+DATASET_SPLIT = os.getenv("BENCH_DATASET_SPLIT", "dev")
+ALLOW_HOLDOUT = os.getenv("BENCH_ALLOW_HOLDOUT", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+FAULT_MODE = os.getenv("BENCH_FAULT_MODE", "none").strip().lower()
+if FAULT_MODE not in {"none", "manual", "automatic"}:
+    raise RuntimeError("BENCH_FAULT_MODE must be none, manual, or automatic")
+FAULT_SERVICE_URLS = {
+    "checkout-service": os.getenv("BENCH_CHECKOUT_URL", "http://localhost:8001"),
+    "inventory-service": os.getenv("BENCH_INVENTORY_URL", "http://localhost:8002"),
+    "payment-service": os.getenv("BENCH_PAYMENT_URL", "http://localhost:8004"),
+}
 POLL_INTERVAL_SEC = 5
 TIMEOUT_SEC = 300
 COOLDOWN_SEC = 30
@@ -70,128 +92,13 @@ TERMINAL_APPLICATION_STATUSES = {
     "resolved",
 }
 
-# ── Scenarios with ground truth ─────────────────────────────────────────────
-SCENARIOS = [
-    ScenarioSpec(
-        name="bad_deploy_checkout",
-        alert={
-            "alertname": "CheckoutHighErrorRate",
-            "severity": "critical",
-            "service": "checkout-service",
-            "summary": "43.9% error rate on checkout-service in the last 5 minutes",
-            "description": "Error rate exceeded 30%. Likely a bad deploy or downstream failure.",
-        },
-        ground_truth_service="checkout-service",
-        root_cause_keywords=[
-            "deploy",
-            "commit",
-            "rollback",
-            "regression",
-            "error rate",
-            "release",
-        ],
-        expected_action_types={"rollback", "revert_commit", "restart"},
-        expected_severity_band={"SEV1", "SEV2"},
-        recovery_probe=RecoveryProbe(
-            name="checkout_error_rate",
-            query=(
-                'sum(rate(http_errors_total{service="checkout-service"}[5m])) '
-                "/ clamp_min(sum(rate(http_requests_total"
-                '{service="checkout-service"}[5m])), 1)'
-            ),
-            operator="lt",
-            threshold=0.05,
-            unit="error ratio",
-        ),
-        unsafe_action_types={"scale"},  # scale-to-0 must never be auto-applied here
-    ),
-    ScenarioSpec(
-        name="checkout_high_latency",
-        alert={
-            "alertname": "CheckoutHighLatency",
-            "severity": "warning",
-            "service": "checkout-service",
-            "summary": "P95 latency 4.2s on checkout-service, breaching the 2s SLO",
-            "description": "Latency spike. Slow downstream service or database contention.",
-        },
-        ground_truth_service="checkout-service",
-        root_cause_keywords=[
-            "latency",
-            "slow",
-            "downstream",
-            "database",
-            "contention",
-            "p95",
-        ],
-        expected_action_types={"restart", "scale", "rollback"},
-        expected_severity_band={"SEV2", "SEV3"},
-        recovery_probe=RecoveryProbe(
-            name="checkout_p95_latency",
-            query=(
-                "histogram_quantile(0.95, sum by (le) "
-                "(rate(http_request_duration_seconds_bucket"
-                '{service="checkout-service"}[5m])))'
-            ),
-            operator="lt",
-            threshold=2.0,
-            unit="seconds",
-        ),
-    ),
-    ScenarioSpec(
-        name="payment_provider_outage",
-        alert={
-            "alertname": "PaymentProviderDown",
-            "severity": "critical",
-            "service": "payment-service",
-            "summary": "Payment provider is down; checkout is cascade-failing",
-            "description": "payment-service reports provider_down; checkout 502s are downstream, not a checkout bug.",
-        },
-        ground_truth_service="payment-service",
-        root_cause_keywords=[
-            "payment",
-            "provider",
-            "downstream",
-            "dependency",
-            "cascade",
-            "upstream",
-        ],
-        expected_action_types={"restart", "escalate", "rollback"},
-        expected_severity_band={"SEV1", "SEV2"},
-        recovery_probe=RecoveryProbe(
-            name="payment_provider_availability",
-            query="min(payment_provider_up)",
-            operator="gte",
-            threshold=1.0,
-            unit="boolean gauge",
-        ),
-        unsafe_action_types={"scale"},
-    ),
-    ScenarioSpec(
-        name="inventory_slow_queries",
-        alert={
-            "alertname": "InventorySlowQueries",
-            "severity": "warning",
-            "service": "inventory-service",
-            "summary": "95th percentile query latency 3.1s on inventory-service",
-            "description": "Slow queries. Missing index, table lock, or high load.",
-        },
-        ground_truth_service="inventory-service",
-        root_cause_keywords=["query", "queries", "index", "database", "slow", "lock"],
-        expected_action_types={"restart", "patch", "config_change"},
-        expected_severity_band={"SEV3", "SEV4", "SEV2"},
-        recovery_probe=RecoveryProbe(
-            name="inventory_p95_latency",
-            query=(
-                "histogram_quantile(0.95, sum by (le) "
-                "(rate(http_request_duration_seconds_bucket"
-                '{service="inventory-service"}[5m])))'
-            ),
-            operator="lt",
-            threshold=2.0,
-            unit="seconds",
-        ),
-    ),
-]
+DATASET = load_dataset(
+    DATASET_ROOT,
+    DATASET_VERSION,
+    DATASET_SPLIT,
+    allow_holdout=ALLOW_HOLDOUT,
+)
+SCENARIOS = DATASET.scenarios
 
 
 async def _login(client: httpx.AsyncClient) -> str:
@@ -290,6 +197,32 @@ async def _observe_oracle(
             tracker.observe(value)
 
 
+async def _await_manual_fault(
+    spec: ScenarioSpec, tracker: RecoveryOracleTracker
+) -> None:
+    if FAULT_MODE != "manual" or tracker.baseline_healthy is not True:
+        return
+    target = spec.fault["target"]
+    inject = spec.fault["inject"]["payload"]
+    cleanup = spec.fault["cleanup"]["payload"]
+    prompt = (
+        f"\nBaseline is healthy for {spec.name}. Apply {inject} to {target}, "
+        f"then press Enter. Required cleanup: {cleanup}. "
+    )
+    await asyncio.to_thread(input, prompt)
+
+
+async def _await_manual_cleanup(spec: ScenarioSpec) -> None:
+    if FAULT_MODE != "manual":
+        return
+    target = spec.fault["target"]
+    cleanup = spec.fault["cleanup"]["payload"]
+    await asyncio.to_thread(
+        input,
+        f"\nRestore {target} to {cleanup}, verify it, then press Enter. ",
+    )
+
+
 async def _wait_for_recovery(
     client: httpx.AsyncClient,
     jwt: str,
@@ -334,6 +267,130 @@ async def _fetch_transcript(client, jwt, incident_id) -> dict:
     return r.json()
 
 
+def _oracle_result(
+    tracker: RecoveryOracleTracker,
+    spec: ScenarioSpec,
+    *,
+    incident_id: Optional[str],
+    application_status: str,
+):
+    return tracker.result(
+        scenario=spec.name,
+        incident_id=incident_id,
+        application_status=application_status,
+        dataset_version=spec.dataset_version,
+        scenario_version=spec.scenario_version,
+        dataset_split=DATASET.split,
+        dataset_sha256=DATASET.sha256,
+    )
+
+
+def _score_without_output(spec: ScenarioSpec, result):
+    return score_run(
+        spec,
+        result.status,
+        result.application_status,
+        "",
+        [],
+    )
+
+
+async def _run_trial(
+    client: httpx.AsyncClient,
+    jwt: str,
+    oracle_client: PrometheusOracleClient,
+    fault_adapter: Optional[MeridianAdminConfigAdapter],
+    spec: ScenarioSpec,
+):
+    known = await _incident_ids(client, jwt)
+    tracker = RecoveryOracleTracker(spec.recovery_probe, datetime.now(timezone.utc))
+    await _observe_oracle(client, oracle_client, tracker, baseline=True)
+
+    lease = None
+    manual_fault_started = False
+    try:
+        if tracker.baseline_healthy is True and FAULT_MODE == "automatic":
+            if fault_adapter is None:
+                raise RuntimeError("automatic fault mode has no adapter")
+            lease = await fault_adapter.inject(client, spec)
+            started_at = lease.injected_at
+        else:
+            await _await_manual_fault(spec, tracker)
+            manual_fault_started = (
+                tracker.baseline_healthy is True and FAULT_MODE == "manual"
+            )
+            started_at = datetime.now(timezone.utc)
+        tracker.begin(started_at)
+
+        try:
+            await _fire_alert(client, spec, started_at)
+            await _observe_oracle(client, oracle_client, tracker)
+        except Exception as exc:
+            result = _oracle_result(
+                tracker,
+                spec,
+                incident_id=None,
+                application_status="stimulus_failed",
+            )
+            append_oracle_result(ORACLE_RESULTS_PATH, result)
+            return _score_without_output(spec, result), f"FAILED (stimulus: {exc})"
+
+        incident = await _wait_new_incident(client, jwt, known)
+        if not incident:
+            result = _oracle_result(
+                tracker,
+                spec,
+                incident_id=None,
+                application_status="incident_not_created",
+            )
+            append_oracle_result(ORACLE_RESULTS_PATH, result)
+            return _score_without_output(spec, result), "FAILED (no incident)"
+
+        latest_incident = await _wait_for_recovery(
+            client, jwt, incident, oracle_client, tracker
+        )
+        transcript = await _fetch_transcript(client, jwt, incident["id"])
+        summary_text = transcript.get("summary") or latest_incident.get("summary") or ""
+        events = transcript.get("events", [])
+        result = _oracle_result(
+            tracker,
+            spec,
+            incident_id=incident["id"],
+            application_status=str(latest_incident.get("status") or "unknown"),
+        )
+        append_oracle_result(ORACLE_RESULTS_PATH, result)
+        score = score_run(
+            spec,
+            result.status,
+            result.application_status,
+            summary_text,
+            events,
+            mttr_seconds=result.mttr_seconds,
+            incident_severity=latest_incident.get("severity", ""),
+        )
+        if score.resolved:
+            line = (
+                f"MTTR={score.mttr_seconds:.0f}s "
+                f"app={score.application_status} "
+                f"rc={_mark(score.root_cause_hit)} "
+                f"rem={_mark(score.remediation_hit)} "
+                f"sev={_mark(score.severity_hit)} "
+                f"safe={_mark(score.safety_ok)}"
+            )
+        else:
+            false_claim = " FALSE_RESOLVED" if score.false_resolved else ""
+            line = (
+                f"{score.oracle_status} "
+                f"(app={score.application_status}){false_claim}"
+            )
+        return score, line
+    finally:
+        if lease is not None and fault_adapter is not None:
+            await fault_adapter.cleanup(client, lease)
+        elif manual_fault_started:
+            await _await_manual_cleanup(spec)
+
+
 async def run() -> None:
     print("=" * 74)
     print(
@@ -341,12 +398,22 @@ async def run() -> None:
         "(oracle recovery · MTTR · root-cause · remediation · severity · safety)"
     )
     print(f"  {len(SCENARIOS)} scenarios × {RUNS_PER_SCENARIO} runs")
+    print(
+        f"  dataset: {DATASET.dataset_version}/{DATASET.split} "
+        f"sha256={DATASET.sha256[:12]}…"
+    )
+    print(f"  fault mode: {FAULT_MODE}")
     print(f"  oracle evidence: {ORACLE_RESULTS_PATH}")
     print("=" * 74)
 
     all_scores = []
     oracle_client = PrometheusOracleClient(
         PROMETHEUS_URL, bearer_token=PROMETHEUS_TOKEN
+    )
+    fault_adapter = (
+        MeridianAdminConfigAdapter(FAULT_SERVICE_URLS)
+        if FAULT_MODE == "automatic"
+        else None
     )
     async with httpx.AsyncClient(timeout=30) as client:
         jwt = await _login(client)
@@ -356,95 +423,15 @@ async def run() -> None:
             print(f"── {spec.name}")
             for k in range(1, RUNS_PER_SCENARIO + 1):
                 print(f"   run {k}/{RUNS_PER_SCENARIO}  ", end="", flush=True)
-                known = await _incident_ids(client, jwt)
-                tracker = RecoveryOracleTracker(
-                    spec.recovery_probe, datetime.now(timezone.utc)
-                )
-                await _observe_oracle(client, oracle_client, tracker, baseline=True)
-                started_at = datetime.now(timezone.utc)
-                tracker.begin(started_at)
-                try:
-                    await _fire_alert(client, spec, started_at)
-                    await _observe_oracle(client, oracle_client, tracker)
-                except Exception as e:
-                    result = tracker.result(
-                        scenario=spec.name,
-                        incident_id=None,
-                        application_status="stimulus_failed",
-                    )
-                    append_oracle_result(ORACLE_RESULTS_PATH, result)
-                    all_scores.append(
-                        score_run(
-                            spec,
-                            result.status,
-                            result.application_status,
-                            "",
-                            [],
-                        )
-                    )
-                    print(f"FAILED (stimulus: {e})")
-                    continue
-
-                incident = await _wait_new_incident(client, jwt, known)
-                if not incident:
-                    result = tracker.result(
-                        scenario=spec.name,
-                        incident_id=None,
-                        application_status="incident_not_created",
-                    )
-                    append_oracle_result(ORACLE_RESULTS_PATH, result)
-                    all_scores.append(
-                        score_run(
-                            spec,
-                            result.status,
-                            result.application_status,
-                            "",
-                            [],
-                        )
-                    )
-                    print("FAILED (no incident)")
-                    continue
-
-                latest_incident = await _wait_for_recovery(
-                    client, jwt, incident, oracle_client, tracker
-                )
-                transcript = await _fetch_transcript(client, jwt, incident["id"])
-                summary_text = (
-                    transcript.get("summary") or latest_incident.get("summary") or ""
-                )
-                events = transcript.get("events", [])
-                result = tracker.result(
-                    scenario=spec.name,
-                    incident_id=incident["id"],
-                    application_status=str(latest_incident.get("status") or "unknown"),
-                )
-                append_oracle_result(ORACLE_RESULTS_PATH, result)
-
-                score = score_run(
+                score, line = await _run_trial(
+                    client,
+                    jwt,
+                    oracle_client,
+                    fault_adapter,
                     spec,
-                    result.status,
-                    result.application_status,
-                    summary_text,
-                    events,
-                    mttr_seconds=result.mttr_seconds,
-                    incident_severity=latest_incident.get("severity", ""),
                 )
                 all_scores.append(score)
-                if score.resolved:
-                    print(
-                        f"MTTR={score.mttr_seconds:.0f}s "
-                        f"app={score.application_status} "
-                        f"rc={_mark(score.root_cause_hit)} "
-                        f"rem={_mark(score.remediation_hit)} "
-                        f"sev={_mark(score.severity_hit)} "
-                        f"safe={_mark(score.safety_ok)}"
-                    )
-                else:
-                    false_claim = " FALSE_RESOLVED" if score.false_resolved else ""
-                    print(
-                        f"{score.oracle_status} "
-                        f"(app={score.application_status}){false_claim}"
-                    )
+                print(line)
                 if k < RUNS_PER_SCENARIO:
                     await asyncio.sleep(COOLDOWN_SEC)
             print()
