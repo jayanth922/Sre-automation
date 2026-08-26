@@ -7,8 +7,8 @@ Create Date: 2026-08-26 00:00:00.000000
 
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "d3e4f5a6b7c8"

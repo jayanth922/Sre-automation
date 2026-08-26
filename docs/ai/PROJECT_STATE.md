@@ -94,11 +94,13 @@ Scratch Python environment:
 - Independent security review suite: 102 passed, 1 dependency-based skip.
 - P03: 12 WebSocket tests and dashboard type-check passed locally; GitHub CI
   passed backend, frontend, rendered Helm routing/RBAC, and image builds.
-- A01 focused provenance/model/auth/IDOR suite: 75 passed; Python compile and
-  migration-head checks passed. CI now runs live `alembic upgrade head`.
+- A01: full local suite 415 passed; focused suite 75 passed; new files pass
+  Ruff/Black, Python compile, migration-head, shell, and Compose checks.
 
 ## Known blockers or risks
 - No live MCP, T07 restart/resume, or cluster authorization test has run.
+- GitHub has not attached a CI event to PR #3; its live PostgreSQL migration
+  check remains pending despite the complete local suite passing.
 - A01 records configured model routes and trace correlation; reconciling actual
   per-call fallback, tokens, cost, and trace completeness remains A08.
 - Process-local job dispatch can still lose queued work before a worker starts;
