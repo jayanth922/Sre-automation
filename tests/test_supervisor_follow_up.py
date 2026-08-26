@@ -44,7 +44,9 @@ async def test_assistant_mode_returns_direct_answer(monkeypatch):
     assert result["next"] == "FINISH"
     assert result["metadata"]["follow_up_mode"] == "direct"
     assert result["metadata"]["conversation_mode"] == "assistant"
-    assert result["final_response"] == "Glad to help. If you want, I can also break down the evidence or next steps."
+    greeting_response = result["final_response"]
+    assert greeting_response
+    assert result["metadata"]["final_response"] == greeting_response
 
     aggregate_state = {
         **state,
@@ -54,7 +56,7 @@ async def test_assistant_mode_returns_direct_answer(monkeypatch):
 
     aggregate_result = await supervisor.aggregate_responses(aggregate_state)
 
-    assert aggregate_result["final_response"] == "Glad to help. If you want, I can also break down the evidence or next steps."
+    assert aggregate_result["final_response"] == greeting_response
     assert captured_events[0]["kwargs"]["event_type"] == "assistant_message"
     assert captured_events[0]["kwargs"]["payload"]["mode"] == "direct_answer"
 

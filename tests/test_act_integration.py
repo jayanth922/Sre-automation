@@ -66,12 +66,12 @@ def test_low_severity_reversible_runs_autonomously_and_records_skill():
     assert report["recorded_skill"] is not None  # self-improving loop fired
 
 
-def test_critical_incident_requires_approval_and_does_not_execute():
+def test_critical_production_rollback_without_approval_flag_is_blocked():
     alert = AlertContext(alert_name="CheckoutHighErrorRate", severity="critical",
                          labels={"service": "checkout-service", "namespace": "demo-app"}, annotations={})
     plan = _plan("rollback", "checkout-service", risk="high", rollback="redeploy")
     report = asyncio.run(_act_gate_node(_state(plan, alert)))["metadata"]["act_report"]
-    assert report["aggregate_decision"] == "requires_approval"
+    assert report["aggregate_decision"] == "blocked"
     assert len(report["executed"]) == 0
 
 

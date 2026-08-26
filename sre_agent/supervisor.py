@@ -269,6 +269,8 @@ def _question_demands_fresh_specialist_run(question: str) -> bool:
         "check now",
         "right now",
         "latest",
+        "recent",
+        "recently",
     )
     return any(marker in normalized for marker in fresh_markers)
 
