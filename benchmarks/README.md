@@ -58,6 +58,14 @@ Config via env: `BENCH_BASE_URL`, `BENCH_ADMIN_EMAIL`, `BENCH_ADMIN_PASSWORD`,
 `BENCH_FAULT_MODE`. Raw agent outputs and structured judgments are written to
 `BENCH_GRADER_RESULTS_PATH` (default `reports/sre-bench-grades.jsonl`).
 
+For paired A05 experiments, also set `BENCH_EXPERIMENT_ID`,
+`BENCH_CANDIDATE_ID`, `BENCH_CONFIG_FINGERPRINT`, and `BENCH_PAIR_SEED`.
+Providing only some of these fields fails startup. The runner deterministically
+randomizes the shared trial schedule and appends strict records to
+`BENCH_TRIAL_RESULTS_PATH` (default `reports/sre-bench-trials.jsonl`). Compare
+candidate runs with `statistical_eval.py`; see
+`benchmarks/evaluation/README.md`.
+
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped
 observations, application status for comparison, and the oracle MTTR.

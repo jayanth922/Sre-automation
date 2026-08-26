@@ -30,6 +30,7 @@ Config via env (falls back to the bench_mttr defaults):
 import asyncio
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -45,6 +46,12 @@ from recovery_oracle import (  # noqa: E402
 )
 from scenario_dataset import load_dataset  # noqa: E402
 from scoring import ScenarioSpec, aggregate, score_run  # noqa: E402
+from statistical_eval import (  # noqa: E402
+    append_trial,
+    build_trial_record,
+    build_trial_schedule,
+    make_pair_id,
+)
 from structured_grading import append_grader_record  # noqa: E402
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -62,6 +69,25 @@ ORACLE_RESULTS_PATH = Path(
 GRADER_RESULTS_PATH = Path(
     os.getenv("BENCH_GRADER_RESULTS_PATH", "reports/sre-bench-grades.jsonl")
 )
+TRIAL_RESULTS_PATH = Path(
+    os.getenv("BENCH_TRIAL_RESULTS_PATH", "reports/sre-bench-trials.jsonl")
+)
+EXPERIMENT_ID = os.getenv("BENCH_EXPERIMENT_ID", "").strip()
+CANDIDATE_ID = os.getenv("BENCH_CANDIDATE_ID", "").strip()
+CONFIG_FINGERPRINT = os.getenv("BENCH_CONFIG_FINGERPRINT", "").strip()
+PAIR_SEED = os.getenv("BENCH_PAIR_SEED", "").strip()
+STATISTICAL_CONFIG = {
+    "experiment_id": EXPERIMENT_ID,
+    "candidate_id": CANDIDATE_ID,
+    "config_fingerprint": CONFIG_FINGERPRINT,
+    "pair_seed": PAIR_SEED,
+}
+STATISTICAL_RECORDING = any(STATISTICAL_CONFIG.values())
+if STATISTICAL_RECORDING and not all(STATISTICAL_CONFIG.values()):
+    missing = sorted(key for key, value in STATISTICAL_CONFIG.items() if not value)
+    raise RuntimeError(
+        f"statistical recording requires all BENCH experiment fields; missing={missing}"
+    )
 DATASET_ROOT = Path(
     os.getenv(
         "BENCH_DATASET_ROOT",
@@ -317,6 +343,66 @@ def _record_grade(
     )
 
 
+def _failure_categories(score) -> tuple[str, ...]:
+    categories: set[str] = set()
+    if score.oracle_status == "INVALID_SCENARIO":
+        categories.add("invalid_scenario")
+    elif not score.resolved:
+        categories.add("unresolved")
+    if score.false_resolved:
+        categories.add("false_resolved")
+    if score.application_status in {"incident_not_created", "stimulus_failed"}:
+        categories.add("platform_failure")
+    if score.resolved and score.grader_status == "INCOMPLETE":
+        categories.add("structured_incomplete")
+    if score.resolved and score.grader_status == "FAIL":
+        categories.add("structured_failure")
+    if not score.safety_ok:
+        categories.add("safety_failure")
+    return tuple(sorted(categories))
+
+
+def _record_statistical_trial(
+    spec: ScenarioSpec,
+    score,
+    *,
+    trial_index: int,
+    latency_seconds: float,
+) -> None:
+    if not STATISTICAL_RECORDING:
+        return
+    pair_id = make_pair_id(
+        experiment_id=EXPERIMENT_ID,
+        dataset_sha256=DATASET.sha256,
+        scenario=spec.name,
+        scenario_version=spec.scenario_version,
+        trial_index=trial_index,
+        pair_seed=PAIR_SEED,
+    )
+    trial = build_trial_record(
+        experiment_id=EXPERIMENT_ID,
+        pair_id=pair_id,
+        candidate_id=CANDIDATE_ID,
+        config_fingerprint=CONFIG_FINGERPRINT,
+        scenario=spec.name,
+        scenario_version=spec.scenario_version,
+        dataset_sha256=DATASET.sha256,
+        risk_class=spec.risk_class,
+        oracle_status=score.oracle_status,
+        resolved=score.resolved,
+        false_resolved=score.false_resolved,
+        grader_status=score.grader_status,
+        safety_ok=score.safety_ok,
+        mttr_seconds=score.mttr_seconds,
+        latency_seconds=latency_seconds,
+        cost_usd=None,
+        failure_categories=list(_failure_categories(score)),
+        oracle_artifact=str(ORACLE_RESULTS_PATH),
+        grader_artifact=str(GRADER_RESULTS_PATH),
+    )
+    append_trial(TRIAL_RESULTS_PATH, trial)
+
+
 async def _run_trial(
     client: httpx.AsyncClient,
     jwt: str,
@@ -432,6 +518,11 @@ async def run() -> None:
     print(f"  fault mode: {FAULT_MODE}")
     print(f"  oracle evidence: {ORACLE_RESULTS_PATH}")
     print(f"  grader evidence: {GRADER_RESULTS_PATH}")
+    if STATISTICAL_RECORDING:
+        print(
+            f"  experiment: {EXPERIMENT_ID}/{CANDIDATE_ID} "
+            f"trials={TRIAL_RESULTS_PATH}"
+        )
     print("=" * 74)
 
     all_scores = []
@@ -447,22 +538,40 @@ async def run() -> None:
         jwt = await _login(client)
         print(f"  logged in as {ADMIN_EMAIL}\n")
 
-        for spec in SCENARIOS:
-            print(f"── {spec.name}")
-            for k in range(1, RUNS_PER_SCENARIO + 1):
-                print(f"   run {k}/{RUNS_PER_SCENARIO}  ", end="", flush=True)
-                score, line = await _run_trial(
-                    client,
-                    jwt,
-                    oracle_client,
-                    fault_adapter,
-                    spec,
-                )
-                all_scores.append(score)
-                print(line)
-                if k < RUNS_PER_SCENARIO:
-                    await asyncio.sleep(COOLDOWN_SEC)
-            print()
+        by_name = {spec.name: spec for spec in SCENARIOS}
+        schedule = build_trial_schedule(
+            list(by_name),
+            runs_per_scenario=RUNS_PER_SCENARIO,
+            pair_seed=PAIR_SEED or "not-recorded",
+            dataset_sha256=DATASET.sha256,
+            randomize=STATISTICAL_RECORDING,
+        )
+        for position, (scenario_name, trial_index) in enumerate(schedule, 1):
+            spec = by_name[scenario_name]
+            print(
+                f"── {spec.name} run {trial_index}/{RUNS_PER_SCENARIO}  ",
+                end="",
+                flush=True,
+            )
+            trial_started = time.perf_counter()
+            score, line = await _run_trial(
+                client,
+                jwt,
+                oracle_client,
+                fault_adapter,
+                spec,
+            )
+            _record_statistical_trial(
+                spec,
+                score,
+                trial_index=trial_index,
+                latency_seconds=time.perf_counter() - trial_started,
+            )
+            all_scores.append(score)
+            print(line)
+            if position < len(schedule):
+                await asyncio.sleep(COOLDOWN_SEC)
+        print()
 
     _report(all_scores)
 
