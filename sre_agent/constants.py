@@ -324,6 +324,7 @@ class SREConstants:
 
         return {
             "model_id": kwargs.get("model_id", cls.model.groq_model_id),
+            "api_key": kwargs.get("api_key"),
             "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
             "temperature": kwargs.get("temperature", cls.model.default_temperature),
         }

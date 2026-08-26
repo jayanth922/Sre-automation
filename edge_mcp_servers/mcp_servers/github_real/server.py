@@ -460,4 +460,5 @@ async def get_repository_file(path: str, max_chars: int = 20000) -> str:
 
 if __name__ == "__main__":
     logger.info("Starting FastMCP server execution...")
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

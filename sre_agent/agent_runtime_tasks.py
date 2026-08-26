@@ -26,7 +26,7 @@ async def run_graph_background_saas(
     SaaS-aware background execution.
     Writes logs/results to the Postgres Database instead of just Redis.
     """
-    from .agent_runtime import agent_graph, tools, initialize_agent
+    from .agent_runtime import initialize_agent
     session_id = str(incident_id)
     state_store = get_state_store()
     
@@ -57,8 +57,8 @@ async def run_graph_background_saas(
         await db.commit()
 
     try:
-        # Ensure Agent System is initialized
-        await initialize_agent()
+        runtime = await initialize_agent(cluster_id)
+        agent_graph, tools = runtime.graph, runtime.tools
         
         from langchain_core.messages import HumanMessage
 
@@ -86,6 +86,7 @@ async def run_graph_background_saas(
                 "llm_provider": llm_provider,
                 "llm_overrides": llm_ctx,
                 "cluster_namespace": resolve_namespace(cluster_obj),
+                "cluster_environment": runtime.context.environment,
                 "tools": tools,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),

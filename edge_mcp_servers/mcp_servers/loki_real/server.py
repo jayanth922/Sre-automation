@@ -261,4 +261,5 @@ def analyze_log_patterns(
 
 if __name__ == "__main__":
     logger.info(f"Starting Loki MCP Server on {host}:{port}")
-    mcp.run(transport="sse")
+    from mcp_auth import run_authenticated_sse
+    run_authenticated_sse(mcp, host=host, port=port)

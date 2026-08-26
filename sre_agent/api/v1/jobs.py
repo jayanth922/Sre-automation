@@ -30,6 +30,7 @@ async def get_cluster_by_token(
 router = APIRouter(
     prefix="/clusters",
     tags=["jobs"],
+    dependencies=[Depends(get_current_user_and_org)],
 )
 
 

@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func
-from backend import models, schemas, auth
+from backend import auth, crypto, models, schemas
 import uuid
 
 async def get_user_by_email(db: AsyncSession, email: str):
@@ -30,28 +30,28 @@ async def get_org_by_id(db: AsyncSession, org_id: uuid.UUID):
     return result.scalars().first()
 
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
-    # Check if org already exists — reuse if found, otherwise create new
-    db_org = await get_org_by_name(db, user.org_name)
-    if not db_org:
-        org_data = schemas.OrgCreate(name=user.org_name)
-        db_org = await create_org(db, org_data)
+    """Register a founding admin in a new organization.
 
-    # Check for duplicate email
+    Registration never joins an organization by a caller-supplied name. Joining
+    an existing organization is exclusively handled by invitation acceptance.
+    """
     existing = await get_user_by_email(db, user.email)
     if existing:
         raise ValueError(f"User with email {user.email} already exists")
 
+    db_org = models.Organization(
+        name=user.org_name,
+        api_key=f"org_{uuid.uuid4().hex}",
+    )
+    db.add(db_org)
+    await db.flush()
+
     hashed_password = auth.get_password_hash(user.password)
-
-    # First user in org becomes ADMIN, subsequent users are MEMBER
-    result = await db.execute(select(models.User).filter(models.User.org_id == db_org.id).limit(1))
-    is_first_user = result.scalars().first() is None
-
     db_user = models.User(
         email=user.email,
         hashed_password=hashed_password,
         full_name=user.full_name,
-        role=models.UserRole.ADMIN if is_first_user else models.UserRole.MEMBER,
+        role=models.UserRole.ADMIN,
         org_id=db_org.id
     )
     db.add(db_user)
@@ -117,6 +117,9 @@ async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_i
         name=cluster.name,
         org_id=org_id,
         token=cluster_token,
+        token_hash=crypto.credential_lookup_hash(cluster_token),
+        key_version=crypto.current_key_version(),
+        execution_context_version=1,
         status=models.ClusterStatus.ONLINE,
         prometheus_url=cluster.prometheus_url,
         loki_url=cluster.loki_url,
@@ -146,7 +149,23 @@ async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.U
     if not cluster or cluster.org_id != org_id:
         return None
     data = update.model_dump(exclude_unset=True)
-    for field in ("name", "prometheus_url", "loki_url", "k8s_api_server", "github_token", "github_repo", "notion_api_key", "notion_database_id"):
+    credential_fields = {
+        "k8s_token",
+        "github_token",
+        "notion_api_key",
+        "llm_api_key",
+    }
+    for field in (
+        "name",
+        "prometheus_url",
+        "loki_url",
+        "k8s_api_server",
+        "k8s_token",
+        "github_token",
+        "github_repo",
+        "notion_api_key",
+        "notion_database_id",
+    ):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
     # Scope + LLM override: an explicitly-sent empty string clears the field
@@ -154,6 +173,19 @@ async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.U
     for field in ("namespace", "llm_provider", "llm_model", "llm_base_url", "llm_api_key"):
         if field in data:
             setattr(cluster, field, data[field] or None)
+    context_fields = credential_fields | {
+        "prometheus_url",
+        "loki_url",
+        "k8s_api_server",
+        "namespace",
+        "llm_provider",
+        "llm_model",
+        "llm_base_url",
+    }
+    if credential_fields.intersection(data):
+        cluster.key_version = crypto.current_key_version()
+    if context_fields.intersection(data):
+        cluster.execution_context_version = (cluster.execution_context_version or 0) + 1
     if "metrics_config" in data:
         cluster.metrics_config = _json.dumps(data["metrics_config"]) if data["metrics_config"] else None
     await db.commit()
@@ -161,7 +193,10 @@ async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.U
     return cluster
 
 async def get_cluster_by_token(db: AsyncSession, token: str):
-    result = await db.execute(select(models.Cluster).filter(models.Cluster.token == token))
+    token_hash = crypto.credential_lookup_hash(token)
+    result = await db.execute(
+        select(models.Cluster).filter(models.Cluster.token_hash == token_hash)
+    )
     return result.scalars().first()
 
 async def get_cluster_by_id(db: AsyncSession, cluster_id: uuid.UUID):

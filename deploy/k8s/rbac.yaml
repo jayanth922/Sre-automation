@@ -31,13 +31,17 @@ rules:
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: sentinel-actuator
+  namespace: meridian
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "nodes", "events", "namespaces"]
+    resources: ["pods"]
     verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "services", "events"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch", "update", "patch"]
@@ -59,12 +63,13 @@ subjects:
     namespace: sentinel
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: sentinel-actuator
+  namespace: meridian
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: sentinel-actuator
 subjects:
   - kind: ServiceAccount

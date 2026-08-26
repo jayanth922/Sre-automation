@@ -103,6 +103,7 @@ def _create_groq_llm(config: Dict[str, Any]):
     """Create Groq LLM instance."""
     return ChatGroq(
         model=config["model_id"],
+        api_key=config.get("api_key"),
         temperature=config["temperature"],
         max_tokens=config["max_tokens"],
     )

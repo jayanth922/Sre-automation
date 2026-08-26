@@ -17,6 +17,12 @@ from .agent_state import AgentState
 from .constants import SREConstants
 from .graph_builder import build_multi_agent_graph
 from .logging_config import configure_logging, should_show_debug_traces
+from .execution_context import (
+    ExecutionContext,
+    is_production_runtime,
+    require_execution_context,
+    require_operator_mcp_endpoint,
+)
 
 # Configure logging if not already configured (e.g., when imported by agent_runtime)
 if not logging.getLogger().handlers:
@@ -66,26 +72,44 @@ def get_current_time() -> str:
     return datetime.now().isoformat()
 
 
-def _get_mcp_server_uris() -> dict[str, str]:
-    """Read MCP server URIs from environment variables."""
-    # Load environment variables
-    load_dotenv(Path(__file__).parent / ".env")
-    
-    mcp_uris = {
-        "k8s": os.getenv("MCP_K8S_URI"),
-        "logs": os.getenv("MCP_LOGS_URI"),
-        "metrics": os.getenv("MCP_METRICS_URI"),
-        "runbooks": os.getenv("MCP_RUNBOOKS_URI"),
-        "github": os.getenv("MCP_GITHUB_URI"),
-    }
-    
-    # Filter out None values
-    mcp_uris = {k: v for k, v in mcp_uris.items() if v}
-    logger.info(f"Configured default MCP servers: {list(mcp_uris.keys())}")
-    return mcp_uris
+def build_mcp_server_config(
+    context: ExecutionContext,
+    *,
+    service_token: Optional[str] = None,
+) -> dict[str, dict[str, Any]]:
+    """Build a tenant-bound MCP config with mandatory bearer auth."""
+    server_config: dict[str, dict[str, Any]] = {}
+    for name, uri in context.mcp_endpoints.items():
+        if uri.startswith("stdio://"):
+            if is_production_runtime():
+                raise RuntimeError("STDIO MCP endpoints are disabled in production")
+            parts = uri.removeprefix("stdio://").split(":", 1)
+            if len(parts) != 2:
+                raise ValueError(f"Invalid stdio MCP endpoint for {name}")
+            server_config[name] = {
+                "command": parts[0],
+                "args": [parts[1]],
+                "transport": "stdio",
+            }
+            continue
+        uri = require_operator_mcp_endpoint(name, uri)
+        server_config[name] = {
+            "url": uri,
+            "transport": "sse",
+            "headers": dict(context.transport_headers(service_token)),
+        }
+    if not server_config:
+        raise ValueError(
+            f"Cluster {context.cluster_id} has no tenant-bound MCP endpoints"
+        )
+    return server_config
 
 
-def create_mcp_client() -> MultiServerMCPClient:
+def create_mcp_client(
+    context: Optional[ExecutionContext] = None,
+    *,
+    service_token: Optional[str] = None,
+) -> MultiServerMCPClient:
     """
     Create and return MultiServerMCPClient with appropriate transport for each domain.
     
@@ -93,69 +117,24 @@ def create_mcp_client() -> MultiServerMCPClient:
     - HTTP/SSE transport: For native FastMCP servers running in Docker/K8s
     - STDIO transport: For local development (if URI starts with "stdio://")
     """
-    mcp_uris = _get_mcp_server_uris()
-    
-    # Configure MCP server connections (one per domain)
-    server_config = {}
-    for name, uri in mcp_uris.items():
-        # Check if URI indicates stdio transport
-        if uri.startswith("stdio://"):
-            # STDIO transport for local development
-            # Format: stdio://python:path/to/server.py
-            parts = uri.replace("stdio://", "").split(":", 1)
-            if len(parts) == 2:
-                command = parts[0]  # e.g., "python"
-                script_path = parts[1]  # e.g., "mcp_servers/loki_real/server.py"
-                server_config[name] = {
-                    "command": command,
-                    "args": [script_path],
-                    "transport": "stdio",
-                }
-            else:
-                logger.warning(f"Invalid stdio URI format for {name}: {uri}, using HTTP")
-                server_config[name] = {
-                    "url": uri,
-                    "transport": "streamable_http",
-                }
-        else:
-            # HTTP/SSE transport for native FastMCP servers
-            server_config[name] = {
-                "url": uri,
-                "transport": "sse",
-                # No authentication required for in-cluster communication
-            }
-    
-    # Client-supplied MCP servers (bring-your-own tools). The client orchestrates
-    # whatever tool servers they run; we just connect to them. JSON object:
-    #   {"name": {"url": "https://...", "transport": "sse"|"streamable_http"|"stdio", "headers": {...}}}
-    # A bare string value is treated as an SSE URL.
-    import json as _json
+    execution_context = require_execution_context(context)
+    return MultiServerMCPClient(
+        build_mcp_server_config(execution_context, service_token=service_token)
+    )
 
-    extra_raw = os.getenv("MCP_SERVERS_JSON") or os.getenv("MCP_EXTRA_SERVERS")
-    if extra_raw:
-        try:
-            extra = _json.loads(extra_raw)
-            if isinstance(extra, dict):
-                for name, spec in extra.items():
-                    if isinstance(spec, str):
-                        server_config[name] = {"url": spec, "transport": "sse"}
-                    elif isinstance(spec, dict) and (spec.get("url") or spec.get("command")):
-                        spec.setdefault("transport", "sse")
-                        server_config[name] = spec
-                logger.info(f"Added client-supplied MCP servers: {list(extra.keys())}")
-            else:
-                logger.warning("MCP_SERVERS_JSON is not a JSON object; ignoring.")
-        except Exception as e:
-            logger.warning(f"Ignoring invalid MCP_SERVERS_JSON: {e}")
 
-    if not server_config:
-        raise ValueError(
-            "No MCP servers configured. Set the MCP_*_URI defaults and/or "
-            "MCP_SERVERS_JSON with your own tool servers."
-        )
-
-    client = MultiServerMCPClient(server_config)
-    return client
+async def close_mcp_client(client: Any) -> None:
+    """Best-effort teardown across MCP adapter versions."""
+    if client is None:
+        return
+    for method_name in ("aclose", "close"):
+        method = getattr(client, method_name, None)
+        if method is None:
+            continue
+        result = method()
+        if asyncio.iscoroutine(result):
+            await result
+        return
 
 
 async def create_multi_agent_system(
@@ -163,9 +142,16 @@ async def create_multi_agent_system(
     checkpointer=None,
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
+    execution_context: Optional[ExecutionContext] = None,
+    return_client: bool = False,
     **llm_kwargs,
 ):
     """Create multi-agent system with MCP tools."""
+    context = require_execution_context(execution_context)
+    provider = context.llm_provider or provider
+    context_llm_kwargs = context.llm_kwargs()
+    context_llm_kwargs.update(llm_kwargs)
+    llm_kwargs = context_llm_kwargs
     logger.info(f"Creating multi-agent system with provider: {provider}")
 
     if provider not in ["groq", "anthropic", "openai_compatible"]:
@@ -176,9 +162,10 @@ async def create_multi_agent_system(
     max_retries = 3
     retry_count = 0
 
+    client = None
     while retry_count < max_retries:
         try:
-            client = create_mcp_client()
+            client = create_mcp_client(context)
             
             # Use get_tools() but handle potential ExceptionGroups from failing servers
             try:
@@ -192,6 +179,8 @@ async def create_multi_agent_system(
                 logger.warning(f"MCP tool loading encountered issues: {e}")
                 # Some versions of the client might still return partial tools or we might need to retry
                 if retry_count < max_retries - 1:
+                    await close_mcp_client(client)
+                    client = None
                     raise e # Trigger retry
                 all_mcp_tools = [] # Fallback to empty on last retry
                 # may need the client to remain connected to be invoked.
@@ -220,10 +209,14 @@ async def create_multi_agent_system(
 
         except asyncio.TimeoutError:
             logger.warning("MCP tool loading timed out after 30 seconds")
+            await close_mcp_client(client)
+            client = None
             mcp_tools = []
             break  # Don't retry on timeout
 
         except Exception as e:
+            await close_mcp_client(client)
+            client = None
             retry_count += 1
             error_msg = str(e)
 
@@ -290,20 +283,19 @@ async def create_multi_agent_system(
     # None unless CHECKPOINTER_ENABLED=true, so the default path is unchanged.
     if checkpointer is None:
         from .checkpointer import get_checkpointer
-        checkpointer = get_checkpointer()
+        checkpointer = await get_checkpointer()
 
     # Build the multi-agent graph
     graph = build_multi_agent_graph(
         tools=all_tools,
         llm_provider=provider,
         checkpointer=checkpointer, # Pass checkpointer for persistence
+        execution_context=context,
         export_graph=export_graph,
         graph_output_path=graph_output_path,
         **llm_kwargs,
     )
 
+    if return_client:
+        return graph, all_tools, client
     return graph, all_tools
-
-
-
-

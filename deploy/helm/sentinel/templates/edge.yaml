@@ -31,6 +31,8 @@ spec:
           env:
             - { name: HOST, value: "0.0.0.0" }
             - { name: HTTP_PORT, value: "3000" }
+            - name: MCP_SERVICE_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ include "sentinel.secretName" $root }}, key: MCP_SERVICE_TOKEN } }
             {{- range .env }}
             - { name: {{ .name }}, value: {{ .value | quote }} }
             {{- end }}

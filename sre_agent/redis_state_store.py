@@ -295,6 +295,28 @@ class RedisStateStore:
             logger.error(f"❌ Error checking lock for {cluster_id}: {e}")
             return False
 
+    def set_idempotency(self, key: str, ttl: int) -> bool:
+        """Atomically claim a mutation key for ``ttl`` seconds.
+
+        Redis ``SET ... NX EX`` is deliberately used as one operation: separate
+        existence and write calls would leave a race in the live-mutation path.
+        ``False`` means either the key was already claimed or Redis was not
+        available; callers that authorize writes must fail closed in both cases.
+        """
+        if not key or ttl <= 0 or not self.is_available():
+            return False
+        try:
+            claimed = self.redis_client.set(
+                f"sre_agent:idempotency:{key}",
+                "CLAIMED",
+                nx=True,
+                ex=ttl,
+            )
+            return bool(claimed)
+        except Exception as e:
+            logger.error(f"❌ Error claiming idempotency key {key}: {e}")
+            return False
+
 
 # Global instance (initialized on import)
 _state_store: Optional[RedisStateStore] = None

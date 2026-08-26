@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from backend.models import UserRole, ClusterStatus, IncidentSeverity, IncidentStatus
 
@@ -83,6 +83,34 @@ class MemberRoleUpdate(BaseModel):
 class MemberStatusUpdate(BaseModel):
     is_active: bool
 
+
+# ----------------------------------------------------------------------
+# Organization invitations
+# ----------------------------------------------------------------------
+
+class InvitationCreate(BaseModel):
+    email: EmailStr
+    role: UserRole = UserRole.MEMBER
+    expires_in_hours: int = Field(default=72, ge=1, le=720)
+
+
+class InvitationCreateResponse(BaseModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    email: EmailStr
+    role: UserRole
+    expires_at: datetime
+    token: str
+
+
+class InvitationAccept(BaseModel):
+    token: str = Field(min_length=32)
+    password: str = Field(min_length=8)
+    full_name: Optional[str] = None
+    # Accepted for compatibility, but deliberately ignored. Organization and
+    # role always come from the server-side invitation record.
+    role: Optional[UserRole] = None
+
 # ----------------------------------------------------------------------
 # Organization Schemas
 # ----------------------------------------------------------------------
@@ -128,6 +156,7 @@ class ClusterUpdate(BaseModel):
     prometheus_url: Optional[str] = None
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
+    k8s_token: Optional[str] = None
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
     notion_api_key: Optional[str] = None
@@ -210,6 +239,11 @@ class IncidentTranscriptResponse(BaseModel):
 
 class IncidentMessageRequest(BaseModel):
     message: str
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approval_request_id: uuid.UUID
+    action_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
 # ----------------------------------------------------------------------
 # SLO Schemas

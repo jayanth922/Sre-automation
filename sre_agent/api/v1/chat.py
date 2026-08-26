@@ -9,8 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import database, models
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
+from sre_agent.api.v1.ownership import get_owned_cluster
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(
+    prefix="/chat",
+    tags=["chat"],
+    dependencies=[Depends(get_current_user_and_org)],
+)
 
 
 class ChatRequest(BaseModel):
@@ -25,15 +30,11 @@ class ChatResponse(BaseModel):
 
 async def _run_chat(message: str, session_id: str, cluster_id: str | None, user_id: str) -> str:
     """Run the agent graph with a free-form message, return the final response."""
-    from sre_agent.agent_runtime import agent_graph, initialize_agent
+    from sre_agent.agent_runtime import initialize_agent
     from langchain_core.messages import HumanMessage
 
-    if agent_graph is None:
-        await initialize_agent()
-
-    graph = agent_graph
-    if graph is None:
-        return "Agent is still initializing. Please try again in a moment."
+    runtime = await initialize_agent(cluster_id)
+    graph = runtime.graph
 
     config = {"configurable": {"thread_id": session_id}}
 
@@ -72,13 +73,20 @@ async def general_chat(
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if not payload.cluster_id:
+        raise HTTPException(status_code=400, detail="cluster_id is required")
+    try:
+        cluster_id = uuid.UUID(payload.cluster_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid cluster_id") from exc
+    await get_owned_cluster(cluster_id, user, db)
 
     session_id = f"chat-{user.id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
     reply = await _run_chat(
         message=message,
         session_id=session_id,
-        cluster_id=payload.cluster_id,
+        cluster_id=str(cluster_id),
         user_id=str(user.id),
     )
 

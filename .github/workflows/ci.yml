@@ -58,6 +58,15 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
+  manifests:
+    name: Manifests (RBAC scope)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Verify namespace-scoped RBAC defaults
+        run: bash scripts/check_helm_rbac.sh
+
   images:
     name: Images build
     runs-on: ubuntu-latest

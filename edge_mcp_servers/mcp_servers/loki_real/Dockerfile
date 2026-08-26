@@ -6,10 +6,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY mcp_servers/loki_real/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py .
+COPY mcp_servers/loki_real/server.py .
+COPY mcp_auth.py .
 
 EXPOSE 3000
 

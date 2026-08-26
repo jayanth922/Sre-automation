@@ -38,7 +38,7 @@ async def _get_cluster_from_token(
     token = authorization.split(" ", 1)[1]
     cluster = await crud.get_cluster_by_token(db, token)
     if not cluster:
-        logger.warning(f"Webhook rejected: Invalid cluster token provided (ends in ...{token[-4:]})")
+        logger.warning("Webhook rejected: Invalid cluster token provided")
         raise HTTPException(status_code=403, detail="Invalid cluster token")
     return cluster
 

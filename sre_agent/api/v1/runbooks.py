@@ -17,7 +17,11 @@ from backend import crud, database, models
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/clusters", tags=["runbooks"])
+router = APIRouter(
+    prefix="/clusters",
+    tags=["runbooks"],
+    dependencies=[Depends(get_current_user_and_org)],
+)
 
 _CANDIDATE_DIRS = [
     os.getenv("RUNBOOKS_DIR", ""),

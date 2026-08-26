@@ -35,6 +35,12 @@ secrets:
   # Used only when create=true. Prefer --set / a sealed secret / external-secrets.
   secretKey: "change-me-to-a-long-random-string"
   postgresPassword: "change-me-postgres-password"
+  # URL-safe base64 encoding of exactly 32 random bytes. Historical versions
+  # stay in credentialEncryptionKeysJson while rows are rotated.
+  credentialEncryptionKey: ""
+  credentialEncryptionKeysJson: ""
+  # Shared bearer credential used only between the API and MCP services.
+  mcpServiceToken: ""
   # Model provider keys (fill the one you use; blank is fine for keyless on-site LLMs)
   llmApiKey: ""
   anthropicApiKey: ""
@@ -104,8 +110,14 @@ auth:
   # carries the Secure flag.
   cookieSecure: "false"
 
+credentialEncryption:
+  keyVersion: "1"
+
 # ── Remediation + feature flags ────────────────────────────────────────────
 features:
+  # Trusted policy environment: production | staging | development | testing.
+  # Unknown values fail closed to production.
+  clusterEnvironment: "production"
   # Reasoning + dry-run proposal always runs. This only authorizes autonomous
   # EXECUTION of gate-approved reversible actions on the live cluster. Read-only
   # by default; high severities always require human approval.
@@ -115,10 +127,11 @@ features:
   executorAllowedNamespaces: "meridian"
   executorMinReplicas: "1"
   # Durability on by default (enables human-approval resume + interrupted-run
-  # continuation). "memory" = in-process; "redis" = cross-crash (needs the
-  # langgraph-checkpoint-redis package).
+  # continuation). PostgreSQL survives API restarts and uses the same database
+  # configured for the control plane.
   checkpointerEnabled: "true"
-  checkpointerBackend: "memory"
+  checkpointerBackend: "postgres"
+  approvalTtlMinutes: "30"
   liveBusBackend: "memory"
   debug: "false"
 
@@ -171,7 +184,16 @@ qdrant:
 
 # ── RBAC for the agent's k8s tools ────────────────────────────────────────────
 rbac:
-  create: true                 # ServiceAccounts + ClusterRoles for observe/actuate
+  create: true
+  # Default: both tool identities are restricted to one workload namespace.
+  namespaced:
+    enabled: true
+    # Existing workload namespace that the observer/executor may access.
+    # Keep aligned with features.executorAllowedNamespaces.
+    namespace: "meridian"
+  # Explicit opt-in for observing/mutating resources across all namespaces.
+  clusterWide:
+    enabled: false
 
 # ── Ingress (optional) ────────────────────────────────────────────────────────
 ingress:

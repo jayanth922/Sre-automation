@@ -1,9 +1,11 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 import os
 import httpx
 from typing import Dict, Any
 
-router = APIRouter(tags=["metrics"])
+from sre_agent.api.v1.auth_deps import get_current_user_and_org
+
+router = APIRouter(tags=["metrics"], dependencies=[Depends(get_current_user_and_org)])
 
 @router.get("/snapshot")
 async def get_metrics_snapshot():

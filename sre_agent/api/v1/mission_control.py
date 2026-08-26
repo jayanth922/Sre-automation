@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -8,20 +9,28 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.exc import ProgrammingError
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from backend import crud, database, models, schemas
-from backend.rbac import require_admin
-from sre_agent.api.v1.auth_deps import get_current_user_and_org
+from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
+from sre_agent.api.v1.ownership import get_owned_incident
+from sre_agent.approval_flow import (
+    ApprovalValidationError,
+    compute_action_hash,
+    current_approval_interrupt,
+    validate_pending_approval,
+)
+from sre_agent.checkpointer import durable_checkpointer_configured, thread_config
 from sre_agent.models import AgentAuditLog
 # agent_graph will be imported lazily to avoid circular dependency
 
 router = APIRouter(
     prefix="/incidents",
     tags=["mission_control"],
+    dependencies=[Depends(get_current_user_and_org)],
 )
 
 # Dependency to get the graph (to be implemented/refactored if needed)
@@ -29,11 +38,13 @@ router = APIRouter(
 # A better way is to move the global `agent_graph` to a separate module 'sre_agent.globals'
 # But let's try to access it via a helper or assume it's available.
 
-def get_agent_graph():
-    from sre_agent.agent_runtime import agent_graph
-    if agent_graph is None:
-        raise HTTPException(status_code=503, detail="Agent system not initialized")
-    return agent_graph
+async def get_agent_graph(cluster_id: uuid.UUID | str):
+    from sre_agent.agent_runtime import get_agent_runtime
+
+    try:
+        return (await get_agent_runtime(cluster_id)).graph
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Agent system unavailable") from exc
 
 
 _INVESTIGATION_KEYWORDS = (
@@ -191,8 +202,9 @@ async def _run_post_summary_follow_up(
     incident_id: uuid.UUID,
     message: str,
     user: models.User,
+    cluster_id: uuid.UUID,
 ) -> None:
-    graph = get_agent_graph()
+    graph = await get_agent_graph(cluster_id)
     config = {"configurable": {"thread_id": str(incident_id)}}
     try:
         current_state = await graph.aget_state(config)
@@ -278,19 +290,11 @@ async def get_incident_transcript(
     incident_id: str,
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
 ):
     """Get the canonical incident transcript timeline."""
     incident_uuid = uuid.UUID(incident_id)
-    incident = await db.execute(
-        select(models.Incident).filter(models.Incident.id == incident_uuid)
-    )
-    incident_obj = incident.scalars().first()
-    if not incident_obj:
-        raise HTTPException(status_code=404, detail="Incident not found")
-
-    cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
-    if not cluster or cluster.org_id != user.org_id:
-        raise HTTPException(status_code=404, detail="Incident not found")
+    incident_obj = owned_incident
 
     events = await crud.get_incident_timeline_events(db, incident_uuid)
     conversation_mode = (
@@ -311,6 +315,7 @@ async def get_incident_audit_logs(
     incident_id: str,
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
 ):
     """
     Get audit logs for a specific incident.
@@ -403,6 +408,7 @@ async def send_incident_message(
     payload: schemas.IncidentMessageRequest,
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
 ):
     """
     Post a follow-up message for an incident and queue a new investigation turn.
@@ -412,15 +418,14 @@ async def send_incident_message(
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     incident_uuid = uuid.UUID(incident_id)
-    incident = await db.execute(
-        select(models.Incident).filter(models.Incident.id == incident_uuid)
-    )
-    incident_obj = incident.scalars().first()
-    if not incident_obj:
-        raise HTTPException(status_code=404, detail="Incident not found")
+    incident_obj = owned_incident
+    # Direct unit calls do not resolve FastAPI dependencies. Keep those calls
+    # on the same centralized authorization path instead of duplicating a load.
+    if not hasattr(incident_obj, "id"):
+        incident_obj = await get_owned_incident(incident_uuid, user, db)
 
     cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
-    if not cluster or cluster.org_id != user.org_id:
+    if not cluster:
         raise HTTPException(status_code=404, detail="Incident not found")
 
     if _incident_is_closed_for_follow_up(incident_obj):
@@ -441,7 +446,14 @@ async def send_incident_message(
             f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
         )
 
-        asyncio.create_task(_run_post_summary_follow_up(incident_uuid, message, user))
+        asyncio.create_task(
+            _run_post_summary_follow_up(
+                incident_uuid,
+                message,
+                user,
+                incident_obj.cluster_id,
+            )
+        )
 
         return {
             "status": "FOLLOW_UP_QUEUED",
@@ -614,11 +626,13 @@ async def send_incident_message(
 async def get_incident_status(
     incident_id: str,
     user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
 ):
     """
     Get the current status of the LangGraph execution for this incident.
     """
-    graph = get_agent_graph()
+    graph = await get_agent_graph(owned_incident.cluster_id)
     config = {"configurable": {"thread_id": incident_id}}
 
     try:
@@ -629,20 +643,14 @@ async def get_incident_status(
 
         next_ops = current_state.next
 
-        # Check if we are waiting for input (interrupted)
-        is_paused = False
-        if next_ops:
-            # If next step is 'execute_action' and we have tasks, it might be paused via interrupt_before
-            # LangGraph StateSnapshot has 'tasks' which are pending
-            if current_state.tasks:
-                first_task = current_state.tasks[0]
-                if first_task.interrupts:
-                    is_paused = True
+        interrupt_payload = current_approval_interrupt(current_state)
+        is_paused = interrupt_payload is not None
 
         return {
             "status": "WAITING_APPROVAL" if is_paused else "RUNNING",
             "next": next_ops,
             "values": current_state.values,
+            "approval": interrupt_payload,
             "created_at": current_state.created_at
         }
     except Exception as e:
@@ -654,6 +662,8 @@ async def get_incident_status(
 async def get_incident_agent_metrics(
     incident_id: str,
     user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
 ):
     """Per-incident agent run telemetry — node timings, step count, total agent
     wall-time, provider fallbacks, and errors — from the in-process recorder.
@@ -666,37 +676,143 @@ async def get_incident_agent_metrics(
 @router.post("/{incident_id}/approve")
 async def approve_incident_action(
     incident_id: str,
+    approval: schemas.ApprovalDecisionRequest,
     user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
 ):
-    """
-    Resume execution with approval. Admin only.
-    """
-    require_admin(user)
-    graph = get_agent_graph()
-    config = {"configurable": {"thread_id": incident_id}}
+    """Atomically authorize and synchronously resume one exact graph action."""
+    await require_admin(user)
+    if not durable_checkpointer_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="A durable checkpointer is required for approvals",
+        )
+
+    result = await db.execute(
+        select(models.ApprovalRequest).where(
+            models.ApprovalRequest.id == approval.approval_request_id,
+            models.ApprovalRequest.incident_id == owned_incident.id,
+            models.ApprovalRequest.organization_id == user.org_id,
+            models.ApprovalRequest.cluster_id == owned_incident.cluster_id,
+        )
+    )
+    pending = result.scalar_one_or_none()
+    if pending is None:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    now = datetime.now(timezone.utc)
+    try:
+        validate_pending_approval(
+            status=pending.status,
+            stored_action_hash=pending.action_hash,
+            submitted_action_hash=approval.action_hash,
+            expires_at=pending.expires_at,
+            now=now,
+        )
+    except ApprovalValidationError as exc:
+        if exc.reason == "not_pending":
+            raise HTTPException(
+                status_code=409, detail="Approval request is no longer pending"
+            ) from exc
+        if exc.reason == "hash_mismatch":
+            raise HTTPException(status_code=400, detail="Action hash does not match") from exc
+        await db.execute(
+            update(models.ApprovalRequest)
+            .where(
+                models.ApprovalRequest.id == pending.id,
+                models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+            )
+            .values(status=models.ApprovalStatus.EXPIRED, decided_at=now)
+        )
+        await db.commit()
+        raise HTTPException(status_code=410, detail="Approval request expired") from exc
+
+    graph = await get_agent_graph(owned_incident.cluster_id)
+    config = thread_config(pending.thread_id)
+    configurable = (config or {}).get("configurable", {})
+    if configurable.get("thread_id") != pending.thread_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Durable checkpointing is required for approvals",
+        )
 
     try:
-        # Resume the graph
-        # output = await graph.ainvoke(Command(resume="APPROVE"), config)
-        # Actually, for resuming from interrupt, we update state or just invoke with Command
+        snapshot = await graph.aget_state(config)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail="Pending graph interrupt unavailable") from exc
 
-        # NOTE: If we are just resuming, we can use None or a specific value expected by the graph
-        # If using interrupt_before, we typically just run it again?
-        # No, we need to invoke. Providing Command(resume="APPROVE") is correct if we used interrupt(payload)
-        # If we used interrupt_before=["node"], we just need to continue.
-        # But usually 'interrupt_before' stops *before* the node. To run it, we just invoke(None, config)?
-        # Or invoke(Command(resume=...), ...) if we want to change behavior?
-
-        # Let's assume we used a simple interrupt_before logic.
-        # But if the user request says: "Resume execution using graph.invoke(Command(resume='APPROVE'), config)"
-        # I will follow that instruction.
-
-        background_task_run = asyncio.create_task(
-            graph.ainvoke(Command(resume="APPROVE"), config)
+    interrupt_payload = current_approval_interrupt(snapshot)
+    if not interrupt_payload:
+        raise HTTPException(status_code=409, detail="No approval interrupt is pending")
+    interrupt_report = interrupt_payload.get("report")
+    if not isinstance(interrupt_report, dict):
+        raise HTTPException(status_code=409, detail="Approval interrupt is invalid")
+    current_hash = compute_action_hash(interrupt_report)
+    if (
+        str(interrupt_payload.get("approval_request_id")) != str(pending.id)
+        or str(interrupt_payload.get("thread_id")) != pending.thread_id
+        or not secrets.compare_digest(
+            str(interrupt_payload.get("action_hash", "")), pending.action_hash
         )
-        # We don't await full completion to return fast
+        or not secrets.compare_digest(current_hash, pending.action_hash)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Approval does not match the current graph interrupt",
+        )
 
-        return {"status": "RESUMED"}
+    cas = await db.execute(
+        update(models.ApprovalRequest)
+        .where(
+            models.ApprovalRequest.id == pending.id,
+            models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+            models.ApprovalRequest.action_hash == approval.action_hash,
+            models.ApprovalRequest.expires_at > now,
+        )
+        .values(
+            status=models.ApprovalStatus.APPROVED,
+            approver_user_id=user.id,
+            decided_at=now,
+        )
+    )
+    if cas.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Approval was already decided")
+    await db.commit()
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    try:
+        output = await graph.ainvoke(
+            Command(
+                resume={
+                    "approved": True,
+                    "approval_request_id": str(pending.id),
+                    "action_hash": pending.action_hash,
+                }
+            ),
+            config=config,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Approved action failed to resume") from exc
+
+    if isinstance(output, dict):
+        from sre_agent.incident_status import compute_incident_status
+
+        act_report = (output.get("metadata") or {}).get("act_report")
+        verification = (act_report or {}).get("verification")
+        computed_status = compute_incident_status(output, act_report, verification)
+        incident_values: Dict[str, Any] = {"status": computed_status}
+        if computed_status == models.IncidentStatus.RESOLVED:
+            incident_values["resolved_at"] = datetime.now(timezone.utc)
+        await db.execute(
+            update(models.Incident)
+            .where(models.Incident.id == owned_incident.id)
+            .values(**incident_values)
+        )
+        await db.commit()
+
+    return {
+        "status": "RESUMED",
+        "approval_request_id": str(pending.id),
+        "thread_id": pending.thread_id,
+        "completed": bool(output),
+    }

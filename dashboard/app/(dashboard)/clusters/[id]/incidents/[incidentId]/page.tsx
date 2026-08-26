@@ -20,6 +20,11 @@ interface GraphStatus {
   status: string
   next?: unknown
   values?: Record<string, unknown>
+  approval?: {
+    approval_request_id: string
+    action_hash: string
+    expires_at: string
+  } | null
 }
 
 interface AgentMetrics {
@@ -121,9 +126,13 @@ export default function IncidentConsolePage() {
   }
 
   const approve = async () => {
+    if (!status?.approval) return
     setApproving(true)
     try {
-      await api.post(`/incidents/${incidentId}/approve`)
+      await api.post(`/incidents/${incidentId}/approve`, {
+        approval_request_id: status.approval.approval_request_id,
+        action_hash: status.approval.action_hash,
+      })
       await loadStatus()
     } finally {
       setApproving(false)
@@ -327,7 +336,7 @@ export default function IncidentConsolePage() {
               {awaitingApproval && (
                 <>
                   <div className="sx-btnrow">
-                    <button className="sx-btn primary" onClick={approve} disabled={!isAdmin || approving}>
+                    <button className="sx-btn primary" onClick={approve} disabled={!isAdmin || approving || !status?.approval}>
                       {approving ? "Approving…" : "Approve & run"}
                     </button>
                   </div>

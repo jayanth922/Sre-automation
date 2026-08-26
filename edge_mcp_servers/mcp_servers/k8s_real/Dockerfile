@@ -9,13 +9,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY mcp_servers/k8s_real/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
-COPY server.py .
+COPY mcp_servers/k8s_real/server.py .
+COPY mcp_auth.py .
 
 # Expose port
 EXPOSE 3000

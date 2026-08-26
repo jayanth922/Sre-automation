@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/organization/members",
     tags=["members"],
+    dependencies=[Depends(get_current_user_and_org)],
 )
 
 

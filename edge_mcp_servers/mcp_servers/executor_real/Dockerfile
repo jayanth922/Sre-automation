@@ -10,11 +10,12 @@ RUN apt-get update && apt-get install -y curl \
     && rm -f kubectl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY mcp_servers/executor_real/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY guardrails.py .
-COPY server.py .
+COPY mcp_servers/executor_real/guardrails.py .
+COPY mcp_servers/executor_real/server.py .
+COPY mcp_auth.py .
 
 EXPOSE 3000
 

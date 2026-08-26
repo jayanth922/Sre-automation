@@ -16,7 +16,11 @@ from backend import crud, database, models
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
 from sre_agent import metrics_profile as mp
 
-router = APIRouter(prefix="/clusters", tags=["services"])
+router = APIRouter(
+    prefix="/clusters",
+    tags=["services"],
+    dependencies=[Depends(get_current_user_and_org)],
+)
 
 
 async def _query_scalar(client: httpx.AsyncClient, base: str, promql: str) -> Optional[float]:

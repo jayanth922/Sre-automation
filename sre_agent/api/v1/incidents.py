@@ -8,14 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select
 
 from backend import schemas, crud, models, database
-from backend.rbac import require_admin
-from sre_agent.api.v1.clusters import get_current_user_and_org
+from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/clusters/{cluster_id}",
     tags=["incidents"],
+    dependencies=[Depends(get_current_user_and_org)],
 )
 
 @router.get("/incidents", response_model=List[schemas.IncidentResponse])
@@ -120,7 +120,7 @@ async def clear_cluster_incidents(
     db: AsyncSession = Depends(database.get_db)
 ):
     """Delete all incidents for a cluster. Admin only."""
-    require_admin(user)
+    await require_admin(user)
 
     cluster = await crud.get_cluster_by_id(db, cluster_id)
     if not cluster or cluster.org_id != user.org_id:

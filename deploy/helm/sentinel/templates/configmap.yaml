@@ -38,6 +38,7 @@ data:
   ACCESS_TOKEN_EXPIRE_MINUTES: {{ .Values.auth.accessTokenMinutes | quote }}
   REFRESH_TOKEN_EXPIRE_DAYS: {{ .Values.auth.refreshTokenDays | quote }}
   COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
+  CREDENTIAL_ENCRYPTION_KEY_VERSION: {{ .Values.credentialEncryption.keyVersion | quote }}
 
   # Slack war-room (bot token in the Secret enables it)
   SLACK_WAR_ROOM_CHANNEL: {{ .Values.slack.warRoomChannel | quote }}
@@ -45,11 +46,13 @@ data:
   LANGFUSE_HOST: {{ .Values.tracing.langfuseHost | quote }}
 
   # Remediation + feature flags
+  SENTINEL_CLUSTER_ENVIRONMENT: {{ .Values.features.clusterEnvironment | quote }}
   EXECUTOR_LIVE: {{ .Values.features.executorLive | quote }}
   EXECUTOR_ALLOWED_NAMESPACES: {{ .Values.features.executorAllowedNamespaces | quote }}
   EXECUTOR_MIN_REPLICAS: {{ .Values.features.executorMinReplicas | quote }}
   CHECKPOINTER_ENABLED: {{ .Values.features.checkpointerEnabled | quote }}
   CHECKPOINTER_BACKEND: {{ .Values.features.checkpointerBackend | quote }}
+  APPROVAL_TTL_MINUTES: {{ .Values.features.approvalTtlMinutes | quote }}
   LIVE_BUS_BACKEND: {{ .Values.features.liveBusBackend | quote }}
   DEBUG: {{ .Values.features.debug | quote }}
   LANGCHAIN_TRACING_V2: "false"

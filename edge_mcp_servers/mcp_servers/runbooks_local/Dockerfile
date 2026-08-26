@@ -9,16 +9,17 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY mcp_servers/runbooks_local/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
-COPY server.py .
+COPY mcp_servers/runbooks_local/server.py .
+COPY mcp_auth.py .
 # Bake the runbook corpus into the image (compose mounts it as a volume; in
 # Kubernetes there is no host mount, so it must ship in the image).
-COPY runbooks ./runbooks
+COPY mcp_servers/runbooks_local/runbooks ./runbooks
 ENV RUNBOOKS_DIR=/app/runbooks
 
 # Expose port

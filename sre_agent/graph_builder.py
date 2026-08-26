@@ -3,12 +3,14 @@
 import asyncio
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
+from langgraph.types import interrupt
 
 from .agent_nodes import (
     create_github_agent,
@@ -54,7 +56,85 @@ def _act_phase_enabled() -> bool:
     return True
 
 
-async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
+async def _prepare_approval_node(
+    state: AgentState,
+    execution_context: Any = None,
+) -> Dict[str, Any]:
+    """Persist an exact remediation proposal before checkpointing its interrupt."""
+    from .act_phase import build_act_report
+    from .approval_flow import compute_action_hash, create_or_reuse_pending_approval
+    from .checkpointer import durable_checkpointer_configured, thread_id_from_state
+
+    report_payload = build_act_report(
+        state,
+        environment=str(getattr(execution_context, "environment", "production")),
+    ).to_dict()
+    metadata = {
+        **(state.get("metadata", {}) or {}),
+        "act_report": report_payload,
+    }
+    if not report_payload.get("plan_present") or report_payload.get("aggregate_decision") in {
+        None,
+        "autonomous",
+    }:
+        metadata.pop("pending_approval", None)
+        return {"metadata": metadata}
+
+    if execution_context is None:
+        raise RuntimeError("Tenant execution context is required for durable approval")
+    if not durable_checkpointer_configured():
+        raise RuntimeError("A durable checkpointer is required for approval")
+
+    incident_id = state.get("incident_id") or metadata.get("incident_id")
+    if not incident_id:
+        raise RuntimeError("Persisted incident_id is required for durable approval")
+
+    action_hash = compute_action_hash(report_payload)
+    pending = await create_or_reuse_pending_approval(
+        incident_id=str(incident_id),
+        thread_id=thread_id_from_state(state),
+        organization_id=str(execution_context.organization_id),
+        cluster_id=str(execution_context.cluster_id),
+        action_hash=action_hash,
+    )
+    metadata["pending_approval"] = pending.interrupt_payload(report_payload)
+    return {"metadata": metadata, "approval_status": "PENDING"}
+
+
+async def _approval_gate_node(state: AgentState) -> Dict[str, Any]:
+    """Pause non-autonomous remediation until the exact persisted action is approved."""
+    metadata = state.get("metadata", {}) or {}
+    pending = metadata.get("pending_approval")
+    if not isinstance(pending, dict):
+        return {}
+
+    resume = interrupt(pending)
+    if not isinstance(resume, dict):
+        raise PermissionError("Invalid approval resume payload")
+    if resume.get("approved") is not True:
+        raise PermissionError("Remediation was not approved")
+    if not secrets.compare_digest(
+        str(resume.get("action_hash", "")), str(pending.get("action_hash", ""))
+    ) or str(resume.get("approval_request_id", "")) != str(
+        pending.get("approval_request_id", "")
+    ):
+        raise PermissionError("Approval does not match the pending remediation")
+
+    approved = {
+        "status": "approved",
+        "approval_request_id": str(pending["approval_request_id"]),
+        "action_hash": str(pending["action_hash"]),
+    }
+    return {
+        "approval_status": "APPROVED",
+        "metadata": {**metadata, "approval": approved},
+    }
+
+
+async def _act_gate_node(
+    state: AgentState,
+    execution_context: Any = None,
+) -> Dict[str, Any]:
     """Graph node: run the severity-gated ACT phase after aggregation.
 
     Thin wrapper over ``act_phase.build_act_report`` (the pure, tested core).
@@ -64,31 +144,58 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
     """
     try:
         from .act_phase import build_act_report
+        from .approval_flow import compute_action_hash
 
-        report = build_act_report(state)  # dry-run; uses real policy_engine
+        report = build_act_report(
+            state,
+            environment=str(getattr(execution_context, "environment", "production")),
+        )
         report_payload = report.to_dict()
         incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
 
-        # Live remediation is a SECOND opt-in flag beyond ACT_PHASE_ENABLED, and
-        # only fires when the ENTIRE plan was gated AUTONOMOUS (mixed plans never
-        # auto-apply). Any failure here is non-fatal to the transcript.
+        approval = (state.get("metadata", {}) or {}).get("approval", {}) or {}
+        current_action_hash = compute_action_hash(report_payload)
+        human_approved = (
+            approval.get("status") == "approved"
+            and secrets.compare_digest(
+                str(approval.get("action_hash", "")), current_action_hash
+            )
+        )
+        if human_approved:
+            report_payload["approval"] = approval
+
+        # Live remediation is a separate opt-in. Autonomous plans proceed
+        # directly; held actions proceed only when this exact report hash was
+        # resumed through the durable approval gate.
         live_on = os.getenv("EXECUTOR_LIVE", "false").lower() in ("true", "1", "yes")
-        if live_on and report.aggregate_decision == "autonomous" and report.plan_present:
+        if live_on and (
+            report.aggregate_decision == "autonomous" or human_approved
+        ) and report.plan_present:
+            caller = github_caller = metrics_caller = None
             try:
                 from .executor import build_executor_tool_caller
                 from .act_phase import execute_autonomous_live
 
-                caller = await build_executor_tool_caller()
+                caller = await build_executor_tool_caller(execution_context)
                 # Code-change remediation (revert PR) goes to the github-exec MCP;
                 # best-effort so an infra-only plan still runs if it's not configured.
                 github_caller = None
                 try:
                     from .executor import build_github_exec_tool_caller
 
-                    github_caller = await build_github_exec_tool_caller()
+                    github_caller = await build_github_exec_tool_caller(
+                        execution_context
+                    )
                 except Exception:
                     github_caller = None
-                live_results = await execute_autonomous_live(state, report, caller, github_caller=github_caller)
+                live_results = await execute_autonomous_live(
+                    state,
+                    report,
+                    caller,
+                    github_caller=github_caller,
+                    approved=human_approved,
+                    context=execution_context,
+                )
                 report_payload["live_results"] = live_results
                 logger.info(f"⚙️  ACT: applied {len(live_results)} live remediation(s)")
 
@@ -97,15 +204,28 @@ async def _act_gate_node(state: AgentState) -> Dict[str, Any]:
                     from .act_phase import verify_live
                     from .executor import build_metrics_tool_caller
 
-                    metrics_caller = await build_metrics_tool_caller()
-                    wait = int(os.getenv("VERIFICATION_WAIT_SECONDS", "0"))
-                    report_payload["verification"] = await verify_live(state, metrics_caller, wait_seconds=wait)
-                    logger.info(f"⚙️  ACT: verification → {report_payload['verification']['status']}")
+                    if any(
+                        item.get("status") == "EXECUTED"
+                        for item in live_results
+                    ):
+                        metrics_caller = await build_metrics_tool_caller(
+                            execution_context
+                        )
+                        wait = int(os.getenv("VERIFICATION_WAIT_SECONDS", "0"))
+                        report_payload["verification"] = await verify_live(state, metrics_caller, wait_seconds=wait)
+                        logger.info(f"⚙️  ACT: verification → {report_payload['verification']['status']}")
                 except Exception as verify_err:
                     logger.warning(f"Verification failed (non-fatal): {verify_err}")
             except Exception as live_err:
                 logger.error(f"Live remediation failed (non-fatal): {live_err}")
                 report_payload["live_error"] = str(live_err)
+            finally:
+                from .multi_agent_langgraph import close_mcp_client
+
+                for tool_caller in (caller, github_caller, metrics_caller):
+                    await close_mcp_client(
+                        getattr(tool_caller, "mcp_client", None)
+                    )
 
         # Self-improving loop (project #2): propose prior skills for this incident
         # class and record the remediation that was applied as a reusable skill.
@@ -863,6 +983,7 @@ def build_multi_agent_graph(
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
     checkpointer: Any = None,
+    execution_context: Any = None,
     **llm_kwargs,
 ) -> StateGraph:
     """
@@ -966,21 +1087,35 @@ def build_multi_agent_graph(
     # the full OODA loop:
     #
     #   supervisor(done) → reflector (ORIENT) → planner (DECIDE)
-    #                    → aggregate (rich OODA summary) → act_gate (ACT, dry-run) → END
+    #                    → aggregate → approval_prepare → approval_gate
+    #                    → act_gate (ACT, dry-run/live) → END
     #
     # Reflector's own "deeper investigation" loop-back is intentionally collapsed
     # to a single forward pass in v1 (fixed reflector → planner edge); wiring the
     # investigation_swarm loop is a later enhancement.
     if _act_phase_enabled():
         logger.info(
-            "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → act_gate → END"
+            "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → approval_gate → act_gate → END"
         )
         workflow.add_node("reflector", _observed("reflector", _reflector_node))
         workflow.add_node("planner", _observed("planner", _planner_node))
-        workflow.add_node("act_gate", _observed("act_gate", _act_gate_node))
+        async def context_act_gate(state: AgentState) -> Dict[str, Any]:
+            return await _act_gate_node(state, execution_context)
+
+        async def context_prepare_approval(state: AgentState) -> Dict[str, Any]:
+            return await _prepare_approval_node(state, execution_context)
+
+        workflow.add_node(
+            "approval_prepare",
+            _observed("approval_prepare", context_prepare_approval),
+        )
+        workflow.add_node("approval_gate", _observed("approval_gate", _approval_gate_node))
+        workflow.add_node("act_gate", _observed("act_gate", context_act_gate))
         workflow.add_edge("reflector", "planner")
         workflow.add_edge("planner", "aggregate")
-        workflow.add_edge("aggregate", "act_gate")
+        workflow.add_edge("aggregate", "approval_prepare")
+        workflow.add_edge("approval_prepare", "approval_gate")
+        workflow.add_edge("approval_gate", "act_gate")
         workflow.add_edge("act_gate", END)
     else:
         workflow.add_edge("aggregate", END)

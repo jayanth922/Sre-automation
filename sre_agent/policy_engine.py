@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 """
 Policy Engine for SRE Agent - Deterministic Safety Rules
 
@@ -7,11 +6,14 @@ Implements safety checks for remediation actions to prevent dangerous
 operations in production environments.
 """
 
+from __future__ import annotations
+
 import logging
 import os
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from .agent_state import RemediationAction
+if TYPE_CHECKING:
+    from .agent_state import RemediationAction
 
 # Configure logging with basicConfig
 logging.basicConfig(

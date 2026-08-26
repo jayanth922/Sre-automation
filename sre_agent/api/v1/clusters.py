@@ -5,12 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import schemas, crud, models, database
-from backend.rbac import require_admin
-from sre_agent.api.v1.auth_deps import get_current_user_and_org
+from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
+from sre_agent.api.v1.ownership import get_owned_cluster
 
 router = APIRouter(
     prefix="/clusters",
     tags=["clusters"],
+    dependencies=[Depends(get_current_user_and_org)],
 )
 
 @router.post("", response_model=dict)
@@ -40,10 +41,11 @@ async def update_cluster_endpoint(
     cluster_id: uuid.UUID,
     update: schemas.ClusterUpdate,
     user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Update a cluster's endpoints and observability config. Admin only."""
-    require_admin(user)
+    await require_admin(user)
     cluster = await crud.update_cluster(db, cluster_id, user.org_id, update)
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -53,18 +55,13 @@ async def update_cluster_endpoint(
 async def get_cluster_health(
     cluster_id: uuid.UUID,
     user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Get latest health status of a cluster."""
-    cluster = await crud.get_cluster_by_id(db, cluster_id)
-    
-    # Ownership Check
-    if not cluster or cluster.org_id != user.org_id:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-        
     return {
-        "status": cluster.status,
-        "last_heartbeat": cluster.last_heartbeat
+        "status": owned_cluster.status,
+        "last_heartbeat": owned_cluster.last_heartbeat
     }
 
 
@@ -73,16 +70,13 @@ async def get_awaiting_approval(
     cluster_id: uuid.UUID,
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Incidents whose remediation is paused waiting on human approval.
 
     Read-only: reuses the same graph-interrupt check as the per-incident status
     endpoint, so the rail can show a persistent 'needs approval' cue that survives
     reloads without any new state to maintain."""
-    cluster = await crud.get_cluster_by_id(db, cluster_id)
-    if not cluster or cluster.org_id != user.org_id:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-
     incidents = await crud.get_incidents_for_cluster(db, cluster_id)
     # Only non-resolved incidents can be paused; cap the scan to bound cost.
     open_incidents = [i for i in incidents if i.status != models.IncidentStatus.RESOLVED][:50]
@@ -90,7 +84,7 @@ async def get_awaiting_approval(
     pending: list[str] = []
     try:
         from sre_agent.api.v1.mission_control import get_agent_graph
-        graph = get_agent_graph()
+        graph = await get_agent_graph(cluster_id)
         for inc in open_incidents:
             try:
                 st = await graph.aget_state({"configurable": {"thread_id": str(inc.id)}})
@@ -109,10 +103,11 @@ async def get_awaiting_approval(
 async def delete_cluster(
     cluster_id: uuid.UUID,
     user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Delete a cluster. Admin only."""
-    require_admin(user)
+    await require_admin(user)
     success = await crud.delete_cluster(db, cluster_id, user.org_id)
     if not success:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -127,12 +122,10 @@ async def delete_cluster(
 async def get_cluster_lock(
     cluster_id: uuid.UUID,
     user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Check if cluster is locked."""
-    cluster = await crud.get_cluster_by_id(db, cluster_id)
-    if not cluster or cluster.org_id != user.org_id:
-        raise HTTPException(status_code=404, detail="Cluster not found")
     from sre_agent.redis_state_store import get_state_store
     storage = get_state_store()
     is_locked = storage.is_cluster_locked(str(cluster_id))
@@ -143,10 +136,11 @@ async def set_cluster_lock(
     cluster_id: uuid.UUID,
     payload: dict,
     user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Toggle Emergency Lock (Break Glass). Admin only."""
-    require_admin(user)
+    await require_admin(user)
     locked = payload.get("locked", False)
     
     from sre_agent.redis_state_store import get_state_store
@@ -175,7 +169,8 @@ async def get_cluster_audit_logs(
     cluster_id: uuid.UUID,
     limit: int = 50,
     user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
     """Get audit trail for cluster."""
     events = await crud.get_audit_events(db, cluster_id, limit)

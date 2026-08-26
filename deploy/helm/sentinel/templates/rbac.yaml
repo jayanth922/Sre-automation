@@ -3,18 +3,89 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "sentinel.observerSA" . }}
+  namespace: {{ .Release.Namespace }}
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "sentinel.actuatorSA" . }}
+  namespace: {{ .Release.Namespace }}
   labels: {{- include "sentinel.labels" . | nindent 4 }}
+
+{{ if .Values.rbac.namespaced.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sentinel.fullname" . }}-observer
+  namespace: {{ .Values.rbac.namespaced.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "events", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sentinel.fullname" . }}-actuator
+  namespace: {{ .Values.rbac.namespaced.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "services", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sentinel.fullname" . }}-observer
+  namespace: {{ .Values.rbac.namespaced.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sentinel.fullname" . }}-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sentinel.observerSA" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sentinel.fullname" . }}-actuator
+  namespace: {{ .Values.rbac.namespaced.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sentinel.fullname" . }}-actuator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sentinel.actuatorSA" . }}
+    namespace: {{ .Release.Namespace }}
+{{ end }}
+
+{{ if .Values.rbac.clusterWide.enabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "sentinel.fullname" . }}-observer
+  name: {{ include "sentinel.fullname" . }}-observer-cluster-wide
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
@@ -27,12 +98,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "sentinel.fullname" . }}-actuator
+  name: {{ include "sentinel.fullname" . }}-actuator-cluster-wide
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "nodes", "events", "namespaces"]
+    resources: ["pods"]
     verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "services", "nodes", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch", "update", "patch"]
@@ -43,12 +117,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "sentinel.fullname" . }}-observer
+  name: {{ include "sentinel.fullname" . }}-observer-cluster-wide
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "sentinel.fullname" . }}-observer
+  name: {{ include "sentinel.fullname" . }}-observer-cluster-wide
 subjects:
   - kind: ServiceAccount
     name: {{ include "sentinel.observerSA" . }}
@@ -57,14 +131,15 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "sentinel.fullname" . }}-actuator
+  name: {{ include "sentinel.fullname" . }}-actuator-cluster-wide
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "sentinel.fullname" . }}-actuator
+  name: {{ include "sentinel.fullname" . }}-actuator-cluster-wide
 subjects:
   - kind: ServiceAccount
     name: {{ include "sentinel.actuatorSA" . }}
     namespace: {{ .Release.Namespace }}
+{{ end }}
 {{- end }}

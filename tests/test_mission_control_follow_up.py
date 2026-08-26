@@ -197,12 +197,16 @@ async def test_post_summary_follow_up_reuses_same_thread_and_resets_turn_state(m
             captured["config"] = config
             return {"final_response": "ok"}
 
-    monkeypatch.setattr(mission_control, "get_agent_graph", lambda: FakeGraph())
+    async def fake_get_agent_graph(cluster_id):
+        return FakeGraph()
+
+    monkeypatch.setattr(mission_control, "get_agent_graph", fake_get_agent_graph)
 
     await mission_control._run_post_summary_follow_up(
         incident_id,
         "What changed recently after the deploy?",
         user,
+        uuid.uuid4(),
     )
 
     assert captured["config"]["configurable"]["thread_id"] == str(incident_id)

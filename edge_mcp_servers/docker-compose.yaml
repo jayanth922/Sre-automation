@@ -22,83 +22,88 @@ services:
 
   mcp-k8s:
     build:
-      context: ./mcp_servers/k8s_real
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/k8s_real/Dockerfile
     container_name: mcp-k8s
     volumes:
       - ${HOME}/.kube:/root/.kube:ro
     environment:
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
       - KUBERNETES_API_SERVER_HOST=host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4000:3000"
+      - "127.0.0.1:4000:3000"
     networks:
       - edge-network
     restart: unless-stopped
 
   mcp-prometheus:
     build:
-      context: ./mcp_servers/prometheus_real
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/prometheus_real/Dockerfile
     container_name: mcp-prometheus
     env_file:
       - .env
     environment:
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4001:3000"
+      - "127.0.0.1:4001:3000"
     networks:
       - edge-network
     restart: unless-stopped
 
   mcp-loki:
     build:
-      context: ./mcp_servers/loki_real
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/loki_real/Dockerfile
     container_name: mcp-loki
     env_file:
       - .env
     environment:
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4002:3000"
+      - "127.0.0.1:4002:3000"
     networks:
       - edge-network
     restart: unless-stopped
 
   mcp-github:
     build:
-      context: ./mcp_servers/github_real
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/github_real/Dockerfile
     container_name: mcp-github
     env_file:
       - .env
     environment:
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     ports:
-      - "4003:3000"
+      - "127.0.0.1:4003:3000"
     networks:
       - edge-network
     restart: unless-stopped
 
   mcp-runbooks:
     build:
-      context: ./mcp_servers/runbooks_local
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/runbooks_local/Dockerfile
     container_name: mcp-runbooks
     environment:
       - RUNBOOKS_DIR=/app/runbooks
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     volumes:
       - ./mcp_servers/runbooks_local/runbooks:/app/runbooks:ro
     ports:
-      - "4004:3000"
+      - "127.0.0.1:4004:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -107,15 +112,16 @@ services:
   # by default; guardrails restrict to revert/comment on allow-listed repos.
   mcp-github-exec:
     build:
-      context: ./mcp_servers/github_exec
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/github_exec/Dockerfile
     container_name: mcp-github-exec
     env_file:
       - .env
     environment:
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     ports:
-      - "4006:3000"
+      - "127.0.0.1:4006:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -124,20 +130,21 @@ services:
   # Dry-run by default; guardrails restrict actions/namespaces (see executor_real/README.md).
   mcp-executor:
     build:
-      context: ./mcp_servers/executor_real
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: mcp_servers/executor_real/Dockerfile
     container_name: mcp-executor
     volumes:
       - ${HOME}/.kube:/root/.kube:ro
     environment:
       - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
       - KUBERNETES_API_SERVER_HOST=host.docker.internal
       - EXECUTOR_ALLOWED_NAMESPACES=meridian
       - EXECUTOR_MIN_REPLICAS=1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4005:3000"
+      - "127.0.0.1:4005:3000"
     networks:
       - edge-network
     restart: unless-stopped
