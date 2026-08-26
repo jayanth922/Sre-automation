@@ -7,14 +7,15 @@ Watch it come up:
 
 Console:
   http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
-Make sure web.wsBase points at the same host, e.g.:
-  --set web.wsBase=wss://{{ .Values.ingress.host }}
+The console uses this same origin's /ws route by default. Set web.wsBase only
+when the browser must reach the API WebSocket on a different origin.
 {{- else }}
 
 No ingress configured. Port-forward the console and the API (the browser needs both):
   kubectl -n {{ .Release.Namespace }} port-forward svc/sentinel-web 3002:3000 &
   kubectl -n {{ .Release.Namespace }} port-forward svc/sentinel-api 8080:8080 &
 Then open http://localhost:3002
+The chart automatically uses ws://localhost:8080 for this port-forward setup.
 {{- end }}
 
 First run: open the console and register. The first person to sign up creates the

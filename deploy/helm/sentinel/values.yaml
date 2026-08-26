@@ -145,9 +145,10 @@ api:
 # ── Web console ───────────────────────────────────────────────────────────────
 web:
   replicas: 1
-  # How the BROWSER reaches the API WebSocket. With the ingress below this is
-  # usually wss://<host>. Without ingress, port-forward and use ws://localhost:8080.
-  wsBase: "ws://localhost:8080"
+  # Optional browser-visible API WebSocket origin. Empty auto-selects the
+  # console origin with ingress, or ws://localhost:8080 for port-forwarding.
+  # Set an explicit origin only when the browser bypasses those defaults.
+  wsBase: ""
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
     limits: { cpu: "1", memory: "1Gi" }

@@ -1,14 +1,16 @@
 # PROJECT_STATE.md
 
 ## Project objective
-Harden Sentinel's P0 trust and safety findings T01–T10 plus the R01 durability
-prerequisite. The verified plan is
+Harden Sentinel's P0 trust and safety findings T01–T10 plus R01, then close
+bounded operational risks. The verified P0 plan is
 `/Users/jayan/.claude/plans/fluttering-inventing-lerdorf.md`.
 
 ## Current milestone
 Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
 `codex/p0-trust-safety-hardening` and published for review as
 [GitHub PR #1](https://github.com/jayanth922/Sre-automation/pull/1).
+P03 WebSocket proxy-path hardening is implemented on the stacked branch
+`codex/p03-websocket-proxy`, pending publication and CI.
 
 ## Current architecture and invariants
 - `sre_agent/incident_status.py::compute_incident_status` is the sole decision
@@ -78,14 +80,16 @@ Phase 3. **T01–T10, R01, and security-review fixes are implemented** on
 - Security review fixes: operator-only MCP routing, trusted policy environment,
   internal-token auth on the legacy webhook, and fail-closed structured MCP
   outcomes with honest audit/verification status.
+- P03: dashboard defaults to same-origin `/ws`, Helm ingress routes that path
+  directly to the API, and explicit split-origin overrides remain supported.
 
 ## Active problem
-PR #1 is open, green, conflict-free, and awaiting user review. It includes the
-48 unpublished baseline commits, the hardening commit, and three PR follow-ups.
+PR #1 is awaiting user review. P03 is locally verified but stacked on that open
+branch, so its review should target the P0 branch until PR #1 merges.
 
 ## Relevant files
-- Review fixes: `execution_context.py`, `executor.py`, `act_phase.py`,
-  `agent_runtime.py`, `mutation_gateway.py`, and focused tests.
+- P03: `dashboard/lib/useLiveStream.ts`, Helm web/ingress configuration,
+  `scripts/check_helm_ws.sh`, CI, and `tests/test_ws_auth.py`.
 
 ## Verification commands and latest results
 Scratch Python environment:
@@ -96,13 +100,14 @@ Scratch Python environment:
 - Independent security review suite: 102 passed, 1 dependency-based skip.
 - GitHub CI run #4: backend 408 passed; frontend type-check, namespace-scoped
   RBAC manifest verification, and both container image builds passed.
+- P03 local: 12 WebSocket tests passed; dashboard type-check, shell syntax,
+  Python compilation, and `git diff --check` passed.
 
 ## Known blockers or risks
 - CI now covers the complete dependency suite and builds, but no live MCP,
   PostgreSQL migration, T07 restart/resume, or cluster authorization test ran.
-- The dashboard's default WebSocket proxy path mismatch is a separate P03 item;
-  deployments must currently set `NEXT_PUBLIC_WS_BASE` correctly.
+- Helm is unavailable locally, so P03's rendered chart check awaits GitHub CI.
 - The dependency stack remains intentionally combined for one full review.
 
 ## Next bounded task
-User reviews and approves PR #1; monitor feedback, but leave merging to the user.
+Publish P03 as a stacked PR against the P0 branch and verify CI; merge neither PR.
