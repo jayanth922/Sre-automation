@@ -43,6 +43,8 @@ The UI is split between route groups and the support code that makes those route
 
 - `middleware.ts` gates access to protected routes by checking for a token cookie.
 - `next.config.ts` rewrites `/api`, `/auth`, `/metrics`, and `/agent` requests to the backend URL.
+- Live WebSockets use same-origin `/ws` by default so ingress can preserve the
+  upgrade directly to the API; `NEXT_PUBLIC_WS_BASE` supports split-origin setups.
 - `app/layout.tsx` applies the root fonts and wraps the app in `AuthProvider`.
 - `app/(dashboard)/layout.tsx` supplies the protected shell, page titles, and account menu.
 - `lib/auth-context.tsx` restores the session, decodes the JWT, and exposes the `api` helper.

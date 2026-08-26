@@ -25,7 +25,7 @@ spec:
             - name: API_URL
               value: "http://sentinel-api:8080"
             - name: NEXT_PUBLIC_WS_BASE
-              value: {{ .Values.web.wsBase | quote }}
+              value: {{ if .Values.web.wsBase }}{{ .Values.web.wsBase | quote }}{{ else if .Values.ingress.enabled }}""{{ else }}"ws://localhost:8080"{{ end }}
           readinessProbe:
             httpGet: { path: /, port: 3000 }
             initialDelaySeconds: 15

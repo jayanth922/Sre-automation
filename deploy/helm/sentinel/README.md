@@ -48,7 +48,7 @@ Then follow the notes printed on install (port-forward or ingress URL).
 | Bring-your-own datastores | `postgres.deploy=false` + `postgres.external.*`; `redis.deploy=false` + `redis.external.url`; `qdrant.deploy=false` + `qdrant.external.url` |
 | Existing secret | `secrets.create=false`, `secrets.existingSecret=<name>` (keys: `SECRET_KEY`, `POSTGRES_PASSWORD`, `LLM_API_KEY`, …) |
 | Private registry | `image.registry`, `imagePullSecrets` |
-| Ingress | `ingress.enabled=true`, `ingress.className`, `ingress.host`, `ingress.tls`; set `web.wsBase=wss://<host>` |
+| Ingress | `ingress.enabled=true`, `ingress.className`, `ingress.host`, `ingress.tls`; same-origin `/ws` works by default, while `web.wsBase` overrides it |
 | Storage | `postgres.storage`, `postgres.storageClass`, `qdrant.storage`, `qdrant.storageClass` |
 | Sizing | `api.resources`, `web.resources`, `mcp.edge.resources`, `*.replicas` |
 | Kubernetes RBAC | `rbac.namespaced.enabled=true`, `rbac.namespaced.namespace=<workload namespace>`; opt in to cross-namespace access with `rbac.clusterWide.enabled=true` |

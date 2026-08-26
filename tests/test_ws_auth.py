@@ -92,6 +92,29 @@ def test_dashboard_mints_a_fresh_ticket_inside_every_connect_attempt():
     assert "encodeURIComponent(ticket)" in src[ticket_call:connect_end]
 
 
+def test_dashboard_websocket_default_matches_the_ingress_route():
+    src = (_ROOT / "dashboard" / "lib" / "useLiveStream.ts").read_text()
+    assert 'return `${proto}//${window.location.host}${path}`' in src
+    assert "/agent${path}" not in src
+
+    values = (
+        _ROOT / "deploy" / "helm" / "sentinel" / "values.yaml"
+    ).read_text()
+    assert 'wsBase: ""' in values
+
+    ingress = (
+        _ROOT / "deploy" / "helm" / "sentinel" / "templates" / "ingress.yaml"
+    ).read_text()
+    assert "- path: /ws" in ingress
+    assert "name: sentinel-api" in ingress
+
+    web = (
+        _ROOT / "deploy" / "helm" / "sentinel" / "templates" / "web.yaml"
+    ).read_text()
+    assert ".Values.ingress.enabled" in web
+    assert '"ws://localhost:8080"' in web
+
+
 def test_helm_rejects_missing_or_placeholder_signing_key():
     src = (
         _ROOT / "deploy" / "helm" / "sentinel" / "templates" / "secret.yaml"

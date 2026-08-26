@@ -66,6 +66,8 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Verify namespace-scoped RBAC defaults
         run: bash scripts/check_helm_rbac.sh
+      - name: Verify WebSocket routing defaults
+        run: bash scripts/check_helm_ws.sh
 
   images:
     name: Images build

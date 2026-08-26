@@ -6,8 +6,8 @@ import { api } from "./auth-context"
 
 // Live incident/insight stream over WebSocket — the push replacement for polling.
 // Connects to the agent runtime's /ws endpoints (see sre_agent/agent_runtime.py).
-// Note: WebSocket upgrades may not pass through the Next.js rewrite proxy in all
-// setups; set NEXT_PUBLIC_WS_BASE to the backend origin (ws://host:8080) if so.
+// The default is the browser's own origin, where Helm routes /ws straight to the
+// API. Set NEXT_PUBLIC_WS_BASE only when the API is exposed on another origin.
 
 export interface LiveEvent {
     type: string
@@ -17,12 +17,11 @@ export interface LiveEvent {
 }
 
 function wsUrl(path: string): string {
-    const base = process.env.NEXT_PUBLIC_WS_BASE
+    const base = process.env.NEXT_PUBLIC_WS_BASE?.replace(/\/+$/, "")
     if (base) return `${base}${path}`
     if (typeof window === "undefined") return path
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:"
-    // Default: proxy under /agent (configure a rewrite/ingress that preserves upgrades).
-    return `${proto}//${window.location.host}/agent${path}`
+    return `${proto}//${window.location.host}${path}`
 }
 
 export type LiveChannel = "insights" | "incidents"
