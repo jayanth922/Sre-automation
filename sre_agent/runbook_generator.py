@@ -109,15 +109,30 @@ def input_from_act(state: Any, report: Any, skill_id: Optional[str] = None) -> R
 
 
 def _frontmatter(inp: RunbookInput) -> Dict[str, Any]:
-    tags = sorted({inp.service, inp.failure_class, "auto-generated", "incident-response", "kubernetes"})
+    outcome = str(inp.verification_status or "pending").lower()
+    success = outcome == "resolved"
+    tags = sorted(
+        {
+            inp.service,
+            inp.failure_class,
+            "auto-generated",
+            "incident-response",
+            "kubernetes",
+            "verified-success" if success else "negative-exemplar",
+        }
+    )
     return {
         "title": f"{runbook_id(inp)} | {inp.service} | {inp.failure_class.replace('_', ' ').title()}",
         "runbook_id": runbook_id(inp),
         "service": inp.service,
         "incident_type": inp.failure_class,
         "severity": inp.severity,
-        "status": "Auto-generated",
+        "status": "Verified success" if success else "Negative exemplar",
+        "learning_outcome": "verified_success" if success else outcome,
         "owner_team": "SRE",
+        "incident_id": inp.incident_id,
+        "skill_id": inp.skill_id,
+        "verification_status": inp.verification_status,
         "tags": tags,
         "alert_name": inp.alert_name,
         "impacted_environment": inp.namespace,
