@@ -229,6 +229,8 @@ async def _act_gate_node(
 
         # Self-improving loop (project #2): propose prior skills for this incident
         # class and record the remediation that was applied as a reusable skill.
+        report_payload["proposed_skills"] = []
+        report_payload["recorded_skill"] = None
         try:
             from .act_phase import apply_skill_learning
 
