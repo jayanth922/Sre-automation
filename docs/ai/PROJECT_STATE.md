@@ -5,9 +5,9 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
 Phase 4. T01–T10, R01, security fixes, and P03 routing are merged to `master`
-through PRs #1 and #2. A01 immutable run provenance is open in PR #3. A02–A09
-are stacked local commits on A01. A10 verified-only learning is in progress on
-`codex/a10-verified-learning`.
+through PRs #1 and #2. A01 immutable run provenance is open in PR #3. A02–A10
+are stacked local commits on A01 through `codex/a10-verified-learning`
+(`3a3ebcf`).
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point; graph
@@ -39,16 +39,15 @@ are stacked local commits on A01. A10 verified-only learning is in progress on
 ## Completed or verified work
 - T01–T10/R01 through A09 as previously checkpointed, including the A09 release
   evaluation gate (`4319f8f`).
-- A10 (in progress): `verified_learning` eligibility/provenance APIs; skill
-  store provenance, negatives, and invalidation; ACT/graph/runtime/supervisor
-  gates so dry-run and unverified outcomes cannot become successful memory,
-  skills, or runbooks.
+- A10: `verified_learning` eligibility/provenance APIs; skill store provenance,
+  negatives, and invalidation; ACT/graph/runtime/supervisor gates so dry-run and
+  unverified outcomes cannot become successful memory, skills, or runbooks
+  (`3a3ebcf`).
 
 ## Active problem
 Live Meridian, blinded labels, paired candidate trials, real calibration,
 adversarial-model observations, live traces, and production release bundles are
-still required. A10 still needs docs/canvas checkpointing and a commit after
-focused verification.
+still required. A02–A10 still need remote branches and reviewable PRs.
 
 ## Relevant files
 - A09: `benchmarks/release_gate.py`, `benchmarks/release/v1/`, CI job.
@@ -72,6 +71,6 @@ focused verification.
 - Process-local dispatch can lose queued jobs; R02 remains open.
 
 ## Next bounded task
-Finish A10 checkpoint: update canvas status, commit verified-only learning, then
-either open stacked PRs for A02–A10 or start the next dependency-safe platform
-item (for example R02 durable dispatch or R05 residual recovery drift).
+Open stacked reviewable PRs for A02–A10 onto A01/master, or start the next
+dependency-safe platform item (R02 durable dispatch or R05 residual recovery
+drift).
