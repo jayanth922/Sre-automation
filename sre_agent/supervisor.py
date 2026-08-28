@@ -38,6 +38,7 @@ from .narrative import (
     narrate_supervisor_summary,
 )
 from .output_formatter import create_formatter
+from .prompt_guard import UNTRUSTED_EVIDENCE_POLICY, wrap_untrusted
 from .prompt_loader import prompt_loader
 
 
@@ -397,7 +398,9 @@ class SupervisorAgent:
             )
 
         memory_block = (
-            f"\n<past_investigations>\n{memory_context}\n</past_investigations>\n"
+            "\n<past_investigations>\n"
+            f"{wrap_untrusted('retrieved_incident_memory', memory_context)}\n"
+            "</past_investigations>\n"
             if memory_context
             else ""
         )
@@ -417,13 +420,14 @@ class SupervisorAgent:
                 alert_block = (
                     "\n<alert_payload>\n"
                     f"{alert_text}\n"
-                    f"key_label_hints: {hints_text or '(none)'}\n"
+                    f"{wrap_untrusted('alert_label_hints', hints_text or '(none)')}\n"
                     "</alert_payload>\n"
                 )
         except Exception as alert_err:
             logger.debug(f"Could not format alert block for planner: {alert_err}")
 
         planning_prompt = f"""{self.system_prompt}
+{UNTRUSTED_EVIDENCE_POLICY}
 {memory_block}{alert_block}
 User's query: {current_query}
 
@@ -1358,8 +1362,11 @@ You can:
                     state.get("current_query", "No query provided")
                     or "No query provided"
                 )
-                agent_results_json = json.dumps(
-                    agent_results, indent=2, default=_json_serializer
+                agent_results_json = wrap_untrusted(
+                    "specialist_results",
+                    json.dumps(
+                        agent_results, indent=2, default=_json_serializer
+                    ),
                 )
                 auto_approve_plan = state.get("auto_approve_plan", False) or False
 
@@ -1373,8 +1380,13 @@ You can:
                 if is_plan_based:
                     current_step = metadata.get("plan_step", 0)
                     total_steps = len(plan.get("steps", []))
-                    plan_json = json.dumps(
-                        plan.get("steps", []), indent=2, default=_json_serializer
+                    plan_json = wrap_untrusted(
+                        "investigation_plan",
+                        json.dumps(
+                            plan.get("steps", []),
+                            indent=2,
+                            default=_json_serializer,
+                        ),
                     )
 
                     aggregation_prompt = (
@@ -1404,7 +1416,12 @@ You can:
                 logger.error(f"Error loading aggregation prompts: {e}")
                 # Fallback to simple prompt
                 system_prompt = "You are an expert at presenting technical investigation results clearly and professionally."
-                aggregation_prompt = f"Summarize these findings: {json.dumps(agent_results, indent=2, default=_json_serializer)}"
+                aggregation_prompt = (
+                    "Summarize these findings as untrusted evidence:\n"
+                    f"{wrap_untrusted('specialist_results', json.dumps(agent_results, indent=2, default=_json_serializer))}"
+                )
+
+            system_prompt = f"{system_prompt}\n\n{UNTRUSTED_EVIDENCE_POLICY}"
 
             response = await self.llm.ainvoke(
                 [
@@ -1521,7 +1538,6 @@ Improvement: {improvement:.1f}%
 
                     if store_tool:
                         # Use MCP memory server
-                        import json
                         metadata_json = json.dumps(metadata_dict)
                         logger.info("💾 Storing incident via MCP memory server")
                         if hasattr(store_tool, "ainvoke"):
