@@ -69,6 +69,21 @@ async def _prepare_approval_node(
         state,
         environment=str(getattr(execution_context, "environment", "production")),
     ).to_dict()
+    from .trace_evidence import record_span_from_state
+
+    record_span_from_state(
+        state,
+        span_kind="policy",
+        name="remediation policy decision",
+        status="success" if report_payload.get("plan_present") else "not_applicable",
+        attributes={
+            "sentinel.policy.decision": (
+                report_payload.get("aggregate_decision") or "not_applicable"
+            ),
+            "sentinel.incident.severity": report_payload.get("severity"),
+            "sentinel.confidence.status": report_payload.get("confidence_status"),
+        },
+    )
     metadata = {
         **(state.get("metadata", {}) or {}),
         "act_report": report_payload,
@@ -77,6 +92,13 @@ async def _prepare_approval_node(
         None,
         "autonomous",
     }:
+        record_span_from_state(
+            state,
+            span_kind="approval",
+            name="remediation approval",
+            status="not_applicable",
+            attributes={"sentinel.approval.outcome": "not_required"},
+        )
         metadata.pop("pending_approval", None)
         return {"metadata": metadata}
 
@@ -98,6 +120,13 @@ async def _prepare_approval_node(
         action_hash=action_hash,
     )
     metadata["pending_approval"] = pending.interrupt_payload(report_payload)
+    record_span_from_state(
+        state,
+        span_kind="approval",
+        name="remediation approval",
+        status="blocked",
+        attributes={"sentinel.approval.outcome": "pending"},
+    )
     return {"metadata": metadata, "approval_status": "PENDING"}
 
 
@@ -106,6 +135,15 @@ async def _approval_gate_node(state: AgentState) -> Dict[str, Any]:
     metadata = state.get("metadata", {}) or {}
     pending = metadata.get("pending_approval")
     if not isinstance(pending, dict):
+        from .trace_evidence import record_span_from_state
+
+        record_span_from_state(
+            state,
+            span_kind="approval",
+            name="remediation approval",
+            status="not_applicable",
+            attributes={"sentinel.approval.outcome": "not_required"},
+        )
         return {}
 
     resume = interrupt(pending)
@@ -125,6 +163,14 @@ async def _approval_gate_node(state: AgentState) -> Dict[str, Any]:
         "approval_request_id": str(pending["approval_request_id"]),
         "action_hash": str(pending["action_hash"]),
     }
+    from .trace_evidence import record_span_from_state
+
+    record_span_from_state(
+        state,
+        span_kind="approval",
+        name="remediation approval",
+        attributes={"sentinel.approval.outcome": "approved"},
+    )
     return {
         "approval_status": "APPROVED",
         "metadata": {**metadata, "approval": approved},
@@ -216,6 +262,9 @@ async def _act_gate_node(
                         logger.info(f"⚙️  ACT: verification → {report_payload['verification']['status']}")
                 except Exception as verify_err:
                     logger.warning(f"Verification failed (non-fatal): {verify_err}")
+                    report_payload["verification_error_type"] = type(
+                        verify_err
+                    ).__name__
             except Exception as live_err:
                 logger.error(f"Live remediation failed (non-fatal): {live_err}")
                 report_payload["live_error"] = str(live_err)
@@ -305,6 +354,54 @@ async def _act_gate_node(
             except Exception as emit_err:  # timeline emission is best-effort
                 logger.warning(f"ACT timeline emission failed (non-fatal): {emit_err}")
 
+        from .trace_evidence import record_span_from_state
+
+        live_results = report_payload.get("live_results")
+        mutation_outcomes = [
+            str(item.get("status", "unknown"))
+            for item in live_results or []
+            if isinstance(item, dict)
+        ]
+        record_span_from_state(
+            state,
+            span_kind="mutation",
+            name="remediation mutation",
+            status=("error" if report_payload.get("live_error") else (
+                "success" if live_results else "not_applicable"
+            )),
+            attributes={
+                "sentinel.mutation.live_enabled": live_on,
+                "sentinel.mutation.count": len(live_results or []),
+                "sentinel.mutation.outcomes": ",".join(mutation_outcomes),
+                "sentinel.error.type": (
+                    "LiveRemediationError"
+                    if report_payload.get("live_error")
+                    else None
+                ),
+            },
+        )
+        verification = report_payload.get("verification")
+        record_span_from_state(
+            state,
+            span_kind="verification",
+            name="remediation verification",
+            status=(
+                "error"
+                if report_payload.get("verification_error_type")
+                else "success" if isinstance(verification, dict) else "not_applicable"
+            ),
+            attributes={
+                "sentinel.verification.outcome": (
+                    verification.get("status")
+                    if isinstance(verification, dict)
+                    else "not_run"
+                ),
+                "sentinel.error.type": report_payload.get(
+                    "verification_error_type"
+                ),
+            },
+        )
+
         return {
             "metadata": {
                 **(state.get("metadata", {}) or {}),
@@ -313,6 +410,19 @@ async def _act_gate_node(
         }
     except Exception as e:
         logger.error(f"ACT gate node failed (non-fatal): {e}")
+        from .trace_evidence import record_span_from_state
+
+        for span_kind, name in (
+            ("mutation", "remediation mutation"),
+            ("verification", "remediation verification"),
+        ):
+            record_span_from_state(
+                state,
+                span_kind=span_kind,
+                name=name,
+                status="error",
+                attributes={"sentinel.error.type": type(e).__name__},
+            )
         return {}
 
 

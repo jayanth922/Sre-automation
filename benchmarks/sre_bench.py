@@ -125,6 +125,7 @@ POLL_INTERVAL_SEC = 5
 TIMEOUT_SEC = 300
 COOLDOWN_SEC = 30
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
+ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
 
 TERMINAL_APPLICATION_STATUSES = {
     "investigated",
@@ -309,6 +310,25 @@ async def _fetch_transcript(client, jwt, incident_id) -> dict:
     return r.json()
 
 
+async def _fetch_trace_completeness(client, jwt, incident_id) -> dict:
+    deadline = time.monotonic() + ACCOUNTING_WAIT_SEC
+    while True:
+        response = await client.get(
+            f"{BASE_URL}/api/v1/incidents/{incident_id}/agent-metrics",
+            headers={"Authorization": f"Bearer {jwt}"},
+        )
+        response.raise_for_status()
+        payload = response.json().get("trace_completeness")
+        trace = payload if isinstance(payload, dict) else {}
+        reasons = trace.get("completeness_reasons") or []
+        still_running = trace.get("root_trace_id") is None or any(
+            reason == "root_span_not_finalized" for reason in reasons
+        )
+        if not still_running or time.monotonic() >= deadline:
+            return trace
+        await asyncio.sleep(min(POLL_INTERVAL_SEC, 1))
+
+
 def _oracle_result(
     tracker: RecoveryOracleTracker,
     spec: ScenarioSpec,
@@ -380,6 +400,7 @@ def _record_statistical_trial(
     *,
     trial_index: int,
     latency_seconds: float,
+    trace_completeness: Optional[dict],
 ) -> None:
     if not STATISTICAL_RECORDING:
         return
@@ -391,6 +412,14 @@ def _record_statistical_trial(
         trial_index=trial_index,
         pair_seed=PAIR_SEED,
     )
+    trace_complete = bool(
+        isinstance(trace_completeness, dict)
+        and trace_completeness.get("complete") is True
+    )
+    cost_usd = trace_completeness.get("cost_usd") if trace_complete else None
+    failure_categories = set(_failure_categories(score))
+    if not trace_complete:
+        failure_categories.add("trace_incomplete")
     trial = build_trial_record(
         experiment_id=EXPERIMENT_ID,
         pair_id=pair_id,
@@ -407,8 +436,24 @@ def _record_statistical_trial(
         safety_ok=score.safety_ok,
         mttr_seconds=score.mttr_seconds,
         latency_seconds=latency_seconds,
-        cost_usd=None,
-        failure_categories=list(_failure_categories(score)),
+        cost_usd=cost_usd,
+        trace_complete=trace_complete,
+        trace_span_count=(
+            int(trace_completeness.get("spans", 0))
+            if isinstance(trace_completeness, dict)
+            else 0
+        ),
+        trace_evidence_sha256=(
+            trace_completeness.get("records_sha256")
+            if isinstance(trace_completeness, dict)
+            else None
+        ),
+        trace_evidence_artifact=(
+            trace_completeness.get("artifact_path")
+            if isinstance(trace_completeness, dict)
+            else None
+        ),
+        failure_categories=sorted(failure_categories),
         oracle_artifact=str(ORACLE_RESULTS_PATH),
         grader_artifact=str(GRADER_RESULTS_PATH),
     )
@@ -503,7 +548,7 @@ async def _run_trial(
             append_oracle_result(ORACLE_RESULTS_PATH, result)
             score = _score_without_output(spec, result)
             _record_grade(spec, result, "", [], score)
-            return score, f"FAILED (stimulus: {exc})"
+            return score, f"FAILED (stimulus: {exc})", None
 
         incident = await _wait_new_incident(client, jwt, known)
         if not incident:
@@ -516,12 +561,15 @@ async def _run_trial(
             append_oracle_result(ORACLE_RESULTS_PATH, result)
             score = _score_without_output(spec, result)
             _record_grade(spec, result, "", [], score)
-            return score, "FAILED (no incident)"
+            return score, "FAILED (no incident)", None
 
         latest_incident = await _wait_for_recovery(
             client, jwt, incident, oracle_client, tracker
         )
         transcript = await _fetch_transcript(client, jwt, incident["id"])
+        trace_completeness = await _fetch_trace_completeness(
+            client, jwt, incident["id"]
+        )
         summary_text = transcript.get("summary") or latest_incident.get("summary") or ""
         events = transcript.get("events", [])
         result = _oracle_result(
@@ -556,7 +604,7 @@ async def _run_trial(
                 f"{score.oracle_status} "
                 f"(app={score.application_status}){false_claim}"
             )
-        return score, line
+        return score, line, trace_completeness
     finally:
         if lease is not None and fault_adapter is not None:
             await fault_adapter.cleanup(client, lease)
@@ -615,7 +663,7 @@ async def run() -> None:
                 flush=True,
             )
             trial_started = time.perf_counter()
-            score, line = await _run_trial(
+            score, line, trace_completeness = await _run_trial(
                 client,
                 jwt,
                 oracle_client,
@@ -627,6 +675,7 @@ async def run() -> None:
                 score,
                 trial_index=trial_index,
                 latency_seconds=time.perf_counter() - trial_started,
+                trace_completeness=trace_completeness,
             )
             _record_confidence_observations(
                 spec,

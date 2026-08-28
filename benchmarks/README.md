@@ -86,6 +86,13 @@ artifact paths under one A01 configuration fingerprint. Evaluate them with
 secret or tenant identifier, autonomous authorization, or external mutation
 blocks release. Synthetic passing observations are unit-test evidence only.
 
+A08 writes a metadata-only root incident trace to `TRACE_EVIDENCE_PATH` and
+routed-model detail to `MODEL_ACCOUNTING_PATH`. The incident metrics API and
+job result expose fail-closed summaries; paired trial v2 records the root-trace
+artifact, digest, span count, and cost only when every required span and model
+call is reconciled. Payload capture is off by default. See
+`benchmarks/accounting/README.md`.
+
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped
 observations, application status for comparison, and the oracle MTTR.

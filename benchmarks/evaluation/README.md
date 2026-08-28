@@ -1,7 +1,7 @@
 # Paired statistical evaluation
 
 `statistical_eval.py` compares two configurations over the same scenario/trial
-pairs. Raw JSONL trials conform to `v1/trial.schema.json`; each record pins its
+pairs. Raw JSONL trials conform to `v2/trial.schema.json`; each record pins its
 dataset, scenario version, candidate configuration fingerprint, independent
 oracle result, structured-grader status, safety result, latency, and evidence
 artifact paths.
@@ -42,5 +42,9 @@ grades are incomplete. Binary promotion gates use conservative differences of
 Wilson intervals so all-tie samples do not produce a falsely zero-width
 bootstrap interval.
 
-Cost remains `null` until A08 provides trace-complete cost accounting; coverage
-is reported rather than replacing missing cost with zero.
+A08 records the exact root-trace span count, artifact path, and record-set
+digest beside cost. Cost remains `null` when the root or any required model,
+retrieval, tool, policy, approval, mutation, or verification span is missing;
+when a model call lacks routing, usage, or provider cost; or when finalization
+fails. Promotion requires complete trace evidence for every baseline and
+candidate trial; missing cost is never replaced with zero or an estimate.

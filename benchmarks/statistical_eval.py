@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _RISK_CLASSES = {"low", "medium", "high", "critical"}
 _SHA256_LENGTH = 64
 _CONFIG_SECTIONS = ("provenance", "models", "tools", "runtime")
@@ -42,6 +42,10 @@ class TrialRecord:
     mttr_seconds: Optional[float]
     latency_seconds: float
     cost_usd: Optional[float]
+    trace_complete: bool
+    trace_span_count: int
+    trace_evidence_sha256: Optional[str]
+    trace_evidence_artifact: Optional[str]
     failure_categories: tuple[str, ...]
     oracle_artifact: str
     grader_artifact: str
@@ -181,15 +185,24 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         "mttr_seconds",
         "latency_seconds",
         "cost_usd",
+        "trace_complete",
+        "trace_span_count",
+        "trace_evidence_sha256",
+        "trace_evidence_artifact",
         "failure_categories",
         "oracle_artifact",
         "grader_artifact",
     }
     if set(payload) != expected:
-        raise StatisticalEvalError(f"{field} keys do not match trial schema v1")
+        raise StatisticalEvalError(f"{field} keys do not match trial schema v2")
     if payload["schema_version"] != SCHEMA_VERSION:
         raise StatisticalEvalError(f"{field} has unsupported schema version")
-    for key in ("resolved", "false_resolved", "safety_ok"):
+    for key in (
+        "resolved",
+        "false_resolved",
+        "safety_ok",
+        "trace_complete",
+    ):
         if not isinstance(payload[key], bool):
             raise StatisticalEvalError(f"{field}.{key} must be boolean")
     if payload["resolved"] and payload["false_resolved"]:
@@ -242,6 +255,39 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         payload["mttr_seconds"], f"{field}.mttr_seconds", optional=True
     )
     cost = _finite_number(payload["cost_usd"], f"{field}.cost_usd", optional=True)
+    trace_span_count = payload["trace_span_count"]
+    if (
+        isinstance(trace_span_count, bool)
+        or not isinstance(trace_span_count, int)
+        or trace_span_count < 0
+    ):
+        raise StatisticalEvalError(
+            f"{field}.trace_span_count must be a non-negative integer"
+        )
+    trace_sha = payload["trace_evidence_sha256"]
+    if trace_sha is not None:
+        trace_sha = _string(trace_sha, f"{field}.trace_evidence_sha256")
+        if len(trace_sha) != _SHA256_LENGTH or any(
+            character not in "0123456789abcdef" for character in trace_sha
+        ):
+            raise StatisticalEvalError(
+                f"{field}.trace_evidence_sha256 must be lowercase SHA-256"
+            )
+    trace_artifact = payload["trace_evidence_artifact"]
+    if trace_artifact is not None:
+        trace_artifact = _string(trace_artifact, f"{field}.trace_evidence_artifact")
+    if payload["trace_complete"]:
+        if (
+            trace_span_count < 1
+            or trace_sha is None
+            or trace_artifact is None
+            or cost is None
+        ):
+            raise StatisticalEvalError(
+                f"{field} complete trace requires spans, digest, artifact, and cost"
+            )
+    elif cost is not None:
+        raise StatisticalEvalError(f"{field} incomplete trace cannot claim a cost")
     if payload["resolved"] and mttr is None:
         raise StatisticalEvalError(f"{field} resolved trial requires MTTR")
     return TrialRecord(
@@ -263,6 +309,10 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         mttr_seconds=mttr,
         latency_seconds=float(latency),
         cost_usd=cost,
+        trace_complete=payload["trace_complete"],
+        trace_span_count=trace_span_count,
+        trace_evidence_sha256=trace_sha,
+        trace_evidence_artifact=trace_artifact,
         failure_categories=tuple(categories),
         oracle_artifact=_string(payload["oracle_artifact"], f"{field}.oracle_artifact"),
         grader_artifact=_string(payload["grader_artifact"], f"{field}.grader_artifact"),
@@ -671,6 +721,11 @@ def compare_candidates(
         reasons.append("candidate has a safety failure")
     if any(trial.grader_status != "PASS" for trial in candidate):
         reasons.append("candidate has incomplete or failed structured grades")
+    if any(
+        not trial.trace_complete or trial.cost_usd is None
+        for trial in (*baseline, *candidate)
+    ):
+        reasons.append("complete root-trace cost is required for every paired trial")
     if critical_recovery is not None and critical_recovery["mean_delta"] < 0:
         reasons.append("candidate regresses a high/critical-risk slice")
     if critical_quality is not None and critical_quality["mean_delta"] < 0:

@@ -29,8 +29,11 @@ def _trial(
     latency=10.0,
     mttr=20.0,
     cost=None,
+    trace_complete=None,
     failure_categories=(),
 ):
+    if trace_complete is None:
+        trace_complete = cost is not None
     return evaluation.TrialRecord(
         experiment_id="exp-1",
         pair_id=f"pair-{pair:03d}",
@@ -48,6 +51,10 @@ def _trial(
         mttr_seconds=mttr if resolved else None,
         latency_seconds=latency,
         cost_usd=cost,
+        trace_complete=trace_complete,
+        trace_span_count=8 if trace_complete else 0,
+        trace_evidence_sha256="e" * 64 if trace_complete else None,
+        trace_evidence_artifact=("reports/run-trace.jsonl" if trace_complete else None),
         failure_categories=tuple(failure_categories),
         oracle_artifact="reports/oracle.jsonl",
         grader_artifact="reports/grades.jsonl",
@@ -114,6 +121,26 @@ def test_configuration_fingerprint_excludes_trial_input_and_trace():
     assert evaluation.configuration_fingerprint(
         manifest
     ) == evaluation.configuration_fingerprint(changed_trial)
+
+
+def test_trial_v2_pins_trace_evidence_and_rejects_unreconciled_cost():
+    payload = _trial(
+        1,
+        "candidate",
+        fingerprint="b" * 64,
+        cost=0.25,
+    ).to_dict()
+    payload.pop("schema_version")
+
+    trial = evaluation.build_trial_record(**payload)
+
+    assert trial.schema_version == 2
+    assert trial.trace_complete is True
+    assert trial.trace_evidence_sha256 == "e" * 64
+
+    payload["trace_complete"] = False
+    with pytest.raises(evaluation.StatisticalEvalError, match="cannot claim a cost"):
+        evaluation.build_trial_record(**payload)
 
 
 def test_bootstrap_interval_is_reproducible():
@@ -236,6 +263,30 @@ def test_any_candidate_safety_failure_blocks_promotion():
     )
 
     assert "candidate has a safety failure" in report["release_decision"]["reasons"]
+
+
+def test_missing_trace_complete_cost_blocks_promotion():
+    trials = list(_paired_trials(count=24))
+    trials[-1] = _trial(
+        23,
+        "candidate",
+        fingerprint="b" * 64,
+        cost=None,
+        failure_categories=("trace_incomplete",),
+    )
+
+    report = evaluation.compare_candidates(
+        tuple(trials),
+        baseline_id="baseline",
+        candidate_id="candidate",
+        artifact=_artifact(len(trials)),
+    )
+
+    assert report["release_decision"]["status"] == "BLOCK"
+    assert any(
+        "complete root-trace cost" in reason
+        for reason in report["release_decision"]["reasons"]
+    )
 
 
 def test_critical_slice_regression_blocks_promotion():
