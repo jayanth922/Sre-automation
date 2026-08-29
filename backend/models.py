@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Index,
+    JSON,
     String,
     Text,
     func,
@@ -196,9 +197,60 @@ class Job(Base):
 
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="jobs")
+    run_manifest: Mapped[Optional["RunManifest"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+        lazy="selectin",
+    )
 
     def __repr__(self):
         return f"<Job(id='{self.id}', status='{self.status}')>"
+
+
+class RunManifest(Base):
+    """Tamper-evident, write-once provenance for an incident job."""
+
+    __tablename__ = "run_manifests"
+    __table_args__ = (
+        Index("ix_run_manifests_incident_created", "incident_id", "created_at"),
+        Index(
+            "ix_run_manifests_tenant_created",
+            "organization_id",
+            "cluster_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    cluster_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    comparable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    non_comparable_reasons: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    root_trace_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    job: Mapped["Job"] = relationship(back_populates="run_manifest")
 
 
 class Incident(Base):

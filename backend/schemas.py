@@ -292,6 +292,35 @@ class JobStatusUpdate(BaseModel):
     result: Optional[str] = None  # JSON string
     logs: Optional[str] = None
 
+
+class RunManifestResponse(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    incident_id: uuid.UUID
+    cluster_id: uuid.UUID
+    organization_id: uuid.UUID
+    schema_version: int
+    manifest: Dict[str, Any]
+    manifest_sha256: str
+    comparable: bool
+    non_comparable_reasons: List[str]
+    root_trace_id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RunManifestComparisonResponse(BaseModel):
+    left_job_id: str
+    right_job_id: str
+    comparable: bool
+    non_comparable_reasons: List[str]
+    configuration_equal: bool
+    configuration_differences: List[Dict[str, Any]]
+    input_differences: List[Dict[str, Any]]
+
+
 class JobResponse(BaseModel):
     id: uuid.UUID
     cluster_id: uuid.UUID
@@ -303,6 +332,7 @@ class JobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    run_manifest: Optional[RunManifestResponse] = None
 
     class Config:
         from_attributes = True

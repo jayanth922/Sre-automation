@@ -33,6 +33,17 @@ set -a
 source "$repo_root/.env"
 set +a
 
+# Stamp clean local builds with their exact revision. Dirty worktrees remain
+# deliberately unknown so their incident runs cannot be mistaken for
+# reproducible evaluation evidence.
+if [ -z "${SENTINEL_CODE_SHA:-}" ] && git -C "$repo_root" rev-parse HEAD >/dev/null 2>&1; then
+    if [ -n "$(git -C "$repo_root" status --porcelain)" ]; then
+        export SENTINEL_CODE_SHA=unknown
+    else
+        export SENTINEL_CODE_SHA="$(git -C "$repo_root" rev-parse HEAD)"
+    fi
+fi
+
 echo -e "${GREEN}📦 Building SaaS Platform...${NC}"
 cd "$script_dir"
 docker compose -f docker-compose.yaml up -d --build

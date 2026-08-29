@@ -36,6 +36,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Sync dependencies (validates the lockfile)
         run: uv sync --frozen --extra dev
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
         run: uv run python -m compileall backend sre_agent
       - name: Tests
@@ -75,6 +77,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build API image
-        run: docker build -f platform/Dockerfile -t sentinel/api:ci .
+        run: docker build --build-arg SENTINEL_CODE_SHA=${{ github.sha }} -f platform/Dockerfile -t sentinel/api:ci .
       - name: Build web image
         run: docker build -f platform/Dockerfile.dashboard -t sentinel/web:ci dashboard
