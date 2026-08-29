@@ -5,7 +5,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from .constants import SREConstants
-from .llm_utils import create_llm_with_error_handling
+from .model_router import TaskType, route_llm
 from .prompt_loader import prompt_loader
 
 # Configure logging with basicConfig
@@ -39,8 +39,12 @@ class SREOutputFormatter:
         )
 
         # Use the centralized error handling with formatter-specific config
-        return create_llm_with_error_handling(
-            self.llm_provider, max_tokens=formatter_config["max_tokens"], **kwargs
+        return route_llm(
+            TaskType.AGGREGATION,
+            provider=self.llm_provider,
+            use_fallback=False,
+            max_tokens=formatter_config["max_tokens"],
+            **kwargs,
         )
 
     def _extract_steps_from_response(self, response: str) -> List[str]:

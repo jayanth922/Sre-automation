@@ -25,8 +25,14 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .confidence_calibration import (
+    ConfidenceCalibrationError,
+    calibrate_confidence,
+    load_calibration_artifact,
+)
 from .executor import Executor
 from .execution_context import ExecutionContext
 from .mutation_gateway import MutationGateContext, authorize_and_execute
@@ -50,6 +56,42 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _raw_probability(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if 0 <= parsed <= 1 else None
+
+
+def _configured_confidence(
+    raw: Optional[float],
+    *,
+    task: str,
+    environment_variable: str,
+    calibration_path: Optional[Path] = None,
+):
+    configured = calibration_path
+    if configured is None:
+        value = os.getenv(environment_variable, "").strip()
+        configured = Path(value) if value else None
+    if raw is None or configured is None:
+        return None
+    config_fingerprint = os.getenv("SENTINEL_CONFIG_FINGERPRINT", "").strip()
+    if not config_fingerprint:
+        return None
+    try:
+        artifact = load_calibration_artifact(configured)
+        return calibrate_confidence(
+            raw,
+            artifact,
+            task=task,
+            config_fingerprint=config_fingerprint,
+        )
+    except (ConfidenceCalibrationError, OSError) as exc:
+        logger.error("%s confidence calibration unavailable: %s", task, exc)
+        return None
+
+
 @dataclass
 class ActReport:
     severity: str
@@ -59,6 +101,12 @@ class ActReport:
     action_reports: List[Dict[str, Any]] = field(default_factory=list)
     executed: List[Dict[str, Any]] = field(default_factory=list)
     summary: str = ""
+    confidence_status: str = "uncalibrated"
+    raw_action_confidence: Optional[float] = None
+    calibrated_action_probability: Optional[float] = None
+    minimum_autonomy_probability: Optional[float] = None
+    calibration_artifact_version: Optional[str] = None
+    calibration_artifact_sha256: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -83,13 +131,15 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
     is_critical = severity_label == "critical"
     revenue = service in _REVENUE_SERVICES
 
-    # Reflector confidence, when the ORIENT phase has run.
+    # Raw reflector confidence is retained as evidence but cannot affect
+    # severity until a diagnosis-specific calibration artifact maps it.
     reflector = _get(state, "reflector_analysis")
-    confidence = _get(reflector, "confidence", 1.0)
-    try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        confidence = 1.0
+    raw_confidence = _raw_probability(_get(reflector, "confidence"))
+    calibrated = _configured_confidence(
+        raw_confidence,
+        task="diagnosis",
+        environment_variable="DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH",
+    )
 
     # Count distinct services mentioned across investigation results, floored at 1.
     agent_results = _get(state, "agent_results", {}) or {}
@@ -104,7 +154,12 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
         slo_burn_rate=14.4 if is_critical else 1.0,
         saturation=0.0,
         still_escalating=is_critical,
-        hypothesis_confidence=confidence,
+        hypothesis_confidence=(
+            calibrated.calibrated_probability
+            if calibrated is not None
+            else 0.0
+        ),
+        hypothesis_confidence_calibrated=calibrated is not None,
     )
 
 
@@ -137,12 +192,29 @@ def _plan_risk_score(plan: Any) -> float:
     return _RISK_BY_LEVEL.get(level, 5.0)
 
 
+def _configured_remediation_confidence(
+    plan: Any,
+    calibration_path: Optional[Path],
+):
+    raw = _raw_probability(_get(plan, "confidence"))
+    calibrated = _configured_confidence(
+        raw,
+        task="remediation",
+        environment_variable="REMEDIATION_CONFIDENCE_CALIBRATION_PATH",
+        calibration_path=calibration_path,
+    )
+    return raw, calibrated
+
+
 def build_act_report(
     state: Any,
     environment: Optional[str] = None,
     evaluate_fn: Optional[Callable[[Any, str, float], Tuple[bool, str]]] = None,
     dry_run: bool = True,
     actor: str = "sre-agent",
+    calibration_path: Optional[Path] = None,
+    calibrated_action_probability: Optional[float] = None,
+    minimum_autonomy_probability: Optional[float] = None,
 ) -> ActReport:
     """Compute severity, gate the plan, and dry-run the autonomous actions."""
     assessment: SeverityAssessment = classify_severity(extract_incident_signals(state))
@@ -162,8 +234,30 @@ def build_act_report(
 
     env = environment or _incident_environment(state)
     risk_score = _plan_risk_score(plan)
+    raw_confidence, calibrated = _configured_remediation_confidence(
+        plan, calibration_path
+    )
+    artifact_version = None
+    artifact_sha256 = None
+    if calibrated is not None:
+        calibrated_action_probability = calibrated.calibrated_probability
+        minimum_autonomy_probability = calibrated.autonomy_threshold
+        artifact_version = calibrated.artifact_version
+        artifact_sha256 = calibrated.artifact_sha256
+    confidence_ready = (
+        calibrated is not None
+        and calibrated.autonomy_threshold is not None
+    )
 
-    aggregate, per_action = decide_plan(actions, assessment, env, risk_score, evaluate_fn)
+    aggregate, per_action = decide_plan(
+        actions,
+        assessment,
+        env,
+        risk_score,
+        evaluate_fn,
+        calibrated_action_probability,
+        minimum_autonomy_probability,
+    )
 
     # Per-cluster blast radius: when this cluster is namespace-scoped, remediation
     # may only touch its own namespace. Missing namespaces default to it; anything
@@ -207,6 +301,9 @@ def build_act_report(
             "decision": gd.decision.value,
             "reversibility": gd.reversibility.value,
             "reason": gd.reason,
+            "confidence_calibrated": gd.confidence_calibrated,
+            "calibrated_action_probability": gd.calibrated_action_probability,
+            "minimum_autonomy_probability": gd.minimum_autonomy_probability,
         }
         if gd.decision is AutonomyDecision.AUTONOMOUS:
             result = executor.execute(action, gd.decision.value, dry_run=dry_run)
@@ -232,6 +329,12 @@ def build_act_report(
         action_reports=action_reports,
         executed=executed,
         summary=summary,
+        confidence_status="calibrated" if confidence_ready else "uncalibrated",
+        raw_action_confidence=raw_confidence,
+        calibrated_action_probability=calibrated_action_probability,
+        minimum_autonomy_probability=minimum_autonomy_probability,
+        calibration_artifact_version=artifact_version,
+        calibration_artifact_sha256=artifact_sha256,
     )
 
 
@@ -294,6 +397,7 @@ async def execute_autonomous_live(
             approved=approved,
             actor=actor,
             incident_id=str(incident_id) if incident_id else None,
+            raw_action_confidence=report.raw_action_confidence,
         )
         res = await authorize_and_execute(
             action,

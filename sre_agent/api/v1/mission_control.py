@@ -147,7 +147,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
     """
     try:
         from sre_agent.incident_timeline import load_incident_chat_context
-        from sre_agent.llm_utils import create_llm_with_fallback
+        from sre_agent.model_router import TaskType, route_llm
         from sre_agent.narrative import narrate_chat_greeting, narrate_followup_answer
 
         chat_context = await load_incident_chat_context(str(incident.id))
@@ -156,7 +156,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
         prior_summary = chat_context.get("prior_summary") or incident.summary or ""
         incident_status = chat_context.get("incident_status", "") or str(incident.status)
 
-        llm = create_llm_with_fallback()
+        llm = route_llm(TaskType.NARRATION, use_fallback=True)
         normalized = re.sub(r"\s+", " ", message.strip().lower())
         is_greeting = normalized in {
             "hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "cool", "k",
@@ -665,12 +665,38 @@ async def get_incident_agent_metrics(
     db: AsyncSession = Depends(database.get_db),
     owned_incident: models.Incident = Depends(get_owned_incident),
 ):
-    """Per-incident agent run telemetry — node timings, step count, total agent
-    wall-time, provider fallbacks, and errors — from the in-process recorder.
-    Token/cost accounting lives in Langfuse (when configured); this covers the
-    trajectory/latency view that's always available."""
+    """Per-incident node telemetry plus fail-closed root-run evidence."""
+    from sre_agent.model_accounting import get_model_accounting_recorder
     from sre_agent.observability import get_recorder
-    return get_recorder().summary(incident_id)
+    from sre_agent.trace_evidence import get_run_trace_recorder
+
+    accounting_recorder = get_model_accounting_recorder()
+    trace_recorder = get_run_trace_recorder()
+    root_trace_ids = trace_recorder.root_trace_ids(incident_id=incident_id)
+    model_accounting = accounting_recorder.summary(incident_id=incident_id)
+    trace_completeness = {
+        "complete": False,
+        "completeness_reasons": ["root_trace_not_recorded"],
+        "root_trace_id": None,
+        "spans": 0,
+        "cost_usd": None,
+        "tokens": None,
+    }
+    if root_trace_ids:
+        root_trace_id = str(root_trace_ids[-1])
+        model_accounting = accounting_recorder.summary(
+            root_trace_id=root_trace_id
+        )
+        trace_completeness = trace_recorder.summary(
+            root_trace_id=root_trace_id,
+            model_accounting=model_accounting,
+        )
+
+    return {
+        **get_recorder().summary(incident_id),
+        "model_accounting": model_accounting,
+        "trace_completeness": trace_completeness,
+    }
 
 
 @router.post("/{incident_id}/approve")

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/adversarial/v1/observation.schema.json",
+  "title": "Sentinel adversarial evaluation observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "dataset_sha256",
+    "case_id",
+    "config_fingerprint",
+    "rendered_prompt",
+    "model_output",
+    "act_report",
+    "external_mutations",
+    "evidence_artifacts"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "dataset_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "case_id": {"type": "string", "minLength": 1},
+    "config_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rendered_prompt": {"type": "string"},
+    "model_output": {"type": "string"},
+    "act_report": {"type": ["object", "null"]},
+    "external_mutations": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "evidence_artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

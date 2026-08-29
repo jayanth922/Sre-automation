@@ -967,6 +967,7 @@ async def _run_graph_impl(
         await db.commit()
 
     runtime = None
+    root_trace_id = None
     try:
         runtime = await initialize_agent(cluster_id)
         agent_graph, tools = runtime.graph, runtime.tools
@@ -1086,6 +1087,15 @@ async def _run_graph_impl(
             run_manifest_id = str(existing_manifest.id)
             root_trace_id = existing_manifest.root_trace_id
 
+        from .trace_evidence import get_run_trace_recorder
+
+        get_run_trace_recorder().start_run(
+            root_trace_id=root_trace_id,
+            run_manifest_id=run_manifest_id,
+            incident_id=str(incident_id),
+            job_id=str(job_id),
+        )
+
         # Build a one-line, searchable summary the specialists can use as a
         # focused query — including the most actionable label hints.
         actionable_label_hints: List[str] = []
@@ -1194,6 +1204,13 @@ async def _run_graph_impl(
                 if node_output is not None and isinstance(node_output, dict):
                     current_execution_state = {**current_execution_state, **node_output}
 
+        from .model_accounting import get_model_accounting_recorder
+
+        get_model_accounting_recorder().finalize_trace(
+            root_trace_id, status="success"
+        )
+        get_run_trace_recorder().finish_run(root_trace_id, status="success")
+
         # Completion: Build the rich result object for the Dashboard cards
         final_response = current_execution_state.get("final_response", "Investigation completed.")
         
@@ -1249,6 +1266,13 @@ async def _run_graph_impl(
         computed_status = compute_incident_status(
             current_execution_state, act_report, verification_outcome
         )
+        model_accounting = get_model_accounting_recorder().summary(
+            root_trace_id=root_trace_id
+        )
+        trace_completeness = get_run_trace_recorder().summary(
+            root_trace_id=root_trace_id,
+            model_accounting=model_accounting,
+        )
 
         # Update Incident and Job in Postgres with RICH DATA
         async with database.AsyncSessionLocal() as db:
@@ -1281,7 +1305,9 @@ async def _run_graph_impl(
                             "hypothesis": final_response.split(".")[0] if final_response else "Issue identified.",
                             "plan": remediation_plan_serializable,
                             "actions": remediation_plan_serializable,
-                            "verification": verification_serializable
+                            "verification": verification_serializable,
+                            "model_accounting": model_accounting,
+                            "trace_completeness": trace_completeness,
                         })
                     )
                 )
@@ -1292,6 +1318,38 @@ async def _run_graph_impl(
 
     except Exception as e:
         logger.error(f"SaaS Background execution failed: {e}")
+        failed_model_accounting = None
+        failed_trace_completeness = None
+        if root_trace_id:
+            try:
+                from .model_accounting import get_model_accounting_recorder
+                from .trace_evidence import get_run_trace_recorder
+
+                accounting_recorder = get_model_accounting_recorder()
+                accounting_recorder.finalize_trace(
+                    root_trace_id,
+                    status="error",
+                    reason=type(e).__name__,
+                )
+                failed_model_accounting = accounting_recorder.summary(
+                    root_trace_id=root_trace_id
+                )
+                run_trace_recorder = get_run_trace_recorder()
+                run_trace_recorder.finish_run(
+                    root_trace_id,
+                    status="error",
+                    error_type=type(e).__name__,
+                )
+                failed_trace_completeness = run_trace_recorder.summary(
+                    root_trace_id=root_trace_id,
+                    model_accounting=failed_model_accounting,
+                )
+            except Exception as accounting_error:
+                logger.error(
+                    "Failed to finalize model accounting for %s: %s",
+                    root_trace_id,
+                    accounting_error,
+                )
         error_log = f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}"
         state_store.append_log(session_id, error_log)
 
@@ -1392,7 +1450,13 @@ async def _run_graph_impl(
                      .values(
                          status=JobStatus.FAILED,
                          completed_at=datetime.now(timezone.utc),
-                         result=json.dumps({"error": str(e)})
+                         result=json.dumps(
+                             {
+                                 "error": str(e),
+                                 "model_accounting": failed_model_accounting,
+                                 "trace_completeness": failed_trace_completeness,
+                             }
+                         )
                      )
                  )
 

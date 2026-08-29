@@ -38,6 +38,7 @@ from .narrative import (
     narrate_supervisor_summary,
 )
 from .output_formatter import create_formatter
+from .prompt_guard import UNTRUSTED_EVIDENCE_POLICY, wrap_untrusted
 from .prompt_loader import prompt_loader
 
 
@@ -339,20 +340,38 @@ class SupervisorAgent:
         from .model_router import TaskType, route_llm
         return route_llm(TaskType.NARRATION, provider=self.llm_provider, use_fallback=False, **kwargs)
 
-    async def _retrieve_memory_context(self, query_text: str) -> str:
+    async def _retrieve_memory_context(
+        self, query_text: str, state: Optional[AgentState] = None
+    ) -> str:
         """Look up similar past investigations in Qdrant and return a formatted block.
 
         Returns an empty string if memory is unavailable, no results pass the
         similarity threshold, or any failure occurs. Errors are intentionally
         swallowed so a transient memory issue never blocks an investigation.
         """
+        from .trace_evidence import record_span_from_state
+
         if not query_text or not query_text.strip():
+            record_span_from_state(
+                state,
+                span_kind="retrieval",
+                name="incident memory retrieval",
+                status="not_applicable",
+                attributes={"sentinel.retrieval.outcome": "empty_query"},
+            )
             return ""
         try:
             from .memory_store import get_memory_store
 
             memory = get_memory_store()
             if not memory.is_available():
+                record_span_from_state(
+                    state,
+                    span_kind="retrieval",
+                    name="incident memory retrieval",
+                    status="not_applicable",
+                    attributes={"sentinel.retrieval.outcome": "unavailable"},
+                )
                 return ""
 
             similar = await asyncio.to_thread(
@@ -363,14 +382,44 @@ class SupervisorAgent:
             )
             if not similar:
                 logger.info("Memory: no similar past incidents found above threshold")
+                record_span_from_state(
+                    state,
+                    span_kind="retrieval",
+                    name="incident memory retrieval",
+                    attributes={
+                        "sentinel.retrieval.outcome": "no_matches",
+                        "sentinel.retrieval.document_count": 0,
+                    },
+                    payload=query_text,
+                )
                 return ""
 
             logger.info(
                 f"Memory: injecting {len(similar)} past incident(s) into planner context"
             )
+            record_span_from_state(
+                state,
+                span_kind="retrieval",
+                name="incident memory retrieval",
+                attributes={
+                    "sentinel.retrieval.outcome": "matches",
+                    "sentinel.retrieval.document_count": len(similar),
+                },
+                payload=query_text,
+            )
             return memory.format_similar_incidents_for_prompt(similar)
         except Exception as e:
             logger.warning(f"Memory retrieval failed (non-fatal): {e}")
+            record_span_from_state(
+                state,
+                span_kind="retrieval",
+                name="incident memory retrieval",
+                status="error",
+                attributes={
+                    "sentinel.retrieval.outcome": "error",
+                    "sentinel.error.type": type(e).__name__,
+                },
+            )
             return ""
 
     async def create_investigation_plan(self, state: AgentState) -> InvestigationPlan:
@@ -384,7 +433,7 @@ class SupervisorAgent:
         # done in Python (not as a tool the LLM has to call) so the function-
         # calling structured output path (used to produce InvestigationPlan)
         # cannot be derailed by extra tool invocations.
-        memory_context = await self._retrieve_memory_context(current_query)
+        memory_context = await self._retrieve_memory_context(current_query, state)
 
         planning_instructions = _read_planning_prompt()
         # Replace placeholders manually to avoid issues with JSON braces in the prompt
@@ -397,7 +446,9 @@ class SupervisorAgent:
             )
 
         memory_block = (
-            f"\n<past_investigations>\n{memory_context}\n</past_investigations>\n"
+            "\n<past_investigations>\n"
+            f"{wrap_untrusted('retrieved_incident_memory', memory_context)}\n"
+            "</past_investigations>\n"
             if memory_context
             else ""
         )
@@ -417,13 +468,14 @@ class SupervisorAgent:
                 alert_block = (
                     "\n<alert_payload>\n"
                     f"{alert_text}\n"
-                    f"key_label_hints: {hints_text or '(none)'}\n"
+                    f"{wrap_untrusted('alert_label_hints', hints_text or '(none)')}\n"
                     "</alert_payload>\n"
                 )
         except Exception as alert_err:
             logger.debug(f"Could not format alert block for planner: {alert_err}")
 
         planning_prompt = f"""{self.system_prompt}
+{UNTRUSTED_EVIDENCE_POLICY}
 {memory_block}{alert_block}
 User's query: {current_query}
 
@@ -1169,7 +1221,10 @@ User's query: {current_query}
             # Format the output from the OODA workflow
             final_response = f"## 🔍 Incident Investigation Summary\n\n"
             final_response += f"**Hypothesis:** {reflector_analysis.hypothesis}\n"
-            final_response += f"**Confidence:** {reflector_analysis.confidence:.0%}\n\n"
+            final_response += (
+                "**Self-reported confidence (uncalibrated):** "
+                f"{reflector_analysis.confidence:.0%}\n\n"
+            )
             final_response += f"### 🧠 Reasoning\n{reflector_analysis.reasoning}\n\n"
             
             final_response += f"## 📋 Recommended Remediation Plan\n\n"
@@ -1203,6 +1258,56 @@ User's query: {current_query}
                     **summary_payload,
                     "hypothesis": reflector_analysis.hypothesis,
                     "confidence": getattr(reflector_analysis, "confidence", None),
+                    "confidence_kind": "model_self_reported",
+                    "confidence_calibrated": False,
+                    "remediation_confidence": getattr(
+                        remediation_plan, "confidence", None
+                    ),
+                    "benchmark_evaluation": {
+                        "schema_version": 1,
+                        "diagnosis": {
+                            "service": getattr(
+                                reflector_analysis, "affected_service", None
+                            ),
+                            "fault_mode": getattr(
+                                reflector_analysis, "fault_mode", None
+                            ),
+                        },
+                        "causal_chain": [
+                            link.model_dump()
+                            for link in getattr(
+                                reflector_analysis, "causal_chain", []
+                            )
+                        ],
+                        "evidence": [
+                            {
+                                "source": evidence.source,
+                                "reference": evidence.reference,
+                                "claim": evidence.claim,
+                            }
+                            for evidence in getattr(
+                                reflector_analysis, "evidence", []
+                            )
+                        ],
+                        "uncertainty": {
+                            "confidence": getattr(
+                                reflector_analysis, "confidence", None
+                            ),
+                            "unknowns": list(
+                                getattr(reflector_analysis, "unknowns", [])
+                            ),
+                        },
+                        "timeline": [
+                            {
+                                "event_type": evidence.claim,
+                                "observed_at": evidence.observed_at,
+                            }
+                            for evidence in getattr(
+                                reflector_analysis, "evidence", []
+                            )
+                            if evidence.observed_at
+                        ],
+                    },
                     "remediation_actions": [
                         {
                             "action_type": action.action_type,
@@ -1305,8 +1410,11 @@ You can:
                     state.get("current_query", "No query provided")
                     or "No query provided"
                 )
-                agent_results_json = json.dumps(
-                    agent_results, indent=2, default=_json_serializer
+                agent_results_json = wrap_untrusted(
+                    "specialist_results",
+                    json.dumps(
+                        agent_results, indent=2, default=_json_serializer
+                    ),
                 )
                 auto_approve_plan = state.get("auto_approve_plan", False) or False
 
@@ -1320,8 +1428,13 @@ You can:
                 if is_plan_based:
                     current_step = metadata.get("plan_step", 0)
                     total_steps = len(plan.get("steps", []))
-                    plan_json = json.dumps(
-                        plan.get("steps", []), indent=2, default=_json_serializer
+                    plan_json = wrap_untrusted(
+                        "investigation_plan",
+                        json.dumps(
+                            plan.get("steps", []),
+                            indent=2,
+                            default=_json_serializer,
+                        ),
                     )
 
                     aggregation_prompt = (
@@ -1351,7 +1464,12 @@ You can:
                 logger.error(f"Error loading aggregation prompts: {e}")
                 # Fallback to simple prompt
                 system_prompt = "You are an expert at presenting technical investigation results clearly and professionally."
-                aggregation_prompt = f"Summarize these findings: {json.dumps(agent_results, indent=2, default=_json_serializer)}"
+                aggregation_prompt = (
+                    "Summarize these findings as untrusted evidence:\n"
+                    f"{wrap_untrusted('specialist_results', json.dumps(agent_results, indent=2, default=_json_serializer))}"
+                )
+
+            system_prompt = f"{system_prompt}\n\n{UNTRUSTED_EVIDENCE_POLICY}"
 
             response = await self.llm.ainvoke(
                 [
@@ -1468,7 +1586,6 @@ Improvement: {improvement:.1f}%
 
                     if store_tool:
                         # Use MCP memory server
-                        import json
                         metadata_json = json.dumps(metadata_dict)
                         logger.info("💾 Storing incident via MCP memory server")
                         if hasattr(store_tool, "ainvoke"):
