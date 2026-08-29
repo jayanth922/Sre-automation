@@ -69,6 +69,24 @@ jobs:
       - name: Verify WebSocket routing defaults
         run: bash scripts/check_helm_ws.sh
 
+  terraform:
+    name: Terraform (Helm module)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - uses: azure/setup-helm@v4
+      - name: Install kind
+        run: |
+          curl -fsSL -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.26.0/kind-linux-amd64
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+      - name: fmt / validate / representative plan
+        run: bash scripts/check_terraform.sh
+
   images:
     name: Images build
     runs-on: ubuntu-latest
