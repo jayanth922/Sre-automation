@@ -39,7 +39,7 @@ def create_llm_with_error_handling(provider: str = "groq", **kwargs):
     """Create LLM instance with proper error handling and helpful error messages.
 
     Args:
-        provider: LLM provider (only "ollama" is supported)
+        provider: LLM provider — ``groq``, ``anthropic``, or ``openai_compatible``
         **kwargs: Additional configuration overrides
 
     Returns:
