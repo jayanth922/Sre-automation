@@ -40,9 +40,10 @@ durable audit behavior on the current integration base.
   model-accounting/trace-completeness result fields.
 
 ## Active problem
-PR #18 is the next merge candidate and must remain conflict-free with fresh
-product CI and no unresolved review threads. R07 operational reconciliation
-must follow R06.
+PR #18 is mergeable and has no unresolved review threads. Backend, frontend,
+manifests, and image checks pass, but the release-evaluation contract blocks
+because R06 changes protected tool paths without candidate release evidence.
+R07 operational reconciliation must follow R06.
 
 ## Relevant files
 - `backend/models.py`
@@ -57,14 +58,21 @@ must follow R06.
 - Audit, model-accounting, and trace-evidence focused suites: 21 passed with 13
   existing warnings.
 - Ruff on the new R06 audit modules and focused test: passed.
+- PR #18 at `f017a1d`: four product checks passed; release evaluation blocked
+  with `protected prompt/model/tool change lacks release evidence`.
 
 ## Known blockers or risks
 - No live database upgrade/downgrade or retention purge has been exercised.
 - Audit failure signaling depends on process-local context propagation around
   each investigation.
+- The release gate requires at least 20 paired baseline/candidate trials plus
+  linked adversarial and root-trace artifacts from a live benchmark system.
+  The repository's frozen safe fixture is explicitly not production evidence,
+  and no local Sentinel benchmark API was available at `localhost:8080`.
 - Preserve the three pre-existing untracked artifacts: Terraform's lockfile and
   two generated runbooks.
 
 ## Next bounded task
-Have the user merge PR #18 after fresh checks pass. Then reconcile R07
-operational code while dropping `d5e6f7a8b9c0`.
+Generate a real R06 candidate evidence bundle from a live baseline/candidate
+benchmark environment, or explicitly defer the protected tool instrumentation.
+Then rerun PR #18 and proceed to R07 while dropping `d5e6f7a8b9c0`.
