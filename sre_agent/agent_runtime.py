@@ -368,22 +368,21 @@ async def get_mcp_client(cluster_id: Optional[uuid.UUID | str] = None):
     return (await get_agent_runtime(cluster_id)).mcp_client
 
 
-async def _heartbeat_loop():
-    """Keep all clusters marked online with a fresh heartbeat every 60 seconds."""
-    from sqlalchemy import update
+async def _heartbeat_reconcile_loop():
+    """Reclassify cluster connectivity from observed heartbeats only.
+
+    Never fabricates ``last_heartbeat`` freshness — disconnects become
+    degraded/stale/offline after configured thresholds.
+    """
     while True:
         try:
             async with database.AsyncSessionLocal() as db:
-                await db.execute(
-                    update(models.Cluster).values(
-                        status=models.ClusterStatus.ONLINE,
-                        last_heartbeat=datetime.now(timezone.utc),
-                    )
-                )
-                await db.commit()
+                updated = await crud.reconcile_cluster_heartbeats(db)
+                if updated:
+                    logger.info("Reconciled connectivity status for %s clusters", updated)
         except Exception as e:
-            logger.warning(f"Heartbeat update failed: {e}")
-        await asyncio.sleep(60)
+            logger.warning(f"Heartbeat reconcile failed: {e}")
+        await asyncio.sleep(30)
 
 
 @app.on_event("startup")
@@ -394,8 +393,9 @@ async def startup_event():
 
     logger.info(f"Startup: AGENT_MODE={agent_mode}, HAS_TOKEN={bool(cluster_token)}")
 
-    # Keep cluster status fresh in the dashboard
-    asyncio.create_task(_heartbeat_loop())
+    # Reclassify cluster connectivity from observed evidence only — never fabricate
+    # online heartbeats for every cluster.
+    asyncio.create_task(_heartbeat_reconcile_loop())
 
     # Incidents are opened by the client's own Alertmanager (their tuned SLO /
     # burn-rate / business rules) via the /alerts/webhook — Sentinel receives and
@@ -428,6 +428,22 @@ async def startup_event():
         if cluster is None:
             raise RuntimeError("CLUSTER_TOKEN does not identify a cluster")
         await initialize_agent(cluster.id)
+
+        async def _edge_heartbeat_loop(cluster_id: uuid.UUID):
+            while True:
+                try:
+                    async with database.AsyncSessionLocal() as db:
+                        await crud.update_cluster_heartbeat(
+                            db,
+                            cluster_id,
+                            source="edge",
+                            reason="edge_runtime_alive",
+                        )
+                except Exception as e:
+                    logger.warning(f"Edge heartbeat failed: {e}")
+                await asyncio.sleep(60)
+
+        asyncio.create_task(_edge_heartbeat_loop(cluster.id))
     elif agent_mode != "api":
         await initialize_agent()
     else:

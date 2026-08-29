@@ -104,6 +104,15 @@ async def receive_alertmanager_webhook(
     body = await request.json()
     alerts = _parse_alertmanager_payload(body)
 
+    # Authenticating with the cluster token and delivering a webhook is observed
+    # Alertmanager connectivity evidence, even when every alert is deduped.
+    await crud.update_cluster_heartbeat(
+        db,
+        cluster.id,
+        source="alertmanager",
+        reason="alertmanager_webhook",
+    )
+
     if not alerts:
         return {"received": 0, "incidents_created": 0, "detail": "No alerts in payload"}
 
