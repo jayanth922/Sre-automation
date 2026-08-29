@@ -37,8 +37,8 @@ def test_plain_manifest_actuator_is_namespaced_and_delete_is_pods_only():
     role = _document(source, "Role", "sentinel-actuator")
     binding = _document(source, "RoleBinding", "sentinel-actuator")
 
-    assert "metadata:\n  name: sentinel-actuator\n  namespace: meridian" in role
-    assert "metadata:\n  name: sentinel-actuator\n  namespace: meridian" in binding
+    assert "metadata:\n  name: sentinel-actuator\n  namespace: default" in role
+    assert "metadata:\n  name: sentinel-actuator\n  namespace: default" in binding
     assert "name: sentinel-actuator\n    namespace: sentinel" in binding
     assert 'resources: ["nodes"' not in role
     assert '"namespaces"' not in role
@@ -60,7 +60,7 @@ def test_helm_defaults_namespaced_and_cluster_wide_is_opt_in():
     ).read_text()
 
     assert "namespaced:\n    enabled: true" in values
-    assert 'namespace: "meridian"' in values
+    assert 'namespace: "default"' in values
     assert "clusterWide:\n    enabled: false" in values
     assert "if .Values.rbac.namespaced.enabled" in template
     assert "if .Values.rbac.clusterWide.enabled" in template
