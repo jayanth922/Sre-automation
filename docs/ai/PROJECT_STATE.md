@@ -6,9 +6,9 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 ## Current milestone
 Phase 4. T01–T10, R01, security fixes, and P03 routing are merged to `master`
 through PRs #1 and #2. A01 immutable run provenance is open in PR #3; it is
-mergeable and all four GitHub checks pass. A02–A07 are stacked local branches
-on A01 and still need remote branches and reviewable PRs. A07 adversarial
-evaluation is implementation-complete on `codex/a07-adversarial-eval`.
+mergeable and all four GitHub checks pass. A02–A08 are stacked local branches
+on A01 and still need remote branches and reviewable PRs. A08 trace-complete
+accounting is implementation-complete on `codex/a08-trace-accounting`.
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point; graph
@@ -50,14 +50,18 @@ evaluation is implementation-complete on `codex/a07-adversarial-eval`.
   exfiltration/cross-tenant cases; strict zero-tolerance evaluator; evidence
   envelopes, redaction, and prompt policies across planner, reflector,
   specialist, narrative, and aggregation paths.
+- A08: one root incident trace with required model, retrieval, tool, policy,
+  approval, mutation, and verification spans; actual model/fallback, provider
+  usage/cost, latency, errors, and A01 correlation; metadata-only append-only
+  artifacts; opt-in redacted payloads; complete-trace cost gates in trial v2.
 
 ## Active problem
 A02/A03 still need a live chaos-backed Meridian run. A04 has no adjudicated
 human-label set or measured judge agreement. A05 has no paired live artifact and
-cannot promote while A04 grades or A08 costs are incomplete. A06 has no real
+cannot promote while A04 grades or A08 traces are incomplete. A06 has no real
 calibration/drift artifact, so mutations require approval. A07 has no live or
-replayed model observation artifact; synthetic test observations cannot support
-a release claim.
+replayed model observation artifact. A08 has no live trace; providers that do
+not report call cost deliberately leave cost and promotion evidence incomplete.
 
 ## Relevant files
 - A01: `sre_agent/run_manifest.py`, database model/migration, runtime/jobs API.
@@ -67,17 +71,21 @@ a release claim.
 - A07: `sre_agent/prompt_guard.py`, prompt/graph/narrative/supervisor wiring,
   `benchmarks/adversarial_eval.py`, `benchmarks/adversarial/v1/`, and the two
   A07 test files.
+- A08: `sre_agent/model_accounting.py`, `sre_agent/trace_evidence.py`, runtime,
+  model-router/checkpointer/graph/API wiring, `benchmarks/accounting/`, and
+  paired evaluation trial schema v2.
 
 ## Verification commands and latest results
-- `/private/tmp/sentinel-a01-venv/bin/python -m pytest -q`: 491 passed, 10
-  Pydantic deprecation warnings.
-- A02–A07 focused evaluator suite: 84 passed.
-- A07 focused suite: 13 passed; new evaluator/guard files pass Black and Ruff;
-  changed Python compiles and `git diff --check` passes.
+- `/tmp/sre-a08-venv/bin/python -m pytest -q`: 508 passed, 11 existing
+  dependency/Pydantic deprecation warnings.
+- A08 integration suite: 91 passed across trace privacy/completeness, routing,
+  evaluation, provenance, checkpointer, ACT, approval, and mission control.
+- New/changed accounting files pass Black and Ruff; changed Python compiles and
+  `git diff --check` passes.
 
 ## Known blockers or risks
 - No live MCP, restart/resume, cluster authorization, chaos-oracle, calibrated
-  autonomy, or adversarial-model run has been exercised.
+  autonomy, adversarial-model run, or A08 trace has been exercised.
 - A01's PostgreSQL migration has only run in CI.
 - The holdout is CI-protected but public; a truly hidden evaluator is future work.
 - Process-local dispatch can lose queued jobs; R02 remains open.
@@ -85,7 +93,8 @@ a release claim.
   contain non-canonical recovery drift for R05/A10.
 
 ## Next bounded task
-Implement A08 trace-complete model accounting: record actual routed model and
-fallback per call, token usage, cost, latency, trace linkage, and explicit
-completeness reasons; make evaluation/cost claims fail closed when any call is
-unreconciled.
+Implement A09 release evaluation gating: run a versioned candidate/baseline
+matrix in CI; freeze evidence artifacts; enforce zero-tolerance safety plus
+approved quality, cost, and latency deltas; and define shadow/canary rollback.
+A deliberately regressive prompt, model, or tool change must fail CI, and every
+promoted configuration must have a pinned evidence artifact.

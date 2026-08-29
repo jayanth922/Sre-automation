@@ -340,20 +340,38 @@ class SupervisorAgent:
         from .model_router import TaskType, route_llm
         return route_llm(TaskType.NARRATION, provider=self.llm_provider, use_fallback=False, **kwargs)
 
-    async def _retrieve_memory_context(self, query_text: str) -> str:
+    async def _retrieve_memory_context(
+        self, query_text: str, state: Optional[AgentState] = None
+    ) -> str:
         """Look up similar past investigations in Qdrant and return a formatted block.
 
         Returns an empty string if memory is unavailable, no results pass the
         similarity threshold, or any failure occurs. Errors are intentionally
         swallowed so a transient memory issue never blocks an investigation.
         """
+        from .trace_evidence import record_span_from_state
+
         if not query_text or not query_text.strip():
+            record_span_from_state(
+                state,
+                span_kind="retrieval",
+                name="incident memory retrieval",
+                status="not_applicable",
+                attributes={"sentinel.retrieval.outcome": "empty_query"},
+            )
             return ""
         try:
             from .memory_store import get_memory_store
 
             memory = get_memory_store()
             if not memory.is_available():
+                record_span_from_state(
+                    state,
+                    span_kind="retrieval",
+                    name="incident memory retrieval",
+                    status="not_applicable",
+                    attributes={"sentinel.retrieval.outcome": "unavailable"},
+                )
                 return ""
 
             similar = await asyncio.to_thread(
@@ -364,14 +382,44 @@ class SupervisorAgent:
             )
             if not similar:
                 logger.info("Memory: no similar past incidents found above threshold")
+                record_span_from_state(
+                    state,
+                    span_kind="retrieval",
+                    name="incident memory retrieval",
+                    attributes={
+                        "sentinel.retrieval.outcome": "no_matches",
+                        "sentinel.retrieval.document_count": 0,
+                    },
+                    payload=query_text,
+                )
                 return ""
 
             logger.info(
                 f"Memory: injecting {len(similar)} past incident(s) into planner context"
             )
+            record_span_from_state(
+                state,
+                span_kind="retrieval",
+                name="incident memory retrieval",
+                attributes={
+                    "sentinel.retrieval.outcome": "matches",
+                    "sentinel.retrieval.document_count": len(similar),
+                },
+                payload=query_text,
+            )
             return memory.format_similar_incidents_for_prompt(similar)
         except Exception as e:
             logger.warning(f"Memory retrieval failed (non-fatal): {e}")
+            record_span_from_state(
+                state,
+                span_kind="retrieval",
+                name="incident memory retrieval",
+                status="error",
+                attributes={
+                    "sentinel.retrieval.outcome": "error",
+                    "sentinel.error.type": type(e).__name__,
+                },
+            )
             return ""
 
     async def create_investigation_plan(self, state: AgentState) -> InvestigationPlan:
@@ -385,7 +433,7 @@ class SupervisorAgent:
         # done in Python (not as a tool the LLM has to call) so the function-
         # calling structured output path (used to produce InvestigationPlan)
         # cannot be derailed by extra tool invocations.
-        memory_context = await self._retrieve_memory_context(current_query)
+        memory_context = await self._retrieve_memory_context(current_query, state)
 
         planning_instructions = _read_planning_prompt()
         # Replace placeholders manually to avoid issues with JSON braces in the prompt
