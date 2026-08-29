@@ -4,52 +4,66 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-Phase 4. T01–T10, R01, and P03 are on `master`. The A01–A10 evaluation stack is
-now fully pushed with reviewable PRs #3–#12. Local tip remains
-`codex/a10-verified-learning` (`e6d577f`).
+A01–A10 are the integration base. Branch `codex/migration-reconciliation` now
+serializes the Alembic changes needed by R02, R06, and R07 before their
+operational implementations are rebased.
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point.
-- Authenticated v1 resources are organization-scoped; live writes pass the
-  mutation gateway.
-- Run manifests, recovery oracles, versioned scenarios, structured graders,
-  paired statistics, confidence calibration, adversarial gates, release gates,
-  and verified-only learning fail closed without evidence.
-- Untrusted evidence is never approval or authority.
-- Successful memory/skills/runbooks require live execution plus RESOLVED
-  verification.
+- Authenticated resources are organization-scoped; live writes pass the
+  mutation gateway with fresh policy, tenant, lock, confidence, idempotency,
+  approval, and audit checks.
+- Run provenance, recovery, grading, statistics, calibration, adversarial
+  safety, trace accounting, release evaluation, and learning fail closed when
+  objective evidence is missing.
+- Successful learning requires externally verified recovery.
+- Alembic has one linear head; operational branches must not restore their old
+  revision files after rebasing.
 
 ## Completed or verified work
-- A01–A10 stacked commits and open PRs:
-  - #3 A01 run manifests (green CI, mergeable into `master`)
-  - #4–#10 A02–A08 (project CI green; Gemini review red from missing API key)
-  - #11 A09 release evaluation
-  - #12 A10 verified-only learning
-- Focused local verification for A09/A10 passed before push.
+- Migration reconciliation starts directly from `codex/a10-verified-learning`
+  at `c3f314e`.
+- R06 owns `agent_audit_logs` and supersedes P07. The retained R06 schema adds
+  organization, cluster, incident, and run provenance; P07's narrower duplicate
+  migration is excluded.
+- Old operational revisions are replaced by this linear chain:
+  - A10 `d3e4f5a6b7c8` -> R02 `b1c7ceb2036b`
+  - R02 `b1c7ceb2036b` -> R06 `d3ac85ffcc7d`
+  - R06 `d3ac85ffcc7d` -> R07 `2253eabf13e3`
+- Alembic resolves one head, and all three migration files pass Python compile,
+  Ruff, Black, and whitespace checks.
 
 ## Active problem
-A01 is the merge gate for the rest of the stack. Gemini Dispatch review fails
-repo-wide without `GEMINI_API_KEY` and is unrelated to product CI. Live Meridian,
-blinded labels, paired candidate trials, real calibration, adversarial-model
-observations, live traces, and production release bundles remain absent.
+R02, R06, and R07 still independently target the old `master` and still carry
+their obsolete revision files. Their operational commits must be rebased
+serially onto the reconciliation base while dropping those old migrations.
+Other R/P branches also remain independently rooted and require later bounded
+integration.
 
 ## Relevant files
-- Stack branches: `codex/a01-run-manifest` … `codex/a10-verified-learning`
-- A09: `benchmarks/release_gate.py`, `benchmarks/release/v1/`
-- A10: `sre_agent/verified_learning.py` and learning call sites
+- `backend/alembic/versions/b1c7ceb2036b_add_durable_job_leases.py`
+- `backend/alembic/versions/d3ac85ffcc7d_add_agent_audit_logs.py`
+- `backend/alembic/versions/2253eabf13e3_add_cluster_heartbeat_truth.py`
+- Operational branches: `codex/r02-durable-jobs`,
+  `codex/r06-durable-audit`, and `codex/r07-truthful-heartbeats`
 
 ## Verification commands and latest results
-- A01 PR #3: Backend/Frontend/Manifests/Images SUCCESS, MERGEABLE
-- A02–A08 project CI SUCCESS; Gemini review FAILURE (missing auth)
-- A09/A10 local: release-gate 9 passed; verified-learning suite 45 passed
+- `.venv/bin/python -m alembic heads`: one head, `2253eabf13e3`.
+- `.venv/bin/python -m alembic history -r d3e4f5a6b7c8:heads`: serialized A10,
+  R02, R06, R07 ancestry in that order.
+- `.venv/bin/ruff check <three migration files>`: passed.
+- `.venv/bin/black --check <three migration files>`: passed.
+- `python3 -m py_compile <three migration files>`: passed.
 
 ## Known blockers or risks
-- Do not treat Gemini review red as a product regression.
-- After A01 merges, retarget A02’s base from `codex/a01-run-manifest` to
-  `master`, then continue merging up the stack.
-- R02 durable dispatch and residual R05 recovery drift remain open.
+- No live database upgrade or downgrade has been exercised.
+- R02/R06/R07 model and runtime changes are intentionally absent from the
+  migration-only reconciliation branch.
+- Preserve the three pre-existing untracked artifacts: Terraform's lockfile and
+  two generated runbooks.
 
 ## Next bounded task
-Merge PR #3 (A01), retarget PR #4 to `master`, then merge A02→A10 in order once
-each PR’s project CI is green. Optionally disable or credential Gemini review so
-it stops failing the check rollup.
+Rebase the R02 operational implementation onto `codex/migration-reconciliation`,
+drop its obsolete `a9b0c1d2e3f4` migration, and run focused durable-job tests.
+Then integrate R06 and R07 serially, dropping `e6f7a8b9c0d1` and
+`d5e6f7a8b9c0` respectively.
