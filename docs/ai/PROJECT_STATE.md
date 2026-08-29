@@ -42,8 +42,8 @@ the current integration base.
 
 ## Active problem
 PR #18 has been narrowed so its protected tool paths match `master`; the local
-release-impact decision is `NOT_REQUIRED`. Fresh product CI and review state
-must be verified after push. R07 operational reconciliation must follow R06.
+release-impact decision is `NOT_REQUIRED`. It is ready for the user to merge.
+R07 operational reconciliation must follow R06.
 
 ## Relevant files
 - `backend/models.py`
@@ -60,6 +60,8 @@ must be verified after push. R07 operational reconciliation must follow R06.
 - Ruff on the new R06 audit modules and focused test: passed.
 - With protected tool changes deferred, local release impact reports
   `NOT_REQUIRED`.
+- All five product checks pass on the narrowed PR #18, which is mergeable and
+  has no unresolved review threads.
 
 ## Known blockers or risks
 - No live database upgrade/downgrade or retention purge has been exercised.
@@ -70,5 +72,4 @@ must be verified after push. R07 operational reconciliation must follow R06.
   two generated runbooks.
 
 ## Next bounded task
-Push the narrowed PR #18, verify fresh CI and review state, and have the user
-merge it. Then reconcile R07 while dropping `d5e6f7a8b9c0`.
+Have the user merge PR #18. Then reconcile R07 while dropping `d5e6f7a8b9c0`.
