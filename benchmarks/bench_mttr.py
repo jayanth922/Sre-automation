@@ -197,7 +197,7 @@ async def _wait_for_resolved(
                 continue
             if inc["status"] == "resolved":
                 return inc, "resolved"
-            # Pipeline failed — agent_runtime_tasks sets status back to OPEN on error
+            # Pipeline failed — canonical runner / agent_runtime sets status back to OPEN on error
             if inc["status"] == "open" and inc.get("summary", ""):
                 return inc, "failed"
     return None, "timeout"

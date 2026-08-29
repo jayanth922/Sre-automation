@@ -999,6 +999,17 @@ async def _run_graph_impl(
     except Exception as war_err:
         logger.debug(f"war-room start skipped: {war_err}")
 
+    # Announce on the live bus so dashboards / Slack war-room consumers update
+    # without waiting for the next poll (migrated from the alternate runner).
+    from sre_agent.incident_runner import publish_incident_lifecycle
+
+    await publish_incident_lifecycle(
+        "opened",
+        incident_id=incident_id,
+        alert_name=alert_name,
+        summary=f"Investigating alert: {alert_name}",
+    )
+
     # Update Incident Status to INVESTIGATING and Job to RUNNING
     async with database.AsyncSessionLocal() as db:
         # Update Incident
@@ -1451,7 +1462,23 @@ async def _run_graph_impl(
                 )
 
             await db.commit()
-            
+
+        # Push lifecycle so incidents list / overview reflect the outcome live.
+        from sre_agent.incident_runner import publish_incident_lifecycle
+
+        lifecycle_event = (
+            "resolved"
+            if computed_status == IncidentStatus.RESOLVED
+            else "status_changed"
+        )
+        await publish_incident_lifecycle(
+            lifecycle_event,
+            incident_id=incident_id,
+            alert_name=alert_name,
+            summary=final_response,
+            extra={"status": str(computed_status)},
+        )
+
         logger.info(f"SaaS Background execution completed for incident: {incident_id}")
 
     except Exception as e:
