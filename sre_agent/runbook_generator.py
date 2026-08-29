@@ -19,7 +19,6 @@ no LLM call is required.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,6 +127,8 @@ def _frontmatter(inp: RunbookInput) -> Dict[str, Any]:
         "incident_type": inp.failure_class,
         "severity": inp.severity,
         "status": "Verified success" if success else "Negative exemplar",
+        "review_state": "pending_review",
+        "agent_retrievable": True,
         "learning_outcome": "verified_success" if success else outcome,
         "owner_team": "SRE",
         "incident_id": inp.incident_id,
@@ -247,11 +248,10 @@ async def generate_runbook_llm(inp: RunbookInput, llm: Any) -> str:
 
 
 def runbooks_dir() -> Path:
-    """Where generated runbooks are written (feeds the runbooks MCP corpus)."""
-    env = os.getenv("RUNBOOKS_DIR")
-    if env:
-        return Path(env)
-    return Path(__file__).resolve().parents[1] / "edge_mcp_servers" / "mcp_servers" / "runbooks_local" / "runbooks"
+    """Where generated runbooks are written (same corpus the MCP/API read)."""
+    from sre_agent.runbooks_corpus import default_runbooks_dir
+
+    return default_runbooks_dir()
 
 
 def write_runbook(inp: RunbookInput, target_dir: Optional[Path] = None) -> Path:

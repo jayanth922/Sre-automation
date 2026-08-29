@@ -270,7 +270,6 @@ async def update_cluster_heartbeat(
     await db.execute(stmt)
     await db.commit()
 
-
 async def reconcile_cluster_heartbeats(db: AsyncSession) -> int:
     """Reclassify cluster status from stored heartbeats without refreshing them."""
     from sre_agent.cluster_heartbeat import evaluate_heartbeat
@@ -299,6 +298,16 @@ async def reconcile_cluster_heartbeats(db: AsyncSession) -> int:
         await db.commit()
     return updated
 
+_ACTIVE_INCIDENT_STATUSES = (
+    models.IncidentStatus.OPEN,
+    models.IncidentStatus.INVESTIGATING,
+    models.IncidentStatus.INVESTIGATED,
+    models.IncidentStatus.AWAITING_APPROVAL,
+    models.IncidentStatus.REMEDIATION_IN_PROGRESS,
+    models.IncidentStatus.REMEDIATION_FAILED,
+    models.IncidentStatus.VERIFICATION_UNKNOWN,
+)
+
 
 async def find_duplicate_incident(
     db: AsyncSession,
@@ -306,20 +315,30 @@ async def find_duplicate_incident(
     title: str,
     window_minutes: Optional[int] = None,
 ) -> Optional[models.Incident]:
-    """Return an existing OPEN/INVESTIGATING incident with the same title, if any.
+    """Return an existing open-lifecycle incident with the same title, if any.
 
     Dedup collapses a re-firing alert into the incident already tracking it for as
-    long as that incident stays open — not just within a short window — so a
+    long as that incident stays active — not just within a short window — so a
     long-running condition never spawns duplicates. Resolved incidents don't
     match, so a genuinely new occurrence after resolution opens a fresh incident.
     (window_minutes is optional and only narrows the lookback if explicitly set.)
     """
+    return await find_active_incident_by_title(
+        db, cluster_id, title, window_minutes=window_minutes
+    )
+
+
+async def find_active_incident_by_title(
+    db: AsyncSession,
+    cluster_id: uuid.UUID,
+    title: str,
+    window_minutes: Optional[int] = None,
+) -> Optional[models.Incident]:
+    """Return the newest non-resolved incident with the same title, if any."""
     filters = [
         models.Incident.cluster_id == cluster_id,
         models.Incident.title == title,
-        models.Incident.status.in_(
-            [models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]
-        ),
+        models.Incident.status.in_(_ACTIVE_INCIDENT_STATUSES),
     ]
     if window_minutes:
         filters.append(

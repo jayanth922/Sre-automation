@@ -29,8 +29,17 @@ def guardrail_check(action: str, repo: str, params: Dict[str, Any] | None = None
     if action not in ALLOWED_ACTIONS:
         return False, f"action '{action}' not in the github-exec allow-list {sorted(ALLOWED_ACTIONS)}"
 
+    repo = (repo or "").strip()
+    if not repo:
+        return False, "GITHUB_REPO must be set for github-exec mutations"
+
     allow = allowed_repos()
-    if allow and repo not in allow:
+    if not allow:
+        return (
+            False,
+            "GITHUB_EXEC_ALLOWED_REPOS (or GITHUB_REPO) must be set — empty allow-list refuses writes",
+        )
+    if repo not in allow:
         return False, f"repo '{repo}' not in the allow-list {sorted(allow)}"
 
     if action == "create_revert_pr":

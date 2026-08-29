@@ -4,7 +4,6 @@ Reads the same runbook documents the runbooks MCP server indexes, so the
 console shows the real source-of-truth catalog (id, title, service, type).
 """
 import logging
-import os
 import re
 import uuid
 from pathlib import Path
@@ -23,18 +22,11 @@ router = APIRouter(
     dependencies=[Depends(get_current_user_and_org)],
 )
 
-_CANDIDATE_DIRS = [
-    os.getenv("RUNBOOKS_DIR", ""),
-    "/app/runbooks",
-    str(Path(__file__).resolve().parents[2] / "edge_mcp_servers" / "mcp_servers" / "runbooks_local" / "runbooks"),
-]
-
-
 def _runbooks_dir() -> Path | None:
-    for d in _CANDIDATE_DIRS:
-        if d and Path(d).is_dir():
-            return Path(d)
-    return None
+    """Same corpus directory the generator writes and the MCP indexes."""
+    from sre_agent.runbooks_corpus import resolve_runbooks_dir
+
+    return resolve_runbooks_dir(create=False)
 
 
 def _parse_frontmatter(text: str) -> Dict[str, str]:
