@@ -10,3 +10,6 @@ resources:
   - api.yaml
   - web.yaml
   - edge.yaml
+  - networkpolicy.yaml
+  # Optional: uncomment when host/TLS are configured
+  # - ingress.yaml

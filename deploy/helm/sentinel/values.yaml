@@ -123,8 +123,8 @@ features:
   # by default; high severities always require human approval.
   executorLive: "false"
   # Namespaces the executor may act on (comma-separated) — the client's blast
-  # radius. Empty means the executor refuses every action.
-  executorAllowedNamespaces: "meridian"
+  # radius. Empty means the executor refuses every action (safe default).
+  executorAllowedNamespaces: ""
   executorMinReplicas: "1"
   # Durability on by default (enables human-approval resume + interrupted-run
   # continuation). PostgreSQL survives API restarts and uses the same database
@@ -132,19 +132,51 @@ features:
   checkpointerEnabled: "true"
   checkpointerBackend: "postgres"
   approvalTtlMinutes: "30"
-  liveBusBackend: "memory"
+  # Redis is required for multi-replica API; memory is single-process only.
+  liveBusBackend: "redis"
   debug: "false"
 
 # ── API (control plane + agent runtime) ───────────────────────────────────────
 api:
-  replicas: 1
+  # Use 2+ with features.liveBusBackend=redis for multi-replica safety.
+  replicas: 2
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: sentinel-api
   resources:
     requests: { cpu: "250m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1536Mi" }
 
 # ── Web console ───────────────────────────────────────────────────────────────
 web:
-  replicas: 1
+  replicas: 2
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: sentinel-web
   # Optional browser-visible API WebSocket origin. Empty auto-selects the
   # console origin with ingress, or ws://localhost:8080 for port-forwarding.
   # Set an explicit origin only when the browser bypasses those defaults.
@@ -172,6 +204,15 @@ postgres:
 redis:
   deploy: true                 # false → set external.url
   image: redis:7-alpine
+  # Durable AOF + PVC so restarts keep bus/cache state. Set persistence.enabled
+  # false only for ephemeral disposable clusters.
+  persistence:
+    enabled: true
+    storage: 2Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "500m", memory: "256Mi" }
   external:
     url: ""                    # e.g. redis://redis.mycorp:6379/0
 
@@ -190,11 +231,15 @@ rbac:
   namespaced:
     enabled: true
     # Existing workload namespace that the observer/executor may access.
-    # Keep aligned with features.executorAllowedNamespaces.
-    namespace: "meridian"
+    # Keep aligned with features.executorAllowedNamespaces when you enable ACT.
+    namespace: "default"
   # Explicit opt-in for observing/mutating resources across all namespaces.
   clusterWide:
     enabled: false
+
+# ── NetworkPolicy (namespace-internal least privilege) ────────────────────────
+networkPolicy:
+  enabled: true
 
 # ── Ingress (optional) ────────────────────────────────────────────────────────
 ingress:

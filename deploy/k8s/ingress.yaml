@@ -1,0 +1,32 @@
+# Optional ingress. Apply when you have an ingress controller + TLS secret.
+# For port-forward demos, leave this out of the default kustomization and apply
+# manually: kubectl apply -f deploy/k8s/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sentinel
+  namespace: sentinel
+  annotations:
+    # Example for cert-manager; override for your cluster.
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["sentinel.example.com"]
+      secretName: sentinel-tls
+  rules:
+    - host: sentinel.example.com
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: sentinel-api
+                port: { number: 8080 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sentinel-web
+                port: { number: 3000 }

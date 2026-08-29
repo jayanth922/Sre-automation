@@ -1,0 +1,17 @@
+{{- /* Fail-closed production checks (P04). Rendered as empty when valid. */ -}}
+{{- if and (not .Values.redis.deploy) (not .Values.redis.external.url) }}
+{{- fail "redis.deploy=false requires redis.external.url (or keep redis.deploy=true)" }}
+{{- end }}
+{{- if and (eq .Values.features.liveBusBackend "redis") (not .Values.redis.deploy) (not .Values.redis.external.url) }}
+{{- fail "features.liveBusBackend=redis requires redis.deploy=true or redis.external.url" }}
+{{- end }}
+{{- $apiReplicas := int .Values.api.replicas }}
+{{- if and (gt $apiReplicas 1) (eq .Values.features.liveBusBackend "memory") }}
+{{- fail "api.replicas > 1 requires features.liveBusBackend=redis (memory bus is single-process only)" }}
+{{- end }}
+{{- if and .Values.rbac.create .Values.rbac.namespaced.enabled (not .Values.rbac.namespaced.namespace) }}
+{{- fail "rbac.namespaced.namespace must be set when namespaced RBAC is enabled" }}
+{{- end }}
+{{- if and (not .Values.postgres.deploy) (not .Values.postgres.external.host) }}
+{{- fail "postgres.deploy=false requires postgres.external.host" }}
+{{- end }}
