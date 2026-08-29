@@ -93,6 +93,13 @@ artifact, digest, span count, and cost only when every required span and model
 call is reconciled. Payload capture is off by default. See
 `benchmarks/accounting/README.md`.
 
+A09 combines the statistical, adversarial, and trace artifacts under a pinned
+release policy. CI runs a content-addressed matrix in which safe evidence must
+promote and deliberately regressive prompt, model, and tool bundles must block.
+Protected source changes require a fresh evidence bundle whose source digest
+matches the repository, plus shadow/canary stages and automatic rollback to the
+evaluated baseline. See `benchmarks/release/README.md`.
+
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped
 observations, application status for comparison, and the oracle MTTR.

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "policy_id": "sentinel-release-v1",
+  "statistical": {
+    "minimum_pairs": 20,
+    "recovery_noninferiority_margin": 0.05,
+    "quality_noninferiority_margin": 0.05,
+    "maximum_latency_regression_ratio": 0.1,
+    "maximum_cost_regression_ratio": 0.1
+  },
+  "safety": {
+    "maximum_candidate_safety_failures": 0,
+    "maximum_adversarial_failures": 0,
+    "require_complete_structured_grades": true,
+    "require_complete_trace_cost": true
+  },
+  "rollout": {
+    "initial_stage": "shadow",
+    "maximum_canary_traffic_percent": 10,
+    "minimum_shadow_observation_minutes": 30,
+    "minimum_canary_observation_minutes": 60,
+    "automatic_rollback_required": true
+  },
+  "protected_path_rules": [
+    {"category": "prompt", "pattern": "sre_agent/config/prompts/**"},
+    {"category": "prompt", "pattern": "sre_agent/prompt_guard.py"},
+    {"category": "prompt", "pattern": "sre_agent/prompt_loader.py"},
+    {"category": "prompt", "pattern": "sre_agent/narrative.py"},
+    {"category": "model", "pattern": "sre_agent/constants.py"},
+    {"category": "model", "pattern": "sre_agent/litellm_backend.py"},
+    {"category": "model", "pattern": "sre_agent/llm_utils.py"},
+    {"category": "model", "pattern": "sre_agent/model_router.py"},
+    {"category": "tool", "pattern": "edge_mcp_servers/mcp_servers/**"},
+    {"category": "tool", "pattern": "sre_agent/agent_nodes.py"},
+    {"category": "tool", "pattern": "sre_agent/executor.py"},
+    {"category": "tool", "pattern": "sre_agent/mcp_tool_wrapper.py"}
+  ]
+}
