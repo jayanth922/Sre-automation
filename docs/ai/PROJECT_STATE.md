@@ -5,8 +5,8 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
 A01–A10 and the reconciled migration chain are merged into `master`. PR #13
-contains the R02 durable-job implementation, targets `master`, and is being
-refreshed onto the final integration base before merge.
+contains the R02 durable-job implementation, targets `master`, includes the
+final integration base, and is ready for the user to merge.
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point.
@@ -38,9 +38,9 @@ refreshed onto the final integration base before merge.
   `b1c7ceb2036b` migration remains the schema owner.
 
 ## Active problem
-PR #13 has been retargeted to `master`. Its branch must include current
-`master`, pass fresh product CI, and be confirmed conflict-free before the user
-merges it. R06 and R07 still require serial operational reconciliation.
+PR #13 has been retargeted to `master`, refreshed without rewriting history,
+and confirmed conflict-free. It now awaits the user's merge. R06 and R07 still
+require serial operational reconciliation.
 
 ## Relevant files
 - `sre_agent/durable_jobs.py`, `sre_agent/job_store.py`,
@@ -58,8 +58,8 @@ merges it. R06 and R07 still require serial operational reconciliation.
 - Durable-job plus run-manifest focused suites: 11 passed.
 - R02's four new Python files pass Ruff and Black; backend and agent modules
   byte-compile successfully.
-- Product CI was green against the reconciliation base; fresh `master`-based
-  CI is required after the ancestry refresh.
+- At R02 commit `8bd26d2`, all five product checks passed against `master`; the
+  PR was mergeable and had no unresolved review threads.
 
 ## Known blockers or risks
 - No live Postgres migration, `FOR UPDATE SKIP LOCKED` contention, API-process
@@ -70,6 +70,5 @@ merges it. R06 and R07 still require serial operational reconciliation.
   two generated runbooks.
 
 ## Next bounded task
-Push the R02 ancestry refresh, verify fresh product CI and review state, then
-have the user merge PR #13. Next reconcile R06 operational code while dropping
+Have the user merge PR #13. Next reconcile R06 operational code while dropping
 `e6f7a8b9c0d1`.
