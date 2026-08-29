@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import runpy
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,9 @@ def test_historical_docs_are_labeled():
 
 
 def test_fixtures_module_requires_env_or_bootstrap():
-    from benchmarks.fixtures import BenchConfigError, load_credentials
+    fixtures = runpy.run_path(str(ROOT / "benchmarks" / "fixtures.py"))
+    bench_config_error = fixtures["BenchConfigError"]
+    load_credentials = fixtures["load_credentials"]
 
     for key in (
         "BENCH_ADMIN_EMAIL",
@@ -52,7 +55,7 @@ def test_fixtures_module_requires_env_or_bootstrap():
         "BENCH_CLUSTER_TOKEN",
     ):
         os.environ.pop(key, None)
-    with pytest.raises(BenchConfigError):
+    with pytest.raises(bench_config_error):
         load_credentials()
 
 
