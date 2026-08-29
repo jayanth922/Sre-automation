@@ -173,6 +173,8 @@ class ClusterResponse(BaseModel):
     name: str
     status: ClusterStatus
     last_heartbeat: Optional[datetime]
+    heartbeat_source: Optional[str] = None
+    heartbeat_reason: Optional[str] = None
     created_at: datetime
     prometheus_url: Optional[str] = None
     loki_url: Optional[str] = None

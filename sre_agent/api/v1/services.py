@@ -213,6 +213,7 @@ async def get_cluster_connections(
 
     def check_alerts():
         hb = cluster.last_heartbeat
+        source = getattr(cluster, "heartbeat_source", None)
         if not hb:
             return _row("Alerts (Alertmanager)", True, None,
                         "No alerts received yet — point Alertmanager at the webhook with this cluster's token.")
@@ -220,7 +221,14 @@ async def get_cluster_connections(
             hb = hb.replace(tzinfo=timezone.utc)
         secs = max(0, int((datetime.now(timezone.utc) - hb).total_seconds()))
         human = f"{secs}s" if secs < 60 else f"{secs // 60}m" if secs < 3600 else f"{secs // 3600}h"
-        return _row("Alerts (Alertmanager)", True, True, f"Last alert received {human} ago.")
+        via = f" via {source}" if source else ""
+        ok = source == "alertmanager" or source is None
+        detail = (
+            f"Last Alertmanager signal {human} ago{via}."
+            if source == "alertmanager"
+            else f"Last connectivity signal {human} ago{via} (not Alertmanager)."
+        )
+        return _row("Alerts (Alertmanager)", True, True if ok and source == "alertmanager" else None, detail)
 
     async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
         prom_r, loki_r, gh_r, notion_r = await asyncio.gather(

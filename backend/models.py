@@ -31,6 +31,8 @@ class UserRole(str, Enum):
 
 class ClusterStatus(str, Enum):
     ONLINE = "online"
+    DEGRADED = "degraded"
+    STALE = "stale"
     OFFLINE = "offline"
     MAINTENANCE = "maintenance"
 
@@ -140,8 +142,10 @@ class Cluster(Base):
     execution_context_version: Mapped[int] = mapped_column(
         Integer, default=1, nullable=False
     )
-    status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.ONLINE)
+    status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.OFFLINE)
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    heartbeat_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    heartbeat_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Customer infrastructure connectivity

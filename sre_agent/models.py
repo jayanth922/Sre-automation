@@ -17,6 +17,8 @@ class UserRole(str, Enum):
 
 class ClusterStatus(str, Enum):
     ONLINE = "online"
+    DEGRADED = "degraded"
+    STALE = "stale"
     OFFLINE = "offline"
     MAINTENANCE = "maintenance"
 
