@@ -45,8 +45,10 @@ def test_v1_train_and_dev_splits_load_with_required_ground_truth():
 
 
 def test_holdout_is_frozen_and_blocked_without_explicit_local_access():
+    # Force non-CI for the protected-access path; GitHub Actions sets CI=true
+    # which would otherwise short-circuit to the CI-unavailable error first.
     with pytest.raises(dataset_module.DatasetError, match="protected"):
-        dataset_module.load_dataset(DATASETS, "v1", "holdout")
+        dataset_module.load_dataset(DATASETS, "v1", "holdout", ci=False)
 
     holdout = dataset_module.load_dataset(
         DATASETS, "v1", "holdout", allow_holdout=True, ci=False
