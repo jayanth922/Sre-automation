@@ -13,7 +13,9 @@ spec:
     matchLabels: { app: {{ .name }} }
   template:
     metadata:
-      labels: { app: {{ .name }} }
+      labels:
+        app: {{ .name }}
+        app.kubernetes.io/component: mcp
     spec:
       {{- with $root.Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}

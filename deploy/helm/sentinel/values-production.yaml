@@ -1,0 +1,72 @@
+# Production-leaning overrides for the Sentinel chart.
+# Use with: helm upgrade --install sentinel deploy/helm/sentinel -f values-production.yaml ...
+#
+# Still requires real secrets via --set / sealed-secrets / existingSecret.
+
+image:
+  # Replace with your registry, e.g. ghcr.io/org/sentinel
+  registry: sentinel
+  tag: "0.2.0"
+  pullPolicy: IfNotPresent
+
+api:
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+web:
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+auth:
+  cookieSecure: "true"
+
+features:
+  clusterEnvironment: "production"
+  executorLive: "false"
+  executorAllowedNamespaces: ""
+  liveBusBackend: "redis"
+  debug: "false"
+
+redis:
+  deploy: true
+  persistence:
+    enabled: true
+    storage: 5Gi
+
+postgres:
+  deploy: true
+  storage: 20Gi
+
+networkPolicy:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  host: sentinel.example.com
+  tls: true
+  tlsSecretName: sentinel-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+rbac:
+  namespaced:
+    enabled: true
+    # Override to the namespace that runs your workloads.
+    namespace: default
+  clusterWide:
+    enabled: false

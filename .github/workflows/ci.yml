@@ -59,7 +59,7 @@ jobs:
         run: npx tsc --noEmit
 
   manifests:
-    name: Manifests (RBAC scope)
+    name: Manifests (Helm + Kustomize)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +68,10 @@ jobs:
         run: bash scripts/check_helm_rbac.sh
       - name: Verify WebSocket routing defaults
         run: bash scripts/check_helm_ws.sh
+      - name: Verify production-capable Helm chart
+        run: bash scripts/check_helm_production.sh
+      - name: Verify Kustomize build
+        run: bash scripts/check_kustomize.sh
 
   images:
     name: Images build
