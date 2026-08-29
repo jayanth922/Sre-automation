@@ -124,6 +124,7 @@ features:
   executorLive: "false"
   # Namespaces the executor may act on (comma-separated) — the client's blast
   # radius. Empty means the executor refuses every action (safe default).
+  # Set per-client via overlay / --set (see deploy/examples/).
   executorAllowedNamespaces: ""
   executorMinReplicas: "1"
   # Durability on by default (enables human-approval resume + interrupted-run
@@ -232,6 +233,7 @@ rbac:
     enabled: true
     # Existing workload namespace that the observer/executor may access.
     # Keep aligned with features.executorAllowedNamespaces when you enable ACT.
+    # Override per client with an example overlay under deploy/examples/.
     namespace: "default"
   # Explicit opt-in for observing/mutating resources across all namespaces.
   clusterWide:

@@ -83,5 +83,8 @@ After installing into a disposable cluster, verify the actuator's expected
 allow/deny boundaries with:
 
 ```bash
-bash scripts/check_live_rbac.sh sentinel meridian default
+bash scripts/check_live_rbac.sh sentinel default default
 ```
+
+For a reference-client overlay (signals MCP + allowlist), see
+`deploy/examples/meridian/`.

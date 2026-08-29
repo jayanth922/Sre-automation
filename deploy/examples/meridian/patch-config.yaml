@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: sentinel
+data:
+  MCP_SERVERS_JSON: '{"meridian-signals":{"url":"http://meridian-signals.meridian.svc.cluster.local:3000/sse","transport":"sse"}}'
+  EXECUTOR_ALLOWED_NAMESPACES: "meridian"

@@ -1,0 +1,14 @@
+# Optional Meridian client overlay — do not use as the platform default.
+mcp:
+  extraServersJson: >-
+    {"meridian-signals":{"url":"http://meridian-signals.meridian.svc.cluster.local:3000/sse","transport":"sse"}}
+
+features:
+  executorAllowedNamespaces: "meridian"
+
+rbac:
+  namespaced:
+    enabled: true
+    namespace: "meridian"
+  clusterWide:
+    enabled: false

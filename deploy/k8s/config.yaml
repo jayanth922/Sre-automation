@@ -33,11 +33,11 @@ data:
   AGENT_MODE: "api"
 
   # --- Edge MCP tool servers (in-cluster service DNS) ---
-  # Bring your own tools: add client-run MCP servers as a JSON object, merged
-  # with the defaults below. Example:
+  # Bring your own tools: optional client-run MCP servers as JSON, merged with
+  # the built-in edge URIs below. Leave empty for a generic Sentinel deploy.
+  # Example (client overlays live under deploy/examples/):
   #   MCP_SERVERS_JSON: '{"my-tool":{"url":"http://my-tool.ns:9000/sse","transport":"sse"}}'
-  # Registered: the Meridian client's app-aware signals server (runs in its ns).
-  MCP_SERVERS_JSON: '{"meridian-signals":{"url":"http://meridian-signals.meridian.svc.cluster.local:3000/sse","transport":"sse"}}'
+  MCP_SERVERS_JSON: ""
   MCP_K8S_URI: "http://mcp-k8s:3000/sse"
   MCP_METRICS_URI: "http://mcp-prometheus:3000/sse"
   MCP_LOGS_URI: "http://mcp-loki:3000/sse"
@@ -70,7 +70,8 @@ data:
   EXECUTOR_LIVE: "false"
   # Namespaces the executor is allowed to act on (comma-separated). This is the
   # client's Kubernetes blast-radius control — set it to the namespace(s) your
-  # workloads run in. Empty = the executor refuses every action.
+  # workloads run in. Empty = the executor refuses every action (safe default).
+  # Client-specific allowlists belong in an overlay under deploy/examples/.
   EXECUTOR_ALLOWED_NAMESPACES: ""
   EXECUTOR_MIN_REPLICAS: "1"
 

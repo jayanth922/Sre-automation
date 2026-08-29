@@ -6,9 +6,11 @@
 # the platform + edge run in Docker; the in-cluster topology uses deploy/k8s.
 #
 # Usage:
-#   1. Ensure the client environment is running (e.g. ../meridian-shop/start.sh)
-#   2. Create .env: cp .env.example .env  (point PROMETHEUS_URL / LOKI_URL at it)
+#   1. Ensure a client / workload environment is reachable (Prometheus, Loki, …)
+#   2. Create .env: cp .env.example .env  (point PROMETHEUS_URL / LOKI_URL;
+#      set EXECUTOR_ALLOWED_NAMESPACES to your workload ns if enabling ACT)
 #   3. docker compose up -d --build
+# Optional reference-client overlays: deploy/examples/
 # =============================================================================
 
 services:
@@ -139,8 +141,10 @@ services:
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
       - KUBERNETES_API_SERVER_HOST=host.docker.internal
-      - EXECUTOR_ALLOWED_NAMESPACES=meridian
-      - EXECUTOR_MIN_REPLICAS=1
+      # Empty = refuse all mutations. Set in edge_mcp_servers/.env for a client
+      # namespace (e.g. demo-app). Reference clients: deploy/examples/.
+      - EXECUTOR_ALLOWED_NAMESPACES=${EXECUTOR_ALLOWED_NAMESPACES:-}
+      - EXECUTOR_MIN_REPLICAS=${EXECUTOR_MIN_REPLICAS:-1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
