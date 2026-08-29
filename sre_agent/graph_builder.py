@@ -276,40 +276,82 @@ async def _act_gate_node(
                         getattr(tool_caller, "mcp_client", None)
                     )
 
-        # Self-improving loop (project #2): propose prior skills for this incident
-        # class and record the remediation that was applied as a reusable skill.
+        # Self-improving loop: propose prior skills and record only verified successes.
         report_payload["proposed_skills"] = []
         report_payload["recorded_skill"] = None
+        report_payload["negative_exemplar"] = None
+        report_payload["learning_eligibility"] = None
+        learning = {}
         try:
             from .act_phase import apply_skill_learning
+            from .incident_status import compute_incident_status
 
-            learning = apply_skill_learning(state, report)
+            verification = report_payload.get("verification")
+            live_results = report_payload.get("live_results")
+            incident_status = compute_incident_status(
+                state, report_payload, verification
+            )
+            learning = apply_skill_learning(
+                state,
+                report,
+                verification_outcome=verification,
+                live_results=live_results,
+                incident_status=incident_status,
+            )
             if learning.get("proposed_skills"):
                 report_payload["proposed_skills"] = learning["proposed_skills"]
             if learning.get("recorded_skill"):
                 report_payload["recorded_skill"] = learning["recorded_skill"]
+            if learning.get("negative_exemplar"):
+                report_payload["negative_exemplar"] = learning["negative_exemplar"]
+            if learning.get("learning_eligibility"):
+                report_payload["learning_eligibility"] = learning[
+                    "learning_eligibility"
+                ]
         except Exception as skill_err:
             logger.warning(f"Skill learning failed (non-fatal): {skill_err}")
             learning = {}
 
-        # Generative runbook: auto-write a runbook/postmortem for this incident so
-        # future RAG can find it. Runs unconditionally; entirely non-fatal (a
-        # failed write or LLM call never breaks the transcript).
+        # Generative runbook: only promote verified recoveries as successful
+        # exemplars. Blocked/dry-run/failed/unknown outcomes may write a negative
+        # postmortem marked as such, never a successful runbook.
         try:
             from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
+            from .verified_learning import assess_learning_eligibility
 
+            eligibility = learning.get("learning_eligibility")
+            if eligibility is None:
+                eligibility = assess_learning_eligibility(
+                    act_report=report_payload,
+                    verification_outcome=report_payload.get("verification"),
+                    live_results=report_payload.get("live_results"),
+                    executed=report_payload.get("executed"),
+                ).to_dict()
             skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
             rb_input = input_from_act(state, report, skill_id=skill_id)
-            # Prefer LLM-authored (generative) runbooks; fall back to template.
-            try:
-                from .model_router import TaskType, route_llm
+            if eligibility.get("eligible_for_success"):
+                rb_input.verification_status = "RESOLVED"
+                try:
+                    from .model_router import TaskType, route_llm
 
-                rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
-                path = await write_runbook_generative(rb_input, rb_llm)
-            except Exception:
+                    rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
+                    path = await write_runbook_generative(rb_input, rb_llm)
+                except Exception:
+                    path = write_runbook(rb_input)
+                report_payload["generated_runbook"] = path.name
+                logger.info(f"📝 ACT: generated verified runbook {path.name}")
+            else:
+                rb_input.verification_status = str(
+                    eligibility.get("outcome_class") or "incomplete"
+                )
                 path = write_runbook(rb_input)
-            report_payload["generated_runbook"] = path.name
-            logger.info(f"📝 ACT: generated runbook {path.name}")
+                report_payload["generated_runbook"] = None
+                report_payload["negative_runbook"] = path.name
+                logger.info(
+                    "📝 ACT: wrote negative runbook %s (%s)",
+                    path.name,
+                    eligibility.get("outcome_class"),
+                )
         except Exception as rb_err:
             logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
 

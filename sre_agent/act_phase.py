@@ -123,7 +123,9 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
     """
     alert = _get(state, "alert_context")
     labels = _get(alert, "labels", {}) or {}
-    severity_label = str(_get(alert, "severity", labels.get("severity", "")) or "").lower()
+    severity_label = str(
+        _get(alert, "severity", labels.get("severity", "")) or ""
+    ).lower()
 
     service = str(labels.get("service") or labels.get("app") or "").lower()
     namespace = labels.get("namespace")
@@ -143,7 +145,9 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
 
     # Count distinct services mentioned across investigation results, floored at 1.
     agent_results = _get(state, "agent_results", {}) or {}
-    affected_services = max(1, len({k for k in agent_results.keys()})) if agent_results else 1
+    affected_services = (
+        max(1, len({k for k in agent_results.keys()})) if agent_results else 1
+    )
 
     return IncidentSignals(
         affected_services=affected_services if service else 1,
@@ -155,9 +159,7 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
         saturation=0.0,
         still_escalating=is_critical,
         hypothesis_confidence=(
-            calibrated.calibrated_probability
-            if calibrated is not None
-            else 0.0
+            calibrated.calibrated_probability if calibrated is not None else 0.0
         ),
         hypothesis_confidence_calibrated=calibrated is not None,
     )
@@ -168,7 +170,9 @@ def _incident_environment(state: Any) -> str:
     # Runtime construction writes this metadata from the operator-owned context;
     # missing or unknown values deliberately fail to production.
     metadata = _get(state, "metadata", {}) or {}
-    raw = str(_get(metadata, "cluster_environment", "production") or "production").lower()
+    raw = str(
+        _get(metadata, "cluster_environment", "production") or "production"
+    ).lower()
     aliases = {
         "prod": "production",
         "production": "production",
@@ -218,7 +222,9 @@ def build_act_report(
 ) -> ActReport:
     """Compute severity, gate the plan, and dry-run the autonomous actions."""
     assessment: SeverityAssessment = classify_severity(extract_incident_signals(state))
-    incident_id = _get(state, "incident_id") or _get(_get(state, "metadata", {}) or {}, "incident_id")
+    incident_id = _get(state, "incident_id") or _get(
+        _get(state, "metadata", {}) or {}, "incident_id"
+    )
 
     plan = _get(state, "remediation_plan")
     actions = _plan_actions(plan)
@@ -245,8 +251,7 @@ def build_act_report(
         artifact_version = calibrated.artifact_version
         artifact_sha256 = calibrated.artifact_sha256
     confidence_ready = (
-        calibrated is not None
-        and calibrated.autonomy_threshold is not None
+        calibrated is not None and calibrated.autonomy_threshold is not None
     )
 
     aggregate, per_action = decide_plan(
@@ -263,7 +268,9 @@ def build_act_report(
     # may only touch its own namespace. Missing namespaces default to it; anything
     # targeting a different namespace is hard-blocked before any (even dry-run)
     # execution — the enforcement point that actually knows the cluster's scope.
-    cluster_ns = str(_get(_get(state, "metadata", {}) or {}, "cluster_namespace") or "").strip()
+    cluster_ns = str(
+        _get(_get(state, "metadata", {}) or {}, "cluster_namespace") or ""
+    ).strip()
 
     executor = Executor(actor=actor, incident_id=incident_id)
     action_reports: List[Dict[str, Any]] = []
@@ -282,15 +289,17 @@ def build_act_report(
                 action_ns = cluster_ns
             elif action_ns != cluster_ns:
                 blocked_out_of_scope += 1
-                action_reports.append({
-                    "action_type": str(_get(action, "action_type", "")),
-                    "target": str(_get(action, "target", "")),
-                    "namespace": action_ns,
-                    "parameters": dict(params or {}),
-                    "decision": AutonomyDecision.BLOCKED.value,
-                    "reversibility": gd.reversibility.value,
-                    "reason": f"blocked: targets namespace '{action_ns}', outside this cluster's scope '{cluster_ns}'",
-                })
+                action_reports.append(
+                    {
+                        "action_type": str(_get(action, "action_type", "")),
+                        "target": str(_get(action, "target", "")),
+                        "namespace": action_ns,
+                        "parameters": dict(params or {}),
+                        "decision": AutonomyDecision.BLOCKED.value,
+                        "reversibility": gd.reversibility.value,
+                        "reason": f"blocked: targets namespace '{action_ns}', outside this cluster's scope '{cluster_ns}'",
+                    }
+                )
                 continue
 
         rep: Dict[str, Any] = {
@@ -313,7 +322,11 @@ def build_act_report(
             executed.append(rep)
         action_reports.append(rep)
 
-    scope_note = f", {blocked_out_of_scope} blocked out-of-namespace" if blocked_out_of_scope else ""
+    scope_note = (
+        f", {blocked_out_of_scope} blocked out-of-namespace"
+        if blocked_out_of_scope
+        else ""
+    )
     summary = (
         f"{assessment.severity.name}: plan {aggregate.value}; "
         f"{len(executed)}/{len(actions)} action(s) dry-run-executed, "
@@ -355,7 +368,9 @@ async def execute_autonomous_live(
     """
     plan = _get(state, "remediation_plan")
     actions = _plan_actions(plan)
-    incident_id = _get(state, "incident_id") or _get(_get(state, "metadata", {}) or {}, "incident_id")
+    incident_id = _get(state, "incident_id") or _get(
+        _get(state, "metadata", {}) or {}, "incident_id"
+    )
     metadata = _get(state, "metadata", {}) or {}
     approval = _get(metadata, "approval", {}) or {}
     approval_hash = str(_get(approval, "action_hash", "") or "")
@@ -407,40 +422,118 @@ async def execute_autonomous_live(
             github_caller,
             idempotency_key,
         )
-        results.append({
-            "action_type": res.action_type,
-            "target": res.target,
-            "status": res.status,
-            "command": res.command,
-            "detail": res.detail,
-        })
+        results.append(
+            {
+                "action_type": res.action_type,
+                "target": res.target,
+                "status": res.status,
+                "command": res.command,
+                "detail": res.detail,
+            }
+        )
     return results
 
 
-def apply_skill_learning(state: Any, report: ActReport, store: Any = None) -> Dict[str, Any]:
-    """Self-improving loop (project #2): propose prior skills, record this one.
+def apply_skill_learning(
+    state: Any,
+    report: ActReport,
+    store: Any = None,
+    *,
+    verification_outcome: Any = None,
+    live_results: Any = None,
+    incident_status: Any = None,
+    reviewer_id: Optional[str] = None,
+    run_manifest_sha256: Optional[str] = None,
+    config_fingerprint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Self-improving loop: propose prior skills; record only verified successes.
 
-    Proposes skills learned from *earlier* incidents of the same class, then
-    records the actions applied in *this* incident as a (possibly recurring)
-    skill. ``store`` is injectable for testing; defaults to the process store.
+    Dry-run, blocked, failed, and unknown outcomes become negative exemplars and
+    never increment successful skill counts. ``store`` is injectable for tests.
     """
-    from .skill_store import get_skill_store, propose_skills, record_successful_remediation
+    from .skill_store import (
+        get_skill_store,
+        propose_skills,
+        record_successful_remediation,
+    )
+    from .verified_learning import (
+        assess_learning_eligibility,
+        build_negative_exemplar,
+        live_executed_actions,
+    )
 
     store = store or get_skill_store()
     alert = _get(state, "alert_context")
-    incident_id = _get(state, "incident_id") or _get(_get(state, "metadata", {}) or {}, "incident_id")
+    incident_id = _get(state, "incident_id") or _get(
+        _get(state, "metadata", {}) or {}, "incident_id"
+    )
+    metadata = _get(state, "metadata", {}) or {}
+    verification = verification_outcome
+    if verification is None:
+        verification = _get(report, "verification") or metadata.get("verification")
+    if live_results is None:
+        live_results = _get(report, "live_results") or metadata.get("live_results")
+    if config_fingerprint is None:
+        config_fingerprint = (
+            os.getenv("SENTINEL_CONFIG_FINGERPRINT", "").strip() or None
+        )
+    if run_manifest_sha256 is None:
+        run_manifest_sha256 = metadata.get("run_manifest_sha256")
 
-    proposed = propose_skills(store, alert)  # from prior incidents, before recording this one
-    executed = getattr(report, "executed", None) or []
-    recorded = record_successful_remediation(store, alert, executed, incident_id) if executed else None
+    proposed = propose_skills(store, alert)
+    eligibility = assess_learning_eligibility(
+        act_report=report,
+        verification_outcome=verification,
+        incident_status=incident_status,
+        live_results=live_results,
+        executed=getattr(report, "executed", None) or [],
+    )
+    recorded = None
+    negative = None
+    live = live_executed_actions(
+        live_results=live_results,
+        executed=getattr(report, "executed", None) or [],
+    )
+    if eligibility.eligible_for_success and live:
+        recorded = record_successful_remediation(
+            store,
+            alert,
+            live,
+            incident_id,
+            verification_status=eligibility.verification_status or "RESOLVED",
+            reviewer_id=reviewer_id,
+            run_manifest_sha256=run_manifest_sha256,
+            config_fingerprint=config_fingerprint,
+        )
+    elif incident_id:
+        try:
+            negative = build_negative_exemplar(
+                eligibility=eligibility,
+                incident_id=str(incident_id),
+                summary=getattr(report, "summary", "") or eligibility.outcome_class,
+                actions=live
+                or list(getattr(report, "executed", None) or [])
+                or list(getattr(report, "action_reports", None) or []),
+                reviewer_id=reviewer_id,
+                run_manifest_sha256=run_manifest_sha256,
+                config_fingerprint=config_fingerprint,
+            )
+            store.add_negative(negative.to_dict())
+        except Exception as exc:
+            logger.warning("negative exemplar not recorded: %s", exc)
+            negative = None
 
     return {
         "proposed_skills": [s.brief() for s in proposed],
         "recorded_skill": recorded.brief() if recorded else None,
+        "negative_exemplar": negative.to_dict() if negative else None,
+        "learning_eligibility": eligibility.to_dict(),
     }
 
 
-async def verify_live(state: Any, tool_caller: Any, wait_seconds: int = 0) -> Dict[str, Any]:
+async def verify_live(
+    state: Any, tool_caller: Any, wait_seconds: int = 0
+) -> Dict[str, Any]:
     """Confirm a remediation worked by re-checking the incident's error rate.
 
     Builds an error-rate PromQL for the affected service, re-queries it through
@@ -453,10 +546,14 @@ async def verify_live(state: Any, tool_caller: Any, wait_seconds: int = 0) -> Di
 
     alert = _get(state, "alert_context")
     service = signature_from_alert(alert).service
-    promql = build_promql(QueryIntent("error_rate", None if service == "unknown" else service, "5m"))
+    promql = build_promql(
+        QueryIntent("error_rate", None if service == "unknown" else service, "5m")
+    )
     threshold = float(os.getenv("VERIFY_ERROR_THRESHOLD", "0.05"))
 
-    outcome = await verify_remediation(promql, threshold, tool_caller, wait_seconds=wait_seconds)
+    outcome = await verify_remediation(
+        promql, threshold, tool_caller, wait_seconds=wait_seconds
+    )
     return {
         "status": outcome.status,
         "current_value": outcome.current_value,

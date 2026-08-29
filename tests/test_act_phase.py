@@ -278,17 +278,42 @@ def test_apply_skill_learning_records_then_proposes():
     plan = FakePlan([FakeAction("rollback", "checkout-service", {"namespace": "demo-app"},
                                 rollback_plan="redeploy")], risk_level="high")
 
-    # Incident 1: force an executed action by faking the report's executed list.
+    # Incident 1: dry-run executed list alone must not become a successful skill.
     report1 = _build(_state(alert, plan))
     report1.executed = [{"action_type": "rollback", "target": "checkout-service"}]
-    out1 = apply_skill_learning(_state(alert, plan), report1, store=store)
-    assert out1["recorded_skill"] is not None
-    assert out1["proposed_skills"] == []  # nothing learned before this one
+    out1 = apply_skill_learning(
+        {**_state(alert, plan), "incident_id": "inc-1"},
+        report1,
+        store=store,
+    )
+    assert out1["recorded_skill"] is None
+    assert out1["learning_eligibility"]["outcome_class"] == "dry_run"
+
+    # Verified live execution is recorded.
+    out1b = apply_skill_learning(
+        {**_state(alert, plan), "incident_id": "inc-1"},
+        report1,
+        store=store,
+        verification_outcome={"status": "RESOLVED"},
+        live_results=[
+            {"status": "EXECUTED", "action_type": "rollback", "target": "checkout-service"}
+        ],
+    )
+    assert out1b["recorded_skill"] is not None
+    assert out1b["proposed_skills"] == []
 
     # Incident 2 (same class): the skill from incident 1 is now proposed.
     report2 = _build(_state(alert, plan))
     report2.executed = [{"action_type": "rollback", "target": "checkout-service"}]
-    out2 = apply_skill_learning(_state(alert, plan), report2, store=store)
+    out2 = apply_skill_learning(
+        {**_state(alert, plan), "incident_id": "inc-2"},
+        report2,
+        store=store,
+        verification_outcome={"status": "RESOLVED"},
+        live_results=[
+            {"status": "EXECUTED", "action_type": "rollback", "target": "checkout-service"}
+        ],
+    )
     assert len(out2["proposed_skills"]) == 1
     assert out2["proposed_skills"][0]["actions"] == ["rollback"]
 

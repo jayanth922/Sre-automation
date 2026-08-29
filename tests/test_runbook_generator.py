@@ -43,14 +43,21 @@ def test_runbook_id_and_filename_stable():
 
 
 def test_frontmatter_is_valid_yaml_with_search_keys():
-    md = generate_runbook_markdown(_inp())
+    md = generate_runbook_markdown(_inp(verification_status="RESOLVED"))
     assert md.startswith("---\n")
     fm_text = md.split("---", 2)[1]
     fm = yaml.safe_load(fm_text)
     # The runbooks server indexes these keys for search.
     assert fm["alert_name"] == "CheckoutHighErrorRate"
     assert fm["service"] == "checkout-service"
-    assert fm["status"] == "Auto-generated"
+    assert fm["status"] == "Verified success"
+    assert "verified-success" in fm["tags"]
+
+    negative = yaml.safe_load(
+        generate_runbook_markdown(_inp(verification_status="dry_run")).split("---", 2)[1]
+    )
+    assert negative["status"] == "Negative exemplar"
+    assert "negative-exemplar" in negative["tags"]
     assert "high_error_rate" in fm["tags"]
 
 
