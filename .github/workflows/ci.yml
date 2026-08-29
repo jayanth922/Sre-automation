@@ -118,6 +118,8 @@ jobs:
         run: bash scripts/check_helm_ws.sh
       - name: Verify production-capable Helm chart
         run: bash scripts/check_helm_production.sh
+      - name: Verify Meridian is not hardcoded in base manifests
+        run: bash scripts/check_no_meridian_defaults.sh
       - name: Verify Kustomize build
         run: bash scripts/check_kustomize.sh
 
