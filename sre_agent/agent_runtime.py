@@ -38,8 +38,9 @@ import uuid
 # Configure logging based on DEBUG environment variable
 # This ensures debug mode works even when not run via __main__
 if not logging.getLogger().handlers:
-    # Check if DEBUG is already set in environment
-    debug_from_env = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+    from .config import parse_bool
+
+    debug_from_env = parse_bool(os.getenv("DEBUG"), default=False, name="DEBUG")
     configure_logging(debug_from_env)
 
 

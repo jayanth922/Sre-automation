@@ -19,9 +19,12 @@ ALGORITHM = "HS256"
 # Short-lived access token (held in memory client-side); refresh handles longevity.
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
-# Secure cookie flag — set true when served over TLS (production). Default false
-# so local http (port-forward) still stores the cookie.
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+# Secure cookie flag — set true when served over TLS (production). Default
+# follows APP_ENV via typed settings (production → true); DEBUG-style string
+# truthiness is not used (COOKIE_SECURE=false must disable).
+from sre_agent.config import get_settings
+
+COOKIE_SECURE = get_settings().cookie_secure
 REFRESH_COOKIE_NAME = "sentinel_refresh"
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
