@@ -1,11 +1,11 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
 from enum import Enum
+from typing import List, Optional
 
-from sqlalchemy import String, ForeignKey, DateTime, Text, Boolean, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # ----------------------------------------------------------------------
 # Enum Definitions
@@ -49,7 +49,7 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     api_key: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     users: Mapped[List["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clusters: Mapped[List["Cluster"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
@@ -134,27 +134,5 @@ class AuditLog(Base):
         return f"<AuditLog(action='{self.action}', user='{self.user_id}')>"
 
 
-class AgentAuditLog(Base):
-    """
-    Flight Recorder: Immutable log of all MCP tool executions by Agents.
-    """
-    __tablename__ = "agent_audit_logs"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    
-    # Context
-    incident_id: Mapped[str] = mapped_column(String, index=True, nullable=True) # ID or "general"
-    agent_name: Mapped[str] = mapped_column(String, nullable=False) # e.g. "KubernetesAgent"
-    
-    # Action
-    tool_name: Mapped[str] = mapped_column(String, nullable=False) # e.g. "mcp-k8s-real.get_pod"
-    tool_args: Mapped[str] = mapped_column(Text) # JSON string of arguments
-    
-    # Outcome
-    status: Mapped[str] = mapped_column(String) # PENDING, SUCCESS, FAILURE
-    result: Mapped[Optional[str]] = mapped_column(Text) # JSON string of result (truncated if too large)
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
-    
-    def __repr__(self):
-        return f"<AgentAuditLog(agent='{self.agent_name}', tool='{self.tool_name}', status='{self.status}')>"
+# Compatibility re-export: flight recorder lives on the canonical backend Base.
+from backend.models import AgentAuditLog as AgentAuditLog  # noqa: E402,F401

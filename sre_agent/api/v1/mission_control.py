@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import desc, select, update
-from sqlalchemy.exc import ProgrammingError
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from backend import crud, database, models, schemas
+from backend.models import AgentAuditLog
 from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
 from sre_agent.api.v1.ownership import get_owned_incident
 from sre_agent.approval_flow import (
@@ -24,7 +24,6 @@ from sre_agent.approval_flow import (
     validate_pending_approval,
 )
 from sre_agent.checkpointer import durable_checkpointer_configured, thread_config
-from sre_agent.models import AgentAuditLog
 # agent_graph will be imported lazily to avoid circular dependency
 
 router = APIRouter(
@@ -320,16 +319,19 @@ async def get_incident_audit_logs(
     """
     Get audit logs for a specific incident.
     """
-    # Fetch Audit Logs (Tools)
-    audit_logs = []
-    try:
-        stmt = select(AgentAuditLog).filter(
-            AgentAuditLog.incident_id == incident_id
-        ).order_by(desc(AgentAuditLog.timestamp))
-        result = await db.execute(stmt)
-        audit_logs = result.scalars().all()
-    except ProgrammingError:
-        audit_logs = []
+    # Fetch Audit Logs (Tools) from the migrated flight-recorder table.
+    stmt = (
+        select(AgentAuditLog)
+        .filter(AgentAuditLog.incident_id == incident_id)
+        .order_by(desc(AgentAuditLog.timestamp))
+    )
+    if owned_incident.cluster_id is not None:
+        stmt = stmt.filter(
+            (AgentAuditLog.cluster_id == owned_incident.cluster_id)
+            | (AgentAuditLog.cluster_id.is_(None))
+        )
+    result = await db.execute(stmt)
+    audit_logs = result.scalars().all()
 
     # Fetch Redis Logs (Thoughts/Steps)
     try:

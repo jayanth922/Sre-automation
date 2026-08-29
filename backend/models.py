@@ -54,6 +54,7 @@ class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
+    DEGRADED = "degraded"
     FAILED = "failed"
 
 class JobType(str, Enum):
@@ -306,6 +307,53 @@ class AuditEvent(Base):
 
     def __repr__(self):
         return f"<AuditEvent(action='{self.action_type}', outcome='{self.outcome}')>"
+
+
+class AgentAuditLog(Base):
+    """Flight recorder: immutable MCP/tool execution log for investigations.
+
+    Lives on the canonical Alembic Base so fresh and upgraded databases create
+    the table. Tenant/cluster/incident/run fields make every critical action
+    queryable for mission-control and compliance export.
+    """
+
+    __tablename__ = "agent_audit_logs"
+    __table_args__ = (
+        Index("ix_agent_audit_logs_org_timestamp", "organization_id", "timestamp"),
+        Index("ix_agent_audit_logs_cluster_timestamp", "cluster_id", "timestamp"),
+        Index("ix_agent_audit_logs_incident_timestamp", "incident_id", "timestamp"),
+        Index("ix_agent_audit_logs_run_timestamp", "run_id", "timestamp"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    cluster_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("clusters.id"), nullable=True, index=True
+    )
+    incident_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+
+    agent_name: Mapped[str] = mapped_column(String, nullable=False)
+    tool_name: Mapped[str] = mapped_column(String, nullable=False)
+    tool_args: Mapped[str] = mapped_column(Text)
+
+    status: Mapped[str] = mapped_column(String)  # PENDING, SUCCESS, FAILURE
+    result: Mapped[Optional[str]] = mapped_column(Text)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    def __repr__(self):
+        return (
+            f"<AgentAuditLog(agent='{self.agent_name}', tool='{self.tool_name}', "
+            f"status='{self.status}')>"
+        )
 
 
 class SLO(Base):
