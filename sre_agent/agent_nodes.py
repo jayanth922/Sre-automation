@@ -230,15 +230,8 @@ class BaseAgentNode:
             # Also try to get from metadata if set by higher level
             if not incident_id:
                 incident_id = state.get("metadata", {}).get("incident_id")
-
-            metadata = state.get("metadata") or {}
-            set_audit_context(
-                incident_id=incident_id,
-                agent_name=self.name,
-                organization_id=metadata.get("organization_id"),
-                cluster_id=metadata.get("cluster_id"),
-                run_id=metadata.get("run_id") or metadata.get("job_id"),
-            )
+            
+            set_audit_context(incident_id=incident_id, agent_name=self.name)
 
             try:
                 # Add timeout to prevent infinite hanging (120 seconds)
