@@ -73,9 +73,17 @@ def test_ci_renders_default_and_opt_in_rbac_modes():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
     check = (ROOT / "scripts" / "check_helm_rbac.sh").read_text()
     live = (ROOT / "scripts" / "check_live_rbac.sh").read_text()
+    deploy_templates = (ROOT / "scripts" / "check_deploy_templates.sh").read_text()
 
-    assert "check_helm_rbac.sh" in workflow
-    assert "check_helm_ws.sh" in workflow
+    # CI may invoke RBAC checks directly or via the deploy-templates wrapper (P08).
+    assert (
+        "check_helm_rbac.sh" in workflow
+        or (
+            "check_deploy_templates.sh" in workflow
+            and "check_helm_rbac.sh" in deploy_templates
+        )
+    )
+    assert "check_helm_ws.sh" in workflow or "check_helm_ws.sh" in deploy_templates
     assert "default chart rendered cluster-wide RBAC" in check
     assert "--set rbac.clusterWide.enabled=true" in check
     assert "assert_denied delete services" in live
