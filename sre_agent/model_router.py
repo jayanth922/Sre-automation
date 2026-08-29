@@ -304,6 +304,18 @@ def route_llm(
         raise ModelRouterBlocked(decision.block_reason)
     logger.info(f"ModelRouter: {decision.reason}")
 
+    def account(llm):
+        from .model_accounting import instrument_llm
+
+        return instrument_llm(
+            llm,
+            task_type=decision.task_type.value,
+            tier=decision.tier.value,
+            requested_provider=decision.provider,
+            requested_model=decision.model_id,
+            fallback_allowed=use_fallback,
+        )
+
     # LiteLLM backend (optional): our tier decides the model; LiteLLM does the
     # multi-provider/cost/fallback plumbing. Falls through to the provider path
     # if not enabled, no tier model configured, or LiteLLM is unavailable.
@@ -313,7 +325,13 @@ def route_llm(
         model = tier_litellm_model(decision.tier.value)
         if model:
             try:
-                return build_litellm_llm(model, temperature=decision.temperature, max_tokens=kwargs.get("max_tokens"))
+                return account(
+                    build_litellm_llm(
+                        model,
+                        temperature=decision.temperature,
+                        max_tokens=kwargs.get("max_tokens"),
+                    )
+                )
             except Exception as e:
                 logger.warning(f"LiteLLM backend unavailable ({e}); using provider path")
 
@@ -327,5 +345,9 @@ def route_llm(
         llm_kwargs["model_id"] = decision.model_id
 
     if use_fallback:
-        return create_llm_with_fallback(primary_provider=decision.provider, **llm_kwargs)
-    return create_llm_with_error_handling(decision.provider, **llm_kwargs)
+        return account(
+            create_llm_with_fallback(
+                primary_provider=decision.provider, **llm_kwargs
+            )
+        )
+    return account(create_llm_with_error_handling(decision.provider, **llm_kwargs))

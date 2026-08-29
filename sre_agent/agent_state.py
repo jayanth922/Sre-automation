@@ -52,6 +52,30 @@ class InvestigationFindings(BaseModel):
     )
 
 
+class CausalLink(BaseModel):
+    """One explicit cause→effect link used by structured evaluation."""
+
+    cause: str = Field(..., description="Evidence-supported causal condition")
+    effect: str = Field(..., description="Observed consequence of the cause")
+
+
+class EvidenceReference(BaseModel):
+    """A source locator supporting one diagnosis claim."""
+
+    source: str = Field(
+        ...,
+        description="Evidence system, such as prometheus, loki, github, or kubernetes",
+    )
+    reference: str = Field(
+        ...,
+        description="Exact query, resource, log selector, commit, or trace reference",
+    )
+    claim: str = Field(..., description="Claim directly supported by this evidence")
+    observed_at: Optional[str] = Field(
+        None, description="Timezone-aware source observation timestamp when available"
+    )
+
+
 class ReflectorAnalysis(BaseModel):
     """Analysis from ReflectorNode identifying discrepancies and hypotheses."""
 
@@ -61,6 +85,24 @@ class ReflectorAnalysis(BaseModel):
     )
     hypothesis: str = Field(
         ..., description="Primary hypothesis explaining the incident"
+    )
+    affected_service: Optional[str] = Field(
+        None, description="Exact service identifier implicated by the evidence"
+    )
+    fault_mode: Optional[str] = Field(
+        None, description="Concise snake_case failure mode implicated by the evidence"
+    )
+    causal_chain: List[CausalLink] = Field(
+        default_factory=list,
+        description="Ordered evidence-supported links from cause to customer impact",
+    )
+    evidence: List[EvidenceReference] = Field(
+        default_factory=list,
+        description="Source references that support the diagnosis",
+    )
+    unknowns: List[str] = Field(
+        default_factory=list,
+        description="Material unresolved questions or missing evidence",
     )
     confidence: float = Field(
         ge=0.0, le=1.0, description="Confidence level in the hypothesis (0.0-1.0)"
@@ -106,6 +148,15 @@ class RemediationPlan(BaseModel):
     )
     risk_level: Literal["low", "medium", "high"] = Field(
         ..., description="Overall risk level of the plan"
+    )
+    confidence: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Self-reported probability that the proposed remediation is correct "
+            "and safe; calibration is required before it can affect autonomy"
+        ),
     )
     requires_approval: bool = Field(
         True, description="Whether this plan requires human approval"

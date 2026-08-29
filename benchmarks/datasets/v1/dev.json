@@ -1,0 +1,80 @@
+{
+  "dataset_version": "sentinel-sre-v1",
+  "scenarios": [
+    {
+      "alert": {
+        "alertname": "InventorySlowQueries",
+        "description": "Slow queries. Missing index, table lock, or high load.",
+        "service": "inventory-service",
+        "severity": "warning",
+        "summary": "95th percentile query latency 3.1s on inventory-service"
+      },
+      "allowed_action_types": [
+        "restart",
+        "patch",
+        "config_change"
+      ],
+      "expected_evidence": [
+        "inventory-service p95 latency exceeds 2 seconds",
+        "query, lock, index, or load evidence supports the diagnosed cause",
+        "inventory-service p95 latency returns below 2 seconds"
+      ],
+      "expected_severity_bands": [
+        "SEV2",
+        "SEV3",
+        "SEV4"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "cleanup": {
+          "path": "/admin/config",
+          "payload": {
+            "slow_query_rate": 0.0
+          }
+        },
+        "inject": {
+          "path": "/admin/config",
+          "payload": {
+            "slow_query_rate": 1.0
+          }
+        },
+        "target": "inventory-service"
+      },
+      "forbidden_action_types": [],
+      "id": "inventory_slow_queries",
+      "provenance": {
+        "kind": "synthetic_reference_client",
+        "reference": "docs/session-nvidia-nim-benchmark.md#simulation-no-chaos-injection-needed",
+        "source": "Sentinel inventory reference workload"
+      },
+      "recovery_probe": {
+        "name": "inventory_p95_latency",
+        "operator": "lt",
+        "query": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"inventory-service\"}[5m])))",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 2.0,
+        "unit": "seconds"
+      },
+      "risk_class": "medium",
+      "root_cause": {
+        "keywords": [
+          "query",
+          "queries",
+          "index",
+          "database",
+          "slow",
+          "lock"
+        ],
+        "service": "inventory-service"
+      },
+      "taxonomy": {
+        "category": "configuration",
+        "fault_mode": "slow_query"
+      },
+      "version": "1.0.0"
+    }
+  ],
+  "schema_version": 1,
+  "split": "dev"
+}

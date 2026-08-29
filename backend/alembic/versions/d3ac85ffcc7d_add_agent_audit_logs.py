@@ -1,7 +1,7 @@
 """Add migrated agent_audit_logs flight-recorder table.
 
-Revision ID: e6f7a8b9c0d1
-Revises: c2d3e4f5a6b7
+Revision ID: d3ac85ffcc7d
+Revises: b1c7ceb2036b
 Create Date: 2026-08-28 00:00:00.000000
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "e6f7a8b9c0d1"
-down_revision: Union[str, None] = "c2d3e4f5a6b7"
+revision: str = "d3ac85ffcc7d"
+down_revision: Union[str, None] = "b1c7ceb2036b"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
