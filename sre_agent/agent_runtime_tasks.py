@@ -1,27 +1,35 @@
-import asyncio
-import json
-import logging
-import os
+"""QUARANTINED alternate investigation runner.
+
+This module historically duplicated SaaS graph execution with a divergent
+feature set (lifecycle publishes, per-cluster metadata). Production must not
+import it for new work.
+
+Use::
+
+    from sre_agent.incident_runner import run_incident_investigation
+
+The symbols below remain only as deprecated forwarders for accidental imports.
+"""
+
+from __future__ import annotations
+
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+import warnings
+from typing import Optional
 
-from .agent_state import AgentState
-from .constants import SREConstants
-from .callbacks import RedisLogCallbackHandler
-from .redis_state_store import get_state_store
-from backend import models, database
-from backend.models import IncidentStatus, JobStatus
-from sqlalchemy import func
+from sre_agent.incident_runner import run_incident_investigation
 
-logger = logging.getLogger(__name__)
+__all__ = ["run_graph_background_saas"]
+
 
 async def run_graph_background_saas(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
     alert_name: str,
-    job_id: Optional[uuid.UUID] = None
+    job_id: Optional[uuid.UUID] = None,
+    **kwargs,
 ):
+<<<<<<< HEAD
     """
     SaaS-aware background execution.
     Writes logs/results to the Postgres Database instead of just Redis.
@@ -305,3 +313,4 @@ async def run_graph_background_saas(
              await db.commit()
 
 import os # Required for getenv in initial_state
+

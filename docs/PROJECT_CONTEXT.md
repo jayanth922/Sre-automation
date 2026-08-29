@@ -346,8 +346,10 @@ Four-layer multi-agent incident-response system:
     queue+ack, else ignore). Poster/steer_sink injected.
   - `integrations/slack_bot.py`: `build_war_room_app` (thread-reply handler),
     `open_war_room`, `post_incident_message` steer sink (POST /message). Guarded.
-  - `agent_runtime_tasks`: publishes an "opened" event to the `incidents` control
-    channel → Slack service opens the war room.
+  - Canonical runner (`sre_agent.incident_runner.run_incident_investigation`)
+    publishes an "opened" lifecycle event to the `incidents` control channel →
+    Slack service opens the war room. The quarantined `agent_runtime_tasks`
+    module only forwards to that entry point.
   - The loop: agent streams into the thread; on-call replies route back into the
     supervisor's human-checkpoint queue → agent responds in-thread. 6 tests; **217**.
   - Roadmap: #1 stream ✓ #2 war room ✓ → #3 monitor+on-call routing, #4 dash chat panel.

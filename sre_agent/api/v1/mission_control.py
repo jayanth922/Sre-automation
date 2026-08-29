@@ -595,7 +595,7 @@ async def send_incident_message(
         },
     )
 
-    from sre_agent.agent_runtime import run_graph_background_saas
+    from sre_agent.incident_runner import run_incident_investigation
     # For follow-up investigations on an incident, reuse the original alert's
     # labels and annotations so the specialists keep the same context they
     # had during the first pass.
@@ -603,7 +603,7 @@ async def send_incident_message(
     follow_up_context = await load_incident_chat_context(str(incident_uuid))
     follow_up_alert = follow_up_context.get("alert_context") or {}
     asyncio.create_task(
-        run_graph_background_saas(
+        run_incident_investigation(
             incident_id=incident_uuid,
             cluster_id=cluster.id,
             alert_name=message,

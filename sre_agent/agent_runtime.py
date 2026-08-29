@@ -991,16 +991,27 @@ async def _run_graph_impl(
     session_id = str(incident_id)
     logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id} (Job: {job_id})")
 
-    # Mirror this incident into a Slack war-room thread (no-op unless Slack is
-    # configured). Fire-and-forget; never blocks or breaks the investigation.
-    try:
-        from sre_agent.war_room_service import maybe_open_war_room
-        asyncio.create_task(maybe_open_war_room(session_id, alert_name))
-    except Exception as war_err:
-        logger.debug(f"war-room start skipped: {war_err}")
+        # Mirror this incident into a Slack war-room thread (no-op unless Slack is
+        # configured). Fire-and-forget; never blocks or breaks the investigation.
+        try:
+            from sre_agent.war_room_service import maybe_open_war_room
+            asyncio.create_task(maybe_open_war_room(session_id, alert_name))
+        except Exception as war_err:
+            logger.debug(f"war-room start skipped: {war_err}")
 
-    # Update Incident Status to INVESTIGATING and Job to RUNNING
-    async with database.AsyncSessionLocal() as db:
+        # Announce on the live bus so dashboards / Slack war-room consumers update
+        # without waiting for the next poll (migrated from the alternate runner).
+        from sre_agent.incident_runner import publish_incident_lifecycle
+
+        await publish_incident_lifecycle(
+            "opened",
+            incident_id=incident_id,
+            alert_name=alert_name,
+            summary=f"Investigating alert: {alert_name}",
+        )
+
+        # Update Incident Status to INVESTIGATING and Job to RUNNING
+        async with database.AsyncSessionLocal() as db:
         # Update Incident
         stmt_inc = (
             models.Incident.__table__
@@ -1451,7 +1462,23 @@ async def _run_graph_impl(
                 )
 
             await db.commit()
-            
+
+        # Push lifecycle so incidents list / overview reflect the outcome live.
+        from sre_agent.incident_runner import publish_incident_lifecycle
+
+        lifecycle_event = (
+            "resolved"
+            if computed_status == IncidentStatus.RESOLVED
+            else "status_changed"
+        )
+        await publish_incident_lifecycle(
+            lifecycle_event,
+            incident_id=incident_id,
+            alert_name=alert_name,
+            summary=final_response,
+            extra={"status": str(computed_status)},
+        )
+
         logger.info(f"SaaS Background execution completed for incident: {incident_id}")
 
     except Exception as e:
