@@ -1,7 +1,19 @@
-# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
-kube_context        = "orbstack"
-namespace           = "sentinel"
-llm_provider        = "groq"
-secret_key          = "change-me-long-random"
-postgres_password   = "change-me-postgres"
-groq_api_key        = ""
+# Copy to terraform.tfvars (git-ignored). No credential values belong here.
+kube_context         = ""                 # empty = current kube context
+namespace            = "sentinel"
+llm_provider         = "groq"
+image_registry       = "sentinel"
+image_tag            = "latest"
+existing_secret_name = "sentinel-secrets" # create this Secret out-of-band first
+
+# Optional non-secret chart overrides:
+# chart_values = {
+#   ingress = {
+#     enabled = true
+#     host    = "sentinel.example.com"
+#     tls     = true
+#     tlsSecretName = "sentinel-tls"
+#   }
+#   api = { replicas = 2 }
+#   features = { liveBusBackend = "redis" }
+# }

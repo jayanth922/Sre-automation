@@ -86,9 +86,12 @@ Build the images once, then pick one:
 # Helm
 helm install sentinel deploy/helm/sentinel -n sentinel --create-namespace \
   --set secrets.secretKey=$(openssl rand -hex 32) \
-  --set secrets.postgresPassword=$(openssl rand -hex 16)
+  --set secrets.postgresPassword=$(openssl rand -hex 16) \
+  --set secrets.credentialEncryptionKey=$(python -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())') \
+  --set secrets.mcpServiceToken=$(openssl rand -hex 32)
 
-# Terraform (installs the chart)
+# Terraform (Helm release only — BYO cluster + pre-created Secret; see deploy/terraform/README.md)
+kubectl apply -f deploy/terraform/secret.example.yaml   # edit first
 cd deploy/terraform && terraform init && terraform apply
 ```
 
