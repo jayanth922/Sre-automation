@@ -1,16 +1,17 @@
 """Add truthful cluster heartbeat source/reason fields.
 
-Revision ID: d5e6f7a8b9c0
-Revises: c2d3e4f5a6b7
+Revision ID: 2253eabf13e3
+Revises: d3ac85ffcc7d
 Create Date: 2026-08-28 00:00:00.000000
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "d5e6f7a8b9c0"
-down_revision: Union[str, None] = "c2d3e4f5a6b7"
+revision: str = "2253eabf13e3"
+down_revision: Union[str, None] = "d3ac85ffcc7d"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

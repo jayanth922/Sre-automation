@@ -540,6 +540,18 @@ async def get_jobs_for_cluster(db: AsyncSession, cluster_id: uuid.UUID):
     return result.scalars().all()
 
 
+async def get_run_manifest_for_job(
+    db: AsyncSession, cluster_id: uuid.UUID, job_id: uuid.UUID
+) -> Optional[models.RunManifest]:
+    result = await db.execute(
+        select(models.RunManifest).where(
+            models.RunManifest.cluster_id == cluster_id,
+            models.RunManifest.job_id == job_id,
+        )
+    )
+    return result.scalars().first()
+
+
 async def create_audit_event(
     db: AsyncSession,
     cluster_id: uuid.UUID,

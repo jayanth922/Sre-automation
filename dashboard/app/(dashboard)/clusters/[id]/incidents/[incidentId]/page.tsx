@@ -224,6 +224,9 @@ export default function IncidentConsolePage() {
               const isUser = ev.speaker_role === "user"
               const rawConf = typeof ev.payload?.confidence === "number" ? (ev.payload.confidence as number) : null
               const conf = rawConf === null ? null : Math.round(rawConf <= 1 ? rawConf * 100 : rawConf)
+              const confidenceLabel = ev.payload?.confidence_calibrated === true
+                ? "calibrated probability"
+                : "self-reported confidence · uncalibrated"
               return (
                 <div className="sx-ev" key={ev.id ?? ev.sequence ?? idx}>
                   <div className="rl">
@@ -235,7 +238,7 @@ export default function IncidentConsolePage() {
                       {ev.title || pretty(ev.event_type)}
                       {conf !== null && (
                         <span className="sx-conf">
-                          confidence
+                          {confidenceLabel}
                           <span className="sx-cbar">
                             <span style={{ width: `${conf}%` }} />
                           </span>

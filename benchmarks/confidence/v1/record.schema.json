@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/confidence/v1/record.schema.json",
+  "title": "Sentinel task-specific confidence outcome record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task",
+    "rubric_version",
+    "raw_confidence",
+    "outcome",
+    "scenario",
+    "scenario_version",
+    "dataset_sha256",
+    "config_fingerprint",
+    "pair_id",
+    "observed_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task": {"enum": ["diagnosis", "remediation"]},
+    "rubric_version": {"type": "string", "minLength": 1},
+    "raw_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "outcome": {"type": "boolean"},
+    "scenario": {"type": "string", "minLength": 1},
+    "scenario_version": {"type": "string", "minLength": 1},
+    "dataset_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "config_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "pair_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"}
+  }
+}

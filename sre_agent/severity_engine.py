@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Literal
 
@@ -85,7 +85,10 @@ class IncidentSignals:
     still_escalating: bool = False
 
     # ── Meta ────────────────────────────────────────────────────────
-    hypothesis_confidence: float = 1.0  # Reflector confidence, 0.0–1.0
+    # Only empirically calibrated diagnosis probability belongs here. Raw
+    # model self-confidence must remain outside severity policy.
+    hypothesis_confidence: float = 0.0
+    hypothesis_confidence_calibrated: bool = False
 
 
 @dataclass
@@ -98,6 +101,7 @@ class SeverityAssessment:
     impact_bucket: Bucket
     urgency_bucket: Bucket
     rounded_up: bool = False
+    confidence_calibrated: bool = False
     rationale: str = ""
 
 
@@ -181,7 +185,10 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
 
     rounded_up = False
     severity = base
-    if signals.hypothesis_confidence < _CONFIDENCE_ROUNDUP_THRESHOLD:
+    if (
+        not signals.hypothesis_confidence_calibrated
+        or signals.hypothesis_confidence < _CONFIDENCE_ROUNDUP_THRESHOLD
+    ):
         severity = _escalate(base)
         rounded_up = severity != base
 
@@ -189,10 +196,18 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
         f"impact={impact:.2f}({ib}) × urgency={urgency:.2f}({ub}) → {base.name}"
     )
     if rounded_up:
-        rationale += (
-            f"; escalated to {severity.name} "
-            f"(confidence {signals.hypothesis_confidence:.2f} < {_CONFIDENCE_ROUNDUP_THRESHOLD})"
-        )
+        if signals.hypothesis_confidence_calibrated:
+            rationale += (
+                f"; escalated to {severity.name} "
+                f"(calibrated diagnosis probability "
+                f"{signals.hypothesis_confidence:.2f} < "
+                f"{_CONFIDENCE_ROUNDUP_THRESHOLD})"
+            )
+        else:
+            rationale += (
+                f"; escalated to {severity.name} "
+                "(diagnosis confidence is uncalibrated)"
+            )
 
     logger.info(f"🎚️  SeverityEngine: {rationale}")
 
@@ -203,6 +218,7 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
         impact_bucket=ib,
         urgency_bucket=ub,
         rounded_up=rounded_up,
+        confidence_calibrated=signals.hypothesis_confidence_calibrated,
         rationale=rationale,
     )
 
