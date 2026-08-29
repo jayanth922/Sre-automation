@@ -65,8 +65,10 @@ dev = [
     "flake8>=6.0.0",
     "bandit>=1.7.0",
     "pre-commit>=3.0.0",
-    "ruff>=0.1.0"
+    "ruff>=0.1.0",
 ]
+# pytest-cov is installed in CI via `uv pip install` (see ci.yml) to avoid
+# regenerating the entire uv.lock for a single tooling dependency.
 bench = [
     # httpx is already a core dependency — no extra installs needed.
     # This group exists as a marker and for any future bench-only additions.
@@ -99,6 +101,19 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
+
+[tool.coverage.run]
+branch = true
+source = ["backend", "sre_agent"]
+omit = [
+    "sre_agent/prompts/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+fail_under = 20
+show_missing = true
+skip_covered = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

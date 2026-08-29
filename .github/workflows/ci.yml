@@ -9,9 +9,33 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  UV_VERSION: "0.6.14"
+  HELM_VERSION: "v3.16.4"
+  TERRAFORM_VERSION: "1.9.8"
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.12"
+
 jobs:
-  backend:
-    name: Backend (deps, compile, tests)
+  python-quality:
+    name: Python quality (ruff critical, mypy, compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+      - name: Quality gate
+        run: bash scripts/check_python_quality.sh
+
+  backend-tests:
+    name: Backend tests + coverage
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -35,14 +59,27 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: Sync dependencies (validates the lockfile)
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
         run: uv sync --frozen --extra dev
       - name: Apply database migrations
         run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
         run: uv run python -m compileall backend sre_agent
-      - name: Unit + existing suite
-        run: uv run pytest -q --ignore=tests/integration
+      - name: Install coverage tooling
+        run: uv pip install "pytest-cov>=4.1.0"
+      - name: Tests with coverage
+        run: >
+          uv run pytest -q
+          --cov=backend
+          --cov=sre_agent
+          --cov-report=term-missing:skip-covered
+          --cov-fail-under=20
+          --ignore=tests/integration
       - name: Integration layer (P09)
         run: uv run pytest -q tests/integration -m integration
 
@@ -90,8 +127,63 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  migrations:
+    name: Alembic migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: sentinel
+          POSTGRES_PASSWORD: sentinel
+          POSTGRES_DB: sentinel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sentinel"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      SECRET_KEY: ci-secret-key
+      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
+      LLM_PROVIDER: groq
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+      - name: Apply migrations
+        run: bash scripts/check_migrations.sh
+
+  eval-smoke:
+    name: Eval smoke (invariants)
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-secret-key
+      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
+      LLM_PROVIDER: groq
+      LIVE_BUS_BACKEND: memory
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+      - name: Eval smoke
+        run: bash scripts/check_eval_smoke.sh
+
   frontend:
-    name: Frontend (type-check)
+    name: Frontend (type-check + production build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -100,12 +192,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
       - name: Type-check
         run: npx tsc --noEmit
+      - name: Production build
+        run: npm run build
 
   manifests:
     name: Manifests (Helm + Kustomize)
@@ -142,8 +236,8 @@ jobs:
       - name: fmt / validate / representative plan
         run: bash scripts/check_terraform.sh
 
-  images:
-    name: Images build
+  images-platform:
+    name: Platform images (API + web)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,3 +245,68 @@ jobs:
         run: docker build --build-arg SENTINEL_CODE_SHA=${{ github.sha }} -f platform/Dockerfile -t sentinel/api:ci .
       - name: Build web image
         run: docker build -f platform/Dockerfile.dashboard -t sentinel/web:ci dashboard
+
+  images-edge:
+    name: Edge MCP images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server:
+          - executor_real
+          - github_exec
+          - github_real
+          - k8s_real
+          - loki_real
+          - prometheus_real
+          - runbooks_local
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.server }}
+        working-directory: edge_mcp_servers
+        run: >
+          docker build
+          -f mcp_servers/${{ matrix.server }}/Dockerfile
+          -t sentinel/edge-${{ matrix.server }}:ci
+          .
+
+  quality-gate:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - python-quality
+      - backend-tests
+      - migrations
+      - eval-smoke
+      - frontend
+      - manifests
+      - images-platform
+      - images-edge
+    steps:
+      - name: Require all jobs to succeed
+        run: |
+          echo "python-quality=${{ needs.python-quality.result }}"
+          echo "backend-tests=${{ needs.backend-tests.result }}"
+          echo "migrations=${{ needs.migrations.result }}"
+          echo "eval-smoke=${{ needs.eval-smoke.result }}"
+          echo "frontend=${{ needs.frontend.result }}"
+          echo "manifests=${{ needs.manifests.result }}"
+          echo "images-platform=${{ needs.images-platform.result }}"
+          echo "images-edge=${{ needs.images-edge.result }}"
+          for r in \
+            "${{ needs.python-quality.result }}" \
+            "${{ needs.backend-tests.result }}" \
+            "${{ needs.migrations.result }}" \
+            "${{ needs.eval-smoke.result }}" \
+            "${{ needs.frontend.result }}" \
+            "${{ needs.manifests.result }}" \
+            "${{ needs.images-platform.result }}" \
+            "${{ needs.images-edge.result }}"
+          do
+            if [[ "$r" != "success" ]]; then
+              echo "Quality gate failed: a required job did not succeed"
+              exit 1
+            fi
+          done
+          echo "Quality gate passed."

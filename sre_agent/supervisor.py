@@ -1605,6 +1605,7 @@ You can:
                             "incident_id": incident_id,
                             "metadata": metadata_json,
                         })
+
                     else:
                         store_tool.invoke({
                             "incident_text": incident_text,
