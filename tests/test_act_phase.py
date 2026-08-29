@@ -25,6 +25,7 @@ from sre_agent.act_phase import (  # noqa: E402
 )
 from sre_agent.approval_flow import compute_action_hash  # noqa: E402
 from sre_agent.execution_context import ExecutionContext  # noqa: E402
+from sre_agent.severity_engine import Severity, classify_severity  # noqa: E402
 from sre_agent.skill_store import InMemorySkillStore  # noqa: E402
 
 ALLOW = lambda a, e, r: (True, "allowed")  # noqa: E731
@@ -90,12 +91,27 @@ class FakeReflector:
     confidence: float = 0.9
 
 
+def _measured_results(**overrides: Any) -> Dict[str, Any]:
+    """Measured telemetry fixtures — never invent these from alert severity alone."""
+    payload = {
+        "error_rate": 0.02,
+        "slo_burn_rate": 0.5,
+        "slo_breached": False,
+        "saturation": 0.1,
+        "error_rate_slope": 0.0,
+        "still_escalating": False,
+        "affected_services": 1,
+    }
+    payload.update(overrides)
+    return {"MetricsAgent": {"findings": payload}}
+
+
 def _state(alert, plan=None, results=None, confidence=0.9):
     return {
         "alert_context": alert,
         "remediation_plan": plan,
         "reflector_analysis": FakeReflector(confidence),
-        "agent_results": results or {"metrics_agent": "ok"},
+        "agent_results": results if results is not None else _measured_results(),
         "incident_id": None,
         "metadata": {},
     }
@@ -124,7 +140,22 @@ def test_critical_incident_requires_approval():
     alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
     plan = FakePlan([FakeAction("rollback", "checkout-service", {"namespace": "demo-app"})],
                     risk_level="high")
-    report = build_act_report(_state(alert, plan), evaluate_fn=ALLOW)
+    # Even without fabricating rates from the critical label, measured outage
+    # signals keep the plan behind approval.
+    report = build_act_report(
+        _state(
+            alert,
+            plan,
+            results=_measured_results(
+                error_rate=0.85,
+                slo_burn_rate=18.0,
+                slo_breached=True,
+                saturation=0.8,
+                still_escalating=True,
+            ),
+        ),
+        evaluate_fn=ALLOW,
+    )
     assert report.aggregate_decision == "requires_approval"
     assert len(report.executed) == 0
 
@@ -152,12 +183,78 @@ def test_mixed_plan_executes_autonomous_holds_the_rest():
     assert len(report.action_reports) == 2
 
 
-def test_extract_signals_from_critical_revenue_service():
+def test_extract_signals_from_critical_revenue_service_without_fabricating_rates():
     alert = FakeAlert("critical", {"service": "checkout-service"})
-    signals = extract_incident_signals(_state(alert))
+    signals = extract_incident_signals(_state(alert, results={}))
     assert signals.revenue_impacting is True
     assert signals.user_facing is True
+    # Critical labels must not invent measured telemetry.
+    assert signals.error_rate is None
+    assert signals.slo_burn_rate is None
+    assert signals.slo_breached is None
+    assert any(link.unknown for link in signals.evidence if link.field == "error_rate")
+
+
+def test_extract_signals_uses_measured_metrics_from_agent_results():
+    alert = FakeAlert("critical", {"service": "checkout-service"})
+    state = _state(
+        alert,
+        results=_measured_results(
+            error_rate=0.42,
+            slo_burn_rate=8.0,
+            slo_breached=True,
+            saturation=0.55,
+        ),
+        confidence=0.8,
+    )
+    signals = extract_incident_signals(state)
+    assert signals.error_rate == 0.42
+    assert signals.slo_burn_rate == 8.0
     assert signals.slo_breached is True
+    assert signals.hypothesis_confidence == 0.8
+    assert any(
+        link.field == "error_rate" and link.source.startswith("agent_results:")
+        for link in signals.evidence
+    )
+    assessment = classify_severity(signals)
+    assert assessment.severity is not Severity.UNKNOWN
+    assert assessment.evidence
+
+
+def test_critical_incident_with_measured_outage_requires_approval():
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    plan = FakePlan(
+        [FakeAction("rollback", "checkout-service", {"namespace": "demo-app"})],
+        risk_level="high",
+    )
+    state = _state(
+        alert,
+        plan,
+        results=_measured_results(
+            error_rate=0.9,
+            slo_burn_rate=20.0,
+            slo_breached=True,
+            saturation=0.9,
+            still_escalating=True,
+            affected_services=3,
+        ),
+        confidence=0.9,
+    )
+    report = build_act_report(state, evaluate_fn=ALLOW)
+    assert report.aggregate_decision == "requires_approval"
+    assert len(report.executed) == 0
+    assert report.severity in {"SEV1", "SEV2"}
+
+
+def test_missing_telemetry_requires_approval_not_autonomy():
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    plan = FakePlan([FakeAction("restart", "inventory-service", {"namespace": "demo-app"})])
+    report = build_act_report(_state(alert, plan, results={}), evaluate_fn=ALLOW)
+    assert report.unknown_telemetry is True
+    assert report.severity == "UNKNOWN"
+    assert report.aggregate_decision == "requires_approval"
+    assert len(report.executed) == 0
+    assert report.severity_evidence
 
 
 def test_report_is_serializable():

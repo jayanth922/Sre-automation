@@ -60,8 +60,12 @@ def _severity(value: Any) -> Severity:
     if isinstance(value, Severity):
         return value
     try:
-        if isinstance(value, str) and value.upper().startswith("SEV"):
-            return Severity[value.upper()]
+        if isinstance(value, str):
+            token = value.upper()
+            if token == "UNKNOWN":
+                return Severity.UNKNOWN
+            if token.startswith("SEV"):
+                return Severity[token]
         return Severity(int(value))
     except (KeyError, TypeError, ValueError) as exc:
         raise MutationRejected("invalid_gate_context", "A valid incident severity is required") from exc
