@@ -409,6 +409,16 @@ async def startup_event():
     except Exception as slack_err:
         logger.warning(f"Could not start Slack bot: {slack_err}")
 
+    # Durable investigation worker (lease-backed queue; survives process loss).
+    try:
+        from sre_agent.job_worker import start_job_worker
+
+        if os.getenv("JOB_WORKER_ENABLED", "true").lower() in {"1", "true", "yes"}:
+            start_job_worker()
+            logger.info("Durable job worker enabled")
+    except Exception as worker_err:
+        logger.warning(f"Could not start durable job worker: {worker_err}")
+
     # Initialize only a tenant-bound graph in API mode. Standalone development
     # may use the explicit local environment context.
     if cluster_token:
@@ -426,8 +436,13 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    try:
+        from sre_agent.job_worker import stop_job_worker
+
+        await stop_job_worker()
+    except Exception as worker_err:
+        logger.warning(f"Durable job worker shutdown failed: {worker_err}")
     await _runtime_cache.close_all()
-    
 
 
 @app.post(
@@ -1639,16 +1654,20 @@ async def webhook_alert(
             incident = await crud.create_incident(db, incident_data, cluster_id)
             incident_id = incident.id
             logger.info(f"✅ Incident created: {incident_id}")
+
+            cluster = await crud.get_cluster_by_id(db, cluster_id)
+            from sre_agent.job_worker import enqueue_and_kick
+
+            await enqueue_and_kick(
+                db=db,
+                cluster_id=cluster_id,
+                organization_id=getattr(cluster, "org_id", None) if cluster else None,
+                incident_id=incident_id,
+                alert_name=alert_name,
+                triggered_by="self_defense",
+            )
         
-        # 🚀 Start SaaS-aware LangGraph execution
-        background_tasks.add_task(
-            run_graph_background_saas,
-            incident_id=incident_id,
-            cluster_id=cluster_id,
-            alert_name=alert_name
-        )
-        
-        logger.info(f"🚀 [SELF-DEFENSE MODE] Investigation launched for incident: {incident_id}")
+        logger.info(f"🚀 [SELF-DEFENSE MODE] Investigation queued for incident: {incident_id}")
         
         return {
             "status": "accepted",
