@@ -12,12 +12,14 @@ echo "==> compile Python packages"
 python3 -m compileall -q backend sre_agent benchmarks
 
 echo "==> docs truthfulness unit checks"
-if command -v pytest >/dev/null 2>&1; then
-  PYTHONPATH="$ROOT" pytest -q tests/test_docs_truthfulness.py
-elif [[ -x .venv/bin/pytest ]]; then
+if [[ -x .venv/bin/pytest ]]; then
   PYTHONPATH="$ROOT" .venv/bin/pytest -q tests/test_docs_truthfulness.py
+elif command -v pytest >/dev/null 2>&1; then
+  PYTHONPATH="$ROOT" pytest -q tests/test_docs_truthfulness.py
+elif command -v uv >/dev/null 2>&1; then
+  PYTHONPATH="$ROOT" uv run pytest -q tests/test_docs_truthfulness.py
 else
-  python3 -m pytest -q tests/test_docs_truthfulness.py
+  PYTHONPATH="$ROOT" python3 -m pytest -q tests/test_docs_truthfulness.py
 fi
 
 echo "==> helm RBAC / WS defaults"
