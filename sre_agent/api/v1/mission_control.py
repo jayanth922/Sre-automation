@@ -24,6 +24,7 @@ from sre_agent.approval_flow import (
     validate_pending_approval,
 )
 from sre_agent.checkpointer import durable_checkpointer_configured, thread_config
+from backend.models import AgentAuditLog
 # agent_graph will be imported lazily to avoid circular dependency
 
 router = APIRouter(
