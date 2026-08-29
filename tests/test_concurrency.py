@@ -64,6 +64,38 @@ def test_default_max_from_env(monkeypatch):
     assert cc.InvestigationLimiter().max == 9
 
 
+def test_lease_admission_never_exceeds_capacity_and_reclaims_expired():
+    admission = cc.LeaseAdmissionController(max_concurrent=1, lease_seconds=30)
+    first = admission.try_acquire("a", organization_id="org-1", owner="w1")
+    assert first is not None
+    assert admission.try_acquire("b", organization_id="org-1", owner="w1") is None
+
+    first.expires_at = first.acquired_at
+    assert admission.reclaim_expired() == 1
+    second = admission.try_acquire("b", organization_id="org-1", owner="w2")
+    assert second is not None
+    assert admission.owner("b") == "w2"
+
+
+def test_lease_admission_per_organization_quota():
+    admission = cc.LeaseAdmissionController(
+        max_concurrent=5, max_per_organization=1, lease_seconds=30
+    )
+    assert admission.try_acquire("a", organization_id="org-1", owner="w1") is not None
+    assert admission.try_acquire("b", organization_id="org-1", owner="w1") is None
+    assert admission.try_acquire("c", organization_id="org-2", owner="w1") is not None
+    stats = admission.stats(organization_id="org-1")
+    assert stats["organization_active"] == 1
+    assert stats["available"] == 3
+
+
+def test_acquire_or_fail_is_fail_closed_on_timeout():
+    admission = cc.LeaseAdmissionController(max_concurrent=1, lease_seconds=30)
+    assert admission.try_acquire("a", owner="w1") is not None
+    with pytest.raises(cc.AtCapacityError, match="admission timeout"):
+        admission.acquire_or_fail("b", owner="w2", wait_seconds=0.01, poll_seconds=0.01)
+
+
 def test_sandbox_create_and_cleanup(tmp_path):
     sb = cc.create_sandbox("inc-1", base_dir=str(tmp_path))
     assert os.path.isdir(sb.workspace)

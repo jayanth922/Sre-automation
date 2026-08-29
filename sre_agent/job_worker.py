@@ -80,6 +80,10 @@ async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
         alert_annotations=payload.get("alert_annotations") or {},
         alert_starts_at=payload.get("alert_starts_at"),
         alert_severity=payload.get("alert_severity") or "warning",
+        organization_id=(
+            str(job.organization_id) if job.organization_id is not None else None
+        ),
+        admission_owner=worker_id,
     )
 
     async with database.AsyncSessionLocal() as db:
@@ -91,11 +95,22 @@ async def worker_loop(worker_id: Optional[str] = None) -> None:
     logger.info("Durable job worker started as %s", owner)
     while not _STOP.is_set():
         try:
+            from sre_agent.concurrency import get_admission_controller
+
+            admission = get_admission_controller()
+            available = int(admission.stats()["available"])
+            if available < 1:
+                try:
+                    await asyncio.wait_for(_STOP.wait(), timeout=_poll_interval())
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
             async with database.AsyncSessionLocal() as db:
                 claimed = await claim_jobs(
                     db,
                     worker_id=owner,
-                    limit=_batch_size(),
+                    limit=min(_batch_size(), available),
                     lease_seconds=default_lease_seconds(),
                 )
             if not claimed:

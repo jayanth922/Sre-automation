@@ -913,30 +913,59 @@ async def run_graph_background_saas(
     alert_annotations: Optional[Dict[str, str]] = None,
     alert_starts_at: Optional[str] = None,
     alert_severity: str = "warning",
+    organization_id: Optional[str] = None,
+    admission_owner: Optional[str] = None,
 ):
-    """Concurrency-bounded entry point: reserve an investigation slot (bounded
-    wait so bursts serialize instead of stampeding the LLM/rate limits), run the
-    investigation, then always release the slot."""
-    from sre_agent.concurrency import get_limiter
+    """Fail-closed concurrency entry point: reserve an admission lease or raise.
 
-    limiter = get_limiter()
+    Never continues without a reserved slot after the wait budget. Callers that
+    enqueue durable jobs should leave the job queued/retryable when this raises
+    ``AtCapacityError``.
+    """
+    from sre_agent.concurrency import AtCapacityError, get_admission_controller
+
+    admission = get_admission_controller()
     sid = str(incident_id)
-    acquired = False
-    for _ in range(24):  # ~2 min bounded wait
-        if limiter.try_acquire(sid):
-            acquired = True
-            break
-        await asyncio.sleep(5)
-    if not acquired:
-        logger.warning(f"investigation limiter at capacity; running {sid} without a slot")
+    owner = admission_owner or f"runtime:{sid}"
+    org = organization_id or "default"
+
+    # Resolve org from cluster when not provided.
+    if organization_id is None:
+        try:
+            async with database.AsyncSessionLocal() as db:
+                cluster = await crud.get_cluster_by_id(db, cluster_id)
+                if cluster is not None and getattr(cluster, "org_id", None):
+                    org = str(cluster.org_id)
+        except Exception as org_err:
+            logger.debug("admission org lookup failed: %s", org_err)
+
+    lease = await admission.async_acquire_or_fail(
+        sid,
+        organization_id=org,
+        owner=owner,
+    )
+    logger.info(
+        "Admission lease acquired for %s owner=%s capacity_stats=%s",
+        sid,
+        lease.owner,
+        admission.stats(organization_id=org),
+    )
     try:
         return await _run_graph_impl(
-            incident_id, cluster_id, alert_name, job_id,
-            alert_labels, alert_annotations, alert_starts_at, alert_severity,
+            incident_id,
+            cluster_id,
+            alert_name,
+            job_id,
+            alert_labels,
+            alert_annotations,
+            alert_starts_at,
+            alert_severity,
         )
     finally:
-        if acquired:
-            limiter.release(sid)
+        try:
+            admission.release(sid, owner=owner)
+        except AtCapacityError as release_err:
+            logger.warning("admission release skipped: %s", release_err)
 
 
 async def _run_graph_impl(
