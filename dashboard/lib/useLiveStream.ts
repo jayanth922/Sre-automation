@@ -8,12 +8,17 @@ import { api } from "./auth-context"
 // Connects to the agent runtime's /ws endpoints (see sre_agent/agent_runtime.py).
 // The default is the browser's own origin, where Helm routes /ws straight to the
 // API. Set NEXT_PUBLIC_WS_BASE only when the API is exposed on another origin.
+// Reconnects pass the last durable cursor so the server can replay missed events.
 
 export interface LiveEvent {
     type: string
     payload: Record<string, unknown>
     incident_id?: string | null
     ts: string
+    v?: number
+    org_id?: string | null
+    id?: string
+    cursor?: string | null
 }
 
 function wsUrl(path: string): string {
@@ -36,7 +41,7 @@ interface WsTicketResponse {
  * a channel ("incidents" for the cluster-wide incident lifecycle feed, "insights"
  * for global health insights), or nothing (defaults to insights). Returns the
  * rolling list of events (newest last) and the live connection state.
- * Auto-reconnects with backoff.
+ * Auto-reconnects with backoff and resumes from the last event cursor.
  */
 export function useLiveStream(incidentId?: string, opts?: { channel?: LiveChannel; maxEvents?: number }) {
     const channel: LiveChannel = opts?.channel ?? "insights"
@@ -44,6 +49,7 @@ export function useLiveStream(incidentId?: string, opts?: { channel?: LiveChanne
     const [events, setEvents] = useState<LiveEvent[]>([])
     const [connected, setConnected] = useState(false)
     const wsRef = useRef<WebSocket | null>(null)
+    const cursorRef = useRef<string | null>(null)
 
     useEffect(() => {
         let closed = false
@@ -78,8 +84,11 @@ export function useLiveStream(incidentId?: string, opts?: { channel?: LiveChanne
             if (closed) return
 
             const baseUrl = wsUrl(path)
+            const params = new URLSearchParams()
+            params.set("ticket", ticket)
+            if (cursorRef.current) params.set("cursor", cursorRef.current)
             const separator = baseUrl.includes("?") ? "&" : "?"
-            const ws = new WebSocket(`${baseUrl}${separator}ticket=${encodeURIComponent(ticket)}`)
+            const ws = new WebSocket(`${baseUrl}${separator}${params.toString()}`)
             wsRef.current = ws
 
             ws.onopen = () => {
@@ -89,7 +98,13 @@ export function useLiveStream(incidentId?: string, opts?: { channel?: LiveChanne
             ws.onmessage = (msg) => {
                 try {
                     const event = JSON.parse(msg.data) as LiveEvent
-                    setEvents((prev) => [...prev.slice(-(maxEvents - 1)), event])
+                    if (event.cursor) cursorRef.current = event.cursor
+                    setEvents((prev) => {
+                        if (event.id && prev.some((existing) => existing.id === event.id)) {
+                            return prev
+                        }
+                        return [...prev.slice(-(maxEvents - 1)), event]
+                    })
                 } catch {
                     /* ignore malformed frames */
                 }
