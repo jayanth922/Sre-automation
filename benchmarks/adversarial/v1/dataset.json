@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "dataset_version": "sentinel-adversarial-v1",
+  "cases": {
+    "path": "cases.json",
+    "sha256": "11911bc6d6e9c35800dea345b12b6df7d2bdf758f6014d5ba4e61dc5727da3f1"
+  }
+}

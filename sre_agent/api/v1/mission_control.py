@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import desc, select, update
-from sqlalchemy.exc import ProgrammingError
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from backend import crud, database, models, schemas
+from backend.models import AgentAuditLog
 from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
 from sre_agent.api.v1.ownership import get_owned_incident
 from sre_agent.approval_flow import (
@@ -24,7 +24,6 @@ from sre_agent.approval_flow import (
     validate_pending_approval,
 )
 from sre_agent.checkpointer import durable_checkpointer_configured, thread_config
-from sre_agent.models import AgentAuditLog
 # agent_graph will be imported lazily to avoid circular dependency
 
 router = APIRouter(
@@ -147,7 +146,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
     """
     try:
         from sre_agent.incident_timeline import load_incident_chat_context
-        from sre_agent.llm_utils import create_llm_with_fallback
+        from sre_agent.model_router import TaskType, route_llm
         from sre_agent.narrative import narrate_chat_greeting, narrate_followup_answer
 
         chat_context = await load_incident_chat_context(str(incident.id))
@@ -156,7 +155,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
         prior_summary = chat_context.get("prior_summary") or incident.summary or ""
         incident_status = chat_context.get("incident_status", "") or str(incident.status)
 
-        llm = create_llm_with_fallback()
+        llm = route_llm(TaskType.NARRATION, use_fallback=True)
         normalized = re.sub(r"\s+", " ", message.strip().lower())
         is_greeting = normalized in {
             "hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "cool", "k",
@@ -320,16 +319,19 @@ async def get_incident_audit_logs(
     """
     Get audit logs for a specific incident.
     """
-    # Fetch Audit Logs (Tools)
-    audit_logs = []
-    try:
-        stmt = select(AgentAuditLog).filter(
-            AgentAuditLog.incident_id == incident_id
-        ).order_by(desc(AgentAuditLog.timestamp))
-        result = await db.execute(stmt)
-        audit_logs = result.scalars().all()
-    except ProgrammingError:
-        audit_logs = []
+    # Fetch Audit Logs (Tools) from the migrated flight-recorder table.
+    stmt = (
+        select(AgentAuditLog)
+        .filter(AgentAuditLog.incident_id == incident_id)
+        .order_by(desc(AgentAuditLog.timestamp))
+    )
+    if owned_incident.cluster_id is not None:
+        stmt = stmt.filter(
+            (AgentAuditLog.cluster_id == owned_incident.cluster_id)
+            | (AgentAuditLog.cluster_id.is_(None))
+        )
+    result = await db.execute(stmt)
+    audit_logs = result.scalars().all()
 
     # Fetch Redis Logs (Thoughts/Steps)
     try:
@@ -665,12 +667,38 @@ async def get_incident_agent_metrics(
     db: AsyncSession = Depends(database.get_db),
     owned_incident: models.Incident = Depends(get_owned_incident),
 ):
-    """Per-incident agent run telemetry — node timings, step count, total agent
-    wall-time, provider fallbacks, and errors — from the in-process recorder.
-    Token/cost accounting lives in Langfuse (when configured); this covers the
-    trajectory/latency view that's always available."""
+    """Per-incident node telemetry plus fail-closed root-run evidence."""
+    from sre_agent.model_accounting import get_model_accounting_recorder
     from sre_agent.observability import get_recorder
-    return get_recorder().summary(incident_id)
+    from sre_agent.trace_evidence import get_run_trace_recorder
+
+    accounting_recorder = get_model_accounting_recorder()
+    trace_recorder = get_run_trace_recorder()
+    root_trace_ids = trace_recorder.root_trace_ids(incident_id=incident_id)
+    model_accounting = accounting_recorder.summary(incident_id=incident_id)
+    trace_completeness = {
+        "complete": False,
+        "completeness_reasons": ["root_trace_not_recorded"],
+        "root_trace_id": None,
+        "spans": 0,
+        "cost_usd": None,
+        "tokens": None,
+    }
+    if root_trace_ids:
+        root_trace_id = str(root_trace_ids[-1])
+        model_accounting = accounting_recorder.summary(
+            root_trace_id=root_trace_id
+        )
+        trace_completeness = trace_recorder.summary(
+            root_trace_id=root_trace_id,
+            model_accounting=model_accounting,
+        )
+
+    return {
+        **get_recorder().summary(incident_id),
+        "model_accounting": model_accounting,
+        "trace_completeness": trace_completeness,
+    }
 
 
 @router.post("/{incident_id}/approve")

@@ -21,7 +21,7 @@ import pytest
 # Backend import chain needs these present to build the engine at import time.
 for k, v in {
     "POSTGRES_USER": "x", "POSTGRES_PASSWORD": "x", "POSTGRES_DB": "x",
-    "POSTGRES_HOST": "localhost", "LLM_PROVIDER": "ollama",
+    "POSTGRES_HOST": "localhost", "LLM_PROVIDER": "groq",
 }.items():
     os.environ.setdefault(k, v)
 
@@ -56,14 +56,14 @@ def _state(plan, alert):
     }
 
 
-def test_low_severity_reversible_runs_autonomously_and_records_skill():
+def test_low_severity_reversible_waits_without_calibration():
     alert = AlertContext(alert_name="InventorySlowQueries", severity="warning",
                          labels={"service": "inventory-service", "namespace": "demo-app"}, annotations={})
     report = asyncio.run(_act_gate_node(_state(_plan("restart", "inventory-service"), alert)))["metadata"]["act_report"]
-    assert report["aggregate_decision"] == "autonomous"
-    assert len(report["executed"]) == 1
-    assert report["executed"][0]["command"].startswith("kubectl rollout restart")
-    assert report["recorded_skill"] is not None  # self-improving loop fired
+    assert report["aggregate_decision"] == "requires_approval"
+    assert report["executed"] == []
+    assert report["confidence_status"] == "uncalibrated"
+    assert report["recorded_skill"] is None
 
 
 def test_critical_production_rollback_without_approval_flag_is_blocked():

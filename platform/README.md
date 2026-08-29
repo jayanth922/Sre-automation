@@ -50,6 +50,10 @@ The script does three important things before it starts containers:
 2. Creates one from [../.env.example](../.env.example) when missing.
 3. Sources the variables into the shell so Docker Compose sees the same values the application sees.
 
+It also stamps clean API images with the current Git SHA. A dirty checkout or a
+direct Compose build without `SENTINEL_CODE_SHA` is intentionally recorded as
+non-comparable in incident run manifests.
+
 For the **full** demo (Target_Client, platform, and edge MCP relay), use [../main_start.sh](../main_start.sh), which runs those pieces in order. Use `cd platform && docker compose up` (or `./start.sh` here) when you only need the control plane without the customer simulation or edge tools.
 
 ## Startup Order And Behavior

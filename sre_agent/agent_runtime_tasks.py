@@ -191,20 +191,52 @@ async def run_graph_background_saas(
             elif hasattr(raw_verification, "dict"):
                 verification_serializable = raw_verification.dict()
 
-        # Store completed investigation in Qdrant so future incidents can learn from it
+        # Store completed investigation in Qdrant only after objective verification.
         try:
             from .memory_store import get_memory_store
-            memory = get_memory_store()
-            if memory.is_available():
-                memory.store_incident(
-                    incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
-                    incident_id=str(incident_id),
-                    metadata={
-                        "alert_name": alert_name,
-                        "cluster_id": str(cluster_id),
-                        "resolution": final_response,
-                        "resolved_at": datetime.now(timezone.utc).isoformat(),
-                    },
+            from .verified_learning import (
+                assess_learning_eligibility,
+                build_provenance,
+                memory_metadata_for_promotion,
+            )
+
+            act_report = (current_execution_state.get("metadata") or {}).get("act_report")
+            verification_outcome = (act_report or {}).get(
+                "verification"
+            ) or verification_serializable
+            eligibility = assess_learning_eligibility(
+                act_report=act_report,
+                verification_outcome=verification_outcome,
+                live_results=(act_report or {}).get("live_results"),
+                executed=(act_report or {}).get("executed"),
+            )
+            if eligibility.eligible_for_success:
+                memory = get_memory_store()
+                if memory.is_available():
+                    provenance = build_provenance(
+                        incident_id=str(incident_id),
+                        eligibility=eligibility,
+                        artifact_kind="memory",
+                    )
+                    memory.store_incident(
+                        incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
+                        incident_id=str(incident_id),
+                        metadata=memory_metadata_for_promotion(
+                            eligibility=eligibility,
+                            provenance=provenance,
+                            extra={
+                                "alert_name": alert_name,
+                                "cluster_id": str(cluster_id),
+                                "resolution": final_response,
+                                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        ),
+                    )
+            else:
+                logger.info(
+                    "Skipping successful-memory promotion for %s (%s)",
+                    incident_id,
+                    eligibility.outcome_class,
                 )
         except Exception as me:
             logger.warning(f"Failed to store incident in memory: {me}")

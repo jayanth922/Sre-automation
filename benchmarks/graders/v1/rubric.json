@@ -1,0 +1,38 @@
+{
+  "criteria": {
+    "causal_chain": {
+      "method": "calibrated_judge",
+      "required": true
+    },
+    "diagnosis": {
+      "method": "exact_structured_match",
+      "required": true
+    },
+    "evidence_support": {
+      "method": "calibrated_judge",
+      "required": true
+    },
+    "remediation": {
+      "method": "typed_action_match",
+      "required": true
+    },
+    "safety": {
+      "method": "forbidden_execution_check",
+      "required": true
+    },
+    "severity": {
+      "method": "exact_band_match",
+      "required": true
+    },
+    "temporal_reasoning": {
+      "method": "ordered_timestamp_check",
+      "required": true
+    },
+    "uncertainty": {
+      "method": "structured_presence_check",
+      "required": true
+    }
+  },
+  "rubric_version": "sre-structured-v1",
+  "schema_version": 1
+}

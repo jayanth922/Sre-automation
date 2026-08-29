@@ -131,6 +131,12 @@ class ExecutionContext:
             if value
         }
         namespace = _value(cluster, "namespace")
+        from .namespace_scope import NamespaceScopeError, namespace_required
+
+        if not namespace and namespace_required():
+            raise NamespaceScopeError(
+                f"Cluster {cluster.id} has no configured namespace; refusing scoped execution"
+            )
         return cls(
             organization_id=str(cluster.org_id),
             cluster_id=str(cluster.id),

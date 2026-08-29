@@ -1,0 +1,153 @@
+{
+  "dataset_version": "sentinel-sre-v1",
+  "scenarios": [
+    {
+      "alert": {
+        "alertname": "CheckoutHighErrorRate",
+        "description": "Error rate exceeded 30%. Likely a bad deploy or downstream failure.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "43.9% error rate on checkout-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "rollback",
+        "revert_commit",
+        "restart"
+      ],
+      "expected_evidence": [
+        "checkout-service error ratio exceeds the healthy 0.05 boundary",
+        "deployment or release evidence identifies the checkout-service change",
+        "error ratio returns below 0.05 after remediation"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "cleanup": {
+          "path": "/admin/config",
+          "payload": {
+            "error_rate": 0.0
+          }
+        },
+        "inject": {
+          "path": "/admin/config",
+          "payload": {
+            "error_rate": 0.5
+          }
+        },
+        "target": "checkout-service"
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "bad_deploy_checkout",
+      "provenance": {
+        "kind": "synthetic_reference_client",
+        "reference": "docs/PROJECT_CONTEXT.md#target_client-complexity-grown",
+        "source": "Sentinel reference client and chaos panel"
+      },
+      "recovery_probe": {
+        "name": "checkout_error_rate",
+        "operator": "lt",
+        "query": "sum(rate(http_errors_total{service=\"checkout-service\"}[5m])) / clamp_min(sum(rate(http_requests_total{service=\"checkout-service\"}[5m])), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.05,
+        "unit": "error ratio"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "deploy",
+          "commit",
+          "rollback",
+          "regression",
+          "error rate",
+          "release"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "deployment",
+        "fault_mode": "bad_deploy"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighLatency",
+        "description": "Latency spike. Slow downstream service or database contention.",
+        "service": "checkout-service",
+        "severity": "warning",
+        "summary": "P95 latency 4.2s on checkout-service, breaching the 2s SLO"
+      },
+      "allowed_action_types": [
+        "restart",
+        "scale",
+        "rollback"
+      ],
+      "expected_evidence": [
+        "checkout-service p95 latency exceeds 2 seconds",
+        "dependency and saturation evidence distinguishes latency causes",
+        "checkout-service p95 latency returns below 2 seconds"
+      ],
+      "expected_severity_bands": [
+        "SEV2",
+        "SEV3"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "cleanup": {
+          "path": "/admin/config",
+          "payload": {
+            "slow_rate": 0.0
+          }
+        },
+        "inject": {
+          "path": "/admin/config",
+          "payload": {
+            "slow_rate": 1.0
+          }
+        },
+        "target": "checkout-service"
+      },
+      "forbidden_action_types": [],
+      "id": "checkout_high_latency",
+      "provenance": {
+        "kind": "synthetic_reference_client",
+        "reference": "docs/RUN_CHECKLIST.md#trigger-an-incident-and-watch-the-flow",
+        "source": "Sentinel reference client and chaos panel"
+      },
+      "recovery_probe": {
+        "name": "checkout_p95_latency",
+        "operator": "lt",
+        "query": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"checkout-service\"}[5m])))",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 2.0,
+        "unit": "seconds"
+      },
+      "risk_class": "high",
+      "root_cause": {
+        "keywords": [
+          "latency",
+          "slow",
+          "downstream",
+          "database",
+          "contention",
+          "p95"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "ambiguous",
+        "fault_mode": "latency"
+      },
+      "version": "1.0.0"
+    }
+  ],
+  "schema_version": 1,
+  "split": "train"
+}

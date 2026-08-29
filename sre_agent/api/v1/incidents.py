@@ -3,7 +3,7 @@ import json
 from typing import List
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select
 
@@ -35,7 +35,6 @@ async def list_incidents(
 async def trigger_incident(
     cluster_id: uuid.UUID,
     payload: schemas.IncidentCreate,
-    background_tasks: BackgroundTasks,
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db)
 ):
@@ -53,61 +52,43 @@ async def trigger_incident(
     # 1. Create Incident Record
     incident = await crud.create_incident(db, payload, cluster_id)
 
-    # 2. Create a shadow Job record so the Dashboard "Incident Command Center" can see it
-    # This bridges the gap between the LangGraph-based Incident flow and the Job-based UI.
-    from backend.models import JobType, JobStatus
-    shadow_job = await crud.create_job(
-        db=db,
-        cluster_id=cluster_id,
-        job=schemas.JobCreate(
-            job_type=JobType.INVESTIGATION,
-            payload=json.dumps({
-                "incident_id": str(incident.id),
-                "alert": payload.title,
-                "severity": payload.severity.value if hasattr(payload.severity, 'value') else str(payload.severity)
-            })
-        )
-    )
+    # 2. Enqueue a durable leased investigation job (idempotent per incident).
+    from sre_agent.job_worker import enqueue_and_kick
 
-    # 3. Trigger Background Agent
-    # We delay the import to avoid top-level circular dependency if any
+    parsed_labels: dict = {}
+    parsed_annotations: dict = {}
+    if payload.description:
+        try:
+            import re as _re
+            match = _re.search(r"Labels:\s*(\{.*\})", payload.description, _re.DOTALL)
+            if match:
+                parsed_labels = json.loads(match.group(1))
+            first_paragraph = payload.description.split("\n\n", 1)[0].strip()
+            if first_paragraph:
+                parsed_annotations["summary"] = first_paragraph
+        except Exception as parse_err:
+            logger.debug(f"Could not parse labels from description: {parse_err}")
+
     try:
-        from sre_agent.agent_runtime import run_graph_background_saas
-        # Best-effort extraction of any alert payload encoded in the
-        # description (Alertmanager-style "Labels: {...}" trailer). This
-        # keeps the dashboard "Trigger" button on parity with the webhook
-        # path so the agents always see the alert's labels.
-        parsed_labels: dict = {}
-        parsed_annotations: dict = {}
-        if payload.description:
-            try:
-                import re as _re
-                match = _re.search(r"Labels:\s*(\{.*\})", payload.description, _re.DOTALL)
-                if match:
-                    parsed_labels = json.loads(match.group(1))
-                first_paragraph = payload.description.split("\n\n", 1)[0].strip()
-                if first_paragraph:
-                    parsed_annotations["summary"] = first_paragraph
-            except Exception as parse_err:
-                logger.debug(f"Could not parse labels from description: {parse_err}")
-
-        background_tasks.add_task(
-            run_graph_background_saas,
-            incident_id=incident.id,
+        await enqueue_and_kick(
+            db=db,
             cluster_id=cluster.id,
+            organization_id=cluster.org_id,
+            incident_id=incident.id,
             alert_name=payload.title,
-            job_id=shadow_job.id,
             alert_labels=parsed_labels,
             alert_annotations=parsed_annotations,
             alert_starts_at=None,
             alert_severity=(
-                payload.severity.value if hasattr(payload.severity, "value") else str(payload.severity)
+                payload.severity.value
+                if hasattr(payload.severity, "value")
+                else str(payload.severity)
             ),
+            triggered_by="manual_trigger",
         )
-    except ImportError as e:
+    except Exception as e:
         logger.error(
-            f"Failed to import run_graph_background_saas: {e}. "
-            f"Incident {incident.id} created but no investigation will run."
+            f"Failed to enqueue investigation for incident {incident.id}: {e}"
         )
 
     return incident

@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Per-cluster LLM authorization, pinning, and runtime isolation."""
+"""Per-cluster LLM authorization and runtime isolation."""
 
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sys
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,16 +17,6 @@ from sre_agent.cluster_context import (
 )
 from sre_agent.execution_context import ExecutionContext
 from sre_agent.runtime_cache import AgentRuntimeCache, RuntimeBundle
-
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "model_router.py"
-_spec = importlib.util.spec_from_file_location("model_router_r04", _MODULE_PATH)
-model_router = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = model_router
-_spec.loader.exec_module(model_router)
-
-TaskType = model_router.TaskType
-select_model = model_router.select_model
-apply_cluster_pin = model_router.apply_cluster_pin
 
 
 @pytest.fixture(autouse=True)
@@ -107,20 +94,6 @@ def test_from_cluster_resolves_authorized_effective_brain(monkeypatch):
     }
     assert context.llm_kwargs()["api_key"] == "tenant-a-key"
     assert "tenant-a-key" not in context.llm_manifest().values()
-
-
-def test_cluster_pin_keeps_model_over_global_tier_override(monkeypatch):
-    monkeypatch.setenv("MODEL_ROUTER_BALANCED_PROVIDER", "anthropic")
-    monkeypatch.setenv("MODEL_ROUTER_BALANCED_MODEL", "claude-global")
-    decision = select_model(TaskType.SPECIALIST, provider="openai_compatible")
-    pinned = apply_cluster_pin(
-        decision,
-        provider="openai_compatible",
-        model_id="tenant-pinned-model",
-        pinned=True,
-    )
-    assert pinned.provider == "openai_compatible"
-    assert pinned.model_id == "tenant-pinned-model"
 
 
 @pytest.mark.asyncio

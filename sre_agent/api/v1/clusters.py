@@ -58,11 +58,15 @@ async def get_cluster_health(
     db: AsyncSession = Depends(database.get_db),
     owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
-    """Get latest health status of a cluster."""
-    return {
-        "status": owned_cluster.status,
-        "last_heartbeat": owned_cluster.last_heartbeat
-    }
+    """Get latest health status of a cluster from observed heartbeat evidence."""
+    from sre_agent.cluster_heartbeat import heartbeat_payload
+
+    return heartbeat_payload(
+        owned_cluster.last_heartbeat,
+        status=owned_cluster.status,
+        source=getattr(owned_cluster, "heartbeat_source", None),
+        reason=getattr(owned_cluster, "heartbeat_reason", None),
+    )
 
 
 @router.get("/{cluster_id}/incidents/awaiting-approval")
