@@ -5,8 +5,8 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
 The documented migration-reconciliation milestone is complete on `master`.
-Narrowed R03 execution-context and mutation namespace enforcement is being
-reconciled with current `master` on `codex/r03-namespace-enforcement` for PR #14.
+Narrowed R03 execution-context and mutation namespace enforcement is reconciled
+with current `master` and merge-ready in PR #14.
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point.
@@ -45,8 +45,7 @@ reconciled with current `master` on `codex/r03-namespace-enforcement` for PR #14
   `d5e6f7a8b9c0` are absent from `master`.
 
 ## Active problem
-PR #14 has been reconciled locally with current `master`; it needs the merge
-commit pushed and fresh GitHub CI before it can be merged.
+None in the narrowed R03 scope. PR #14 awaits user merge.
 
 ## Relevant files
 - `backend/alembic/versions/b1c7ceb2036b_add_durable_job_leases.py`
@@ -71,6 +70,7 @@ commit pushed and fresh GitHub CI before it can be merged.
 - Frozen release-evaluation matrix: `PASS`.
 - R03 release-impact check: `NOT_REQUIRED`; no protected paths remain in the
   final PR diff.
+- Fresh GitHub product CI after reconciliation: all five checks passed.
 
 ## Known blockers or risks
 - No live database upgrade/downgrade, multi-replica job contention, audit
@@ -85,5 +85,4 @@ commit pushed and fresh GitHub CI before it can be merged.
   two generated runbooks.
 
 ## Next bounded task
-Push PR #14, verify fresh GitHub mergeability and CI, then hand it to the user
-to merge before starting the next independently rooted operational PR.
+Merge PR #14 before starting the next independently rooted operational PR.
