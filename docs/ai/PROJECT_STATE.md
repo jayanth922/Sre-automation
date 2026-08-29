@@ -4,9 +4,10 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-A01–A10 and the reconciled migration chain are merged into `master`. PR #13
-contains the R02 durable-job implementation, targets `master`, includes the
-final integration base, and is ready for the user to merge.
+A01–A10, the reconciled migration chain, and R02 durable jobs are merged into
+`master`. PR #18 is the next serialized operational change and contains R06's
+canonical audit storage, query, retention, and failure-propagation plumbing on
+the current integration base.
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point.
@@ -17,11 +18,12 @@ final integration base, and is ready for the user to merge.
   safety, trace accounting, release evaluation, and learning fail closed when
   objective evidence is missing.
 - Successful learning requires externally verified recovery.
-- Alembic has one linear head; operational branches must not restore their old
-  revision files after reconciliation.
 - Investigation work is persisted as tenant-scoped jobs with idempotency,
   lease ownership, heartbeats, bounded retries, cancellation, and dead-letter
-  state rather than process-local background dispatch.
+  state.
+- Agent flight-recorder storage uses canonical `AgentAuditLog`.
+- Alembic has one linear head; operational branches must not restore obsolete
+  revision files after reconciliation.
 
 ## Completed or verified work
 - R06 owns `agent_audit_logs` and supersedes P07.
@@ -29,46 +31,45 @@ final integration base, and is ready for the user to merge.
   - A10 `d3e4f5a6b7c8` -> R02 `b1c7ceb2036b`
   - R02 `b1c7ceb2036b` -> R06 `d3ac85ffcc7d`
   - R06 `d3ac85ffcc7d` -> R07 `2253eabf13e3`
-- R02 adds the durable job model, claim/heartbeat/fail/complete adapters,
-  tenant-fair worker loop, alert/manual/self-defense enqueue paths, and cancel
-  endpoint.
-- R02 retains A10's run-manifest response and manifest comparison endpoints
-  while adding durable-job response fields.
-- R02's obsolete `a9b0c1d2e3f4` migration is excluded; the reconciled
-  `b1c7ceb2036b` migration remains the schema owner.
+- R02 merged through PR #13.
+- R06 adds scoped audit context, canonical durable audit records,
+  retention/export helpers, mission-control querying, and runtime plumbing for
+  visible audit failures.
+- R06's obsolete `e6f7a8b9c0d1` migration is excluded; the reconciled
+  `d3ac85ffcc7d` migration remains the schema owner.
+- The R06/runtime conflict preserves both degraded-audit reporting and
+  model-accounting/trace-completeness result fields.
 
 ## Active problem
-PR #13 has been retargeted to `master`, refreshed without rewriting history,
-and confirmed conflict-free. It now awaits the user's merge. R06 and R07 still
-require serial operational reconciliation.
+PR #18 has been narrowed so its protected tool paths match `master`; the local
+release-impact decision is `NOT_REQUIRED`. It is ready for the user to merge.
+R07 operational reconciliation must follow R06.
 
 ## Relevant files
-- `sre_agent/durable_jobs.py`, `sre_agent/job_store.py`,
-  `sre_agent/job_worker.py`
-- `sre_agent/agent_runtime.py`, `sre_agent/api/v1/alerts.py`,
-  `sre_agent/api/v1/incidents.py`, `sre_agent/api/v1/jobs.py`
-- `backend/models.py`, `backend/schemas.py`
-- `backend/alembic/versions/b1c7ceb2036b_add_durable_job_leases.py`
-- `tests/test_durable_jobs.py`
+- `backend/models.py`
+- `backend/alembic/versions/d3ac85ffcc7d_add_agent_audit_logs.py`
+- `sre_agent/agent_audit.py`, `sre_agent/audit_context.py`
+- `sre_agent/agent_nodes.py`, `sre_agent/agent_runtime.py`
+- `sre_agent/api/v1/mission_control.py`, `sre_agent/mcp_tool_wrapper.py`
+- `tests/test_agent_audit.py`
 
 ## Verification commands and latest results
-- Migration reconciliation: one Alembic head; compile, Ruff, Black, and
-  whitespace checks passed.
-- `uv run --frozen --extra dev pytest -q`: 529 passed, 13 existing warnings.
-- Durable-job plus run-manifest focused suites: 11 passed.
-- R02's four new Python files pass Ruff and Black; backend and agent modules
-  byte-compile successfully.
-- At R02 commit `8bd26d2`, all five product checks passed against `master`; the
-  PR was mergeable and had no unresolved review threads.
+- `.venv/bin/python -m alembic heads`: one head, `2253eabf13e3`.
+- Audit, model-accounting, and trace-evidence focused suites: 21 passed with 13
+  existing warnings.
+- Ruff on the new R06 audit modules and focused test: passed.
+- With protected tool changes deferred, local release impact reports
+  `NOT_REQUIRED`.
+- All five product checks pass on the narrowed PR #18, which is mergeable and
+  has no unresolved review threads.
 
 ## Known blockers or risks
-- No live Postgres migration, `FOR UPDATE SKIP LOCKED` contention, API-process
-  kill/reclaim, or multi-replica restart has been exercised.
-- The in-process worker is replica-safe only to the extent guaranteed by the
-  database lease implementation.
+- No live database upgrade/downgrade or retention purge has been exercised.
+- Protected changes that enrich audit records at tool-execution time and signal
+  persistence failures remain deferred. They require a separate evidence-backed
+  change with paired, adversarial, and root-trace artifacts.
 - Preserve the three pre-existing untracked artifacts: Terraform's lockfile and
   two generated runbooks.
 
 ## Next bounded task
-Have the user merge PR #13. Next reconcile R06 operational code while dropping
-`e6f7a8b9c0d1`.
+Have the user merge PR #18. Then reconcile R07 while dropping `d5e6f7a8b9c0`.

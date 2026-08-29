@@ -1135,8 +1135,10 @@ async def _run_graph_impl(
                 "llm_provider": runtime.context.llm_provider
                 or os.getenv("LLM_PROVIDER", "groq"),
                 "tools": tools,
+                "organization_id": runtime.context.organization_id,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
+                "run_id": str(job_id) if job_id else str(incident_id),
                 "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
                 "run_manifest_id": run_manifest_id,
@@ -1149,6 +1151,16 @@ async def _run_graph_impl(
             "session_id": session_id,
             "user_id": "saas_user",
         }
+
+        from .audit_context import clear_audit_context, pop_audit_write_failure, set_audit_context
+
+        set_audit_context(
+            incident_id=str(incident_id),
+            agent_name="SRE Agent",
+            organization_id=runtime.context.organization_id,
+            cluster_id=str(cluster_id),
+            run_id=str(job_id) if job_id else str(incident_id),
+        )
         
         # Redis Logging Setup (for real-time UI updates)
         state_store.set(session_id, {
@@ -1349,22 +1361,45 @@ async def _run_graph_impl(
             # Update Job with structured results for the Dashboard "Action Deck"
             if job_id:
                 from backend.models import JobStatus
+
+                audit_failure = pop_audit_write_failure()
+                job_status = JobStatus.DEGRADED if audit_failure else JobStatus.COMPLETED
+                result_payload = {
+                    "summary": final_response,
+                    "hypothesis": final_response.split(".")[0] if final_response else "Issue identified.",
+                    "plan": remediation_plan_serializable,
+                    "actions": remediation_plan_serializable,
+                    "verification": verification_serializable,
+                    "model_accounting": model_accounting,
+                    "trace_completeness": trace_completeness,
+                }
+                if audit_failure:
+                    result_payload["audit_persist_failed"] = True
+                    result_payload["audit_persist_error"] = audit_failure
+                    audit_log = (
+                        f"[{datetime.now(timezone.utc).isoformat()}] "
+                        f"⚠️ AUDIT_PERSIST_FAILED: {audit_failure}"
+                    )
+                    state_store.append_log(session_id, audit_log)
+                    await db.execute(
+                        models.Job.__table__
+                        .update()
+                        .where(models.Job.id == job_id)
+                        .values(
+                            logs=func.concat(
+                                func.coalesce(models.Job.logs, ""), audit_log + "\n"
+                            ),
+                        )
+                    )
+
                 await db.execute(
                     models.Job.__table__
                     .update()
                     .where(models.Job.id == job_id)
                     .values(
-                        status=JobStatus.COMPLETED,
+                        status=job_status,
                         completed_at=datetime.now(timezone.utc),
-                        result=json.dumps({
-                            "summary": final_response,
-                            "hypothesis": final_response.split(".")[0] if final_response else "Issue identified.",
-                            "plan": remediation_plan_serializable,
-                            "actions": remediation_plan_serializable,
-                            "verification": verification_serializable,
-                            "model_accounting": model_accounting,
-                            "trace_completeness": trace_completeness,
-                        })
+                        result=json.dumps(result_payload),
                     )
                 )
 
@@ -1517,6 +1552,10 @@ async def _run_graph_impl(
                  )
 
              await db.commit()
+    finally:
+        from .audit_context import clear_audit_context as _clear_audit_context
+
+        _clear_audit_context()
 
 @app.post(
     "/webhook/alert",
