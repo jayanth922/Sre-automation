@@ -117,13 +117,16 @@ class ExecutionContext:
         # clients carry an operator secret, so they may only use deployment-
         # controlled service routes and pass cluster identity separately.
         endpoints = operator_mcp_endpoints()
+        from .cluster_context import resolve_authorized_llm
+
+        llm = resolve_authorized_llm(cluster)
         credentials = {
             name: value
             for name, value in {
                 "k8s_token": _value(cluster, "k8s_token"),
                 "github_token": _value(cluster, "github_token"),
                 "notion_api_key": _value(cluster, "notion_api_key"),
-                "llm_api_key": _value(cluster, "llm_api_key"),
+                "llm_api_key": llm.get("api_key") or _value(cluster, "llm_api_key"),
             }.items()
             if value
         }
@@ -141,9 +144,9 @@ class ExecutionContext:
             credentials=credentials,
             namespace=namespace,
             allowlist=(namespace,) if namespace else (),
-            llm_provider=_value(cluster, "llm_provider"),
-            llm_model=_value(cluster, "llm_model"),
-            llm_base_url=_value(cluster, "llm_base_url"),
+            llm_provider=llm["provider"],
+            llm_model=llm["model"],
+            llm_base_url=llm["base_url"],
             environment=operator_cluster_environment(),
             key_version=int(getattr(cluster, "key_version", 1) or 1),
             context_version=int(getattr(cluster, "execution_context_version", 1) or 1),
@@ -152,9 +155,12 @@ class ExecutionContext:
     @classmethod
     def from_environment(cls) -> "ExecutionContext":
         """Build a local-development context from process environment."""
+        from .cluster_context import resolve_authorized_llm
+
         endpoints = operator_mcp_endpoints()
         namespace = os.getenv("EXECUTOR_ALLOWED_NAMESPACES", "").strip()
         allowlist = tuple(item.strip() for item in namespace.split(",") if item.strip())
+        llm = resolve_authorized_llm(None)
         return cls(
             organization_id="local",
             cluster_id=os.getenv("CLUSTER_ID", "local"),
@@ -162,16 +168,16 @@ class ExecutionContext:
             credentials={
                 name: value
                 for name, value in {
-                    "llm_api_key": os.getenv("LLM_API_KEY"),
+                    "llm_api_key": llm.get("api_key") or os.getenv("LLM_API_KEY"),
                     "github_token": os.getenv("GITHUB_TOKEN"),
                 }.items()
                 if value
             },
             namespace=allowlist[0] if len(allowlist) == 1 else None,
             allowlist=allowlist,
-            llm_provider=os.getenv("LLM_PROVIDER"),
-            llm_model=os.getenv("LLM_MODEL"),
-            llm_base_url=os.getenv("LLM_BASE_URL"),
+            llm_provider=llm["provider"],
+            llm_model=llm["model"],
+            llm_base_url=llm["base_url"],
             environment=operator_cluster_environment(),
             key_version=int(os.getenv("CREDENTIAL_ENCRYPTION_KEY_VERSION", "1")),
         )
@@ -221,6 +227,18 @@ class ExecutionContext:
             "api_key": self.credentials.get("llm_api_key"),
         }
         return {name: value for name, value in values.items() if value}
+
+    def llm_manifest(self) -> dict[str, Optional[str]]:
+        """Exact authorized LLM settings for traces/UI (no secrets)."""
+        from .cluster_context import llm_manifest
+
+        return llm_manifest(
+            {
+                "provider": self.llm_provider,
+                "model": self.llm_model,
+                "base_url": self.llm_base_url,
+            }
+        )
 
 
 def require_execution_context(

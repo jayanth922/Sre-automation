@@ -62,19 +62,11 @@ async def run_graph_background_saas(
         
         from langchain_core.messages import HumanMessage
 
-        # Resolve the agent "brain" per-cluster: a cluster may override the
-        # provider (and later model/endpoint/key); otherwise the platform default
-        # applies. Only the provider takes effect end-to-end today — model/base_url/
-        # api_key are carried in metadata for the router to honor.
-        from .cluster_context import resolve_llm, resolve_namespace
-        cluster_obj = None
-        try:
-            async with database.AsyncSessionLocal() as _db:
-                cluster_obj = await _db.get(models.Cluster, cluster_id)
-        except Exception as _ce:
-            logger.debug(f"cluster context lookup skipped: {_ce}")
-        llm_ctx = resolve_llm(cluster_obj)
-        llm_provider = llm_ctx["provider"]
+        # Resolve the authorized agent "brain" from the tenant execution context.
+        # Provider/model/base_url/key are enforced against operator allowlists and
+        # recorded exactly in run metadata for UI/trace parity.
+        llm_manifest = runtime.context.llm_manifest()
+        llm_provider = llm_manifest["provider"] or os.getenv("LLM_PROVIDER", "groq")
 
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
@@ -84,8 +76,14 @@ async def run_graph_background_saas(
             "current_query": f"Investigate alert: {alert_name}",
             "metadata": {
                 "llm_provider": llm_provider,
-                "llm_overrides": llm_ctx,
-                "cluster_namespace": resolve_namespace(cluster_obj),
+                "llm": llm_manifest,
+                "llm_overrides": {
+                    "provider": llm_manifest["provider"],
+                    "model": llm_manifest["model"],
+                    "base_url": llm_manifest["base_url"],
+                    "api_key": None,
+                },
+                "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
                 "tools": tools,
                 "cluster_id": str(cluster_id),

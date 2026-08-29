@@ -21,7 +21,7 @@ import pytest
 # Backend import chain needs these present to build the engine at import time.
 for k, v in {
     "POSTGRES_USER": "x", "POSTGRES_PASSWORD": "x", "POSTGRES_DB": "x",
-    "POSTGRES_HOST": "localhost", "LLM_PROVIDER": "ollama",
+    "POSTGRES_HOST": "localhost", "LLM_PROVIDER": "groq",
 }.items():
     os.environ.setdefault(k, v)
 

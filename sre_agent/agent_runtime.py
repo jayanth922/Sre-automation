@@ -1150,6 +1150,7 @@ async def _run_graph_impl(
             "metadata": {
                 "llm_provider": runtime.context.llm_provider
                 or os.getenv("LLM_PROVIDER", "groq"),
+                "llm": runtime.context.llm_manifest(),
                 "tools": tools,
                 "organization_id": runtime.context.organization_id,
                 "cluster_id": str(cluster_id),
