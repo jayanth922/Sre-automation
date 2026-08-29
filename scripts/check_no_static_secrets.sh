@@ -15,6 +15,7 @@ HITS="$(git grep -nE "$PATTERN" -- \
   ':!uv.lock' \
   ':!docs/session-nvidia-nim-benchmark.md' \
   ':!archive/**' \
+  ':!tests/test_docs_truthfulness.py' \
   2>/dev/null || true)"
 
 if [[ -n "$HITS" ]]; then
@@ -26,10 +27,13 @@ if [[ -n "$HITS" ]]; then
 fi
 
 # Explicitly reject known historical demo defaults if they reappear in benches.
-if git grep -nE 'BENCH_CLUSTER_TOKEN.*, *"cl_|CLUSTER_TOKEN *= *"cl_|ADMIN_PASSWORD *= *"admin"' -- \
-  benchmarks '*.py' 2>/dev/null | grep -v fixtures.py >/dev/null 2>&1; then
+BENCH_HITS="$(git grep -nE 'CLUSTER_TOKEN[[:space:]]*=[[:space:]]*"cl_|ADMIN_PASSWORD[[:space:]]*=[[:space:]]*"admin"' -- \
+  'benchmarks/*.py' \
+  ':!benchmarks/fixtures.py' \
+  2>/dev/null || true)"
+if [[ -n "$BENCH_HITS" ]]; then
   echo "Benchmark files still embed static demo credentials" >&2
-  git grep -nE 'CLUSTER_TOKEN *= *"cl_|ADMIN_PASSWORD *= *"admin"' -- benchmarks || true
+  echo "$BENCH_HITS" >&2
   exit 1
 fi
 

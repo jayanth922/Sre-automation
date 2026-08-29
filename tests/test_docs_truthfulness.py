@@ -17,14 +17,16 @@ def test_benchmarks_do_not_ship_static_cluster_tokens():
             continue
         text = path.read_text()
         assert not re.search(r"cl_[0-9a-f]{20,}", text), path.name
-        assert 'ADMIN_PASSWORD = "admin"' not in text
+        assert not re.search(r'ADMIN_PASSWORD\s*=\s*"admin"', text), path.name
 
 
 def test_env_example_has_no_seed_secrets():
     text = (ROOT / ".env.example").read_text()
-    assert 'SEED_ADMIN_PASSWORD="admin"' not in text
-    assert "cl_58f71c23a54e4b5ab1d10c8defccfc6d" not in text
+    assert not re.search(r'SEED_ADMIN_PASSWORD="admin"', text)
     assert 'SEED_ADMIN_PASSWORD=""' in text
+    assert 'SEED_CLUSTER_TOKEN=""' in text
+    # Reject any committed seed token shaped like cl_<hex> without embedding one here.
+    assert not re.search(r'SEED_CLUSTER_TOKEN="cl_[0-9a-f]{20,}"', text)
 
 
 def test_architecture_readme_points_at_canonical_runtime():
