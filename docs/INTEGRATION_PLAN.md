@@ -1,6 +1,6 @@
 # Integrating Harkirat's "7 Projects" into the SRE Agent — One Unified Platform
 
-> **HISTORICAL (P10).** This document describes an interview-mapping plan and
+> **HISTORICAL (P11).** This document describes an interview-mapping plan and
 > earlier prototype milestones. It is **not** the current architecture source of
 > truth. Prefer [`docs/architecture/MODULE_OWNERS.md`](architecture/MODULE_OWNERS.md)
 > and the live `sre_agent.agent_runtime` / `graph_builder` entry points.

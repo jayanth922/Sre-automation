@@ -1,6 +1,13 @@
 # Architecture Diagrams
 
-This folder contains the source and generated diagrams for the SRE Agent Intermediate system architecture.
+Canonical product topology for Sentinel. Diagrams should match the live entry
+points in `sre_agent/agent_runtime.py` and `sre_agent/graph_builder.py`.
+
+Ownership inventory: [`MODULE_OWNERS.md`](MODULE_OWNERS.md) (when present on the
+branch) or the agent runtime import graph.
+
+Truthfulness checks: `tests/test_docs_truthfulness.py`,
+`scripts/check_no_static_secrets.sh`, `scripts/quickstart_smoke.sh`.
 
 ## Diagram sources (Mermaid)
 
