@@ -1,5 +1,10 @@
 # Integrating Harkirat's "7 Projects" into the SRE Agent — One Unified Platform
 
+> **HISTORICAL (P10).** This document describes an interview-mapping plan and
+> earlier prototype milestones. It is **not** the current architecture source of
+> truth. Prefer [`docs/architecture/MODULE_OWNERS.md`](architecture/MODULE_OWNERS.md)
+> and the live `sre_agent.agent_runtime` / `graph_builder` entry points.
+
 **Author's note:** This plan maps the seven projects from Harkirat Singh's video
 *"How I Interview AI Engineers + 7 Projects That'd Get You Hired"* onto the
 existing `SRE_Agent_Intermediate` codebase. The thesis is simple: you do **not**

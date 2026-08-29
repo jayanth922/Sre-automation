@@ -15,6 +15,20 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _opening_text(summary: str) -> str:
+    """Compose the Slack open message, mentioning on-call when configured."""
+    mention = ""
+    try:
+        from sre_agent.oncall import format_slack_mention, resolve_oncall
+
+        handle = resolve_oncall()
+        if handle:
+            mention = f"\nOn-call: {format_slack_mention(handle)}"
+    except Exception as exc:  # pragma: no cover - never block war-room open
+        logger.debug("war-room: on-call resolve skipped (%s)", exc)
+    return f":rotating_light: *Incident opened*\n{summary}{mention}"
+
+
 async def maybe_open_war_room(incident_id: str, summary: str) -> None:
     """Open a Slack war-room thread for this incident and stream its events.
     No-op unless SLACK_BOT_TOKEN is configured."""
@@ -33,7 +47,7 @@ async def maybe_open_war_room(incident_id: str, summary: str) -> None:
         channel = os.getenv("SLACK_WAR_ROOM_CHANNEL", "#incidents")
         opened = await app.client.chat_postMessage(
             channel=channel,
-            text=f":rotating_light: *Incident opened*\n{summary}",
+            text=_opening_text(summary),
         )
         thread_ts = opened.get("ts")
         resolved_channel = opened.get("channel", channel)
