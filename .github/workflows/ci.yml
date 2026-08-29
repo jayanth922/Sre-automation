@@ -40,8 +40,10 @@ jobs:
         run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
         run: uv run python -m compileall backend sre_agent
-      - name: Tests
-        run: uv run pytest -q
+      - name: Unit + existing suite
+        run: uv run pytest -q --ignore=tests/integration
+      - name: Integration layer (P09)
+        run: uv run pytest -q tests/integration -m integration
 
   release-evaluation:
     name: Release evaluation contract
