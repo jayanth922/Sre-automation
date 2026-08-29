@@ -46,22 +46,22 @@ logger = logging.getLogger(__name__)
 class TaskType(str, Enum):
     """The kind of work a given LLM call performs in the OODA loop."""
 
-    ROUTING = "routing"          # supervisor picks the next specialist
-    NARRATION = "narration"      # conversational handoff / greeting text
-    GREETING = "greeting"        # casual follow-up acknowledgement
-    SPECIALIST = "specialist"    # a specialist agent gathering evidence
+    ROUTING = "routing"  # supervisor picks the next specialist
+    NARRATION = "narration"  # conversational handoff / greeting text
+    GREETING = "greeting"  # casual follow-up acknowledgement
+    SPECIALIST = "specialist"  # a specialist agent gathering evidence
     AGGREGATION = "aggregation"  # merging specialist findings into a summary
-    REFLECTION = "reflection"    # ReflectorNode hypothesis formation (high stakes)
-    PLANNING = "planning"        # PlannerNode remediation plan (high stakes)
+    REFLECTION = "reflection"  # ReflectorNode hypothesis formation (high stakes)
+    PLANNING = "planning"  # PlannerNode remediation plan (high stakes)
 
 
 # ── Model tiers (the "how much horsepower?" dimension) ──────────────────────────
 class ModelTier(str, Enum):
     """Cost/capability tier a task is routed to."""
 
-    FAST = "fast"          # cheap, low-latency, high-frequency calls
+    FAST = "fast"  # cheap, low-latency, high-frequency calls
     BALANCED = "balanced"  # default working tier
-    STRONG = "strong"      # highest-capability, high-stakes reasoning
+    STRONG = "strong"  # highest-capability, high-stakes reasoning
 
 
 # Default policy: which tier each task type wants. Deliberately conservative —
@@ -91,7 +91,8 @@ _TIER_TEMPERATURE: Dict[ModelTier, float] = {
 }
 
 
-class ModelRouterBlocked(Exception):
+# Pre-existing public name; keep stable for callers.
+class ModelRouterBlocked(Exception):  # noqa: N818
     """Raised when the router refuses a request (off-policy or budget-exhausted)."""
 
 
@@ -105,7 +106,7 @@ class RequestContext:
     """
 
     remaining_budget: Optional[float] = None  # remaining credits/USD; None = unmetered
-    off_policy: bool = False                   # caller-classified: disallowed request
+    off_policy: bool = False  # caller-classified: disallowed request
     user_id: Optional[str] = None
 
 
@@ -212,18 +213,28 @@ def select_model(
     # Off-policy requests are refused regardless of router state.
     if request and request.off_policy:
         return RoutingDecision(
-            task_type=task_type, tier=ModelTier.FAST, provider=base_provider,
+            task_type=task_type,
+            tier=ModelTier.FAST,
+            provider=base_provider,
             temperature=_TIER_TEMPERATURE[ModelTier.FAST],
-            blocked=True, block_reason="Request is off-policy and was blocked.",
+            blocked=True,
+            block_reason="Request is off-policy and was blocked.",
             reason="blocked: off-policy",
         )
 
     # Exhausted budget is refused too.
-    if request and request.remaining_budget is not None and request.remaining_budget <= 0:
+    if (
+        request
+        and request.remaining_budget is not None
+        and request.remaining_budget <= 0
+    ):
         return RoutingDecision(
-            task_type=task_type, tier=ModelTier.FAST, provider=base_provider,
+            task_type=task_type,
+            tier=ModelTier.FAST,
+            provider=base_provider,
             temperature=_TIER_TEMPERATURE[ModelTier.FAST],
-            blocked=True, block_reason="Budget exhausted; request blocked.",
+            blocked=True,
+            block_reason="Budget exhausted; request blocked.",
             reason="blocked: budget exhausted",
         )
 
@@ -250,7 +261,11 @@ def select_model(
 
     # Budget-constrained downgrade: conserve spend when running low.
     budget_downgraded = False
-    if request and request.remaining_budget is not None and request.remaining_budget < _LOW_BUDGET_THRESHOLD:
+    if (
+        request
+        and request.remaining_budget is not None
+        and request.remaining_budget < _LOW_BUDGET_THRESHOLD
+    ):
         bumped_down = _downgrade(tier, 1)
         if bumped_down != tier:
             budget_downgraded = True
@@ -277,6 +292,39 @@ def select_model(
     )
 
 
+def apply_cluster_pin(
+    decision: RoutingDecision,
+    *,
+    provider: Optional[str] = None,
+    model_id: Optional[str] = None,
+    pinned: bool = False,
+) -> RoutingDecision:
+    """Keep authorized cluster provider/model over process-global tier overrides.
+
+    When a cluster pins a model id (or other client credentials), the router must
+    not silently switch providers via ``MODEL_ROUTER_*_PROVIDER`` or replace the
+    model via ``MODEL_ROUTER_*_MODEL``. Temperature/tier metadata remain for
+    observability.
+    """
+    if not pinned and not model_id:
+        return decision
+    pinned_provider = (
+        (provider or decision.provider or _default_provider()).strip().lower()
+    )
+    provider_changed = decision.provider != pinned_provider
+    decision.provider = pinned_provider
+    if model_id:
+        decision.model_id = model_id
+    elif provider_changed:
+        # Drop tier model overrides that targeted a different provider.
+        decision.model_id = None
+    decision.reason = (
+        f"{decision.reason}; cluster-pinned provider={pinned_provider}"
+        + (f" model={model_id}" if model_id else "")
+    )
+    return decision
+
+
 def route_llm(
     task_type: TaskType,
     complexity: str = "simple",
@@ -298,24 +346,41 @@ def route_llm(
     Returns:
         An LLM instance, exactly as ``create_llm_with_error_handling`` would.
     """
-    decision = select_model(task_type, complexity=complexity, provider=provider, request=request)
+    decision = select_model(
+        task_type, complexity=complexity, provider=provider, request=request
+    )
     if decision.blocked:
         logger.warning(f"ModelRouter BLOCKED: {decision.block_reason}")
         raise ModelRouterBlocked(decision.block_reason)
+
+    cluster_model = kwargs.get("model_id")
+    cluster_pin = bool(cluster_model or kwargs.get("base_url") or kwargs.get("api_key"))
+    decision = apply_cluster_pin(
+        decision,
+        provider=provider,
+        model_id=cluster_model,
+        pinned=cluster_pin,
+    )
     logger.info(f"ModelRouter: {decision.reason}")
 
     # LiteLLM backend (optional): our tier decides the model; LiteLLM does the
-    # multi-provider/cost/fallback plumbing. Falls through to the provider path
-    # if not enabled, no tier model configured, or LiteLLM is unavailable.
+    # multi-provider/cost/fallback plumbing. Skip when the cluster pinned its
+    # own model/endpoint/key so tenant settings cannot be replaced.
     from .litellm_backend import build_litellm_llm, litellm_enabled, tier_litellm_model
 
-    if litellm_enabled():
+    if litellm_enabled() and not cluster_pin:
         model = tier_litellm_model(decision.tier.value)
         if model:
             try:
-                return build_litellm_llm(model, temperature=decision.temperature, max_tokens=kwargs.get("max_tokens"))
+                return build_litellm_llm(
+                    model,
+                    temperature=decision.temperature,
+                    max_tokens=kwargs.get("max_tokens"),
+                )
             except Exception as e:
-                logger.warning(f"LiteLLM backend unavailable ({e}); using provider path")
+                logger.warning(
+                    f"LiteLLM backend unavailable ({e}); using provider path"
+                )
 
     # Lazy import: keeps ``select_model`` (and this module) importable without
     # langchain installed, which is what makes the unit tests dependency-free.
@@ -326,6 +391,12 @@ def route_llm(
     if decision.model_id:
         llm_kwargs["model_id"] = decision.model_id
 
+    # Cluster-pinned brains must not fall across providers.
+    if cluster_pin:
+        use_fallback = False
+
     if use_fallback:
-        return create_llm_with_fallback(primary_provider=decision.provider, **llm_kwargs)
+        return create_llm_with_fallback(
+            primary_provider=decision.provider, **llm_kwargs
+        )
     return create_llm_with_error_handling(decision.provider, **llm_kwargs)

@@ -192,7 +192,7 @@ export default function SettingsPage() {
 
         <SectionTitle title="Agent brain" meta="per-cluster LLM override (optional)" />
         <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Leave the provider blank to use the platform default. Override it to tune the brain for this cluster&apos;s use case. The provider takes effect now; model, base URL, and key overrides are stored and honored as the router adds per-cluster support.
+          Leave the provider blank to use the platform default. Override provider, model, base URL, and key to tune this cluster&apos;s brain; authorized settings are enforced at run start and recorded exactly in investigation traces.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 420 }}>
           <div>

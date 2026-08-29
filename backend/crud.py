@@ -136,6 +136,9 @@ async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_i
         llm_base_url=cluster.llm_base_url or None,
         llm_api_key=cluster.llm_api_key or None,
     )
+    from sre_agent.cluster_context import resolve_authorized_llm
+
+    resolve_authorized_llm(db_cluster)
     db.add(db_cluster)
     await db.commit()
     await db.refresh(db_cluster)
@@ -173,6 +176,11 @@ async def update_cluster(db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.U
     for field in ("namespace", "llm_provider", "llm_model", "llm_base_url", "llm_api_key"):
         if field in data:
             setattr(cluster, field, data[field] or None)
+    # Refuse configs the runtime would reject at investigation start.
+    if any(field in data for field in ("llm_provider", "llm_model", "llm_base_url", "llm_api_key")):
+        from sre_agent.cluster_context import resolve_authorized_llm
+
+        resolve_authorized_llm(cluster)
     context_fields = credential_fields | {
         "prometheus_url",
         "loki_url",
