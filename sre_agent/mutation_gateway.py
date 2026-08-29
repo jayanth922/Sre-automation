@@ -71,7 +71,9 @@ def _severity(value: Any) -> Severity:
             return Severity[value.upper()]
         return Severity(int(value))
     except (KeyError, TypeError, ValueError) as exc:
-        raise MutationRejected("invalid_gate_context", "A valid incident severity is required") from exc
+        raise MutationRejected(
+            "invalid_gate_context", "A valid incident severity is required"
+        ) from exc
 
 
 def _decision_value(value: Any) -> str:
@@ -119,8 +121,12 @@ def _runtime_remediation_calibration(
 
 def _verify_scope(action: Any, context: ExecutionContext) -> None:
     """Require the proposed target to remain inside its tenant and namespace."""
+    from .namespace_scope import NamespaceScopeError, assert_action_namespace
+
     if not context.organization_id or not context.cluster_id:
-        raise MutationRejected("scope_mismatch", "Tenant and cluster scope are required")
+        raise MutationRejected(
+            "scope_mismatch", "Tenant and cluster scope are required"
+        )
 
     params = getattr(action, "parameters", None) or {}
     if not isinstance(params, dict):
@@ -143,19 +149,29 @@ def _verify_scope(action: Any, context: ExecutionContext) -> None:
         raise MutationRejected("scope_mismatch", "Action target is required")
 
     if action_type in EXECUTOR_TOOL_MAP:
+        try:
+            assert_action_namespace(action, context)
+        except NamespaceScopeError as exc:
+            raise MutationRejected("scope_mismatch", str(exc)) from exc
+        # Re-read after possible injection.
+        params = getattr(action, "parameters", None) or {}
+        namespace = str((params or {}).get("namespace") or "").strip()
         allowed = set(context.allowlist)
         if context.namespace:
             allowed.add(context.namespace)
-        namespace = str(params.get("namespace") or "").strip()
         if not allowed:
-            raise MutationRejected("scope_mismatch", "No mutation namespace is configured")
+            raise MutationRejected(
+                "scope_mismatch", "No mutation namespace is configured"
+            )
         if not namespace or namespace not in allowed:
             raise MutationRejected(
                 "scope_mismatch",
                 f"Namespace '{namespace or '<missing>'}' is outside the execution context",
             )
     elif action_type not in GITHUB_EXEC_TOOL_MAP:
-        raise MutationRejected("unsupported_action", f"No live tool maps to '{action_type}'")
+        raise MutationRejected(
+            "unsupported_action", f"No live tool maps to '{action_type}'"
+        )
 
 
 def _as_uuid(value: str, label: str) -> uuid.UUID:
@@ -229,7 +245,9 @@ async def authorize_and_execute(
     try:
         risk_score = float(_field(gate_decision, "risk_score", 0.0) or 0.0)
     except (TypeError, ValueError) as exc:
-        raise MutationRejected("invalid_gate_context", "Risk score must be numeric") from exc
+        raise MutationRejected(
+            "invalid_gate_context", "Risk score must be numeric"
+        ) from exc
     approved = bool(_field(gate_decision, "approved", False))
     calibrated_probability, autonomy_threshold = (
         _runtime_remediation_calibration(
@@ -257,7 +275,9 @@ async def authorize_and_execute(
         )
     if not store.set_idempotency(str(idempotency_key), _idempotency_ttl()):
         if hasattr(store, "is_available") and not store.is_available():
-            raise MutationRejected("state_unavailable", "Redis failed during idempotency claim")
+            raise MutationRejected(
+                "state_unavailable", "Redis failed during idempotency claim"
+            )
         return ExecutionResult(
             action_type=str(getattr(action, "action_type", "")).lower(),
             target=str(getattr(action, "target", "")),

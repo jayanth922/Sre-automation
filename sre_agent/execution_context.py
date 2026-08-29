@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
-
 _MCP_ENDPOINT_ENV = {
     "k8s": "MCP_K8S_URI",
     "executor": "MCP_EXECUTOR_URI",
@@ -98,10 +97,16 @@ class ExecutionContext:
     context_version: int = 1
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "mcp_endpoints", MappingProxyType(dict(self.mcp_endpoints)))
-        object.__setattr__(self, "credentials", MappingProxyType(dict(self.credentials)))
+        object.__setattr__(
+            self, "mcp_endpoints", MappingProxyType(dict(self.mcp_endpoints))
+        )
+        object.__setattr__(
+            self, "credentials", MappingProxyType(dict(self.credentials))
+        )
         object.__setattr__(self, "allowlist", tuple(sorted(set(self.allowlist))))
-        object.__setattr__(self, "environment", _normalized_environment(self.environment))
+        object.__setattr__(
+            self, "environment", _normalized_environment(self.environment)
+        )
 
     @classmethod
     def from_cluster(cls, cluster: Any) -> "ExecutionContext":
@@ -123,6 +128,12 @@ class ExecutionContext:
             if value
         }
         namespace = _value(cluster, "namespace")
+        from .namespace_scope import NamespaceScopeError, namespace_required
+
+        if not namespace and namespace_required():
+            raise NamespaceScopeError(
+                f"Cluster {cluster.id} has no configured namespace; refusing scoped execution"
+            )
         return cls(
             organization_id=str(cluster.org_id),
             cluster_id=str(cluster.id),
@@ -134,12 +145,8 @@ class ExecutionContext:
             llm_model=_value(cluster, "llm_model"),
             llm_base_url=_value(cluster, "llm_base_url"),
             environment=operator_cluster_environment(),
-            key_version=int(
-                getattr(cluster, "key_version", 1) or 1
-            ),
-            context_version=int(
-                getattr(cluster, "execution_context_version", 1) or 1
-            ),
+            key_version=int(getattr(cluster, "key_version", 1) or 1),
+            context_version=int(getattr(cluster, "execution_context_version", 1) or 1),
         )
 
     @classmethod
