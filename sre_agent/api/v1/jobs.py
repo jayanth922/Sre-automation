@@ -111,3 +111,30 @@ async def compare_job_manifests(
         raise HTTPException(status_code=404, detail="Run manifest not found")
     return compare_run_manifests(left, right)
 
+
+@router.post("/{cluster_id}/jobs/{job_id}/cancel", response_model=schemas.JobResponse)
+async def cancel_job(
+    cluster_id: uuid.UUID,
+    job_id: uuid.UUID,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+):
+    """Request cancellation of a durable investigation job."""
+    cluster = await crud.get_cluster_by_id(db, cluster_id)
+    if not cluster or cluster.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    job = await crud.get_job_by_id(db, job_id)
+    if not job or job.cluster_id != cluster_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    from sre_agent.durable_jobs import DurableJobError
+    from sre_agent.job_store import request_job_cancel
+
+    try:
+        record = await request_job_cancel(db, job_id)
+    except DurableJobError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    refreshed = await crud.get_job_by_id(db, record.id)
+    return refreshed

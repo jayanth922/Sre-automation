@@ -14,6 +14,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -56,6 +57,8 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    DEAD_LETTER = "dead_letter"
 
 class JobType(str, Enum):
     TOOL_CALL = "tool_call"
@@ -181,16 +184,37 @@ class Cluster(Base):
 
 
 class Job(Base):
-    """Represents a job queued for execution by an Edge Agent."""
+    """Durable investigation/tool job with lease-based ownership."""
     __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id",
+            "idempotency_key",
+            name="uq_jobs_cluster_idempotency_key",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cluster_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clusters.id"), nullable=False)
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    incident_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("incidents.id"), nullable=True, index=True
+    )
     job_type: Mapped[JobType] = mapped_column(String, default=JobType.INVESTIGATION)
-    status: Mapped[JobStatus] = mapped_column(String, default=JobStatus.PENDING)
+    status: Mapped[JobStatus] = mapped_column(String, default=JobStatus.PENDING, index=True)
     payload: Mapped[Optional[str]] = mapped_column(Text)  # JSON payload for the job
     result: Mapped[Optional[str]] = mapped_column(Text)   # JSON result from agent
     logs: Mapped[Optional[str]] = mapped_column(Text)     # Accumulated log lines
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    lease_owner: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

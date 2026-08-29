@@ -333,6 +333,15 @@ class JobResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     run_manifest: Optional[RunManifestResponse] = None
+    organization_id: Optional[uuid.UUID] = None
+    incident_id: Optional[uuid.UUID] = None
+    idempotency_key: Optional[str] = None
+    attempt_count: Optional[int] = None
+    max_attempts: Optional[int] = None
+    lease_owner: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
+    cancel_requested_at: Optional[datetime] = None
+    last_error: Optional[str] = None
 
     class Config:
         from_attributes = True
