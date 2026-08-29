@@ -138,3 +138,4 @@ async def cancel_job(
 
     refreshed = await crud.get_job_by_id(db, record.id)
     return refreshed
+
