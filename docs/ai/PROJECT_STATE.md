@@ -4,9 +4,9 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-A01 is merged and A02–A10 remain stacked. PR #35 provides the migration-only
-integration base after A10. R02's operational durable-job implementation is now
-stacked on that reconciliation base without its obsolete migration.
+A01–A10 and the reconciled migration chain are merged into `master`. PR #13
+contains the R02 durable-job implementation, targets `master`, and is being
+refreshed onto the final integration base before merge.
 
 ## Current architecture and invariants
 - `compute_incident_status` is the canonical RESOLVED decision point.
@@ -18,17 +18,17 @@ stacked on that reconciliation base without its obsolete migration.
   objective evidence is missing.
 - Successful learning requires externally verified recovery.
 - Alembic has one linear head; operational branches must not restore their old
-  revision files after rebasing.
+  revision files after reconciliation.
 - Investigation work is persisted as tenant-scoped jobs with idempotency,
   lease ownership, heartbeats, bounded retries, cancellation, and dead-letter
   state rather than process-local background dispatch.
 
 ## Completed or verified work
-- PR #35 starts directly from `codex/a10-verified-learning` and serializes:
+- R06 owns `agent_audit_logs` and supersedes P07.
+- The migration chain merged through PR #40 is:
   - A10 `d3e4f5a6b7c8` -> R02 `b1c7ceb2036b`
   - R02 `b1c7ceb2036b` -> R06 `d3ac85ffcc7d`
   - R06 `d3ac85ffcc7d` -> R07 `2253eabf13e3`
-- R06 owns `agent_audit_logs` and supersedes P07.
 - R02 adds the durable job model, claim/heartbeat/fail/complete adapters,
   tenant-fair worker loop, alert/manual/self-defense enqueue paths, and cancel
   endpoint.
@@ -38,10 +38,9 @@ stacked on that reconciliation base without its obsolete migration.
   `b1c7ceb2036b` migration remains the schema owner.
 
 ## Active problem
-PR #13 is stacked on PR #35 and must not be retargeted to `master` until the
-reconciliation PR merges. R06 and R07 still require the same serial operational
-reconciliation. Other R/P branches remain independently rooted and require
-later bounded integration.
+PR #13 has been retargeted to `master`. Its branch must include current
+`master`, pass fresh product CI, and be confirmed conflict-free before the user
+merges it. R06 and R07 still require serial operational reconciliation.
 
 ## Relevant files
 - `sre_agent/durable_jobs.py`, `sre_agent/job_store.py`,
@@ -59,7 +58,8 @@ later bounded integration.
 - Durable-job plus run-manifest focused suites: 11 passed.
 - R02's four new Python files pass Ruff and Black; backend and agent modules
   byte-compile successfully.
-- Current-base release impact reports `NOT_REQUIRED` with no protected changes.
+- Product CI was green against the reconciliation base; fresh `master`-based
+  CI is required after the ancestry refresh.
 
 ## Known blockers or risks
 - No live Postgres migration, `FOR UPDATE SKIP LOCKED` contention, API-process
@@ -70,6 +70,6 @@ later bounded integration.
   two generated runbooks.
 
 ## Next bounded task
-After the A-stack and PR #35 merge, retarget PR #13 to `master` and merge it if
-checks remain green. Then reconcile R06 operational code while dropping
+Push the R02 ancestry refresh, verify fresh product CI and review state, then
+have the user merge PR #13. Next reconcile R06 operational code while dropping
 `e6f7a8b9c0d1`.
