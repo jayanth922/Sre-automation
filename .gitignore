@@ -113,7 +113,6 @@ config.yaml
 # Temporary files
 *.tmp
 *.temp
-.gemini/
 gha-creds-*.json
 
 # Kubernetes rendered secret (never commit)

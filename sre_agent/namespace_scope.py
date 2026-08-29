@@ -1,53 +1,16 @@
 #!/usr/bin/env python3
-"""R03 cluster-namespace scope helpers for tool calls and mutations."""
+"""R03 cluster-namespace scope helpers for execution and mutations."""
 
 from __future__ import annotations
 
 import os
-import re
-from typing import Any, Mapping, MutableMapping, Optional, Set
+from typing import Any, MutableMapping, Set
 
 from .execution_context import ExecutionContext, is_production_runtime
 
-# Tools whose arguments are namespaced Kubernetes / observability lookups.
-_NAMESPACE_ARG_TOOLS = {
-    "get_pod_status",
-    "list_pods",
-    "list_services",
-    "list_deployments",
-    "list_events",
-    "get_service_endpoints",
-    "get_pod_logs",
-    "get_deployment_status",
-    "restart_deployment",
-    "scale_deployment",
-    "rollback_deployment",
-    "patch_resource_limits",
-    "query_logs",
-    "get_error_logs",
-    "analyze_log_patterns",
-    "get_metric",
-    "get_metric_range",
-    "get_golden_signals",
-}
-
-_QUERY_TOOLS = {
-    "get_metric",
-    "get_metric_range",
-    "get_golden_signals",
-    "query_logs",
-    "get_error_logs",
-    "analyze_log_patterns",
-}
-
-_NAMESPACE_SELECTOR = re.compile(
-    r'(namespace\s*=\s*")([^"]*)(")',
-    re.IGNORECASE,
-)
-
 
 class NamespaceScopeError(PermissionError):
-    """A tool or action attempted to leave the authorized cluster namespace."""
+    """An operation attempted to leave the authorized cluster namespace."""
 
 
 def namespace_required() -> bool:
@@ -76,55 +39,6 @@ def require_cluster_namespace(context: ExecutionContext) -> str:
             "Cluster namespace is required for scoped investigations and mutations"
         )
     return ""
-
-
-def _rewrite_query(query: str, namespace: str) -> str:
-    if "namespace=" in query.lower():
-        return _NAMESPACE_SELECTOR.sub(rf"\1{namespace}\3", query)
-    if "{" in query:
-        return query.replace("{", '{namespace="' + namespace + '",', 1)
-    return query
-
-
-def enforce_tool_arguments(
-    tool_name: str,
-    arguments: Optional[Mapping[str, Any]],
-    context: ExecutionContext,
-) -> dict[str, Any]:
-    """Inject the configured namespace and reject cross-namespace targets."""
-    args: dict[str, Any] = dict(arguments or {})
-    name = (tool_name or "").strip()
-    allowed = allowed_namespaces(context)
-    required = require_cluster_namespace(context)
-
-    if name == "list_namespaces":
-        if required:
-            args["namespace"] = required
-        return args
-
-    if name not in _NAMESPACE_ARG_TOOLS:
-        return args
-
-    if not allowed:
-        raise NamespaceScopeError(
-            f"Tool '{name}' requires a configured cluster namespace"
-        )
-
-    supplied = str(args.get("namespace") or "").strip()
-    if supplied and supplied not in allowed:
-        raise NamespaceScopeError(
-            f"Namespace '{supplied}' is outside cluster scope {sorted(allowed)}"
-        )
-    if required:
-        args["namespace"] = required
-
-    if name in _QUERY_TOOLS and required:
-        for key in ("query", "promql", "logql", "expr"):
-            value = args.get(key)
-            if isinstance(value, str) and value.strip():
-                args[key] = _rewrite_query(value, required)
-
-    return args
 
 
 def assert_action_namespace(action: Any, context: ExecutionContext) -> None:

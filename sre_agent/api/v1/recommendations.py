@@ -18,11 +18,10 @@ router = APIRouter(
 
 
 async def _generate_recommendations(summary: Dict[str, Any]) -> str:
-    import os
-    from sre_agent.llm_utils import create_llm_with_error_handling
     from langchain_core.messages import HumanMessage, SystemMessage
+    from sre_agent.model_router import TaskType, route_llm
 
-    llm = create_llm_with_error_handling(os.getenv("LLM_PROVIDER", "groq"))
+    llm = route_llm(TaskType.AGGREGATION, use_fallback=False)
 
     system = (
         "You are a senior SRE advisor. Given a cluster's 30-day incident data, "

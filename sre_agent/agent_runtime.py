@@ -368,22 +368,21 @@ async def get_mcp_client(cluster_id: Optional[uuid.UUID | str] = None):
     return (await get_agent_runtime(cluster_id)).mcp_client
 
 
-async def _heartbeat_loop():
-    """Keep all clusters marked online with a fresh heartbeat every 60 seconds."""
-    from sqlalchemy import update
+async def _heartbeat_reconcile_loop():
+    """Reclassify cluster connectivity from observed heartbeats only.
+
+    Never fabricates ``last_heartbeat`` freshness — disconnects become
+    degraded/stale/offline after configured thresholds.
+    """
     while True:
         try:
             async with database.AsyncSessionLocal() as db:
-                await db.execute(
-                    update(models.Cluster).values(
-                        status=models.ClusterStatus.ONLINE,
-                        last_heartbeat=datetime.now(timezone.utc),
-                    )
-                )
-                await db.commit()
+                updated = await crud.reconcile_cluster_heartbeats(db)
+                if updated:
+                    logger.info("Reconciled connectivity status for %s clusters", updated)
         except Exception as e:
-            logger.warning(f"Heartbeat update failed: {e}")
-        await asyncio.sleep(60)
+            logger.warning(f"Heartbeat reconcile failed: {e}")
+        await asyncio.sleep(30)
 
 
 @app.on_event("startup")
@@ -394,8 +393,9 @@ async def startup_event():
 
     logger.info(f"Startup: AGENT_MODE={agent_mode}, HAS_TOKEN={bool(cluster_token)}")
 
-    # Keep cluster status fresh in the dashboard
-    asyncio.create_task(_heartbeat_loop())
+    # Reclassify cluster connectivity from observed evidence only — never fabricate
+    # online heartbeats for every cluster.
+    asyncio.create_task(_heartbeat_reconcile_loop())
 
     # Incidents are opened by the client's own Alertmanager (their tuned SLO /
     # burn-rate / business rules) via the /alerts/webhook — Sentinel receives and
@@ -409,6 +409,16 @@ async def startup_event():
     except Exception as slack_err:
         logger.warning(f"Could not start Slack bot: {slack_err}")
 
+    # Durable investigation worker (lease-backed queue; survives process loss).
+    try:
+        from sre_agent.job_worker import start_job_worker
+
+        if os.getenv("JOB_WORKER_ENABLED", "true").lower() in {"1", "true", "yes"}:
+            start_job_worker()
+            logger.info("Durable job worker enabled")
+    except Exception as worker_err:
+        logger.warning(f"Could not start durable job worker: {worker_err}")
+
     # Initialize only a tenant-bound graph in API mode. Standalone development
     # may use the explicit local environment context.
     if cluster_token:
@@ -418,6 +428,22 @@ async def startup_event():
         if cluster is None:
             raise RuntimeError("CLUSTER_TOKEN does not identify a cluster")
         await initialize_agent(cluster.id)
+
+        async def _edge_heartbeat_loop(cluster_id: uuid.UUID):
+            while True:
+                try:
+                    async with database.AsyncSessionLocal() as db:
+                        await crud.update_cluster_heartbeat(
+                            db,
+                            cluster_id,
+                            source="edge",
+                            reason="edge_runtime_alive",
+                        )
+                except Exception as e:
+                    logger.warning(f"Edge heartbeat failed: {e}")
+                await asyncio.sleep(60)
+
+        asyncio.create_task(_edge_heartbeat_loop(cluster.id))
     elif agent_mode != "api":
         await initialize_agent()
     else:
@@ -426,8 +452,13 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    try:
+        from sre_agent.job_worker import stop_job_worker
+
+        await stop_job_worker()
+    except Exception as worker_err:
+        logger.warning(f"Durable job worker shutdown failed: {worker_err}")
     await _runtime_cache.close_all()
-    
 
 
 @app.post(
@@ -966,6 +997,8 @@ async def _run_graph_impl(
 
         await db.commit()
 
+    runtime = None
+    root_trace_id = None
     try:
         runtime = await initialize_agent(cluster_id)
         agent_graph, tools = runtime.graph, runtime.tools
@@ -1038,6 +1071,62 @@ async def _run_graph_impl(
                 starts_at=alert_starts_at,
             )
 
+        if job_id is None:
+            raise RuntimeError(
+                "incident investigations require a persisted job for run provenance"
+            )
+
+        # A01: establish immutable provenance before the graph can make any
+        # model or tool call. A retry reuses the original manifest/root trace;
+        # it never rewrites configuration history.
+        from sre_agent.run_manifest import build_run_manifest, persist_run_manifest
+
+        async with database.AsyncSessionLocal() as db:
+            existing_manifest = await crud.get_run_manifest_for_job(
+                db, cluster_id, job_id
+            )
+            if existing_manifest is None:
+                built_manifest = build_run_manifest(
+                    execution_context=runtime.context,
+                    tools=tools,
+                    incident_id=incident_id,
+                    job_id=job_id,
+                    input_payload={
+                        "alert_name": alert_name,
+                        "labels": effective_labels,
+                        "annotations": effective_annotations,
+                        "starts_at": alert_starts_at,
+                        "severity": normalised_severity,
+                    },
+                )
+                existing_manifest = await persist_run_manifest(
+                    db,
+                    built=built_manifest,
+                    job_id=job_id,
+                    incident_id=incident_id,
+                    cluster_id=cluster_id,
+                    organization_id=uuid.UUID(str(runtime.context.organization_id)),
+                )
+                await db.commit()
+                if not built_manifest.comparable:
+                    logger.warning(
+                        "Run %s is non-comparable: %s",
+                        job_id,
+                        "; ".join(built_manifest.non_comparable_reasons),
+                    )
+
+            run_manifest_id = str(existing_manifest.id)
+            root_trace_id = existing_manifest.root_trace_id
+
+        from .trace_evidence import get_run_trace_recorder
+
+        get_run_trace_recorder().start_run(
+            root_trace_id=root_trace_id,
+            run_manifest_id=run_manifest_id,
+            incident_id=str(incident_id),
+            job_id=str(job_id),
+        )
+
         # Build a one-line, searchable summary the specialists can use as a
         # focused query — including the most actionable label hints.
         actionable_label_hints: List[str] = []
@@ -1062,10 +1151,14 @@ async def _run_graph_impl(
                 "llm_provider": runtime.context.llm_provider
                 or os.getenv("LLM_PROVIDER", "groq"),
                 "tools": tools,
+                "organization_id": runtime.context.organization_id,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
+                "run_id": str(job_id) if job_id else str(incident_id),
                 "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
+                "run_manifest_id": run_manifest_id,
+                "root_trace_id": root_trace_id,
             },
             "requires_collaboration": True,
             "agents_invoked": [],
@@ -1074,6 +1167,16 @@ async def _run_graph_impl(
             "session_id": session_id,
             "user_id": "saas_user",
         }
+
+        from .audit_context import clear_audit_context, pop_audit_write_failure, set_audit_context
+
+        set_audit_context(
+            incident_id=str(incident_id),
+            agent_name="SRE Agent",
+            organization_id=runtime.context.organization_id,
+            cluster_id=str(cluster_id),
+            run_id=str(job_id) if job_id else str(incident_id),
+        )
         
         # Redis Logging Setup (for real-time UI updates)
         state_store.set(session_id, {
@@ -1091,9 +1194,21 @@ async def _run_graph_impl(
         current_execution_state = initial_state
         
         from .checkpointer import thread_config, thread_id_from_state
+        graph_config = thread_config(
+            thread_id_from_state(initial_state),
+            {
+                "callbacks": [callback_handler],
+                "metadata": {
+                    "run_manifest_id": run_manifest_id,
+                    "root_trace_id": root_trace_id,
+                    "incident_id": str(incident_id),
+                    "job_id": str(job_id),
+                },
+            },
+        )
         async for event in agent_graph.astream(
             initial_state,
-            config=thread_config(thread_id_from_state(initial_state), {"callbacks": [callback_handler]}),
+            config=graph_config,
         ):
             for node_name, node_output in event.items():
                 logger.info(f"SaaS Background processing node: {node_name}")
@@ -1132,6 +1247,13 @@ async def _run_graph_impl(
                 if node_output is not None and isinstance(node_output, dict):
                     current_execution_state = {**current_execution_state, **node_output}
 
+        from .model_accounting import get_model_accounting_recorder
+
+        get_model_accounting_recorder().finalize_trace(
+            root_trace_id, status="success"
+        )
+        get_run_trace_recorder().finish_run(root_trace_id, status="success")
+
         # Completion: Build the rich result object for the Dashboard cards
         final_response = current_execution_state.get("final_response", "Investigation completed.")
         
@@ -1160,22 +1282,63 @@ async def _run_graph_impl(
             elif hasattr(raw_verification, "dict"):
                 verification_serializable = raw_verification.dict()
 
-        # Store resolved investigation in Qdrant for future RAG similarity search
+        # Store resolved investigation in Qdrant only after objective verification.
         try:
             from .memory_store import get_memory_store
-            memory = get_memory_store()
-            if memory.is_available():
-                memory.store_incident(
-                    incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
-                    incident_id=str(incident_id),
-                    metadata={
-                        "alert_name": alert_name,
-                        "cluster_id": str(cluster_id),
-                        "resolution": final_response,
-                        "resolved_at": datetime.now(timezone.utc).isoformat(),
-                    },
+            from .verified_learning import (
+                assess_learning_eligibility,
+                build_provenance,
+                memory_metadata_for_promotion,
+            )
+
+            act_report = (current_execution_state.get("metadata") or {}).get("act_report")
+            verification_outcome = (act_report or {}).get("verification")
+            eligibility = assess_learning_eligibility(
+                act_report=act_report,
+                verification_outcome=verification_outcome
+                or current_execution_state.get("verification_result"),
+                incident_status=None,
+                live_results=(act_report or {}).get("live_results"),
+                executed=(act_report or {}).get("executed"),
+            )
+            if eligibility.eligible_for_success:
+                memory = get_memory_store()
+                if memory.is_available():
+                    provenance = build_provenance(
+                        incident_id=str(incident_id),
+                        eligibility=eligibility,
+                        artifact_kind="memory",
+                        run_manifest_sha256=(
+                            (current_execution_state.get("metadata") or {}).get(
+                                "run_manifest_sha256"
+                            )
+                        ),
+                        config_fingerprint=os.getenv(
+                            "SENTINEL_CONFIG_FINGERPRINT", ""
+                        ).strip()
+                        or None,
+                    )
+                    memory.store_incident(
+                        incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
+                        incident_id=str(incident_id),
+                        metadata=memory_metadata_for_promotion(
+                            eligibility=eligibility,
+                            provenance=provenance,
+                            extra={
+                                "alert_name": alert_name,
+                                "cluster_id": str(cluster_id),
+                                "resolution": final_response,
+                                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        ),
+                    )
+                    logger.info(f"Stored verified incident {incident_id} in Qdrant memory")
+            else:
+                logger.info(
+                    "Skipping successful-memory promotion for %s (%s)",
+                    incident_id,
+                    eligibility.outcome_class,
                 )
-                logger.info(f"Stored incident {incident_id} in Qdrant memory")
         except Exception as me:
             logger.warning(f"Failed to store incident in Qdrant: {me}")
 
@@ -1186,6 +1349,13 @@ async def _run_graph_impl(
         verification_outcome = (act_report or {}).get("verification")
         computed_status = compute_incident_status(
             current_execution_state, act_report, verification_outcome
+        )
+        model_accounting = get_model_accounting_recorder().summary(
+            root_trace_id=root_trace_id
+        )
+        trace_completeness = get_run_trace_recorder().summary(
+            root_trace_id=root_trace_id,
+            model_accounting=model_accounting,
         )
 
         # Update Incident and Job in Postgres with RICH DATA
@@ -1207,20 +1377,45 @@ async def _run_graph_impl(
             # Update Job with structured results for the Dashboard "Action Deck"
             if job_id:
                 from backend.models import JobStatus
+
+                audit_failure = pop_audit_write_failure()
+                job_status = JobStatus.DEGRADED if audit_failure else JobStatus.COMPLETED
+                result_payload = {
+                    "summary": final_response,
+                    "hypothesis": final_response.split(".")[0] if final_response else "Issue identified.",
+                    "plan": remediation_plan_serializable,
+                    "actions": remediation_plan_serializable,
+                    "verification": verification_serializable,
+                    "model_accounting": model_accounting,
+                    "trace_completeness": trace_completeness,
+                }
+                if audit_failure:
+                    result_payload["audit_persist_failed"] = True
+                    result_payload["audit_persist_error"] = audit_failure
+                    audit_log = (
+                        f"[{datetime.now(timezone.utc).isoformat()}] "
+                        f"⚠️ AUDIT_PERSIST_FAILED: {audit_failure}"
+                    )
+                    state_store.append_log(session_id, audit_log)
+                    await db.execute(
+                        models.Job.__table__
+                        .update()
+                        .where(models.Job.id == job_id)
+                        .values(
+                            logs=func.concat(
+                                func.coalesce(models.Job.logs, ""), audit_log + "\n"
+                            ),
+                        )
+                    )
+
                 await db.execute(
                     models.Job.__table__
                     .update()
                     .where(models.Job.id == job_id)
                     .values(
-                        status=JobStatus.COMPLETED,
+                        status=job_status,
                         completed_at=datetime.now(timezone.utc),
-                        result=json.dumps({
-                            "summary": final_response,
-                            "hypothesis": final_response.split(".")[0] if final_response else "Issue identified.",
-                            "plan": remediation_plan_serializable,
-                            "actions": remediation_plan_serializable,
-                            "verification": verification_serializable
-                        })
+                        result=json.dumps(result_payload),
                     )
                 )
 
@@ -1230,8 +1425,97 @@ async def _run_graph_impl(
 
     except Exception as e:
         logger.error(f"SaaS Background execution failed: {e}")
+        failed_model_accounting = None
+        failed_trace_completeness = None
+        if root_trace_id:
+            try:
+                from .model_accounting import get_model_accounting_recorder
+                from .trace_evidence import get_run_trace_recorder
+
+                accounting_recorder = get_model_accounting_recorder()
+                accounting_recorder.finalize_trace(
+                    root_trace_id,
+                    status="error",
+                    reason=type(e).__name__,
+                )
+                failed_model_accounting = accounting_recorder.summary(
+                    root_trace_id=root_trace_id
+                )
+                run_trace_recorder = get_run_trace_recorder()
+                run_trace_recorder.finish_run(
+                    root_trace_id,
+                    status="error",
+                    error_type=type(e).__name__,
+                )
+                failed_trace_completeness = run_trace_recorder.summary(
+                    root_trace_id=root_trace_id,
+                    model_accounting=failed_model_accounting,
+                )
+            except Exception as accounting_error:
+                logger.error(
+                    "Failed to finalize model accounting for %s: %s",
+                    root_trace_id,
+                    accounting_error,
+                )
         error_log = f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}"
         state_store.append_log(session_id, error_log)
+
+        # Even startup failures need durable provenance. If initialization
+        # failed before tool discovery, persist a deliberately non-comparable
+        # manifest (empty tool schema set) rather than leaving no record.
+        if job_id is not None:
+            try:
+                async with database.AsyncSessionLocal() as manifest_db:
+                    failed_manifest = await crud.get_run_manifest_for_job(
+                        manifest_db, cluster_id, job_id
+                    )
+                    if failed_manifest is None:
+                        cluster_row = await manifest_db.get(models.Cluster, cluster_id)
+                        if cluster_row is None:
+                            raise RuntimeError(
+                                "cluster missing while recording failed run"
+                            )
+                        failure_context = (
+                            runtime.context
+                            if runtime is not None
+                            else ExecutionContext.from_cluster(cluster_row)
+                        )
+                        from sre_agent.run_manifest import (
+                            build_run_manifest,
+                            persist_run_manifest,
+                        )
+
+                        built_failure_manifest = build_run_manifest(
+                            execution_context=failure_context,
+                            tools=runtime.tools if runtime is not None else [],
+                            incident_id=incident_id,
+                            job_id=job_id,
+                            input_payload={
+                                "alert_name": alert_name,
+                                "labels": alert_labels or {},
+                                "annotations": alert_annotations or {},
+                                "starts_at": alert_starts_at,
+                                "severity": alert_severity,
+                                "run_stage": "startup_failed",
+                            },
+                        )
+                        await persist_run_manifest(
+                            manifest_db,
+                            built=built_failure_manifest,
+                            job_id=job_id,
+                            incident_id=incident_id,
+                            cluster_id=cluster_id,
+                            organization_id=uuid.UUID(
+                                str(failure_context.organization_id)
+                            ),
+                        )
+                        await manifest_db.commit()
+            except Exception as manifest_error:
+                logger.error(
+                    "Failed to persist provenance for failed job %s: %s",
+                    job_id,
+                    manifest_error,
+                )
 
         async with database.AsyncSessionLocal() as db:
             try:
@@ -1273,11 +1557,21 @@ async def _run_graph_impl(
                      .values(
                          status=JobStatus.FAILED,
                          completed_at=datetime.now(timezone.utc),
-                         result=json.dumps({"error": str(e)})
+                         result=json.dumps(
+                             {
+                                 "error": str(e),
+                                 "model_accounting": failed_model_accounting,
+                                 "trace_completeness": failed_trace_completeness,
+                             }
+                         )
                      )
                  )
 
              await db.commit()
+    finally:
+        from .audit_context import clear_audit_context as _clear_audit_context
+
+        _clear_audit_context()
 
 @app.post(
     "/webhook/alert",
@@ -1415,16 +1709,20 @@ async def webhook_alert(
             incident = await crud.create_incident(db, incident_data, cluster_id)
             incident_id = incident.id
             logger.info(f"✅ Incident created: {incident_id}")
+
+            cluster = await crud.get_cluster_by_id(db, cluster_id)
+            from sre_agent.job_worker import enqueue_and_kick
+
+            await enqueue_and_kick(
+                db=db,
+                cluster_id=cluster_id,
+                organization_id=getattr(cluster, "org_id", None) if cluster else None,
+                incident_id=incident_id,
+                alert_name=alert_name,
+                triggered_by="self_defense",
+            )
         
-        # 🚀 Start SaaS-aware LangGraph execution
-        background_tasks.add_task(
-            run_graph_background_saas,
-            incident_id=incident_id,
-            cluster_id=cluster_id,
-            alert_name=alert_name
-        )
-        
-        logger.info(f"🚀 [SELF-DEFENSE MODE] Investigation launched for incident: {incident_id}")
+        logger.info(f"🚀 [SELF-DEFENSE MODE] Investigation queued for incident: {incident_id}")
         
         return {
             "status": "accepted",

@@ -43,40 +43,59 @@ def sev(level: Severity) -> SeverityAssessment:
 
 ALLOW = lambda a, e, r: (True, "allowed")   # noqa: E731
 BLOCK = lambda a, e, r: (False, "blocked by rule")  # noqa: E731
+CALIBRATED = {
+    "calibrated_action_probability": 0.99,
+    "minimum_autonomy_probability": 0.95,
+}
 
 
 def test_reversible_low_severity_is_autonomous():
-    d = decide(FakeAction("restart"), sev(Severity.SEV4), evaluate_fn=ALLOW)
+    d = decide(
+        FakeAction("restart"),
+        sev(Severity.SEV4),
+        evaluate_fn=ALLOW,
+        **CALIBRATED,
+    )
     assert d.decision is AutonomyDecision.AUTONOMOUS
 
 
 def test_reversible_high_severity_requires_approval():
-    d = decide(FakeAction("restart"), sev(Severity.SEV1), evaluate_fn=ALLOW)
+    d = decide(
+        FakeAction("restart"),
+        sev(Severity.SEV1),
+        evaluate_fn=ALLOW,
+        **CALIBRATED,
+    )
     assert d.decision is AutonomyDecision.REQUIRES_APPROVAL
 
 
 def test_risky_low_severity_with_rollback_is_autonomous():
     action = FakeAction("config_change", rollback_plan="kubectl apply previous configmap")
-    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW)
+    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED)
     assert d.decision is AutonomyDecision.AUTONOMOUS
 
 
 def test_risky_low_severity_without_rollback_requires_approval():
-    d = decide(FakeAction("config_change"), sev(Severity.SEV4), evaluate_fn=ALLOW)
+    d = decide(
+        FakeAction("config_change"),
+        sev(Severity.SEV4),
+        evaluate_fn=ALLOW,
+        **CALIBRATED,
+    )
     assert d.decision is AutonomyDecision.REQUIRES_APPROVAL
 
 
 def test_scale_to_zero_is_irreversible_and_needs_approval_even_low_sev():
     action = FakeAction("scale", parameters={"replicas": 0})
     assert classify_reversibility(action) is Reversibility.IRREVERSIBLE
-    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW)
+    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED)
     assert d.decision is AutonomyDecision.REQUIRES_APPROVAL
 
 
 def test_scale_up_is_risky_not_irreversible():
     action = FakeAction("scale", parameters={"replicas": 5}, rollback_plan="scale back to 2")
     assert classify_reversibility(action) is Reversibility.RISKY
-    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW)
+    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED)
     assert d.decision is AutonomyDecision.AUTONOMOUS
 
 
@@ -88,14 +107,18 @@ def test_hard_policy_block_wins():
 
 def test_plan_all_autonomous():
     actions = [FakeAction("restart"), FakeAction("rollback")]
-    agg, per = decide_plan(actions, sev(Severity.SEV4), evaluate_fn=ALLOW)
+    agg, per = decide_plan(
+        actions, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED
+    )
     assert agg is AutonomyDecision.AUTONOMOUS
     assert len(per) == 2
 
 
 def test_plan_one_approval_downgrades_whole_plan():
     actions = [FakeAction("restart"), FakeAction("config_change")]  # 2nd has no rollback
-    agg, _ = decide_plan(actions, sev(Severity.SEV4), evaluate_fn=ALLOW)
+    agg, _ = decide_plan(
+        actions, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED
+    )
     assert agg is AutonomyDecision.REQUIRES_APPROVAL
 
 
@@ -110,6 +133,30 @@ def test_plan_one_blocked_blocks_whole_plan():
 
 def test_escalate_is_reversible_noop():
     assert classify_reversibility(FakeAction("escalate")) is Reversibility.REVERSIBLE
+
+
+def test_uncalibrated_self_confidence_cannot_authorize_mutation():
+    d = decide(FakeAction("restart"), sev(Severity.SEV4), evaluate_fn=ALLOW)
+    assert d.decision is AutonomyDecision.REQUIRES_APPROVAL
+    assert d.confidence_calibrated is False
+    assert "uncalibrated" in d.reason
+
+
+def test_calibrated_probability_below_measured_threshold_requires_approval():
+    d = decide(
+        FakeAction("restart"),
+        sev(Severity.SEV4),
+        evaluate_fn=ALLOW,
+        calibrated_action_probability=0.89,
+        minimum_autonomy_probability=0.95,
+    )
+    assert d.decision is AutonomyDecision.REQUIRES_APPROVAL
+    assert d.confidence_calibrated is True
+
+
+def test_notify_only_escalation_does_not_require_calibration():
+    d = decide(FakeAction("escalate"), sev(Severity.SEV4), evaluate_fn=ALLOW)
+    assert d.decision is AutonomyDecision.AUTONOMOUS
 
 
 if __name__ == "__main__":

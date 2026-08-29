@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/confidence/v1/artifact.schema.json",
+  "title": "Sentinel task-specific confidence calibration artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_version",
+    "task",
+    "rubric_version",
+    "config_fingerprint",
+    "source_sha256",
+    "sample_count",
+    "bins",
+    "autonomy_threshold",
+    "threshold_support",
+    "threshold_wilson_lower",
+    "required_wilson_lower",
+    "built_at",
+    "artifact_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "artifact_version": {"type": "string", "minLength": 1},
+    "task": {"enum": ["diagnosis", "remediation"]},
+    "rubric_version": {"type": "string", "minLength": 1},
+    "config_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sample_count": {"type": "integer", "minimum": 1},
+    "bins": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "upper_bound",
+          "count",
+          "successes",
+          "calibrated_probability"
+        ],
+        "properties": {
+          "upper_bound": {"type": "number", "minimum": 0, "maximum": 1},
+          "count": {"type": "integer", "minimum": 1},
+          "successes": {"type": "integer", "minimum": 0},
+          "calibrated_probability": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "autonomy_threshold": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "threshold_support": {"type": "integer", "minimum": 0},
+    "threshold_wilson_lower": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "required_wilson_lower": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1
+    },
+    "built_at": {"type": "string", "format": "date-time"},
+    "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

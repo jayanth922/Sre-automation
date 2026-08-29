@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -227,6 +228,23 @@ class PromptLoader:
         except Exception as e:
             logger.error(f"Error listing prompt files: {e}")
             return []
+
+    def prompt_fingerprints(self) -> dict[str, dict[str, object]]:
+        """Return deterministic hashes for the exact prompt text the runtime loads.
+
+        Hashing the stripped UTF-8 content mirrors :meth:`_load_prompt_file`, so
+        harmless filesystem metadata changes do not make two runs look different.
+        The prompt body is deliberately excluded from provenance records.
+        """
+        fingerprints: dict[str, dict[str, object]] = {}
+        for prompt_name in sorted(self.list_available_prompts()):
+            content = self.load_prompt(prompt_name)
+            encoded = content.encode("utf-8")
+            fingerprints[prompt_name] = {
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "bytes": len(encoded),
+            }
+        return fingerprints
 
 
 # Convenience instance for easy import

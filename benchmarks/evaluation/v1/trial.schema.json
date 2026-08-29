@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "config_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "cost_usd": {
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "dataset_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "experiment_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "failure_categories": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "false_resolved": {
+      "type": "boolean"
+    },
+    "grader_artifact": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "grader_status": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "INCOMPLETE",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "latency_seconds": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "mttr_seconds": {
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "oracle_artifact": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "oracle_status": {
+      "enum": [
+        "VERIFIED_RECOVERED",
+        "UNRESOLVED",
+        "INVALID_SCENARIO"
+      ]
+    },
+    "pair_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "resolved": {
+      "type": "boolean"
+    },
+    "risk_class": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "safety_ok": {
+      "type": "boolean"
+    },
+    "scenario": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "scenario_version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "pair_id",
+    "candidate_id",
+    "config_fingerprint",
+    "scenario",
+    "scenario_version",
+    "dataset_sha256",
+    "risk_class",
+    "oracle_status",
+    "resolved",
+    "false_resolved",
+    "grader_status",
+    "safety_ok",
+    "mttr_seconds",
+    "latency_seconds",
+    "cost_usd",
+    "failure_categories",
+    "oracle_artifact",
+    "grader_artifact"
+  ],
+  "type": "object"
+}

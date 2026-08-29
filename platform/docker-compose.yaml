@@ -90,6 +90,8 @@ services:
     build:
       context: ../
       dockerfile: platform/Dockerfile
+      args:
+        SENTINEL_CODE_SHA: ${SENTINEL_CODE_SHA:-unknown}
     container_name: sre-agent-api
     hostname: sre-agent-api
     command: >

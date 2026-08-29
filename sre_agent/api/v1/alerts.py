@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import crud, database, models, schemas
@@ -82,7 +82,6 @@ def _parse_alertmanager_payload(body: Dict[str, Any]) -> List[Dict[str, Any]]:
 @router.post("/webhook")
 async def receive_alertmanager_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     cluster: models.Cluster = Depends(_get_cluster_from_token),
     db: AsyncSession = Depends(database.get_db),
 ):
@@ -104,6 +103,15 @@ async def receive_alertmanager_webhook(
     """
     body = await request.json()
     alerts = _parse_alertmanager_payload(body)
+
+    # Authenticating with the cluster token and delivering a webhook is observed
+    # Alertmanager connectivity evidence, even when every alert is deduped.
+    await crud.update_cluster_heartbeat(
+        db,
+        cluster.id,
+        source="alertmanager",
+        reason="alertmanager_webhook",
+    )
 
     if not alerts:
         return {"received": 0, "incidents_created": 0, "detail": "No alerts in payload"}
@@ -139,31 +147,15 @@ async def receive_alertmanager_webhook(
         incidents_created += 1
         logger.info(f"Created incident {incident.id} for alert '{alert['alertname']}' on cluster {cluster.id}")
 
-        # Create a Job for the SRE Edge Agent to pick up
-        job_data = schemas.JobCreate(
-            job_type=models.JobType.INVESTIGATION,
-            payload=json.dumps({
-                "alert": title,
-                "incident_id": str(incident.id),
-                "triggered_by": "alertmanager_webhook"
-            })
-        )
-        job = await crud.create_job(db, cluster.id, job_data)
-        logger.info(f"Queued job {job.id} for incident {incident.id}")
+        # Create a durable investigation job (lease-backed; survives process loss).
+        from sre_agent.job_worker import enqueue_and_kick
 
-        # 🚀 START: SaaS-side background investigation
-        # Pass the full alert payload so the agents have access to labels,
-        # annotations, and the alert's time window — without these the
-        # specialists can't produce queries with the right label values
-        # and the supervisor's synthesis loses the alert's own evidence
-        # (reason=, error_type=, query=, endpoint=, etc.).
-        from sre_agent.agent_runtime import run_graph_background_saas
-        background_tasks.add_task(
-            run_graph_background_saas,
-            incident_id=incident.id,
+        job = await enqueue_and_kick(
+            db=db,
             cluster_id=cluster.id,
+            organization_id=cluster.org_id,
+            incident_id=incident.id,
             alert_name=alert["alertname"],
-            job_id=job.id,
             alert_labels=alert.get("labels") or {},
             alert_annotations={
                 "summary": alert.get("summary", ""),
@@ -171,8 +163,9 @@ async def receive_alertmanager_webhook(
             },
             alert_starts_at=alert.get("startsAt") or alert.get("starts_at"),
             alert_severity=alert.get("severity") or "warning",
+            triggered_by="alertmanager_webhook",
         )
-        logger.info(f"Launched background investigation for incident {incident.id}")
+        logger.info(f"Queued durable job {job.id} for incident {incident.id}")
 
     return {
         "received": len(alerts),
