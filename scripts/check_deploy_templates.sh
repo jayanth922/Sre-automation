@@ -20,6 +20,19 @@ bash scripts/check_helm_rbac.sh
 bash scripts/check_helm_ws.sh
 
 echo "==> Kustomize build (deploy/k8s)"
+# secret.yaml is gitignored; materialize from the example for CI/local smoke only.
+CLEANUP_SECRET=0
+if [[ ! -f deploy/k8s/secret.yaml ]]; then
+  cp deploy/k8s/secret.example.yaml deploy/k8s/secret.yaml
+  CLEANUP_SECRET=1
+fi
+kustomize_cleanup() {
+  if [[ "$CLEANUP_SECRET" -eq 1 ]]; then
+    rm -f deploy/k8s/secret.yaml
+  fi
+}
+trap kustomize_cleanup EXIT
+
 if command -v kubectl >/dev/null 2>&1; then
   kubectl kustomize deploy/k8s >/dev/null
 elif command -v kustomize >/dev/null 2>&1; then
@@ -28,6 +41,8 @@ else
   echo "ERROR: kubectl or kustomize required" >&2
   exit 1
 fi
+kustomize_cleanup
+trap - EXIT
 
 if [[ -f deploy/terraform/main.tf ]]; then
   echo "==> Terraform fmt -check + validate (deploy/terraform)"

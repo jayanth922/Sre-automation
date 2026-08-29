@@ -74,7 +74,8 @@ def test_ci_renders_default_and_opt_in_rbac_modes():
     check = (ROOT / "scripts" / "check_helm_rbac.sh").read_text()
     live = (ROOT / "scripts" / "check_live_rbac.sh").read_text()
 
-    assert "bash scripts/check_helm_rbac.sh" in workflow
+    assert "check_helm_rbac.sh" in workflow
+    assert "check_helm_ws.sh" in workflow
     assert "default chart rendered cluster-wide RBAC" in check
     assert "--set rbac.clusterWide.enabled=true" in check
     assert "assert_denied delete services" in live
