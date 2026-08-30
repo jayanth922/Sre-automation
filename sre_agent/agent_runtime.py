@@ -321,6 +321,10 @@ app.include_router(members_router.router, prefix="/api/v1")
 from sre_agent.api.v1 import ws_tickets as ws_tickets_router
 app.include_router(ws_tickets_router.router, prefix="/api/v1")
 
+# Multi-tenant secure access: Slack OAuth install flow, GitHub App install linking
+from sre_agent.api.v1 import multitenant as multitenant_router
+app.include_router(multitenant_router.router, prefix="/api/v1")
+
 
 # Simple request/response models
 class InvocationRequest(BaseModel):

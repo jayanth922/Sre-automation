@@ -93,7 +93,13 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     api_key: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    
+    # Slack OAuth ("Add to Slack"): one Sentinel-owned Slack app installed by
+    # each org's own workspace, replacing the single global SLACK_BOT_TOKEN
+    # env var (self-hosted-only model) with a per-org bot token. Null =
+    # this org hasn't installed via OAuth; falls back to SLACK_BOT_TOKEN.
+    slack_bot_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
+    slack_team_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # Relationships
     users: Mapped[List["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     clusters: Mapped[List["Cluster"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
@@ -160,6 +166,11 @@ class Cluster(Base):
     k8s_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     github_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     github_repo: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. org/repo
+    # GitHub App installation (Phase 4): when set, the platform mints a
+    # short-lived installation access token per request instead of using the
+    # long-lived github_token PAT above. github_token remains the fallback
+    # for clusters that never install the App.
+    github_app_installation_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     notion_api_key: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     notion_database_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Per-customer Jira ticketing (each tenant has its own Jira Cloud site

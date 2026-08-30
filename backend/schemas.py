@@ -122,6 +122,7 @@ class OrgResponse(BaseModel):
     id: uuid.UUID
     name: str
     created_at: datetime
+    slack_team_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -139,6 +140,9 @@ class ClusterCreate(BaseModel):
     k8s_token: Optional[str] = None
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
+    # GitHub App installation ID (Phase 4): when set, a short-lived
+    # installation token is minted per request instead of github_token.
+    github_app_installation_id: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
     jira_url: Optional[str] = None
@@ -163,6 +167,7 @@ class ClusterUpdate(BaseModel):
     k8s_token: Optional[str] = None
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
+    github_app_installation_id: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
     jira_url: Optional[str] = None
@@ -188,6 +193,7 @@ class ClusterResponse(BaseModel):
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
+    github_app_installation_id: Optional[str] = None
     notion_database_id: Optional[str] = None
     jira_project_key: Optional[str] = None
     metrics_config: Optional[str] = None

@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY mcp_servers/loki_real/server.py .
 COPY mcp_auth.py .
+COPY relay_credentials.py .
 
 EXPOSE 3000
 

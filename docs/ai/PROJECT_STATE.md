@@ -8,10 +8,12 @@ Executing the 5-phase upgrade plan (Jira, observability, memory, multi-tenancy,
 real benchmark) from `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md`,
 one PR per phase, no cross-phase file overlap. PR #44 (Temporal sandbox
 verification), PR #45 (Slack conversational memory), PR #46 (Jira ticketing,
-Phase 1), and PR #47 (Langfuse observability, Phase 2) are all merged into
-`master`, and PR #48 (memory sophistication, Phase 3) is now merged into
-`master` as well. Phases 4-5 (multi-tenant secure access, AIOpsLab benchmark)
-are scoped in the plan file but not started.
+Phase 1), PR #47 (Langfuse observability, Phase 2), and PR #48 (memory
+sophistication, Phase 3) are all merged into `master`. Phase 4 (multi-tenant
+secure access) is implemented and verified on branch
+`feature/multitenant-secure-access` — **not yet committed/pushed/PR'd**, see
+Next bounded task. Phase 5 (AIOpsLab benchmark) is scoped in the plan file
+but not started.
 
 Temporal sandbox (PR #44) is a **log-based recovery oracle only**: replay the
 log evidence that proved an incident was broken, apply the proposed patch
@@ -31,52 +33,56 @@ test runner.
 - **Incident memory (Phase 3, PR #48, merged):** `sre_agent/memory_store.py` stores each incident as three separately-embedded named Qdrant vectors (`symptoms`/`root_cause`/`resolution`) in collection `sre_incidents_v2`, tenant-scoped by `organization_id`/`cluster_id` payload fields + Qdrant `Filter` on every search, recency-decayed ranking (`SENTINEL_MEMORY_RECENCY_HALF_LIFE_DAYS`, default 30d half-life), and cross-incident back-links computed at store time via a `root_cause`-similarity lookup. Point IDs are `uuid.uuid5(NAMESPACE, incident_id)` (deterministic across processes), not Python's `hash()` (see `DECISIONS.md`). Embedding bootstrap is unified in `sre_agent/embedding.py` — the process-wide `fastembed` singleton used by `memory_store.py` (`skill_store.py` has no embedding code to unify yet; `edge_mcp_servers/.../runbooks_local/server.py` intentionally keeps its own, since it's a separate customer-deployed container that never imports `sre_agent`).
 - **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt/model/tool changes against content-addressed evidence bundles; `candidate.source_digest` is a full-tree hash of files matching `protected_path_rules`, not diff-based — any branch behind `master` needs a fresh merge + digest recompute (`uv run python benchmarks/release_gate.py digest ...`) before the gate passes. Zero protected-path changes → `NOT_REQUIRED` (passes regardless of bundle content).
 - **Module Reachability Governance:** `scripts/check_module_reachability.py`; standalone `python -m` workers with no in-process caller are declared directly as `ENTRY_FILES` roots.
-- **Alembic:** single linear head; PR #46's `db94419c24dc` (Jira columns) now chains after PR #45's `f6a7b8c9d0e1` (Slack columns) — both originally branched from the same parent and required a manual `down_revision` re-point during merge.
+- **Alembic:** single linear head; PR #46's `db94419c24dc` (Jira columns) now chains after PR #45's `f6a7b8c9d0e1` (Slack columns) — both originally branched from the same parent and required a manual `down_revision` re-point during merge. Phase 4 adds `a3f7c1d9b2e4` (GitHub App installation ID, Slack OAuth columns) chained after `db94419c24dc` — this is the current sole head on `feature/multitenant-secure-access`.
+- **Multi-tenant secure access (Phase 4, branch `feature/multitenant-secure-access`, not yet merged):** new `sre_agent/multitenant/` package — `github_app.py` mints short-lived (~1h) GitHub App installation tokens (RS256 JWT via `python-jose`, already a dependency) when `Cluster.github_app_installation_id` is set, falling back non-fatally to the stored `github_token` PAT on any failure; `slack_oauth.py` implements Slack's "Add to Slack" OAuth v2 flow, storing a per-`Organization` bot token/team ID (`slack_bot_token`/`slack_team_id`, new encrypted/plain columns) instead of only the global `SLACK_BOT_TOKEN` env var; `relay_auth.py::build_relay_headers()` relays one cluster's resolved GitHub/K8s credentials as `X-Sentinel-Relay-*` headers alongside the existing tenant-identity headers on each investigation's fresh MCP connection (`build_mcp_server_config`/`create_mcp_client` are now `async def` for this). Edge side: `edge_mcp_servers/relay_credentials.py` (new, dependency-free — never imports `sre_agent`) captures those headers into a `contextvars.ContextVar` from the existing bearer-auth ASGI middleware (`mcp_auth.py`); `github_real/server.py::_active_repo()` and `k8s_real/server.py::_relay_api_client()` are the only two choke points that read them back, each a small bounded cache (max 8 entries), falling back to the static single-tenant `GITHUB_TOKEN`/`KUBECONFIG` env-var path when nothing was relayed. New API routes (`sre_agent/api/v1/multitenant.py`) let an authenticated user start each flow (`GET /api/v1/organizations/slack/install-url`, `GET /api/v1/clusters/{id}/github-app/install-url`) and an unauthenticated callback finish it (`GET /api/v1/organizations/slack/callback`, `GET /api/v1/clusters/github-app/callback`) — CSRF/identity state is a short-lived (10 min) signed JWT via `backend.auth.create_access_token`/`decode_access_token` (a `purpose` claim scopes it), not server-side session storage, so it works across multiple API workers. See `docs/ai/DECISIONS.md`'s "Per-cluster credentials relay over the MCP transport" entry for the full rationale.
 
 ## Completed or verified work
 - All 41 backlog packages + PR #34 (LLM provider restriction), PR #42, PR #43 merged.
-- PR #44: Temporal sandbox verification workflow. PR #45: Slack conversational memory. PR #46: Jira ticketing (Phase 1). PR #47: Langfuse observability (Phase 2). PR #48: Memory sophistication (Phase 3). All merged to `master`.
-- Phase 3 (memory sophistication, PR #48), all three parts done:
-  1. **Tenant filter:** `store_incident()`/`search_similar_incidents()` gained `organization_id`/`cluster_id` kwargs; search builds a Qdrant `Filter`. All 4 real call sites (`agent_runtime.py`, `supervisor.py` x2, `graph_builder.py`) updated. Confirmed the `store_incident_memory`/`recall_similar_incidents` MCP-tool lookups referenced in `supervisor.py`/`graph_builder.py` are speculative (no MCP server in-repo registers those names) — the direct `MemoryStore` path is the only one that executes today.
-  2. **Structured payload:** `store_incident()` now takes `symptoms`/`root_cause`/`resolution` instead of one flat `incident_text`, embedded as three named Qdrant vectors in collection `sre_incidents_v2` (renamed from `sre_incidents` — incompatible schema change, no production data to migrate). `search_similar_incidents()` queries all three fields, dedups by `incident_id` keeping the best raw score, then re-ranks by recency-decayed score. Both store call sites (`agent_runtime.py`, `supervisor.py`) updated to pass the three fields from data they already had in scope (`alert_name`/`reflector_analysis.hypothesis`/`final_response` or `plan_hypothesis`).
-  3. **Cross-incident back-links:** at store time, a `root_cause`-similarity query finds related past incidents (tenant-scoped, `RELATED_SCORE_THRESHOLD=0.5`, `related_limit=3` default); the new incident's payload gets `related_incident_ids`, and each related incident's own payload is updated (`client.retrieve` + `set_payload`) to back-link the new incident. Surfaced in `format_similar_incidents_for_prompt()`.
-  4. **Embedding unification:** new `sre_agent/embedding.py` — shared lazy `fastembed.TextEmbedding` singleton (`SENTINEL_EMBEDDING_MODEL` env override, default `BAAI/bge-small-en-v1.5`); `memory_store.py` now uses it instead of its own instance.
-  - `tests/test_memory_store.py` (new, 13 tests): tenant payload/filter, no-mutation, related-incident computation + back-linking, `related_limit=0` skip, per-field query dedup, recency-decay reordering, related-ids surfaced in results/prompt, point-ID determinism, decay bounds.
-  - `docs/ai/DECISIONS.md` gained "Incident memory uses named vectors and deterministic point IDs" entry.
-  - `.env.example` gained a Qdrant/memory section documenting `QDRANT_URL` (pre-existing, previously undocumented) and the two new optional tuning vars.
+- PR #44: Temporal sandbox verification. PR #45: Slack conversational memory. PR #46: Jira ticketing (Phase 1). PR #47: Langfuse observability (Phase 2). PR #48: Memory sophistication (Phase 3, tenant-filtered/structured/back-linked Qdrant memory — see `sre_agent/memory_store.py` and `docs/ai/DECISIONS.md`). All merged to `master`.
+- Phase 4 (multi-tenant secure access): implemented on `feature/multitenant-secure-access` — see the "Current architecture" bullet above and "Relevant files" below for what changed; fully covered by new/updated tests (see Verification below). Not yet committed.
 
 ## Active problem
-None. Phase 3 (PR #48) merged into `master`. Next milestone is Phase 4 (multi-tenant secure access).
+None technical — Phase 4 is implemented and fully verified locally. It is
+sitting uncommitted on `feature/multitenant-secure-access` pending an
+explicit go-ahead to commit/push/open the PR (repo convention is one PR per
+phase, but this session does not commit without being asked).
 
 ## Relevant files
-- `sre_agent/memory_store.py` (Phase 3 — structured payload, tenant filter, recency decay, back-links)
-- `sre_agent/embedding.py` (new — shared embedding singleton)
-- `sre_agent/agent_runtime.py`, `sre_agent/supervisor.py`, `sre_agent/graph_builder.py` (memory_store call sites, tenant-scoped + structured fields)
-- `tests/test_memory_store.py` (new — full `MemoryStore` unit coverage, no live Qdrant needed)
-- `docs/ai/DECISIONS.md`, `.env.example` (Phase 3 documentation)
+- `sre_agent/multitenant/{github_app,slack_oauth,relay_auth}.py` (Phase 4, new)
+- `sre_agent/api/v1/multitenant.py` (Phase 4, new — Slack/GitHub App install+callback routes)
+- `edge_mcp_servers/relay_credentials.py` (Phase 4, new — dependency-free edge-side contextvar capture)
+- `edge_mcp_servers/mcp_auth.py`, `edge_mcp_servers/mcp_servers/{github_real,k8s_real}/server.py`, all 8 `edge_mcp_servers/mcp_servers/*/Dockerfile` (Phase 4 — relay wiring)
+- `backend/models.py`, `backend/schemas.py`, `backend/crud.py`, `backend/alembic/versions/a3f7c1d9b2e4_*.py` (Phase 4 — `github_app_installation_id`, `slack_bot_token`, `slack_team_id`)
+- `sre_agent/execution_context.py`, `sre_agent/multi_agent_langgraph.py` (Phase 4 — credentials folded into `ExecutionContext`, MCP client builder now `async`)
+- `sre_agent/integrations/slack_bot.py` (Phase 4 — `build_slack_app(organization=...)` resolves the OAuth-installed token when given one)
+- `tests/test_multitenant_{github_app,slack_oauth,relay_auth}.py` (Phase 4, new); `tests/test_mcp_auth.py`, `tests/test_canonical_models.py` (Phase 4 — updated for the new relay import + Alembic head)
+- `docs/ai/DECISIONS.md` "Per-cluster credentials relay over the MCP transport" entry, `.env.example` (Phase 4 documentation)
+- `sre_agent/memory_store.py`, `sre_agent/embedding.py` (Phase 3, merged)
 - `sre_agent/tracing.py`, `platform/docker-compose.yaml`, `deploy/helm/sentinel/templates/langfuse.yaml` (Phase 2, merged)
-- `sre_agent/integrations/jira.py`, `sre_agent/api/v1/tickets.py` (Phase 1, merged)
+- `sre_agent/integrations/jira.py`, `sre_agent/api/v1/tickets.py` (Phase 1, merged — structural template Phase 4's API routes followed)
 - `benchmarks/release_gate.py`, `benchmarks/release/v1/policy.json`, `benchmarks/release/candidate/bundle.json`
 - `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` (authoritative phase plan)
 
 ## Verification commands and latest results
-- `uv run pytest -q` → 716 passed, 2 skipped, on `feature/memory-sophistication` (baseline 702 on `master` + 13 new `test_memory_store.py` + 1 more collected).
-- `uv run pytest -q tests/test_memory_store.py` → 13 passed.
-- `uv run ruff check sre_agent/memory_store.py sre_agent/embedding.py` → all checks passed (pre-existing lint debt elsewhere in `supervisor.py`/`agent_runtime.py`/`graph_builder.py` untouched by this diff).
+- `uv run pytest -q` → 750 passed, 2 skipped, on `feature/multitenant-secure-access` (34 new Phase 4 tests; one pre-existing hardcoded-head test and one stale source-string assertion in `test_mcp_auth.py` updated to match the new code, not skipped).
+- `uv run pytest -q tests/test_multitenant_github_app.py tests/test_multitenant_slack_oauth.py tests/test_multitenant_relay_auth.py tests/test_mcp_auth.py` → 40 passed.
+- `uv run ruff check <all Phase 4 new/changed files>` → zero errors introduced; pre-existing lint debt in `agent_runtime.py`/`multi_agent_langgraph.py`/`models.py`/etc. confirmed unchanged by diffing against `master` before touching those files.
 - `uv run python scripts/check_module_reachability.py` → `Reachability OK: 72 reachable, 6 experimental.`
-- `gh pr checks 44` / `45` / `46` / `47` / `48` → all green before merge; all `MERGED`.
+- Alembic: `a3f7c1d9b2e4` confirmed as sole head, chained after `db94419c24dc`.
 
 ## Known blockers or risks
-- None technical. Phase 4 (multi-tenant secure access) will need a real GitHub App + Slack app registration from the user for end-to-end OAuth validation — not needed until that phase.
+- Real end-to-end OAuth validation (an actual GitHub App + Slack app
+  registered by the user) has not been done — token-scope logic and all
+  regression tests are verified locally without them, per the original task
+  scope. The Slack OAuth callback and GitHub App callback routes return bare
+  JSON (no frontend redirect UX yet — no `FRONTEND_URL` convention existed
+  in this repo to redirect to; deferred as a separate frontend task).
+- Nothing has been committed to `feature/multitenant-secure-access` yet.
 
 ## Next bounded task
-Start Phase 4 (multi-tenant secure access) in a **fresh
-conversation**: new `sre_agent/multitenant/` package (`github_app.py`,
-`slack_oauth.py`, `relay_auth.py`) replacing the single shared
-`MCP_SERVICE_TOKEN` with per-tenant issued credentials, extending
-`edge_mcp_servers/*` to accept per-installation credentials from `Cluster`'s
-already-encrypted columns instead of only `KUBECONFIG`; builds on
-`mutation_gateway.py::_verify_scope()`/`namespace_scope.py`. Needs a real
-GitHub App + Slack app registration from the user for end-to-end OAuth
-validation. Read this file plus the plan file's "Phases 3-5" section before
-starting.
+Get sign-off to commit the Phase 4 working-tree changes on
+`feature/multitenant-secure-access`, push, and open the PR (one-PR-per-phase
+convention, same as #44-#48) — this session will not do so without being
+asked. After that: Phase 5 (AIOpsLab benchmark) is the next milestone; start
+it in a **fresh conversation**, reading this file plus the plan file's
+"Phases 3-5" section first.

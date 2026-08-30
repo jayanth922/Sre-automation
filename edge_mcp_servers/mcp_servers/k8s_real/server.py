@@ -32,13 +32,63 @@ v1 = None
 last_connection_attempt = 0
 CONNECTION_RETRY_INTERVAL = 10 
 
+# Bounded cache of relayed (api_server, token) -> ApiClient, so a
+# multi-tenant control plane relaying different clusters' credentials across
+# requests doesn't rebuild a client on every tool call.
+_relay_k8s_client_cache: Dict[tuple, Any] = {}
+_RELAY_K8S_CLIENT_CACHE_MAX = 8
+
+
+def _relay_api_client():
+    """A per-request ApiClient built from relayed cluster credentials, if any.
+
+    Prefers a per-request relayed (api_server, token) pair — one control
+    plane managing many Cluster rows — over this process's static
+    single-tenant KUBECONFIG/in-cluster configuration, which remains the
+    fallback for a self-hosted deployment that never relays per-cluster
+    credentials.
+    """
+    try:
+        from relay_credentials import get_relay_credential
+    except ImportError:
+        return None
+
+    host = get_relay_credential("k8s_api_server")
+    token = get_relay_credential("k8s_token")
+    if not host or not token:
+        return None
+
+    cache_key = (host, token)
+    cached = _relay_k8s_client_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    configuration = client.Configuration()
+    configuration.host = host
+    configuration.api_key = {"authorization": token}
+    configuration.api_key_prefix = {"authorization": "Bearer"}
+    configuration.verify_ssl = os.getenv(
+        "RELAY_K8S_VERIFY_SSL", "true"
+    ).strip().lower() not in ("0", "false", "no")
+    relay_client = client.ApiClient(configuration)
+
+    if len(_relay_k8s_client_cache) >= _RELAY_K8S_CLIENT_CACHE_MAX:
+        _relay_k8s_client_cache.pop(next(iter(_relay_k8s_client_cache)))
+    _relay_k8s_client_cache[cache_key] = relay_client
+    return relay_client
+
+
 def get_k8s_api() -> Optional[client.CoreV1Api]:
     """
     Get Kubernetes CoreV1Api, attempting to initialize if necessary.
     Implements lazy loading and backoff.
     """
+    relay_client = _relay_api_client()
+    if relay_client is not None:
+        return client.CoreV1Api(relay_client)
+
     global k8s_client, v1, last_connection_attempt
-    
+
     if v1:
         return v1
 
@@ -46,7 +96,7 @@ def get_k8s_api() -> Optional[client.CoreV1Api]:
     now = time.time()
     if now - last_connection_attempt < CONNECTION_RETRY_INTERVAL:
         return None
-        
+
     last_connection_attempt = now
 
     try:
@@ -58,9 +108,13 @@ def get_k8s_api() -> Optional[client.CoreV1Api]:
 
 def get_apps_v1_api() -> Optional[client.AppsV1Api]:
     """Get AppsV1Api, ensuring connection exists."""
+    relay_client = _relay_api_client()
+    if relay_client is not None:
+        return client.AppsV1Api(relay_client)
+
     global k8s_client
     get_k8s_api() # Trigger initialization if needed
-    
+
     if k8s_client:
         return client.AppsV1Api(k8s_client)
     return None

@@ -114,3 +114,39 @@
   surfaced while the claim remains active to prevent an unsafe retry.
 - **Rejected alternative:** Calling `Executor` from ACT with a cached gate result
   or checking idempotency with separate read and write operations.
+
+## Per-cluster credentials relay over the MCP transport (Phase 4)
+
+- **Decision:** `edge_mcp_servers/*` keep resolving credentials from static
+  process environment variables (`GITHUB_TOKEN`/`GITHUB_REPO`, `KUBECONFIG`)
+  as their fallback, but a request-scoped credential relay now takes
+  priority: `sre_agent/multitenant/relay_auth.py::build_relay_headers`
+  attaches one cluster's resolved GitHub/K8s credentials as additional
+  `X-Sentinel-Relay-*` headers on the MCP connection built fresh per
+  investigation (`build_mcp_server_config`); the edge-side ASGI bearer-auth
+  middleware (`mcp_auth.py`) captures them into a `contextvars.ContextVar`
+  (`edge_mcp_servers/relay_credentials.py`), and only two choke points read
+  them back — `github_real/server.py::_active_repo()` and
+  `k8s_real/server.py::_relay_api_client()` — both bounded caches (max 8
+  entries) keyed by the credential itself.
+- **Reason:** One `Organization` can own many `Cluster` rows, but the edge
+  fleet's static single-tenant env vars were only ever correct for exactly
+  one `Cluster` per deployment. Rewriting every tool handler to thread a
+  credential parameter through would touch far more surface area than the
+  two functions that actually gate all GitHub/K8s tool calls.
+- **Consequences:** `edge_mcp_servers` still must never import `sre_agent`
+  (see `runbooks_local/server.py`'s existing precedent) — header name
+  constants are duplicated as plain strings on both sides and must be kept
+  in sync by hand. GitHub tokens now also come from a GitHub App
+  installation (`sre_agent/multitenant/github_app.py`) when
+  `Cluster.github_app_installation_id` is set, minting a short-lived (~1h)
+  token per resolution instead of relaying the long-lived stored PAT;
+  minting failures fall back to the stored PAT non-fatally, same convention
+  as `sre_agent/integrations/jira.py`. Slack similarly moves from a single
+  global `SLACK_BOT_TOKEN` to a per-`Organization` OAuth-installed token
+  (`sre_agent/multitenant/slack_oauth.py`, `Organization.slack_bot_token`),
+  with the env var kept as the self-hosted fallback.
+- **Rejected alternative:** A large mechanical rewrite threading a
+  `Cluster`/credentials object through every MCP tool handler signature, or
+  giving each `Cluster` its own edge deployment (defeats the point of a
+  shared control plane and multiplies operational cost per tenant).

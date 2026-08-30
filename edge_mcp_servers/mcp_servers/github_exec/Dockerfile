@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY mcp_servers/github_exec/guardrails.py .
 COPY mcp_servers/github_exec/server.py .
 COPY mcp_auth.py .
+COPY relay_credentials.py .
 
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

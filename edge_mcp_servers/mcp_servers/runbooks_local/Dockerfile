@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy server code
 COPY mcp_servers/runbooks_local/server.py .
 COPY mcp_auth.py .
+COPY relay_credentials.py .
 # Bake the runbook corpus into the image (compose mounts it as a volume; in
 # Kubernetes there is no host mount, so it must ship in the image).
 COPY mcp_servers/runbooks_local/runbooks ./runbooks
