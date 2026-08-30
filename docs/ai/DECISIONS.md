@@ -76,6 +76,30 @@
 - **Rejected alternative:** Default ClusterRoleBindings or a combined delete
   rule covering pods, services, nodes, events, and namespaces.
 
+## Incident memory uses named vectors and deterministic point IDs
+
+- **Decision:** `memory_store.py` embeds symptoms/root_cause/resolution as
+  three separate named vectors per point (not one flat blob), in a renamed
+  `sre_incidents_v2` collection, with Qdrant point IDs derived via
+  `uuid.uuid5(NAMESPACE, incident_id)` instead of Python's built-in `hash()`.
+- **Reason:** A single flat embedding blurs distinct signals a query might
+  match on (what was observed vs. why vs. how it was fixed). Separately,
+  `hash()` on strings is `PYTHONHASHSEED`-randomized per process, so the old
+  `hash(incident_id) % (2**63)` scheme produced a different Qdrant point ID
+  for the same `incident_id` across process restarts — silently duplicating
+  points instead of upserting the existing one, and making it impossible to
+  reliably look up a point by `incident_id` for cross-incident back-linking.
+- **Consequences:** The old `sre_incidents` collection (single flat vector)
+  is abandoned in place, not migrated — Qdrant is local/self-hosted per
+  `platform/docker-compose.yaml` with no production tenant traffic yet,
+  so there is no data worth migrating. Any future code that needs a point
+  for a known `incident_id` must use `memory_store._point_id()`, not query by
+  payload filter.
+- **Rejected alternative:** Reusing the `sre_incidents` collection name with
+  changed `vectors_config` (Qdrant would reject upserts against the
+  pre-existing incompatible schema), or a migration script for a collection
+  with no real tenant data to preserve.
+
 ## Live writes cross one fresh authorization boundary
 
 - **Decision:** `mutation_gateway.authorize_and_execute` is the only application

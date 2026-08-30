@@ -1073,7 +1073,13 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
             memory = get_memory_store()
             if memory.is_available():
                 query_text = f"{alert_context.alert_name if alert_context else ''} {reflector_analysis.hypothesis} {reflector_analysis.reasoning}"
-                similar_incidents = memory.search_similar_incidents(query_text, limit=3)
+                state_metadata = state.get("metadata", {}) or {}
+                similar_incidents = memory.search_similar_incidents(
+                    query_text,
+                    limit=3,
+                    organization_id=state_metadata.get("organization_id"),
+                    cluster_id=state_metadata.get("cluster_id"),
+                )
                 if similar_incidents:
                     past_solutions = memory.format_similar_incidents_for_prompt(similar_incidents)
                     logger.info(f"✅ Found {len(similar_incidents)} similar past incidents")
