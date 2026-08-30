@@ -8,12 +8,18 @@ modules are listed separately so they cannot be mistaken for product surface.
 | Owner module | Entry point | Notes |
 |--------------|-------------|-------|
 | `sre_agent.agent_runtime` | FastAPI `app` | HTTP + WebSocket surface |
-| `sre_agent.agent_runtime_tasks` | Celery / background jobs | Graph invocation worker |
+| `sre_agent.job_worker` | `python -m sre_agent.job_worker` | Postgres lease-backed durable job worker; invokes `sre_agent.incident_runner.run_incident_investigation` |
 | `sre_agent.graph_builder` | LangGraph compile | Canonical investigation graph |
 | `sre_agent.multi_agent_langgraph` | `create_multi_agent_system` | Specialist wiring |
 | `sre_agent.api.v1.*` | `/api/v1/*` routers | Tenant-scoped REST |
 | `backend.routers.auth` | `/auth/*` | Login / session |
 | `dashboard/app` | Next.js App Router | Operator UI |
+
+`sre_agent.agent_runtime_tasks` is listed as a reachability root
+(`scripts/check_module_reachability.py`) but is not an active entry point: it
+is a quarantined forwarding shim (`DeprecationWarning` + call-through) that
+exists only so old imports don't hard-fail. New work must call
+`sre_agent.incident_runner.run_incident_investigation` directly.
 
 ## Intentionally experimental (CLI / benchmarks only)
 

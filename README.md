@@ -59,7 +59,8 @@ mutation is governed by the policy gate + human approval (surfaced as
 strong) — cheap models for narration/routing, strong models for
 reflection/planning — with complexity bump-up, budget-aware downgrade,
 off-policy blocking, and a provider fallback chain. Per-tier provider overrides
-let you split, e.g., reflection/planning on Claude and chatter on Groq.
+(`MODEL_ROUTER_<TIER>_PROVIDER`) let you split, e.g., reflection/planning on
+Claude and fast narration on Gemini.
 
 ## Observability, security, production engineering
 
@@ -67,13 +68,35 @@ let you split, e.g., reflection/planning on Claude and chatter on Groq.
   `/agent/metrics` (per-node runs/latency/errors, always on), and full Langfuse
   span tracing of every LLM/tool/chain call with tokens & cost when configured
   (self-hostable).
-- **Auth / sessions** — short-lived access token in memory + rotating refresh
-  token in an httpOnly cookie, with reuse detection and server-side revocation.
+- **Auth / sessions** — every HTTP and WebSocket route on the runtime requires
+  an authenticated principal; tenant and cluster context are derived
+  server-side from that principal, never accepted as trusted request input.
+  Sessions use a short-lived access token in memory + rotating refresh token
+  in an httpOnly cookie, with reuse detection and server-side revocation.
+- **Tenant isolation** — the MCP/tool plane is resolved per tenant+cluster
+  (endpoints, credentials, namespace allowlists), not shared off one
+  process-global registry; audit log entries are stamped with
+  `organization_id`/`cluster_id` at write time, not inferred after the fact.
+- **Mutation safety** — every live cluster write passes one mutation gateway
+  immediately before the tool call fires, re-checking tenant, namespace,
+  approval/action hash, cluster lock, and idempotency — not just at the API
+  layer where a lock could go stale between planning and execution. Cluster
+  credentials and provider API keys are encrypted at rest (envelope
+  encryption, versioned keys); nothing sensitive is logged or traced in the
+  clear.
 - **Guardrails** — prompt-injection defense on untrusted telemetry entering
   prompts; action guardrails on the executor / github-exec tools; the policy
   gate + approval as the real safety net.
-- **Durability** — graph state checkpointed per incident (human-approval resume
-  + interrupted-run continuation); Redis backend for cross-crash durability.
+- **Durability** — investigations run as Postgres lease-backed durable jobs
+  (heartbeat renewal, bounded retry, cancellation, dead-letter queueing), and
+  graph state is checkpointed per incident against the same durable backend
+  so a human-approval pause or an API restart resumes exactly once instead of
+  re-running or silently dropping the incident.
+- **Release safety** — changes to prompts, model routing, or tool contracts
+  are gated in CI by a content-addressed evidence bundle (paired statistical
+  comparison, zero-tolerance adversarial suite, full trace accounting) keyed
+  to the exact source digest of what changed; a change without matching
+  evidence fails closed instead of shipping unverified.
 
 ## Deploy (same-machine Kubernetes)
 
@@ -103,10 +126,13 @@ conventions, GitHub repo, Notion runbook database) and point Alertmanager at
 
 ## Configure (bring your own)
 
-- **LLM** — `anthropic` (Claude), `groq`, or `openai_compatible`. Run your **own
-  model on the machine** with `openai_compatible` + `LLM_BASE_URL` (local Ollama
-  `/v1`, vLLM, or LiteLLM). Providers are curated to ones that reliably support
-  tool/function-calling structured output.
+- **LLM** — `anthropic` (Claude) or `gemini`, per cluster or per model-router
+  tier (`MODEL_ROUTER_<TIER>_PROVIDER`). Provider support is deliberately
+  narrow rather than a generic LiteLLM passthrough: both providers give
+  reliable tool/function-calling structured output, which the agent's
+  specialist and planner nodes depend on. Startup fails closed with a
+  migration message if a legacy provider (`groq`, `ollama`, `nvidia`,
+  `openai`, `openai_compatible`) is still configured.
 - **MCP tools** — register your own servers via `MCP_SERVERS_JSON`, merged with
   the built-ins.
 - **Runbooks** — a cluster's Notion database, or the local markdown corpus.
@@ -117,15 +143,31 @@ conventions, GitHub repo, Notion runbook database) and point Alertmanager at
 
 ## Testing & benchmarks
 
-- **CI** (`.github/workflows/ci.yml`): lockfile validation, byte-compile,
-  `pytest` (against a Postgres service), frontend type-check, image builds.
+- **CI** (`.github/workflows/ci.yml`), gated behind a `quality-gate` aggregator
+  that has to see every job pass:
+  - `python-quality` — Ruff, Mypy, compileall, secret scanning.
+  - `backend-tests` — `pytest` against a real Postgres service, plus the docs
+    truthfulness suite (`tests/test_docs_truthfulness.py`).
+  - `release-evaluation` — runs `release_gate.py impact` over the PR's diff;
+    a protected prompt/model/tool change without a matching evidence bundle
+    fails the build.
+  - `migrations` — Alembic upgrade/downgrade round-trip on a clean database.
+  - `eval-smoke` — fast subset of the agent evaluation suite.
+  - `frontend` — dashboard type-check and lint.
+  - `manifests` / `terraform` — Helm and Terraform validation against
+    production defaults.
+  - `images-platform` / `images-edge` — container builds for the runtime and
+    each MCP tool server (matrixed).
 - **Quickstart smoke** (no live cluster): `bash scripts/quickstart_smoke.sh`
-  runs secret scanning, compileall, docs truthfulness tests, and Helm default checks.
+  runs secret scanning, compileall, and the docs truthfulness tests as a fast
+  local pre-flight before pushing.
 - **Benchmarks** (`benchmarks/`): `sre_bench.py` / `bench_mttr.py` fire scenarios
   at a live platform. Credentials come from env (`BENCH_ADMIN_*`,
   `BENCH_CLUSTER_*`) or runtime bootstrap (`BENCH_BOOTSTRAP=1`) via
   `benchmarks/fixtures.py` — no static cluster tokens are shipped.
   Scoring is pure-function and unit-tested (`tests/test_bench_scoring.py`).
+  `release_gate.py` (used by CI above) evaluates the same kind of evidence
+  bundle offline via its `evaluate`/`impact`/`matrix` subcommands.
 
 ## Tech stack
 
