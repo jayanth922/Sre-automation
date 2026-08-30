@@ -34,6 +34,11 @@ except Exception as exc:  # pragma: no cover - env-dependent
     pytest.skip(f"full runtime stack unavailable: {exc}", allow_module_level=True)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_generated_runbooks(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUNBOOKS_DIR", str(tmp_path))
+
+
 def _plan(action_type, target, risk="low", rollback=None):
     return RemediationPlan(
         plan_id="p-int",

@@ -352,7 +352,10 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
             provider = require_supported_provider(
                 context.llm_provider or os.getenv("LLM_PROVIDER") or "anthropic"
             )
-            validate_provider_credentials(provider)
+            validate_provider_credentials(
+                provider,
+                api_key=context.credentials.get("llm_api_key"),
+            )
         except ProviderConfigError as exc:
             logger.error("Invalid LLM provider configuration: %s", exc)
             raise

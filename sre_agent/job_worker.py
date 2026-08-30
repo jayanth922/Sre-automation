@@ -50,6 +50,31 @@ def _batch_size() -> int:
         return 2
 
 
+async def _renew_job_lease(
+    job_id: uuid.UUID,
+    *,
+    worker_id: str,
+    lease_seconds: int,
+    stop: asyncio.Event,
+    renewal_interval: Optional[float] = None,
+) -> None:
+    """Keep a claimed lease alive until execution finishes or ownership is lost."""
+    interval = renewal_interval or max(1.0, lease_seconds / 3)
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except asyncio.TimeoutError:
+            pass
+        async with database.AsyncSessionLocal() as db:
+            await heartbeat_job(
+                db,
+                job_id,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+            )
+
+
 async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
     """Run one claimed investigation job and finalize its lease."""
     from sre_agent.incident_runner import run_incident_investigation
@@ -63,28 +88,60 @@ async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
     cluster_id = uuid.UUID(str(payload["cluster_id"]))
     alert_name = str(payload.get("alert_name") or "unknown")
 
+    lease_seconds = default_lease_seconds()
     async with database.AsyncSessionLocal() as db:
         await heartbeat_job(
             db,
             job.id,
             worker_id=worker_id,
-            lease_seconds=default_lease_seconds(),
+            lease_seconds=lease_seconds,
         )
 
-    await run_incident_investigation(
-        incident_id=incident_id,
-        cluster_id=cluster_id,
-        alert_name=alert_name,
-        job_id=job.id,
-        alert_labels=payload.get("alert_labels") or {},
-        alert_annotations=payload.get("alert_annotations") or {},
-        alert_starts_at=payload.get("alert_starts_at"),
-        alert_severity=payload.get("alert_severity") or "warning",
-        organization_id=(
-            str(job.organization_id) if job.organization_id is not None else None
-        ),
-        admission_owner=worker_id,
+    stop_renewal = asyncio.Event()
+    run_task = asyncio.create_task(
+        run_incident_investigation(
+            incident_id=incident_id,
+            cluster_id=cluster_id,
+            alert_name=alert_name,
+            job_id=job.id,
+            alert_labels=payload.get("alert_labels") or {},
+            alert_annotations=payload.get("alert_annotations") or {},
+            alert_starts_at=payload.get("alert_starts_at"),
+            alert_severity=payload.get("alert_severity") or "warning",
+            organization_id=(
+                str(job.organization_id) if job.organization_id is not None else None
+            ),
+            admission_owner=worker_id,
+        )
     )
+    renewal_task = asyncio.create_task(
+        _renew_job_lease(
+            job.id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            stop=stop_renewal,
+        )
+    )
+    try:
+        done, _ = await asyncio.wait(
+            {run_task, renewal_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if renewal_task in done:
+            renewal_error = renewal_task.exception()
+            if renewal_error is not None:
+                run_task.cancel()
+                await asyncio.gather(run_task, return_exceptions=True)
+                raise DurableJobError(
+                    f"job lease renewal failed: {renewal_error}"
+                ) from renewal_error
+            if not run_task.done():
+                run_task.cancel()
+                await asyncio.gather(run_task, return_exceptions=True)
+                raise DurableJobError("job lease renewal stopped before execution")
+        await run_task
+    finally:
+        stop_renewal.set()
+        await asyncio.gather(renewal_task, return_exceptions=True)
 
     async with database.AsyncSessionLocal() as db:
         await complete_job(db, job.id, worker_id=worker_id, result_payload={"ok": True})
@@ -176,6 +233,7 @@ async def enqueue_and_kick(
     alert_starts_at: Optional[str] = None,
     alert_severity: Optional[str] = None,
     triggered_by: str = "durable_queue",
+    idempotency_key: Optional[str] = None,
 ):
     """Persist an investigation job and ensure a worker is running in-process."""
     from sre_agent.durable_jobs import (
@@ -200,7 +258,8 @@ async def enqueue_and_kick(
         organization_id=organization_id,
         incident_id=incident_id,
         payload=payload,
-        idempotency_key=investigation_idempotency_key(incident_id),
+        idempotency_key=idempotency_key
+        or investigation_idempotency_key(incident_id),
     )
     if os.getenv("JOB_WORKER_ENABLED", "true").lower() in {"1", "true", "yes"}:
         start_job_worker()

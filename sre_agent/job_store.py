@@ -109,6 +109,7 @@ async def reclaim_expired_leases(
     result = await db.execute(
         select(models.Job).where(
             models.Job.status == models.JobStatus.RUNNING,
+            models.Job.job_type == models.JobType.INVESTIGATION,
             models.Job.lease_expires_at.is_not(None),
             models.Job.lease_expires_at <= clock,
         )
@@ -147,6 +148,7 @@ async def claim_jobs(
     pending_cancel = await db.execute(
         select(models.Job).where(
             models.Job.status == models.JobStatus.PENDING,
+            models.Job.job_type == models.JobType.INVESTIGATION,
             models.Job.cancel_requested_at.is_not(None),
         )
     )
@@ -159,6 +161,7 @@ async def claim_jobs(
         select(models.Job)
         .where(
             models.Job.status == models.JobStatus.PENDING,
+            models.Job.job_type == models.JobType.INVESTIGATION,
             models.Job.cancel_requested_at.is_(None),
         )
         .order_by(models.Job.created_at.asc())

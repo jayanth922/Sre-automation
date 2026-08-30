@@ -240,3 +240,74 @@ def test_timeline_event_to_response_includes_pending_state():
     assert response.payload == {"source": "dashboard_chat", "mode": "post_summary_follow_up"}
     assert response.pending_supervisor is True
     assert response.handled_at == now
+
+
+@pytest.mark.asyncio
+async def test_investigated_follow_up_uses_durable_investigation_queue(monkeypatch):
+    from sre_agent import incident_timeline, job_worker, redis_state_store
+
+    incident_id = uuid.uuid4()
+    cluster_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4(), org_id=org_id)
+    incident = SimpleNamespace(
+        id=incident_id,
+        cluster_id=cluster_id,
+        status=models.IncidentStatus.INVESTIGATED,
+        summary="",
+        title="Checkout latency spike",
+        description="Latency spike during checkout",
+        resolved_at=None,
+    )
+    captured = {}
+
+    async def fake_get_cluster_by_id(db, requested_cluster_id):
+        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
+
+    async def fake_create_event(*args, **kwargs):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_load_context(requested_incident_id):
+        return {
+            "alert_context": {
+                "labels": {"service": "checkout"},
+                "summary": "Latency elevated",
+                "description": "p99 above SLO",
+                "severity": "critical",
+            }
+        }
+
+    async def fake_enqueue(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id=uuid.uuid4())
+
+    def forbidden_create_task(coro):
+        coro.close()
+        raise AssertionError("follow-up must not create an in-process graph task")
+
+    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
+    monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
+    monkeypatch.setattr(incident_timeline, "load_incident_chat_context", fake_load_context)
+    monkeypatch.setattr(job_worker, "enqueue_and_kick", fake_enqueue)
+    monkeypatch.setattr(mission_control.asyncio, "create_task", forbidden_create_task)
+    monkeypatch.setattr(
+        redis_state_store,
+        "get_state_store",
+        lambda: type("Store", (), {"append_log": lambda *args: None})(),
+    )
+
+    response = await mission_control.send_incident_message(
+        str(incident_id),
+        schemas.IncidentMessageRequest(message="Investigate the remaining errors"),
+        user=user,
+        db=FakeDb(incident),
+        owned_incident=incident,
+    )
+
+    assert response["status"] == "QUEUED"
+    assert captured["organization_id"] == org_id
+    assert captured["cluster_id"] == cluster_id
+    assert captured["incident_id"] == incident_id
+    assert captured["alert_labels"] == {"service": "checkout"}
+    assert captured["triggered_by"] == "dashboard_chat"
+    assert captured["idempotency_key"].startswith(f"follow-up:{incident_id}:")

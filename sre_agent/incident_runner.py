@@ -55,6 +55,8 @@ async def run_incident_investigation(
     alert_annotations: Optional[Dict[str, str]] = None,
     alert_starts_at: Optional[str] = None,
     alert_severity: str = "warning",
+    organization_id: Optional[str] = None,
+    admission_owner: Optional[str] = None,
 ):
     """Single production entry point for SaaS incident graph invocation."""
     from sre_agent.agent_runtime import run_graph_background_saas
@@ -68,4 +70,6 @@ async def run_incident_investigation(
         alert_annotations=alert_annotations,
         alert_starts_at=alert_starts_at,
         alert_severity=alert_severity,
+        organization_id=organization_id,
+        admission_owner=admission_owner,
     )
