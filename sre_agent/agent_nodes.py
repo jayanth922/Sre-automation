@@ -40,7 +40,7 @@ def _load_agent_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _create_llm(provider: str = "groq", **kwargs):
+def _create_llm(provider: str = "anthropic", **kwargs):
     """Create a specialist LLM, routed to the balanced tier by the model router."""
     from .model_router import TaskType, route_llm
     return route_llm(TaskType.SPECIALIST, provider=provider, use_fallback=False, **kwargs)
@@ -98,7 +98,7 @@ class BaseAgentNode:
         name: str,
         description: str,
         tools: List[BaseTool],
-        llm_provider: str = "groq",
+        llm_provider: str = "anthropic",
         agent_metadata: AgentMetadata = None,
         **llm_kwargs,
     ):

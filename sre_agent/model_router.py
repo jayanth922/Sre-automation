@@ -131,7 +131,7 @@ def _router_enabled() -> bool:
 
 
 def _default_provider() -> str:
-    return os.getenv("LLM_PROVIDER", "groq")
+    return os.getenv("LLM_PROVIDER", "anthropic")
 
 
 def _escalate(tier: ModelTier, steps: int = 1) -> ModelTier:

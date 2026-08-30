@@ -52,8 +52,8 @@ jobs:
     env:
       SECRET_KEY: ci-secret-key
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
-      LLM_PROVIDER: groq
-      GROQ_API_KEY: ci-test-groq-key
+      LLM_PROVIDER: anthropic
+      ANTHROPIC_API_KEY: ci-test-anthropic-key
       LIVE_BUS_BACKEND: memory
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +151,8 @@ jobs:
     env:
       SECRET_KEY: ci-secret-key
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
-      LLM_PROVIDER: groq
+      LLM_PROVIDER: anthropic
+      ANTHROPIC_API_KEY: ci-test-anthropic-key
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -172,7 +173,8 @@ jobs:
     env:
       SECRET_KEY: ci-secret-key
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
-      LLM_PROVIDER: groq
+      LLM_PROVIDER: anthropic
+      ANTHROPIC_API_KEY: ci-test-anthropic-key
       LIVE_BUS_BACKEND: memory
     steps:
       - uses: actions/checkout@v4

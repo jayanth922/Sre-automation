@@ -22,8 +22,7 @@ class SREOutputFormatter:
     """Simple markdown output formatter for SRE multi-agent responses."""
 
     def __init__(self, llm_provider: Optional[str] = None):
-        # Get provider from parameter, environment, or default to ollama
-        self.llm_provider = llm_provider or os.getenv("LLM_PROVIDER", "groq")
+        self.llm_provider = llm_provider or os.getenv("LLM_PROVIDER", "anthropic")
         logger.info(
             f"SREOutputFormatter initialized with LLM provider: {self.llm_provider}"
         )

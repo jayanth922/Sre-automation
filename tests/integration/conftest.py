@@ -17,7 +17,8 @@ for _k, _v in {
     "POSTGRES_PASSWORD": "sentinel",
     "POSTGRES_DB": "sentinel",
     "POSTGRES_HOST": "localhost",
-    "LLM_PROVIDER": "groq",
+    "LLM_PROVIDER": "anthropic",
+    "ANTHROPIC_API_KEY": "ci-test-key",
     "LIVE_BUS_BACKEND": "memory",
 }.items():
     os.environ.setdefault(_k, _v)

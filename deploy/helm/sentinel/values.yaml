@@ -56,15 +56,11 @@ secrets:
   langfuseSecretKey: ""
 
 # ── Model provider ────────────────────────────────────────────────────────────
-# Curated to reliable structured-output providers: anthropic | groq | openai_compatible.
+# Curated to reliable structured-output providers: anthropic | gemini.
 llm:
-  provider: "groq"
-  groqModel: "llama-3.3-70b-versatile"
+  provider: "anthropic"
   anthropicModel: "claude-3-5-sonnet-latest"
-  # openai_compatible = run your OWN model on the machine (local Ollama /v1, vLLM,
-  # LiteLLM, LocalAI). Key (if any) in secrets.llmApiKey. Use a tool-capable model.
-  baseUrl: "http://host.docker.internal:11434/v1"
-  model: "qwen2.5:7b-instruct"
+  geminiModel: "gemini-2.0-flash"
 
 # ── MCP tool servers ──────────────────────────────────────────────────────────
 mcp:

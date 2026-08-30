@@ -219,10 +219,20 @@ def _protected_files(repo_root: Path, policy: dict[str, Any]) -> tuple[Path, ...
         if pattern.endswith("/**"):
             directory = repo_root / pattern[:-3]
             if directory.is_dir():
-                files.update(path for path in directory.rglob("*") if path.is_file())
+                files.update(
+                    path
+                    for path in directory.rglob("*")
+                    if path.is_file()
+                    and "__pycache__" not in path.parts
+                    and not path.name.endswith((".pyc", ".pyo", ".DS_Store"))
+                )
         else:
             path = repo_root / pattern
-            if path.is_file():
+            if (
+                path.is_file()
+                and "__pycache__" not in path.parts
+                and not path.name.endswith((".pyc", ".pyo", ".DS_Store"))
+            ):
                 files.add(path)
     return tuple(sorted(files, key=lambda path: path.relative_to(repo_root).as_posix()))
 

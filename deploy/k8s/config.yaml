@@ -11,19 +11,12 @@ metadata:
 data:
   # --- Model provider (bring your own) ---
   # Curated to providers that reliably do tool/function-calling structured output:
-  #   anthropic | groq | openai_compatible
-  # - Claude:    LLM_PROVIDER=anthropic + ANTHROPIC_MODEL, ANTHROPIC_API_KEY in the
-  #              Secret (image needs langchain-anthropic).
-  # - Groq:      LLM_PROVIDER=groq + GROQ_MODEL, GROQ_API_KEY in the Secret.
-  # - Own model  LLM_PROVIDER=openai_compatible + LLM_BASE_URL + LLM_MODEL. This is
-  #   on your      how you run your OWN LLM on the machine: point it at your local
-  #   machine:     Ollama (http://host:11434/v1), vLLM, LiteLLM, or LocalAI. Use a
-  #                tool-capable model (llama3.1+, qwen2.5, etc.). Key optional.
-  LLM_PROVIDER: "groq"
-  GROQ_MODEL: "llama-3.3-70b-versatile"
+  #   anthropic | gemini
+  # - Claude:    LLM_PROVIDER=anthropic + ANTHROPIC_MODEL, ANTHROPIC_API_KEY in the Secret.
+  # - Gemini:    LLM_PROVIDER=gemini + GEMINI_MODEL, GOOGLE_API_KEY in the Secret.
+  LLM_PROVIDER: "anthropic"
   ANTHROPIC_MODEL: "claude-3-5-sonnet-latest"
-  LLM_BASE_URL: "http://host.docker.internal:11434/v1"
-  LLM_MODEL: "qwen2.5:7b-instruct"
+  GEMINI_MODEL: "gemini-2.0-flash"
 
   # --- Database / infra (in-cluster) ---
   POSTGRES_USER: "sentinel"

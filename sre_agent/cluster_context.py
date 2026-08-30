@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Mapping, Optional
 
-SUPPORTED_LLM_PROVIDERS = frozenset({"groq", "anthropic", "openai_compatible"})
+SUPPORTED_LLM_PROVIDERS = frozenset({"anthropic", "gemini"})
 
 
 class UnauthorizedLLMConfigError(ValueError):
@@ -33,12 +33,11 @@ def allowed_llm_providers() -> frozenset[str]:
 
 
 def allowed_llm_models() -> Optional[frozenset[str]]:
-    """Optional operator model allowlist. ``None`` means any model id is permitted."""
+    """Operator model allowlist; empty env means no model restriction."""
     raw = os.getenv("ALLOWED_LLM_MODELS", "").strip()
     if not raw:
         return None
-    allowed = frozenset(part.strip() for part in raw.split(",") if part.strip())
-    return allowed or None
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
 def llm_run_budget() -> Optional[float]:
@@ -62,7 +61,7 @@ def llm_run_budget() -> Optional[float]:
 def resolve_llm(cluster: Any) -> Dict[str, Optional[str]]:
     """Per-cluster LLM brain with platform-default fallback.
 
-    provider is always resolved (cluster override → platform env → groq).
+    provider is always resolved (cluster override → platform env → anthropic).
     model/base_url/api_key prefer the cluster override, then platform env when
     no cluster is bound (local development).
     ``cluster`` may be None → platform defaults.
@@ -70,7 +69,7 @@ def resolve_llm(cluster: Any) -> Dict[str, Optional[str]]:
     use_env_fallbacks = cluster is None
     return {
         "provider": (
-            _attr(cluster, "llm_provider") or os.getenv("LLM_PROVIDER", "groq")
+            _attr(cluster, "llm_provider") or os.getenv("LLM_PROVIDER", "anthropic")
         )
         .strip()
         .lower(),
@@ -90,7 +89,7 @@ def authorize_llm(
     api_key: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     """Fail closed when provider/model/budget are outside operator policy."""
-    resolved_provider = (provider or os.getenv("LLM_PROVIDER", "groq")).strip().lower()
+    resolved_provider = (provider or os.getenv("LLM_PROVIDER", "anthropic")).strip().lower()
     if resolved_provider not in SUPPORTED_LLM_PROVIDERS:
         raise UnauthorizedLLMConfigError(
             f"Unsupported LLM provider {resolved_provider!r}; "

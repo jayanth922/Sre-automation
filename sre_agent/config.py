@@ -129,12 +129,13 @@ class Settings(BaseModel):
     redis_url: str = "redis://localhost:6379/0"
 
     secret_key: SecretStr = Field(default_factory=lambda: SecretStr(""))
-    groq_api_key: Optional[SecretStr] = None
+    google_api_key: Optional[SecretStr] = None
     anthropic_api_key: Optional[SecretStr] = None
+    groq_api_key: Optional[SecretStr] = None
     llm_api_key: Optional[SecretStr] = None
     mcp_service_token: Optional[SecretStr] = None
 
-    llm_provider: str = "groq"
+    llm_provider: str = "anthropic"
     live_bus_backend: LiveBusBackend = LiveBusBackend.MEMORY
     checkpointer_enabled: bool = False
     checkpointer_backend: CheckpointerBackend = CheckpointerBackend.MEMORY
@@ -249,7 +250,7 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
 
     # Provider allow-list is enforced by provider_config (P01); here we only
     # normalize the string so settings stay loadable with legacy env files.
-    llm_provider = (env.get("LLM_PROVIDER") or "groq").strip().lower() or "groq"
+    llm_provider = (env.get("LLM_PROVIDER") or "anthropic").strip().lower() or "anthropic"
 
     live_bus = _enum_value(
         LiveBusBackend,

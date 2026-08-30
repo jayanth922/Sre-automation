@@ -18,7 +18,7 @@ for k, v in {
     "POSTGRES_PASSWORD": "x",
     "POSTGRES_DB": "x",
     "POSTGRES_HOST": "localhost",
-    "LLM_PROVIDER": "ollama",
+    "LLM_PROVIDER": "anthropic",
 }.items():
     os.environ.setdefault(k, v)
 

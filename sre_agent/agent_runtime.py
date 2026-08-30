@@ -350,7 +350,7 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
 
         try:
             provider = require_supported_provider(
-                context.llm_provider or os.getenv("LLM_PROVIDER") or "groq"
+                context.llm_provider or os.getenv("LLM_PROVIDER") or "anthropic"
             )
             validate_provider_credentials(provider)
         except ProviderConfigError as exc:
@@ -392,9 +392,8 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
             print(f"\n❌ {type(e).__name__}:")
             print(str(e))
             print("\n💡 Check provider credentials for your LLM_PROVIDER setting")
-            print("   groq → GROQ_API_KEY")
             print("   anthropic → ANTHROPIC_API_KEY")
-            print("   openai_compatible → LLM_BASE_URL + LLM_MODEL (+ LLM_API_KEY if required)")
+            print("   gemini → GOOGLE_API_KEY or GEMINI_API_KEY")
         else:
             logger.error(f"Failed to initialize SRE Agent system: {e}")
         raise
@@ -1262,7 +1261,7 @@ async def _run_graph_impl(
             ),
             "metadata": {
                 "llm_provider": runtime.context.llm_provider
-                or os.getenv("LLM_PROVIDER", "groq"),
+                or os.getenv("LLM_PROVIDER", "anthropic"),
                 "llm": runtime.context.llm_manifest(),
                 "tools": tools,
                 "organization_id": runtime.context.organization_id,
@@ -1772,7 +1771,7 @@ async def webhook_alert(
             incident_id_str = f"incident-{enriched_context.alert_name}-{session_id}"
             
             from .agent_state import AgentState, AlertContext
-            llm_provider = os.getenv("LLM_PROVIDER", "groq")
+            llm_provider = os.getenv("LLM_PROVIDER", "anthropic")
             
             initial_state: AgentState = {
                 "messages": [HumanMessage(content=f"Alert: {enriched_context.alert_name}")],
@@ -1868,13 +1867,13 @@ async def webhook_alert(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
+async def invoke_sre_agent_async(prompt: str, provider: str = "anthropic") -> str:
     """
     Programmatic interface to invoke SRE agent.
 
     Args:
         prompt: The user prompt/query
-        provider: LLM provider (only "groq" is supported)
+        provider: LLM provider (``anthropic`` or ``gemini``)
 
     Returns:
         The agent's response as a string
@@ -1913,13 +1912,13 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
         raise
 
 
-def invoke_sre_agent(prompt: str, provider: str = "groq") -> str:
+def invoke_sre_agent(prompt: str, provider: str = "anthropic") -> str:
     """
     Synchronous wrapper for invoke_sre_agent_async.
 
     Args:
         prompt: The user prompt/query
-        provider: LLM provider (only "groq" is supported)
+        provider: LLM provider (``anthropic`` or ``gemini``)
 
     Returns:
         The agent's response as a string
@@ -1935,8 +1934,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SRE Agent Runtime")
     parser.add_argument(
         "--provider",
-        default=os.getenv("LLM_PROVIDER", "groq"),
-        help="LLM provider: groq | anthropic | openai_compatible (default: groq)",
+        default=os.getenv("LLM_PROVIDER", "anthropic"),
+        help="LLM provider: anthropic | gemini (default: anthropic)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")

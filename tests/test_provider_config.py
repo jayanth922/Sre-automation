@@ -25,88 +25,73 @@ pc = _load()
 
 
 def test_supported_providers_pass():
-    for provider in ("groq", "anthropic", "openai_compatible"):
+    for provider in ("anthropic", "gemini"):
         assert pc.require_supported_provider(provider) == provider
 
 
 @pytest.mark.parametrize(
     "bad",
-    ["ollama", "nvidia", "gemini", "openai", "bogus", ""],
+    ["groq", "ollama", "nvidia", "openai", "openai_compatible", "bogus", ""],
 )
 def test_unsupported_providers_fail_closed(bad):
     with pytest.raises(pc.ProviderConfigError) as exc:
         pc.require_supported_provider(bad)
     msg = str(exc.value).lower()
-    assert "not supported" in msg or "unset" in msg or "unsupported" in msg
-    # Never suggests silently using groq as a coercion path for aliases.
-    if bad == "ollama":
-        assert "openai_compatible" in msg
-        assert "llm_base_url" in msg
+    assert "not supported" in msg or "unset" in msg or "unsupported" in msg or "removed" in msg
+    if bad in ("groq", "ollama", "nvidia", "openai_compatible"):
+        assert "anthropic" in msg or "gemini" in msg
 
 
-def test_groq_requires_real_key():
-    with pytest.raises(pc.ProviderConfigError, match="GROQ_API_KEY"):
-        pc.validate_provider_credentials("groq", {"GROQ_API_KEY": "YOUR_KEY"})
-    with pytest.raises(pc.ProviderConfigError, match="GROQ_API_KEY"):
-        pc.validate_provider_credentials("groq", {"GROQ_API_KEY": ""})
-    pc.validate_provider_credentials("groq", {"GROQ_API_KEY": "gsk_live_test_value"})
+def test_anthropic_requires_real_key():
+    with pytest.raises(pc.ProviderConfigError, match="ANTHROPIC_API_KEY"):
+        pc.validate_provider_credentials("anthropic", {"ANTHROPIC_API_KEY": "YOUR_KEY"})
+    with pytest.raises(pc.ProviderConfigError, match="ANTHROPIC_API_KEY"):
+        pc.validate_provider_credentials("anthropic", {"ANTHROPIC_API_KEY": ""})
+    pc.validate_provider_credentials("anthropic", {"ANTHROPIC_API_KEY": "sk-ant-api-test-key"})
 
 
-def test_openai_compatible_requires_base_and_model():
-    with pytest.raises(pc.ProviderConfigError, match="LLM_BASE_URL"):
-        pc.validate_provider_credentials(
-            "openai_compatible",
-            {"LLM_BASE_URL": "", "LLM_MODEL": "llama3"},
-        )
-    with pytest.raises(pc.ProviderConfigError, match="LLM_MODEL"):
-        pc.validate_provider_credentials(
-            "openai_compatible",
-            {"LLM_BASE_URL": "http://localhost:11434/v1", "LLM_MODEL": ""},
-        )
-    pc.validate_provider_credentials(
-        "openai_compatible",
-        {
-            "LLM_BASE_URL": "http://localhost:11434/v1",
-            "LLM_MODEL": "llama3.1",
-            "LLM_API_KEY": "not-needed",
-        },
-    )
+def test_gemini_requires_real_key():
+    with pytest.raises(pc.ProviderConfigError, match="GOOGLE_API_KEY"):
+        pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": "YOUR_KEY"})
+    with pytest.raises(pc.ProviderConfigError, match="GOOGLE_API_KEY"):
+        pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": ""})
+    pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": "AIzaSyTestKey"})
 
 
 def test_validate_startup_config_happy_path():
     env = {
         "SECRET_KEY": "dev-secret",
+        "LLM_PROVIDER": "anthropic",
+        "ANTHROPIC_API_KEY": "sk-ant-test-key",
+    }
+    assert pc.validate_startup_config(env) == "anthropic"
+
+
+def test_validate_startup_rejects_groq():
+    env = {
+        "SECRET_KEY": "dev-secret",
         "LLM_PROVIDER": "groq",
         "GROQ_API_KEY": "gsk_test_key",
     }
-    assert pc.validate_startup_config(env) == "groq"
-
-
-def test_validate_startup_rejects_ollama_example():
-    env = {
-        "SECRET_KEY": "dev-secret",
-        "LLM_PROVIDER": "ollama",
-        "GROQ_API_KEY": "gsk_test_key",
-    }
-    with pytest.raises(pc.ProviderConfigError, match="openai_compatible"):
+    with pytest.raises(pc.ProviderConfigError, match="Groq support was removed"):
         pc.validate_startup_config(env)
 
 
 def test_cli_exits_nonzero_on_invalid(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "dev-secret")
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
     assert pc.main([]) == 1
 
 
 def test_cli_exits_zero_on_valid(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "dev-secret")
-    monkeypatch.setenv("LLM_PROVIDER", "groq")
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test_key")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
     assert pc.main([]) == 0
 
 
 def test_runtime_no_longer_coerces_provider():
-    """Source guard: agent_runtime must not silently default invalid providers to groq."""
+    """Source guard: agent_runtime must not silently default invalid providers."""
     source = (_ROOT / "sre_agent" / "agent_runtime.py").read_text(encoding="utf-8")
     assert "defaulting to 'groq'" not in source
     assert "require_supported_provider" in source
@@ -117,7 +102,7 @@ def test_module_cli_subprocess_invalid():
     env = {
         **dict(**{k: v for k, v in __import__("os").environ.items()}),
         "SECRET_KEY": "dev-secret",
-        "LLM_PROVIDER": "ollama",
+        "LLM_PROVIDER": "groq",
         "PYTHONPATH": str(_ROOT),
     }
     proc = subprocess.run(

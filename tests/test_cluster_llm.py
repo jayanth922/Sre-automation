@@ -35,7 +35,7 @@ def _clean_llm_policy(monkeypatch):
         "MODEL_ROUTER_BALANCED_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
     monkeypatch.setenv("MODEL_ROUTER_ENABLED", "true")
 
 
@@ -59,36 +59,36 @@ def _cluster(**overrides):
 
 
 def test_authorize_rejects_provider_outside_allowlist(monkeypatch):
-    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "groq")
+    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "anthropic")
     with pytest.raises(UnauthorizedLLMConfigError, match="ALLOWED_LLM_PROVIDERS"):
-        authorize_llm("anthropic", model="claude-3-5-sonnet-latest")
+        authorize_llm("gemini", model="gemini-2.0-flash")
 
 
 def test_authorize_rejects_model_outside_allowlist(monkeypatch):
-    monkeypatch.setenv("ALLOWED_LLM_MODELS", "llama-3.1-8b-instant")
+    monkeypatch.setenv("ALLOWED_LLM_MODELS", "claude-3-5-sonnet-latest")
     with pytest.raises(UnauthorizedLLMConfigError, match="ALLOWED_LLM_MODELS"):
-        authorize_llm("groq", model="secret-finetune")
+        authorize_llm("anthropic", model="secret-finetune")
 
 
 def test_authorize_rejects_exhausted_budget(monkeypatch):
     monkeypatch.setenv("LLM_RUN_BUDGET", "0")
     with pytest.raises(UnauthorizedLLMConfigError, match="exhausted"):
-        authorize_llm("groq")
+        authorize_llm("anthropic")
 
 
 def test_from_cluster_resolves_authorized_effective_brain(monkeypatch):
     monkeypatch.setenv("MCP_METRICS_URI", "https://operator.internal/metrics")
-    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "openai_compatible,groq")
+    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "gemini,anthropic")
     monkeypatch.setenv("ALLOWED_LLM_MODELS", "tenant-a-model,tenant-b-model")
     cluster = _cluster(
-        llm_provider="openai_compatible",
+        llm_provider="gemini",
         llm_model="tenant-a-model",
         llm_base_url="https://tenant-a.example/v1",
         llm_api_key="tenant-a-key",
     )
     context = ExecutionContext.from_cluster(cluster)
     assert context.llm_manifest() == {
-        "provider": "openai_compatible",
+        "provider": "gemini",
         "model": "tenant-a-model",
         "base_url": "https://tenant-a.example/v1",
     }
@@ -99,13 +99,13 @@ def test_from_cluster_resolves_authorized_effective_brain(monkeypatch):
 @pytest.mark.asyncio
 async def test_two_clusters_cache_separate_provider_model_runtimes(monkeypatch):
     monkeypatch.setenv("MCP_METRICS_URI", "https://operator.internal/metrics")
-    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "groq,anthropic")
+    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "gemini,anthropic")
     monkeypatch.setenv(
         "ALLOWED_LLM_MODELS",
-        "llama-fast,claude-strong",
+        "gemini-fast,claude-strong",
     )
 
-    cluster_a = _cluster(llm_provider="groq", llm_model="llama-fast", namespace="ns-a")
+    cluster_a = _cluster(llm_provider="gemini", llm_model="gemini-fast", namespace="ns-a")
     cluster_b = _cluster(
         id=uuid.uuid4(),
         org_id=uuid.uuid4(),
@@ -142,9 +142,9 @@ async def test_two_clusters_cache_separate_provider_model_runtimes(monkeypatch):
     again_a = await cache.get_or_create(context_a, factory)
 
     assert len(created) == 2
-    assert {item[1] for item in created} == {"groq", "anthropic"}
-    assert {item[2] for item in created} == {"llama-fast", "claude-strong"}
+    assert {item[1] for item in created} == {"gemini", "anthropic"}
+    assert {item[2] for item in created} == {"gemini-fast", "claude-strong"}
     assert bundle_a is again_a
     assert bundle_a is not bundle_b
-    assert bundle_a.context.llm_manifest()["model"] == "llama-fast"
+    assert bundle_a.context.llm_manifest()["model"] == "gemini-fast"
     assert bundle_b.context.llm_manifest()["model"] == "claude-strong"

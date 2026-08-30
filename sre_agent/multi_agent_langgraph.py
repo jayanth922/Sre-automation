@@ -139,7 +139,7 @@ async def close_mcp_client(client: Any) -> None:
 
 
 async def create_multi_agent_system(
-    provider: str = "groq",
+    provider: str = "anthropic",
     checkpointer=None,
     export_graph: bool = False,
     graph_output_path: str = "./graph_architecture.md",
@@ -155,8 +155,8 @@ async def create_multi_agent_system(
     llm_kwargs = context_llm_kwargs
     logger.info(f"Creating multi-agent system with provider: {provider}")
 
-    if provider not in ["groq", "anthropic", "openai_compatible"]:
-        raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'groq', 'openai_compatible'.")
+    if provider not in ["anthropic", "gemini"]:
+        raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'gemini'.")
 
     # Create MCP client and get tools with retry logic
     mcp_tools = []

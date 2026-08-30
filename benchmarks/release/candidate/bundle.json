@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "release_id": "ci-safe-candidate",
+  "change_class": "mixed",
+  "baseline": {
+    "candidate_id": "baseline",
+    "config_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "candidate": {
+    "candidate_id": "candidate-safe",
+    "config_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "source_digest": "22fe82f713b68f0b3fb8dfd28385145d3c6794965f8e788eefa934bbcf9273ee"
+  },
+  "statistical_report": {
+    "schema_version": 2,
+    "baseline": {
+      "candidate_id": "baseline",
+      "config_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "runs": 20,
+      "safety_rate": 1.0,
+      "structured_complete": 20,
+      "latency_seconds": {"mean": 10.0},
+      "cost_usd": {"mean": 0.1, "coverage": 1.0}
+    },
+    "candidate": {
+      "candidate_id": "candidate-safe",
+      "config_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runs": 20,
+      "safety_rate": 1.0,
+      "structured_complete": 20,
+      "latency_seconds": {"mean": 9.5},
+      "cost_usd": {"mean": 0.105, "coverage": 1.0}
+    },
+    "paired": {
+      "pair_count": 20,
+      "recovery": {"conservative_wilson_95": [-0.02, 0.02]},
+      "quality": {"conservative_wilson_95": [-0.02, 0.02]}
+    },
+    "raw_artifacts": [
+      {"path": "trials.jsonl", "sha256": "d50b08bba90103abd7ccfcb11d07226f2f12929013d208f40c6947e033e7dedb", "records": 40}
+    ],
+    "release_decision": {"status": "PROMOTE", "reasons": []}
+  },
+  "adversarial_report": {
+    "schema_version": 1,
+    "config_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "cases": 6,
+    "passed": 6,
+    "failed": 0,
+    "raw_artifacts": [
+      {"path": "adversarial.jsonl", "sha256": "d3c634dc7a575117547bce15d511da260e730f138991d4977dace57f3d889492", "records": 6}
+    ],
+    "release_decision": {"status": "PASS", "policy": "zero_tolerance", "reasons": []}
+  },
+  "evidence_artifacts": [
+    {"kind": "paired_trials", "path": "evidence/trials.jsonl", "sha256": "d50b08bba90103abd7ccfcb11d07226f2f12929013d208f40c6947e033e7dedb", "records": 40},
+    {"kind": "adversarial_observations", "path": "evidence/adversarial.jsonl", "sha256": "d3c634dc7a575117547bce15d511da260e730f138991d4977dace57f3d889492", "records": 6},
+    {"kind": "root_traces", "path": "evidence/traces.jsonl", "sha256": "bb5025291ef7b2f979fe9ad6e3ad148c3e99f1b29ee2ba7258d3c447fc52cfed", "records": 40}
+  ],
+  "rollout_plan": {
+    "initial_stage": "shadow",
+    "stages": [
+      {"name": "shadow", "traffic_percent": 0, "observation_minutes": 30},
+      {"name": "canary", "traffic_percent": 5, "observation_minutes": 60}
+    ],
+    "rollback": {
+      "automatic": true,
+      "target_config_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "triggers": {
+        "safety_failure_count_above": 0,
+        "recovery_delta_below": -0.05,
+        "quality_delta_below": -0.05,
+        "latency_regression_ratio_above": 0.1,
+        "cost_regression_ratio_above": 0.1,
+        "trace_incomplete": true
+      }
+    }
+  }
+}

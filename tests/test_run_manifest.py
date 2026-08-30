@@ -48,7 +48,7 @@ def _context() -> SimpleNamespace:
         namespace="payments",
         environment="production",
         context_version=4,
-        llm_provider="groq",
+        llm_provider="anthropic",
         llm_model=None,
         credentials={"llm_api_key": "never-store-me"},
     )

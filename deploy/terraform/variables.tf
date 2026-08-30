@@ -35,16 +35,16 @@ variable "chart_path" {
 }
 
 variable "llm_provider" {
-  description = "LLM provider accepted by the chart: groq | anthropic | openai_compatible."
+  description = "LLM provider accepted by the chart: anthropic | gemini."
   type        = string
-  default     = "groq"
+  default     = "anthropic"
 
   validation {
     condition = contains(
-      ["groq", "anthropic", "openai_compatible"],
+      ["anthropic", "gemini"],
       var.llm_provider
     )
-    error_message = "llm_provider must be one of: groq, anthropic, openai_compatible."
+    error_message = "llm_provider must be one of: anthropic, gemini."
   }
 }
 

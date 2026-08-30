@@ -41,8 +41,8 @@ def test_tier_model_resolution(monkeypatch):
 
 
 def test_tier_model_falls_back_to_generic_model_env(monkeypatch):
-    monkeypatch.setenv("MODEL_ROUTER_FAST_MODEL", "groq/llama-3.1-8b-instant")
-    assert lb.tier_litellm_model("fast") == "groq/llama-3.1-8b-instant"
+    monkeypatch.setenv("MODEL_ROUTER_FAST_MODEL", "gemini/gemini-2.0-flash")
+    assert lb.tier_litellm_model("fast") == "gemini/gemini-2.0-flash"
 
 
 def test_tier_model_none_when_unset():
