@@ -117,15 +117,18 @@ async def run_graph_background_saas(
         # Announce the incident on the live bus so the Slack service can open a
         # two-way war-room thread for it (design slice #2). Best-effort.
         try:
-            from .live_events import LiveEvent, get_event_bus
-            from .war_room import INCIDENTS_CHANNEL
+            from .live_events import publish_lifecycle_event
 
-            await get_event_bus().publish(INCIDENTS_CHANNEL, LiveEvent(
+            org_id = None
+            if cluster_obj is not None and getattr(cluster_obj, "org_id", None):
+                org_id = str(cluster_obj.org_id)
+            await publish_lifecycle_event(
                 "opened",
-                {"incident_id": str(incident_id), "alert_name": alert_name,
-                 "summary": f"Investigating alert: {alert_name}"},
-                str(incident_id),
-            ).to_dict())
+                incident_id=str(incident_id),
+                alert_name=alert_name,
+                summary=f"Investigating alert: {alert_name}",
+                org_id=org_id,
+            )
         except Exception as _bus_err:
             logger.debug(f"incident-open publish skipped: {_bus_err}")
 
@@ -282,15 +285,19 @@ async def run_graph_background_saas(
         # Push a lifecycle event so the incidents list / overview reflect the
         # resolution live, without waiting for their next poll.
         try:
-            from .live_events import LiveEvent, get_event_bus
-            from .war_room import INCIDENTS_CHANNEL
+            from .live_events import publish_lifecycle_event
 
-            await get_event_bus().publish(INCIDENTS_CHANNEL, LiveEvent(
+            org_id = None
+            if cluster_obj is not None and getattr(cluster_obj, "org_id", None):
+                org_id = str(cluster_obj.org_id)
+            await publish_lifecycle_event(
                 "resolved",
-                {"incident_id": str(incident_id), "alert_name": alert_name,
-                 "summary": final_response},
-                str(incident_id),
-            ).to_dict())
+                incident_id=str(incident_id),
+                alert_name=alert_name,
+                summary=final_response,
+                org_id=org_id,
+                status="resolved",
+            )
         except Exception as _bus_err:
             logger.debug(f"incident-resolved publish skipped: {_bus_err}")
 

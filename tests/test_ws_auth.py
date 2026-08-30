@@ -89,7 +89,12 @@ def test_dashboard_mints_a_fresh_ticket_inside_every_connect_attempt():
     ticket_call = src.index('api.post<WsTicketResponse>("/ws-tickets")')
     websocket_call = src.index("new WebSocket(`", ticket_call)
     assert connect_start < ticket_call < websocket_call < connect_end
-    assert "encodeURIComponent(ticket)" in src[ticket_call:connect_end]
+    connect_body = src[ticket_call:connect_end]
+    # Ticket must be query-encoded (URLSearchParams or encodeURIComponent).
+    assert (
+        'params.set("ticket", ticket)' in connect_body
+        or "encodeURIComponent(ticket)" in connect_body
+    )
 
 
 def test_dashboard_websocket_default_matches_the_ingress_route():

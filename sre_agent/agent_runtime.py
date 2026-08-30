@@ -154,14 +154,44 @@ async def _stream(
     websocket: WebSocket,
     channel: str,
     event_filter: Optional[Callable[[Dict[str, Any]], Awaitable[bool]]] = None,
+    *,
+    cursor: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> None:
-    from .live_events import get_event_bus
+    from .live_events import event_org_id, get_event_bus
 
     await websocket.accept()
-    sub = get_event_bus().subscribe(channel)
+    bus = get_event_bus()
+
+    # Replay durable history after the client's cursor, then continue live.
+    try:
+        replayed = await bus.replay(channel, cursor, limit=200)
+    except Exception as replay_err:
+        logger.warning("live replay failed for %s: %s", channel, replay_err)
+        replayed = []
+
+    last_cursor = cursor
+    for event in replayed:
+        if org_id is not None:
+            event_org = event_org_id(event)
+            if event_org and not org_id_matches(event_org, org_id):
+                continue
+        if event_filter is not None and not await event_filter(event):
+            continue
+        await websocket.send_json(event)
+        last_cursor = event.get("cursor") or last_cursor
+
+    sub = bus.subscribe(channel)
+    if hasattr(sub, "start_after"):
+        sub.start_after(last_cursor)
     try:
         while True:
             event = await sub.get()
+            if org_id is not None:
+                event_org = event_org_id(event)
+                # Fail closed for envelopes that declare a foreign tenant.
+                if event_org and not org_id_matches(event_org, org_id):
+                    continue
             if event_filter is not None and not await event_filter(event):
                 continue
             await websocket.send_json(event)
@@ -184,7 +214,13 @@ async def ws_incident(websocket: WebSocket, incident_id: str):
     if not org_id_matches(await _incident_org_id(incident_id), claims["org_id"]):
         await websocket.close(code=WS_CLOSE_FORBIDDEN, reason="Incident not found")
         return
-    await _stream(websocket, incident_channel(incident_id))
+    cursor = websocket.query_params.get("cursor")
+    await _stream(
+        websocket,
+        incident_channel(incident_id),
+        cursor=cursor,
+        org_id=claims["org_id"],
+    )
 
 
 @app.websocket("/ws/insights")
@@ -196,12 +232,15 @@ async def ws_insights(websocket: WebSocket):
     if claims is None:
         return
     org_id = claims["org_id"]
+    cursor = websocket.query_params.get("cursor")
     await _stream(
         websocket,
         INSIGHTS_CHANNEL,
         event_filter=lambda event: event_visible_to_org(
             event, org_id, _incident_org_id, _cluster_org_id
         ),
+        cursor=cursor,
+        org_id=org_id,
     )
 
 
@@ -216,12 +255,15 @@ async def ws_incidents(websocket: WebSocket):
     if claims is None:
         return
     org_id = claims["org_id"]
+    cursor = websocket.query_params.get("cursor")
     await _stream(
         websocket,
         INCIDENTS_CHANNEL,
         event_filter=lambda event: event_visible_to_org(
             event, org_id, _incident_org_id, _cluster_org_id
         ),
+        cursor=cursor,
+        org_id=org_id,
     )
 
 
@@ -1023,16 +1065,22 @@ async def _run_graph_impl(
     except Exception as war_err:
         logger.debug(f"war-room start skipped: {war_err}")
 
-    # Announce on the live bus so dashboards / Slack war-room consumers update
-    # without waiting for the next poll (migrated from the alternate runner).
-    from sre_agent.incident_runner import publish_incident_lifecycle
+    # Durable lifecycle publish so multi-replica dashboards/Slack resume from
+    # the shared bus rather than process-local memory.
+    org_id_for_bus: Optional[str] = None
+    try:
+        org_id_for_bus = str(await _cluster_org_id(cluster_id) or "") or None
+        from .live_events import publish_lifecycle_event
 
-    await publish_incident_lifecycle(
-        "opened",
-        incident_id=incident_id,
-        alert_name=alert_name,
-        summary=f"Investigating alert: {alert_name}",
-    )
+        await publish_lifecycle_event(
+            "opened",
+            incident_id=str(incident_id),
+            alert_name=alert_name,
+            summary=f"Investigating alert: {alert_name}",
+            org_id=org_id_for_bus,
+        )
+    except Exception as bus_err:
+        logger.debug(f"incident-open publish skipped: {bus_err}")
 
     # Update Incident Status to INVESTIGATING and Job to RUNNING
     async with database.AsyncSessionLocal() as db:
@@ -1487,21 +1535,21 @@ async def _run_graph_impl(
 
             await db.commit()
 
-        # Push lifecycle so incidents list / overview reflect the outcome live.
-        from sre_agent.incident_runner import publish_incident_lifecycle
+        try:
+            from .live_events import publish_lifecycle_event
 
-        lifecycle_event = (
-            "resolved"
-            if computed_status == IncidentStatus.RESOLVED
-            else "status_changed"
-        )
-        await publish_incident_lifecycle(
-            lifecycle_event,
-            incident_id=incident_id,
-            alert_name=alert_name,
-            summary=final_response,
-            extra={"status": str(computed_status)},
-        )
+            await publish_lifecycle_event(
+                "resolved"
+                if computed_status == IncidentStatus.RESOLVED
+                else "status_changed",
+                incident_id=str(incident_id),
+                alert_name=alert_name,
+                summary=final_response,
+                org_id=org_id_for_bus,
+                status=str(computed_status),
+            )
+        except Exception as bus_err:
+            logger.debug(f"incident-lifecycle publish skipped: {bus_err}")
 
         logger.info(f"SaaS Background execution completed for incident: {incident_id}")
 
