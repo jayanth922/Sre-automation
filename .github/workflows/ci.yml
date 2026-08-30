@@ -29,6 +29,7 @@ jobs:
       SECRET_KEY: ci-secret-key
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
       LLM_PROVIDER: groq
+      GROQ_API_KEY: ci-test-groq-key
       LIVE_BUS_BACKEND: memory
     steps:
       - uses: actions/checkout@v4

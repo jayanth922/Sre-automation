@@ -300,12 +300,20 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
     try:
         logger.info("Initializing SRE Agent system for cluster %s", context.cluster_id)
 
-        provider = (context.llm_provider or os.getenv("LLM_PROVIDER", "groq")).lower()
+        from .provider_config import (
+            ProviderConfigError,
+            require_supported_provider,
+            validate_provider_credentials,
+        )
 
-        # Validate provider (curated to reliable structured-output providers)
-        if provider not in ["groq", "anthropic", "openai_compatible"]:
-            logger.warning(f"Invalid provider '{provider}', defaulting to 'groq'")
-            provider = "groq"
+        try:
+            provider = require_supported_provider(
+                context.llm_provider or os.getenv("LLM_PROVIDER") or "groq"
+            )
+            validate_provider_credentials(provider)
+        except ProviderConfigError as exc:
+            logger.error("Invalid LLM provider configuration: %s", exc)
+            raise
 
         logger.info(f"Using LLM provider: {provider}")
 
@@ -331,13 +339,20 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
 
     except Exception as e:
         from .llm_utils import LLMAccessError, LLMAuthenticationError, LLMProviderError
+        from .provider_config import ProviderConfigError, SUPPORTED_PROVIDERS
 
-        if isinstance(e, (LLMAuthenticationError, LLMAccessError, LLMProviderError)):
+        if isinstance(e, ProviderConfigError):
+            logger.error(f"Provider configuration error: {e}")
+            print(f"\n❌ ProviderConfigError:\n{e}")
+            print(f"\n💡 Supported LLM_PROVIDER values: {', '.join(SUPPORTED_PROVIDERS)}")
+        elif isinstance(e, (LLMAuthenticationError, LLMAccessError, LLMProviderError)):
             logger.error(f"LLM Provider Error: {e}")
             print(f"\n❌ {type(e).__name__}:")
             print(str(e))
-            print("\n💡 Check your GROQ_API_KEY environment variable")
-            print(f"   export LLM_PROVIDER=ollama")
+            print("\n💡 Check provider credentials for your LLM_PROVIDER setting")
+            print("   groq → GROQ_API_KEY")
+            print("   anthropic → ANTHROPIC_API_KEY")
+            print("   openai_compatible → LLM_BASE_URL + LLM_MODEL (+ LLM_API_KEY if required)")
         else:
             logger.error(f"Failed to initialize SRE Agent system: {e}")
         raise
@@ -389,6 +404,15 @@ async def _heartbeat_reconcile_loop():
 @app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
+    from .provider_config import ProviderConfigError, validate_startup_config
+
+    try:
+        provider = validate_startup_config()
+        logger.info("Startup config validated: LLM_PROVIDER=%s", provider)
+    except ProviderConfigError as exc:
+        logger.error("Refusing to start: %s", exc)
+        raise SystemExit(f"startup config invalid: {exc}") from exc
+
     agent_mode = os.getenv("AGENT_MODE", "standalone").lower()
     cluster_token = os.getenv("CLUSTER_TOKEN", "")
 
@@ -1864,7 +1888,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--provider",
         default=os.getenv("LLM_PROVIDER", "groq"),
-        help="LLM provider to use (default: ollama)",
+        help="LLM provider: groq | anthropic | openai_compatible (default: groq)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")

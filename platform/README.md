@@ -73,7 +73,10 @@ The dashboard container is built from [../dashboard/](../dashboard/) and points 
 Use [../.env.example](../.env.example) as the source of truth. The most important values are:
 
 - `SECRET_KEY` for JWT signing and auth consistency.
-- `LLM_PROVIDER` to select the model backend: `ollama`, `groq`, `gemini`, or `nvidia` (see [../.env.example](../.env.example) for provider-specific variables).
+- `LLM_PROVIDER` to select the model backend: `groq`, `anthropic`, or
+  `openai_compatible` (see [../.env.example](../.env.example)). Local Ollama/vLLM
+  use `openai_compatible` + `LLM_BASE_URL`. Invalid values fail startup — they
+  are never silently coerced.
 - `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and `OLLAMA_NUM_CTX` when using Ollama.
 - `GROQ_API_KEY` when using Groq.
 - `GOOGLE_API_KEY` and `GEMINI_MODEL` when using Gemini; `NVIDIA_API_KEY`, `NVIDIA_BASE_URL`, and `NVIDIA_MODEL` when using NVIDIA NIM.
