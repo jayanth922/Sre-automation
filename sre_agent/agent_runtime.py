@@ -1448,9 +1448,21 @@ async def _run_graph_impl(
                         ).strip()
                         or None,
                     )
+                    reflector_analysis = current_execution_state.get("reflector_analysis")
+                    root_cause = "Unknown root cause"
+                    if reflector_analysis:
+                        if hasattr(reflector_analysis, "hypothesis"):
+                            root_cause = reflector_analysis.hypothesis
+                        elif isinstance(reflector_analysis, dict):
+                            root_cause = reflector_analysis.get(
+                                "hypothesis", "Unknown root cause"
+                            )
+
                     memory.store_incident(
-                        incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
                         incident_id=str(incident_id),
+                        symptoms=f"Alert: {alert_name}",
+                        root_cause=root_cause,
+                        resolution=final_response,
                         metadata=memory_metadata_for_promotion(
                             eligibility=eligibility,
                             provenance=provenance,
@@ -1461,6 +1473,8 @@ async def _run_graph_impl(
                                 "resolved_at": datetime.now(timezone.utc).isoformat(),
                             },
                         ),
+                        organization_id=runtime.context.organization_id,
+                        cluster_id=str(cluster_id),
                     )
                     logger.info(f"Stored verified incident {incident_id} in Qdrant memory")
             else:

@@ -374,11 +374,14 @@ class SupervisorAgent:
                 )
                 return ""
 
+            state_metadata = (state or {}).get("metadata", {}) or {}
             similar = await asyncio.to_thread(
                 memory.search_similar_incidents,
                 query_text,
                 5,    # limit
                 0.6,  # score_threshold
+                organization_id=state_metadata.get("organization_id"),
+                cluster_id=state_metadata.get("cluster_id"),
             )
             if not similar:
                 logger.info("Memory: no similar past incidents found above threshold")
@@ -1617,7 +1620,16 @@ You can:
                     from .memory_store import get_memory_store
                     memory = get_memory_store()
                     if memory.is_available():
-                        memory.store_incident(incident_text, incident_id, metadata_dict)
+                        state_metadata = state.get("metadata", {}) or {}
+                        memory.store_incident(
+                            incident_id,
+                            symptoms=f"Alert: {alert_name}",
+                            root_cause=hypothesis,
+                            resolution=plan_hypothesis,
+                            metadata=metadata_dict,
+                            organization_id=state_metadata.get("organization_id"),
+                            cluster_id=state_metadata.get("cluster_id"),
+                        )
                         logger.info(f"✅ Stored verified resolution in memory: {incident_id}")
             else:
                 logger.info(
