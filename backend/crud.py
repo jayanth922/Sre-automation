@@ -143,6 +143,10 @@ async def create_cluster(
         github_repo=cluster.github_repo,
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
+        jira_url=cluster.jira_url,
+        jira_email=cluster.jira_email,
+        jira_api_token=cluster.jira_api_token,
+        jira_project_key=cluster.jira_project_key,
         metrics_config=(
             _json.dumps(cluster.metrics_config) if cluster.metrics_config else None
         ),
@@ -177,6 +181,7 @@ async def update_cluster(
         "k8s_token",
         "github_token",
         "notion_api_key",
+        "jira_api_token",
         "llm_api_key",
     }
     for field in (
@@ -189,6 +194,10 @@ async def update_cluster(
         "github_repo",
         "notion_api_key",
         "notion_database_id",
+        "jira_url",
+        "jira_email",
+        "jira_api_token",
+        "jira_project_key",
     ):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
@@ -367,6 +376,23 @@ async def create_incident(
     await db.commit()
     await db.refresh(db_incident)
     return db_incident
+
+
+async def get_incident_by_id(db: AsyncSession, incident_id: uuid.UUID):
+    result = await db.execute(
+        select(models.Incident).filter(models.Incident.id == incident_id)
+    )
+    return result.scalars().first()
+
+
+async def set_incident_jira_key(db: AsyncSession, incident_id: uuid.UUID, issue_key: str) -> None:
+    await db.execute(
+        models.Incident.__table__
+        .update()
+        .where(models.Incident.id == incident_id)
+        .values(jira_issue_key=issue_key)
+    )
+    await db.commit()
 
 
 def _serialize_timeline_payload(payload: Any) -> Optional[str]:

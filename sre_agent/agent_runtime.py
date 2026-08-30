@@ -301,6 +301,10 @@ app.include_router(services_router.router, prefix="/api/v1")
 from sre_agent.api.v1 import runbooks as runbooks_router
 app.include_router(runbooks_router.router, prefix="/api/v1")
 
+# Jira Tickets Router (manual create/link/status for an incident's ticket)
+from sre_agent.api.v1 import tickets as jira_tickets_router
+app.include_router(jira_tickets_router.router, prefix="/api/v1")
+
 # General Chat Router
 from sre_agent.api.v1 import chat as chat_router
 app.include_router(chat_router.router, prefix="/api/v1")
@@ -1067,6 +1071,16 @@ async def _run_graph_impl(
     except Exception as war_err:
         logger.debug(f"war-room start skipped: {war_err}")
 
+    # Open a Jira issue for this incident (no-op unless the owning cluster
+    # has Jira configured). Fire-and-forget; never blocks the investigation.
+    try:
+        from sre_agent.integrations.jira import maybe_create_jira_issue
+        asyncio.create_task(
+            maybe_create_jira_issue(session_id, str(cluster_id), alert_name, alert_name, alert_severity)
+        )
+    except Exception as jira_err:
+        logger.debug(f"jira start skipped: {jira_err}")
+
     # Durable lifecycle publish so multi-replica dashboards/Slack resume from
     # the shared bus rather than process-local memory.
     org_id_for_bus: Optional[str] = None
@@ -1536,6 +1550,30 @@ async def _run_graph_impl(
                 )
 
             await db.commit()
+
+        # Transition the incident's linked Jira issue (no-op unless Jira is
+        # configured and an issue was created at open time). On resolve,
+        # attach the deterministically-generated postmortem as a comment.
+        try:
+            from sre_agent.integrations.jira import transition_jira_issue
+
+            jira_comment = None
+            if computed_status == IncidentStatus.RESOLVED:
+                try:
+                    from sre_agent.runbook_generator import generate_runbook_markdown, input_from_act
+
+                    jira_comment = generate_runbook_markdown(
+                        input_from_act(current_execution_state, act_report)
+                    )
+                except Exception as postmortem_err:
+                    logger.debug(f"jira: postmortem generation skipped: {postmortem_err}")
+            asyncio.create_task(
+                transition_jira_issue(
+                    session_id, str(cluster_id), computed_status.value, jira_comment
+                )
+            )
+        except Exception as jira_err:
+            logger.debug(f"jira transition skipped: {jira_err}")
 
         try:
             from .live_events import publish_lifecycle_event
