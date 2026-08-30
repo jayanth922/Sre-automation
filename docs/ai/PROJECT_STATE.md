@@ -45,11 +45,9 @@ authorization is being reconciled with current `master` in PR #16.
   - A10 `d3e4f5a6b7c8` -> R02 `b1c7ceb2036b`
   - R02 `b1c7ceb2036b` -> R06 `d3ac85ffcc7d`
   - R06 `d3ac85ffcc7d` -> R07 `2253eabf13e3`
-- Obsolete operational revisions `a9b0c1d2e3f4`, `e6f7a8b9c0d1`, and
+- Obsolete operational revisions `a9b0c1d2e3f4`, `e6f7a8b9c0d1`, and `d5e6f7a8b9c0` are absent from `master`.
 - **Backlog Integration Complete:** All 41 work packages (T01-T10, A01-A10, R01-R11, P01-P11) have been merged into `master`.
-- **CI and Test Fixes:** Resolved post-rebase semantic conflicts on `master` that were bypassing CI due to admin force-merges. Fixed duplicate Alembic migrations, outdated runner imports in `job_worker.py`, unmanaged module reachability in `agent_audit`, and uncalibrated telemetry assertions in integration tests.
-
-  `d5e6f7a8b9c0` are absent from `master`.
+- **CI and Test Fixes:** Resolved post-rebase semantic conflicts on `master` that were bypassing CI due to admin force-merges. Fixed duplicate Alembic migrations, outdated runner imports in `job_worker.py`, unmanaged module reachability in `agent_audit`, and uncalibrated telemetry assertions in integration tests. All 17 CI quality gate jobs on `master` are verified green.
 
 ## Active problem
 None. All 11 conflicting feature PRs from the Sentinel build backlog have been successfully rebased, integrated, and merged into `master`.
