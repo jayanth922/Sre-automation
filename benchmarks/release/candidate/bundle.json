@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "release_id": "ci-safe-candidate",
-  "change_class": "prompt",
+  "change_class": "tool",
   "baseline": {
     "candidate_id": "baseline",
     "config_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -10,7 +10,7 @@
   "candidate": {
     "candidate_id": "candidate-safe",
     "config_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "source_digest": "ddd9e64b49776049bf35977645c668b32ebe81eb4f0a5c7656ebaee021b1fe34"
+    "source_digest": "925af839515bfc77a0749835ed334dc6b29fe495edb6cd428f784a37af80c26b"
   },
   "statistical_report": {
     "schema_version": 2,
