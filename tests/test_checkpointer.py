@@ -19,6 +19,10 @@ _spec.loader.exec_module(checkpointer)
 def _clean(monkeypatch):
     for k in ("CHECKPOINTER_ENABLED", "CHECKPOINTER_BACKEND"):
         monkeypatch.delenv(k, raising=False)
+    # Langfuse tracing is on by default (sre_agent/tracing.py) and thread_config()
+    # calls it unconditionally; these tests are about checkpointer behavior, not
+    # tracing, so pin tracing off to keep callbacks lists deterministic.
+    monkeypatch.setenv("LANGFUSE_TRACING", "false")
 
 
 def test_disabled_returns_none():

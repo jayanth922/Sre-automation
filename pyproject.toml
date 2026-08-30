@@ -54,6 +54,14 @@ dependencies = [
     "langchain-google-genai>=2.0.0",
     "qdrant-client>=1.9.0",
     "fastembed>=0.3.0",
+
+    # Observability — self-hosted Langfuse is wired by default (sre_agent/tracing.py).
+    # langfuse.langchain.CallbackHandler does `import langchain; langchain.__version__`
+    # purely to pick its v0/v1 import branch, even though every actual import it uses
+    # comes from langchain-core (already a dependency above) — so the bare `langchain`
+    # package is required too, or the callback silently fails to construct.
+    "langfuse>=3.0.0",
+    "langchain>=1.0.0",
 ]
 
 [project.optional-dependencies]

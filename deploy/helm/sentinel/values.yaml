@@ -51,9 +51,18 @@ secrets:
   # Optional Slack war-room (bot token enables incident mirroring; app token for replies)
   slackBotToken: ""
   slackAppToken: ""
-  # Optional Langfuse tracing (both keys enable full LLM/tool span export)
-  langfusePublicKey: ""
-  langfuseSecretKey: ""
+  # Langfuse tracing is wired by default (tracing.enabled=true) — these keys are
+  # required unless you set tracing.enabled=false. When langfuse.deploy=true, the
+  # same pair also headlessly bootstraps the in-cluster Langfuse project (see
+  # templates/langfuse.yaml), so a fresh install traces with zero manual setup.
+  langfusePublicKey: "change-me-langfuse-public-key"
+  langfuseSecretKey: "change-me-langfuse-secret-key"
+  # Langfuse's own at-rest crypto (required by langfuse-web/-worker when
+  # langfuse.deploy=true) and its NextAuth session-signing secret.
+  langfuseSalt: "change-me-langfuse-salt"
+  langfuseEncryptionKey: ""
+  # Admin user minted by Langfuse's headless init on first boot.
+  langfuseInitUserPassword: "change-me-langfuse-admin-password"
 
 # ── Model provider ────────────────────────────────────────────────────────────
 # Curated to reliable structured-output providers: anthropic | gemini.
@@ -96,9 +105,16 @@ observability:
 slack:
   warRoomChannel: "#incidents"
 
-# ── Agent tracing (optional) ─────────────────────────────────────────────────
+# ── Agent tracing (self-hosted Langfuse, wired by default) ────────────────────
 tracing:
-  langfuseHost: "https://cloud.langfuse.com"
+  # Every LLM/tool call is traced out of the box. Set false only to fully
+  # disable tracing (also set langfuse.deploy=false to skip standing up the
+  # in-cluster stack).
+  enabled: true
+  # "" auto-resolves: the in-cluster langfuse-web service when langfuse.deploy
+  # is true, else langfuse.external.host. Set explicitly to point at your own
+  # Langfuse instance (e.g. Langfuse Cloud) without deploying one in-cluster.
+  langfuseHost: ""
 
 # ── Auth / session ─────────────────────────────────────────────────────────
 auth:
@@ -222,6 +238,56 @@ qdrant:
   storageClass: ""
   external:
     url: ""                    # e.g. http://qdrant.mycorp:6333
+
+# Self-hosted Langfuse (LLM/tool tracing, wired by default — see tracing.*
+# above). Reuses this chart's postgres (own logical database, "langfuse") and
+# redis (own DB index, "/2") — clickhouse and minio are new, Langfuse-only
+# backing services deployed alongside them.
+langfuse:
+  deploy: true                  # false → bring your own; set external.host + tracing.langfuseHost
+  images:
+    web: docker.langfuse.com/langfuse/langfuse:4
+    worker: docker.langfuse.com/langfuse/langfuse-worker:4
+    clickhouse: clickhouse/clickhouse-server:25.12
+    minio: minio/minio:latest
+  clickhouse:
+    storage: 5Gi
+    storageClass: ""
+    # Internal-only credential between langfuse-web/-worker and this pod's
+    # ClickHouse — not internet-facing and covered by networkPolicy.enabled,
+    # so it lives here rather than in the required secrets.* block.
+    password: "langfuse-internal"
+    resources:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits: { cpu: "1", memory: "2Gi" }
+  minio:
+    storage: 5Gi
+    storageClass: ""
+    rootUser: "langfuse"
+    rootPassword: "langfuse-minio-internal"
+    resources:
+      requests: { cpu: "50m", memory: "128Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+  web:
+    resources:
+      requests: { cpu: "100m", memory: "512Mi" }
+      limits: { cpu: "1", memory: "1536Mi" }
+  worker:
+    resources:
+      requests: { cpu: "100m", memory: "512Mi" }
+      limits: { cpu: "1", memory: "1536Mi" }
+  # Headless bootstrap (LANGFUSE_INIT_*) — mints an org/project/API-keypair on
+  # first boot, using secrets.langfusePublicKey/langfuseSecretKey as the
+  # keypair, so tracing works immediately with zero manual UI setup.
+  init:
+    orgId: "sentinel"
+    orgName: "Sentinel"
+    projectId: "sentinel-agent"
+    projectName: "Sentinel Agent"
+    userEmail: "admin@sentinel.local"
+    userName: "Sentinel Admin"
+  external:                     # used when deploy=false
+    host: ""                    # e.g. https://your-langfuse.mycorp.com
 
 # ── Sandbox (code-fix verification Jobs) ──────────────────────────────────────
 # Dedicated namespace + operator-owned safety envelope for the ephemeral K8s

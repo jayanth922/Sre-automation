@@ -20,7 +20,14 @@ def _clean(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
-def test_disabled_by_default():
+def test_enabled_by_default():
+    # Self-hosted Langfuse is wired by default in every deployment; no env
+    # var is required to opt in.
+    assert tr.langfuse_enabled() is True
+
+
+def test_disabled_via_explicit_opt_out(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_TRACING", "false")
     assert tr.langfuse_enabled() is False
     assert tr.get_langfuse_callback() is None
 
@@ -30,7 +37,8 @@ def test_enabled_by_public_key(monkeypatch):
     assert tr.langfuse_enabled() is True
 
 
-def test_tracing_callbacks_passthrough_when_disabled():
+def test_tracing_callbacks_passthrough_when_disabled(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_TRACING", "false")
     base = {"callbacks": ["existing"]}
     assert tr.tracing_callbacks(base) is base
     assert tr.tracing_callbacks(None) is None
