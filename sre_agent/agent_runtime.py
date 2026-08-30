@@ -1553,6 +1553,14 @@ async def _run_graph_impl(
         except Exception as bus_err:
             logger.debug(f"incident-lifecycle publish skipped: {bus_err}")
 
+        if computed_status == IncidentStatus.RESOLVED:
+            try:
+                from .war_room_service import close_war_room
+
+                await close_war_room(str(incident_id))
+            except Exception as war_room_err:
+                logger.debug(f"war-room close skipped: {war_room_err}")
+
         logger.info(f"SaaS Background execution completed for incident: {incident_id}")
 
     except Exception as e:

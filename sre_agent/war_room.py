@@ -5,12 +5,14 @@ War room — the two-way incident conversation (design slice #2).
 Turns "the system posts a message" into "on-call and the agent converse". Each
 incident gets a dedicated Slack thread (the war room). The agent *streams* its
 work into the thread (outbound, off the live event bus from slice #1), and
-on-call *replies in the thread* (inbound), which routes to either a verified
-metric answer (NL query) or a steer that feeds the supervisor's existing
-human-checkpoint queue — so a human message becomes a real mid-investigation input.
+on-call *replies in the thread* (inbound), which routes directly through the
+same memory-backed conversational handler the dashboard chat uses
+(``mission_control.handle_incident_message``) — so a human message becomes a
+real, remembered turn in the incident's conversation, not a one-off keyword
+match.
 
 Framework-agnostic and testable: Slack I/O is injected as a ``poster`` and a
-``steer_sink``. The live Slack wiring lives in ``integrations/slack_bot.py``.
+``handler``. The live Slack wiring lives in ``integrations/slack_bot.py``.
 """
 
 from __future__ import annotations
@@ -78,19 +80,32 @@ def format_event_for_slack(event: Dict[str, Any]) -> Optional[str]:
     return f"*{title}*\n{content[:1500]}" if content else f"*{title}*"
 
 
-def _format_result_for_slack(result: Dict[str, Any]) -> str:
-    mode = result.get("mode")
-    if mode == "query":
-        if not result.get("valid"):
-            return f"I couldn't turn that into a safe query: {result.get('error', '')}"
-        if result.get("executed"):
-            return f"`{result.get('promql')}`\n→ {result.get('data')}"
-        return f"Generated `{result.get('promql')}` (not executed): {result.get('error', '')}".strip()
-    if mode == "steer":
-        return "Got it — folding that into the investigation at the next checkpoint."
-    if mode == "greeting":
-        return "👋 On-call SRE agent here — ask for a metric or steer the investigation."
-    return "Sorry, I didn't understand that."
+def _format_result_for_reply(result: Dict[str, Any]) -> str:
+    """Turn a `handle_incident_message` status dict into a Slack reply."""
+    status = result.get("status")
+    if status == "RESPONDED":
+        return result.get("response") or "Got it."
+    if status == "PENDING_SUPERVISOR":
+        return "Got it — queued for the next safe supervisor checkpoint."
+    if status in ("FOLLOW_UP_QUEUED", "QUEUED"):
+        return "On it — I'll follow up in this thread once that's done."
+    return "Sorry, I couldn't process that."
+
+
+async def _default_handler(text: str, incident_id: str) -> Dict[str, Any]:
+    """Route an in-thread reply through the real, memory-backed conversational
+    endpoint the dashboard already uses — in-process, no HTTP hop."""
+    import uuid as _uuid
+
+    from backend import crud, database, models
+    from sre_agent.api.v1.mission_control import handle_incident_message
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, _uuid.UUID(incident_id))
+        if incident is None:
+            return {"status": "ignored"}
+        cluster = await crud.get_cluster_by_id(db, incident.cluster_id)
+        return await handle_incident_message(db, incident, cluster, text, source="slack")
 
 
 async def forward_events(
@@ -126,25 +141,18 @@ async def route_thread_reply(
     thread: ThreadRef,
     registry: WarRoomRegistry,
     poster: Callable[[Optional[ThreadRef], str], Awaitable[Any]],
-    steer_sink: Callable[[str, str], Awaitable[Any]],
-    handler: Optional[Callable[[str, Optional[str]], Awaitable[Dict[str, Any]]]] = None,
+    handler: Optional[Callable[[str, str], Awaitable[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
-    """Route an on-call reply in a war-room thread (inbound).
-
-    query → answer in-thread; steer → push to the incident's checkpoint queue via
-    ``steer_sink`` (the /message endpoint) + ack; greeting → ack. Ignores replies
-    in threads that aren't war rooms.
+    """Route an on-call reply in a war-room thread (inbound) through the real,
+    memory-backed conversational handler (`mission_control.handle_incident_message`
+    in production; injectable for tests). Ignores replies in threads that
+    aren't war rooms.
     """
     incident_id = registry.incident_for(thread)
     if not incident_id:
         return {"mode": "ignored"}
 
-    if handler is None:
-        from .nl_query import handle_chat_message
-        handler = handle_chat_message
-
+    handler = handler or _default_handler
     result = await handler(text, incident_id)
-    if result.get("mode") == "steer":
-        await steer_sink(incident_id, text)
-    await poster(thread, _format_result_for_slack(result))
+    await poster(thread, _format_result_for_reply(result))
     return result
