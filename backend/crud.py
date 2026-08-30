@@ -476,6 +476,61 @@ async def get_incidents_for_cluster(db: AsyncSession, cluster_id: uuid.UUID):
     return result.scalars().all()
 
 
+async def set_incident_slack_thread(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    channel: str,
+    thread_ts: str,
+) -> None:
+    incident = await db.get(models.Incident, incident_id)
+    if incident is None:
+        return
+    incident.slack_channel = channel
+    incident.slack_thread_ts = thread_ts
+    await db.commit()
+
+
+async def get_incidents_with_open_slack_threads(
+    db: AsyncSession,
+) -> List[models.Incident]:
+    result = await db.execute(
+        select(models.Incident).filter(
+            models.Incident.status.in_(
+                [models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]
+            ),
+            models.Incident.slack_channel.isnot(None),
+            models.Incident.slack_thread_ts.isnot(None),
+        )
+    )
+    return result.scalars().all()
+
+
+async def get_recent_timeline_turns(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    limit: int = 12,
+) -> List[Dict[str, str]]:
+    result = await db.execute(
+        select(models.IncidentTimelineEvent)
+        .filter(
+            models.IncidentTimelineEvent.incident_id == incident_id,
+            models.IncidentTimelineEvent.event_type.in_(
+                ["human_message", "assistant_message"]
+            ),
+        )
+        .order_by(models.IncidentTimelineEvent.sequence.desc())
+        .limit(limit)
+    )
+    events = list(reversed(result.scalars().all()))
+    return [
+        {
+            "role": "user" if event.event_type == "human_message" else "assistant",
+            "content": event.content or "",
+        }
+        for event in events
+    ]
+
+
 async def delete_cluster(
     db: AsyncSession, cluster_id: uuid.UUID, org_id: uuid.UUID
 ) -> bool:

@@ -2,16 +2,20 @@
 """
 Slack transport for the SRE agent (project #3, the actual chat integration).
 
-This is the "tag the agent in Slack and it responds" layer that was previously
-only documented. It registers the SRE agent as a Slack app member: when it's
-@-mentioned, the message is routed through the tested NL-query / chat dispatcher
-(`nl_query.handle_chat_message`) and the reply is posted back to the thread.
+This registers the SRE agent as a Slack app member. Two ways to talk to it:
+- @-mention it anywhere: routed through the ad hoc NL-query / chat dispatcher
+  (`nl_query.handle_chat_message`), or through the tracked incident's real
+  conversational context if the mention lands inside an open war-room thread.
+- Reply directly inside a war-room thread (no @mention needed — the natural
+  way to respond): captured by the `message` event and routed through the
+  same memory-backed conversational endpoint the dashboard chat uses
+  (`mission_control.handle_incident_message`, via `war_room.route_thread_reply`).
 
 Design:
 - `format_reply` and `process_mention` are pure/injectable and unit-tested (no
   Slack, no MCP required).
 - `build_slack_app` lazily imports `slack_bolt` (a real dependency you add only
-  when deploying the bot) and wires the app-mention event. If `slack_bolt` isn't
+  when deploying the bot) and wires both events. If `slack_bolt` isn't
   installed the module still imports, so the logic stays testable.
 
 Deploy:
@@ -71,87 +75,70 @@ async def process_mention(
     return reply
 
 
-def build_slack_app():
-    """Build the Slack Bolt app wired to the SRE agent (lazy import)."""
+def build_slack_app(registry=None):
+    """Build the Slack Bolt app wired to the SRE agent (lazy import).
+
+    `registry` is the shared `WarRoomRegistry` (see `war_room_service.py`)
+    mapping Slack threads to incidents. Without it, only bare @mentions work
+    (ad hoc, no incident context). With it, two things change: an @mention
+    inside a tracked war-room thread resolves its `incident_id` instead of
+    always answering cold, and a plain in-thread reply (no @mention — the
+    natural way to respond) is captured and routed through the real,
+    memory-backed conversational endpoint the dashboard chat already uses.
+    """
     try:
         from slack_bolt.async_app import AsyncApp  # lazy; optional dependency
     except Exception as e:  # pragma: no cover - only without slack_bolt
         raise RuntimeError("slack_bolt not installed; run: pip install 'slack_bolt>=1.18'") from e
 
+    from ..war_room import ThreadRef, route_thread_reply
+
     app = AsyncApp(token=os.getenv("SLACK_BOT_TOKEN"))
 
     @app.event("app_mention")
     async def _on_mention(event, say):  # pragma: no cover - requires Slack
-        incident_id = None  # a channel↔incident mapping can be injected here
+        thread = ThreadRef(
+            channel=event.get("channel", ""),
+            thread_ts=event.get("thread_ts") or event.get("ts", ""),
+        )
+        incident_id = registry.incident_for(thread) if registry else None
         await process_mention(
             event.get("text", ""), incident_id,
             respond=lambda msg: say(text=msg, thread_ts=event.get("ts")),
         )
 
-    return app
+    if registry is not None:
+        @app.event("message")
+        async def _on_thread_message(event, say):  # pragma: no cover - requires Slack
+            # Only react to human replies inside a tracked war-room thread.
+            if event.get("bot_id") or not event.get("thread_ts"):
+                return
+            thread = ThreadRef(channel=event.get("channel", ""), thread_ts=event.get("thread_ts", ""))
+            if not registry.is_war_room(thread):
+                return
 
+            async def poster(_thread, text):
+                await say(text=text, thread_ts=thread.thread_ts)
 
-async def post_incident_message(incident_id: str, text: str,
-                                base_url: Optional[str] = None, token: Optional[str] = None) -> Any:
-    """Steer sink: push an on-call reply into the incident's checkpoint queue.
-
-    POSTs to the mission-control /message endpoint the supervisor already consumes.
-    """
-    import httpx
-
-    base_url = base_url or os.getenv("AGENT_API_URL", "http://localhost:8080")
-    token = token or os.getenv("SLACK_STEER_TOKEN", "")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(f"{base_url}/api/v1/incidents/{incident_id}/message",
-                              json={"message": text}, headers=headers)
-        r.raise_for_status()
-        return r.json()
-
-
-def build_war_room_app(registry):  # pragma: no cover - requires Slack
-    """Bolt app that routes war-room thread replies to the agent (two-way chat)."""
-    from slack_bolt.async_app import AsyncApp
-
-    from ..war_room import ThreadRef, route_thread_reply
-
-    app = AsyncApp(token=os.getenv("SLACK_BOT_TOKEN"))
-
-    @app.event("message")
-    async def _on_thread_message(event, say):
-        # Only react to human replies inside a war-room thread.
-        if event.get("bot_id") or not event.get("thread_ts"):
-            return
-        thread = ThreadRef(channel=event.get("channel", ""), thread_ts=event.get("thread_ts", ""))
-
-        async def poster(_thread, text):
-            await say(text=text, thread_ts=thread.thread_ts)
-
-        await route_thread_reply(event.get("text", ""), thread, registry, poster, post_incident_message)
+            await route_thread_reply(event.get("text", ""), thread, registry, poster)
 
     return app
 
 
-async def open_war_room(app, registry, incident_id: str, summary: str,
-                        channel: Optional[str] = None):  # pragma: no cover - requires Slack
-    """Open a war-room thread for an incident and register it."""
-    from ..war_room import ThreadRef
+async def _run_async() -> None:  # pragma: no cover - requires Slack tokens
+    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+    from ..war_room_service import _get_registry
 
-    channel = channel or os.getenv("SLACK_WAR_ROOM_CHANNEL", "#incidents")
-    resp = await app.client.chat_postMessage(channel=channel, text=f":rotating_light: *Incident opened*\n{summary}")
-    thread = ThreadRef(channel=resp["channel"], thread_ts=resp["ts"])
-    registry.open(incident_id, thread)
-    return thread
+    registry = await _get_registry()
+    app = build_slack_app(registry)
+    handler = AsyncSocketModeHandler(app, os.getenv("SLACK_APP_TOKEN"))
+    await handler.start_async()
 
 
 def run() -> None:  # pragma: no cover - requires Slack tokens
-    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-
-    app = build_slack_app()
-    handler = AsyncSocketModeHandler(app, os.getenv("SLACK_APP_TOKEN"))
     import asyncio
 
-    asyncio.run(handler.start_async())
+    asyncio.run(_run_async())
 
 
 if __name__ == "__main__":  # pragma: no cover

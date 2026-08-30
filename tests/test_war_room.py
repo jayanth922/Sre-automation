@@ -81,26 +81,7 @@ def test_forward_events_posts_surfaced_events():
 
 
 # ── inbound: thread reply routing ─────────────────────────────────────────────
-def test_route_steer_feeds_checkpoint_and_acks():
-    async def scenario():
-        reg = WarRoomRegistry()
-        t = ThreadRef("C1", "T1")
-        reg.open("inc-1", t)
-        steers, posts = [], []
-
-        async def poster(thread, text): posts.append(text)
-        async def steer_sink(incident_id, text): steers.append((incident_id, text))
-        async def handler(text, incident_id): return {"mode": "steer"}
-
-        await route_thread_reply("focus on logs", t, reg, poster, steer_sink, handler=handler)
-        return steers, posts
-
-    steers, posts = asyncio.run(scenario())
-    assert steers == [("inc-1", "focus on logs")]     # pushed to the checkpoint queue
-    assert posts and "folding that into" in posts[0]  # acked in-thread
-
-
-def test_route_query_answers_in_thread():
+def test_route_responded_posts_reply_directly():
     async def scenario():
         reg = WarRoomRegistry()
         t = ThreadRef("C1", "T1")
@@ -108,15 +89,49 @@ def test_route_query_answers_in_thread():
         posts = []
 
         async def poster(thread, text): posts.append(text)
-        async def steer_sink(i, x): raise AssertionError("query should not steer")
         async def handler(text, incident_id):
-            return {"mode": "query", "valid": True, "executed": True, "promql": "rate(errors[5m])", "data": 0.03}
+            return {"status": "RESPONDED", "incident_id": incident_id, "response": "Error rate is 3%."}
 
-        await route_thread_reply("error rate?", t, reg, poster, steer_sink, handler=handler)
+        result = await route_thread_reply("what's the error rate?", t, reg, poster, handler=handler)
+        return result, posts
+
+    result, posts = asyncio.run(scenario())
+    assert result["status"] == "RESPONDED"
+    assert posts == ["Error rate is 3%."]
+
+
+def test_route_pending_supervisor_acks_queued():
+    async def scenario():
+        reg = WarRoomRegistry()
+        t = ThreadRef("C1", "T1")
+        reg.open("inc-1", t)
+        posts = []
+
+        async def poster(thread, text): posts.append(text)
+        async def handler(text, incident_id): return {"status": "PENDING_SUPERVISOR"}
+
+        await route_thread_reply("restart the pod", t, reg, poster, handler=handler)
         return posts
 
     posts = asyncio.run(scenario())
-    assert posts and "rate(errors[5m])" in posts[0]
+    assert posts and "next safe supervisor checkpoint" in posts[0]
+
+
+def test_route_queued_acks_on_it():
+    async def scenario():
+        reg = WarRoomRegistry()
+        t = ThreadRef("C1", "T1")
+        reg.open("inc-1", t)
+        posts = []
+
+        async def poster(thread, text): posts.append(text)
+        async def handler(text, incident_id): return {"status": "QUEUED"}
+
+        await route_thread_reply("check the payments service too", t, reg, poster, handler=handler)
+        return posts
+
+    posts = asyncio.run(scenario())
+    assert posts and "On it" in posts[0]
 
 
 def test_route_ignores_non_war_room_thread():
@@ -124,9 +139,8 @@ def test_route_ignores_non_war_room_thread():
         reg = WarRoomRegistry()  # empty
         posts = []
         async def poster(thread, text): posts.append(text)
-        async def steer_sink(i, x): raise AssertionError("should not steer")
         async def handler(text, incident_id): raise AssertionError("should not handle")
-        res = await route_thread_reply("hello", ThreadRef("C9", "T9"), reg, poster, steer_sink, handler=handler)
+        res = await route_thread_reply("hello", ThreadRef("C9", "T9"), reg, poster, handler=handler)
         return res, posts
 
     res, posts = asyncio.run(scenario())

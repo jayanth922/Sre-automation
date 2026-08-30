@@ -112,4 +112,4 @@ def test_alembic_single_head_includes_agent_audit():
     cfg = Config(str(ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["2253eabf13e3"], heads
+    assert heads == ["f6a7b8c9d0e1"], heads

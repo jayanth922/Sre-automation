@@ -348,6 +348,19 @@ def _format_findings_block(agent_results: Dict[str, Any]) -> str:
     return "\n\n".join(blocks)
 
 
+def _format_recent_turns_block(recent_turns: Optional[List[Dict[str, Any]]]) -> str:
+    if not recent_turns:
+        return "(no prior turns in this conversation)"
+
+    lines: List[str] = []
+    for turn in recent_turns:
+        role = turn.get("role") or "user"
+        speaker = "User" if role == "user" else "You"
+        content = _truncate(_safe_text(turn.get("content", "")), 600)
+        lines.append(f"{speaker}: {content}")
+    return wrap_untrusted("recent_conversation_turns", "\n".join(lines))
+
+
 async def _invoke_llm(llm: Any, system: str, user: str) -> str:
     try:
         response = await llm.ainvoke(
@@ -674,6 +687,7 @@ async def narrate_followup_answer(
     agent_results: Dict[str, Any],
     prior_summary: str,
     incident_status: str = "",
+    recent_turns: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     fallback = _fallback_followup(question, prior_summary)
     if not llm:
@@ -686,25 +700,30 @@ async def narrate_followup_answer(
         "prior_supervisor_summary",
         _truncate(prior_summary or "(no prior summary captured)", 2400),
     )
+    turns_block = _format_recent_turns_block(recent_turns)
 
     system = (
         f"{_BASE_SUPERVISOR_TONE}\n\n"
         "The investigation has already wrapped up and you're now in a "
         "follow-up Q&A with the on-call engineer in the same incident chat. "
         "Answer their question directly and conversationally, grounded in the "
-        "alert context, the specialist findings, and the prior wrap-up summary "
-        "below. If they ask 'what are the next steps' or 'give me instructions', "
-        "give a concrete, ordered list of actions a human SRE can run right now, "
-        "and call out anything risky. Never invent commands, services, or metric "
-        "values that aren't in the inputs. If the inputs genuinely don't contain "
-        "what they need, say so honestly and suggest the smallest next probe."
+        "alert context, the specialist findings, the prior wrap-up summary, "
+        "and the recent conversation turns below. Use the recent turns to "
+        "resolve pronouns and references like 'it' or 'that' to what was "
+        "actually discussed. If they ask 'what are the next steps' or 'give "
+        "me instructions', give a concrete, ordered list of actions a human "
+        "SRE can run right now, and call out anything risky. Never invent "
+        "commands, services, or metric values that aren't in the inputs. If "
+        "the inputs genuinely don't contain what they need, say so honestly "
+        "and suggest the smallest next probe."
     )
     user = (
         f"User's follow-up question: {question}\n\n"
         f"Incident objective: {objective}{status_line}\n"
         f"Alert payload:\n{alert_block}\n\n"
         f"Specialist findings from the original investigation:\n{findings_block}\n\n"
-        f"My prior wrap-up summary:\n---\n{summary_block}\n---\n"
+        f"My prior wrap-up summary:\n---\n{summary_block}\n---\n\n"
+        f"Recent conversation turns (oldest first):\n---\n{turns_block}\n---\n"
     )
     out = await _invoke_llm(llm, system, user)
     return out or fallback
@@ -731,6 +750,7 @@ async def narrate_chat_greeting(
     alert_context: Any,
     incident_status: str = "",
     prior_summary: str = "",
+    recent_turns: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     fallback = _fallback_greeting(objective, incident_status)
     if not llm:
@@ -741,6 +761,7 @@ async def narrate_chat_greeting(
         "prior_supervisor_summary",
         _truncate(prior_summary or "(no prior summary captured)", 1200),
     )
+    turns_block = _format_recent_turns_block(recent_turns)
     status_line = f"\nCurrent incident status: {incident_status}\n" if incident_status else ""
 
     system = (
@@ -754,7 +775,8 @@ async def narrate_chat_greeting(
         f"User message: {user_message}\n\n"
         f"Incident objective: {objective}{status_line}\n"
         f"Alert payload:\n{alert_block}\n\n"
-        f"Prior summary (for context only):\n{summary_block}\n"
+        f"Prior summary (for context only):\n{summary_block}\n\n"
+        f"Recent conversation turns (for context only):\n{turns_block}\n"
     )
     out = await _invoke_llm(llm, system, user)
     return out or fallback
