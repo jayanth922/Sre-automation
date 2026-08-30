@@ -10,7 +10,7 @@
   "candidate": {
     "candidate_id": "candidate-safe",
     "config_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "source_digest": "033a86518e8823ecc5755a12f545857218e47ec9f697af5fc934a18ed0b5d300"
+    "source_digest": "ba561e3df2eb7ca3074a8d2574c3719f997ebc83bf58ddcc9ddfd8552f30ec87"
   },
   "statistical_report": {
     "schema_version": 2,
