@@ -28,7 +28,18 @@ data:
   MCP_GITHUB_URI: "http://mcp-github:3000/sse"
   MCP_EXECUTOR_URI: "http://mcp-executor:3000/sse"
   MCP_GITHUB_EXEC_URI: "http://mcp-github-exec:3000/sse"
+  MCP_SANDBOX_URI: "http://mcp-sandbox:3000/sse"
   {{- end }}
+
+  # Sandbox (code-fix verification Jobs) — operator-owned safety envelope
+  SANDBOX_NAMESPACE: {{ .Values.sandbox.namespace | quote }}
+  SANDBOX_ALLOWED_IMAGES: {{ .Values.sandbox.allowedImages | quote }}
+  SANDBOX_MAX_ACTIVE_DEADLINE_SECONDS: {{ .Values.sandbox.maxActiveDeadlineSeconds | quote }}
+
+  # Temporal (sandbox workflow orchestration)
+  TEMPORAL_ENABLED: {{ .Values.temporal.enabled | quote }}
+  TEMPORAL_HOST: {{ include "sentinel.temporalHost" . | quote }}
+  TEMPORAL_NAMESPACE: {{ .Values.temporal.namespace | quote }}
 
   # Observability fallback (per-cluster settings live in the console)
   PROMETHEUS_URL: {{ .Values.observability.prometheusUrl | quote }}

@@ -9,6 +9,7 @@ modules are listed separately so they cannot be mistaken for product surface.
 |--------------|-------------|-------|
 | `sre_agent.agent_runtime` | FastAPI `app` | HTTP + WebSocket surface |
 | `sre_agent.job_worker` | `python -m sre_agent.job_worker` | Postgres lease-backed durable job worker; invokes `sre_agent.incident_runner.run_incident_investigation` |
+| `sre_agent.sandbox_worker` | `python -m sre_agent.sandbox_worker` | Temporal worker; runs `sre_agent.sandbox_workflow.CodeFixVerificationWorkflow`, the log-based recovery oracle for AI-proposed code fixes |
 | `sre_agent.graph_builder` | LangGraph compile | Canonical investigation graph |
 | `sre_agent.multi_agent_langgraph` | `create_multi_agent_system` | Specialist wiring |
 | `sre_agent.api.v1.*` | `/api/v1/*` routers | Tenant-scoped REST |

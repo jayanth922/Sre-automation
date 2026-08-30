@@ -66,7 +66,12 @@ def test_helm_defaults_namespaced_and_cluster_wide_is_opt_in():
     assert "if .Values.rbac.clusterWide.enabled" in template
     assert "namespace: {{ .Values.rbac.namespaced.namespace }}" in template
     assert "namespace: {{ .Release.Namespace }}" in template
-    _assert_delete_is_pods_only(template)
+    # The always-rendered sandbox Role (namespace-isolated, see the comment
+    # above it in rbac.yaml) legitimately grants delete on batch/jobs to tear
+    # down ephemeral code-fix-verification Jobs -- a distinct concern from the
+    # actuator's pods-only delete invariant, so scope the check past that block.
+    actuator_scoped = template.split("{{ if .Values.rbac.namespaced.enabled }}", 1)[1]
+    _assert_delete_is_pods_only(actuator_scoped)
 
 
 def test_ci_renders_default_and_opt_in_rbac_modes():

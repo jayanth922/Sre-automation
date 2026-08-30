@@ -84,6 +84,8 @@ mcp:
       - { name: mcp-github, image: mcp-github, secretEnv: [ GITHUB_TOKEN ] }
       - { name: mcp-github-exec, image: mcp-github-exec, secretEnv: [ GITHUB_TOKEN ] }
       - { name: mcp-runbooks, image: mcp-runbooks, env: [ { name: RUNBOOKS_DIR, value: /app/runbooks } ] }
+      - { name: mcp-sandbox, image: mcp-sandbox, serviceAccount: sandbox,
+          configEnv: [ SANDBOX_NAMESPACE, SANDBOX_ALLOWED_IMAGES, SANDBOX_MAX_ACTIVE_DEADLINE_SECONDS ] }
 
 # ── Observability defaults (per-cluster settings live in the console) ─────────
 observability:
@@ -220,6 +222,32 @@ qdrant:
   storageClass: ""
   external:
     url: ""                    # e.g. http://qdrant.mycorp:6333
+
+# ── Sandbox (code-fix verification Jobs) ──────────────────────────────────────
+# Dedicated namespace + operator-owned safety envelope for the ephemeral K8s
+# Jobs that run AI-generated code fixes for verification. Never the same
+# namespace as a real workload.
+sandbox:
+  namespace: "sentinel-sandbox"
+  # Comma-separated allow-list of runner images the sandbox may launch. Empty
+  # refuses every provision request (safe default) — set per-client to the
+  # runner image(s) that can actually execute your code fix candidates.
+  allowedImages: ""
+  maxActiveDeadlineSeconds: "600"
+
+# ── Temporal (sandbox workflow orchestration) ─────────────────────────────────
+temporal:
+  enabled: true
+  deploy: true                 # false → use an external Temporal, set external.host
+  image: temporalio/auto-setup:1.24
+  namespace: "default"         # Temporal namespace (not a k8s namespace)
+  storage: 2Gi
+  storageClass: ""
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+  external:
+    host: ""                   # e.g. temporal.mycorp:7233
 
 # ── RBAC for the agent's k8s tools ────────────────────────────────────────────
 rbac:

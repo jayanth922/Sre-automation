@@ -1,0 +1,59 @@
+{{- if .Values.temporal.enabled }}
+# Background worker for sre_agent.sandbox_workflow.CodeFixVerificationWorkflow.
+# Reuses the sentinel/api image (no separate Dockerfile/CI image build) with a
+# different entrypoint — a long-lived Temporal task-queue poller, not an HTTP
+# service, so it carries no ports or HTTP probes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-temporal-worker
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: sentinel-temporal-worker }
+  template:
+    metadata:
+      labels: { app: sentinel-temporal-worker }
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: temporal-worker
+          image: {{ include "sentinel.image" (dict "root" . "name" "api") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["uv", "run", "python", "-m", "sre_agent.sandbox_worker"]
+          envFrom:
+            - configMapRef: { name: {{ include "sentinel.fullname" . }}-config }
+            - secretRef: { name: {{ include "sentinel.secretName" . }} }
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "sentinel.secretName" . }}, key: POSTGRES_PASSWORD } }
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@{{ include "sentinel.postgresHost" . }}:{{ include "sentinel.postgresPort" . }}/$(POSTGRES_DB)"
+            - name: PYTHONPATH
+              value: /app
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          livenessProbe:
+            exec: { command: ["pgrep", "-f", "sre_agent.sandbox_worker"] }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources: {{- toYaml .Values.temporal.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

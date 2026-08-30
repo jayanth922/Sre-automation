@@ -43,6 +43,10 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- printf "%s-actuator" (include "sentinel.fullname" .) -}}
 {{- end -}}
 
+{{- define "sentinel.sandboxSA" -}}
+{{- printf "%s-sandbox" (include "sentinel.fullname" .) -}}
+{{- end -}}
+
 {{/* Postgres host: in-cluster service when we deploy it, else external */}}
 {{- define "sentinel.postgresHost" -}}
 {{- if .Values.postgres.deploy -}}postgres{{- else -}}{{ .Values.postgres.external.host }}{{- end -}}
@@ -60,4 +64,9 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{/* Qdrant URL: in-cluster or external */}}
 {{- define "sentinel.qdrantUrl" -}}
 {{- if .Values.qdrant.deploy -}}http://qdrant:6333{{- else -}}{{ .Values.qdrant.external.url }}{{- end -}}
+{{- end -}}
+
+{{/* Temporal frontend host:port — in-cluster or external */}}
+{{- define "sentinel.temporalHost" -}}
+{{- if .Values.temporal.deploy -}}temporal:7233{{- else -}}{{ .Values.temporal.external.host }}{{- end -}}
 {{- end -}}

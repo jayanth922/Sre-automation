@@ -30,6 +30,10 @@ _NAMESPACE_ARG_TOOLS = frozenset(
         "get_metric",
         "get_metric_range",
         "get_golden_signals",
+        "sandbox_provision",
+        "sandbox_status",
+        "sandbox_logs",
+        "sandbox_teardown",
     }
 )
 _QUERY_TOOLS = frozenset(
