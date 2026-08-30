@@ -61,3 +61,43 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- define "sentinel.qdrantUrl" -}}
 {{- if .Values.qdrant.deploy -}}http://qdrant:6333{{- else -}}{{ .Values.qdrant.external.url }}{{- end -}}
 {{- end -}}
+
+{{/* Langfuse host: explicit override, else in-cluster service, else external */}}
+{{- define "sentinel.langfuseHost" -}}
+{{- if .Values.tracing.langfuseHost -}}{{ .Values.tracing.langfuseHost }}
+{{- else if .Values.langfuse.deploy -}}http://langfuse-web:3000
+{{- else -}}{{ .Values.langfuse.external.host }}
+{{- end -}}
+{{- end -}}
+
+{{/* Redis connection string for Langfuse: same in-cluster/external host as the
+     main app, but its own logical DB index so state never collides. */}}
+{{- define "sentinel.langfuseRedisUrl" -}}
+{{- if .Values.redis.deploy -}}redis://redis:6379/2{{- else -}}{{ .Values.redis.external.url }}{{- end -}}
+{{- end -}}
+
+{{/* Init container: waits for the shared postgres to accept connections, then
+     idempotently creates the `langfuse` logical database. Requires the pod's
+     envFrom to already include the chart Secret (for POSTGRES_PASSWORD). */}}
+{{- define "sentinel.langfuseDbInitContainer" -}}
+- name: langfuse-db-init
+  image: postgres:15-alpine
+  env:
+    - name: POSTGRES_PASSWORD
+      valueFrom: { secretKeyRef: { name: {{ include "sentinel.secretName" . }}, key: POSTGRES_PASSWORD } }
+  command: ["sh", "-c"]
+  args:
+    - |
+      set -e
+      for i in $(seq 1 60); do
+        if PGPASSWORD="$POSTGRES_PASSWORD" pg_isready -h {{ include "sentinel.postgresHost" . }} -p {{ include "sentinel.postgresPort" . }} -U {{ .Values.postgres.user }} >/dev/null 2>&1; then
+          if PGPASSWORD="$POSTGRES_PASSWORD" psql -h {{ include "sentinel.postgresHost" . }} -p {{ include "sentinel.postgresPort" . }} -U {{ .Values.postgres.user }} -d {{ .Values.postgres.database }} -tc "SELECT 1 FROM pg_database WHERE datname = 'langfuse'" | grep -q 1; then
+            exit 0
+          fi
+          PGPASSWORD="$POSTGRES_PASSWORD" createdb -h {{ include "sentinel.postgresHost" . }} -p {{ include "sentinel.postgresPort" . }} -U {{ .Values.postgres.user }} langfuse && exit 0
+        fi
+        sleep 2
+      done
+      echo "postgres unreachable or langfuse database creation failed after retries" >&2
+      exit 1
+{{- end -}}

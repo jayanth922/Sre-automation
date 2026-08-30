@@ -38,7 +38,8 @@ spec:
       ports:
         - { protocol: TCP, port: 6333 }
         - { protocol: TCP, port: 6334 }
-    # MCP edge servers (and optional extraServers) listen on 3000 in-cluster.
+    # MCP edge servers (and optional extraServers), and self-hosted Langfuse's
+    # langfuse-web (tracing, wired by default), all listen on 3000 in-cluster.
     - to:
         - podSelector: {}
       ports:
@@ -95,4 +96,77 @@ spec:
     - from:
         - podSelector:
             matchLabels: { app: sentinel-api }
+        - podSelector:
+            matchLabels: { app: langfuse-web }
+        - podSelector:
+            matchLabels: { app: langfuse-worker }
+{{- if .Values.langfuse.deploy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel.fullname" . }}-langfuse
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["langfuse-web", "langfuse-worker"]
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: sentinel-api }
+      ports:
+        - { protocol: TCP, port: 3000 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector:
+            matchLabels: { app: redis }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector:
+            matchLabels: { app: clickhouse }
+      ports:
+        - { protocol: TCP, port: 8123 }
+        - { protocol: TCP, port: 9000 }
+    - to:
+        - podSelector:
+            matchLabels: { app: minio }
+      ports:
+        - { protocol: TCP, port: 9000 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel.fullname" . }}-langfuse-datastores
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["clickhouse", "minio"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: langfuse-web }
+        - podSelector:
+            matchLabels: { app: langfuse-worker }
+{{- end }}
 {{- end }}

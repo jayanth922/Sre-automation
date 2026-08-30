@@ -13,8 +13,13 @@ Verified API (Langfuse Python SDK v3):
     handler = CallbackHandler()
     graph.astream(state, config={"callbacks": [handler]})
 
-Enabled when LANGFUSE_PUBLIC_KEY is set (or LANGFUSE_TRACING=true). Guarded import
-so the module loads without langfuse installed.
+Enabled by default (self-hosted Langfuse is wired into every deployment —
+docker-compose and the Helm chart both provision a working instance and
+matching API keys out of the box). Set LANGFUSE_TRACING=false to opt out.
+Guarded import so the module loads without langfuse installed, and so a
+deployment with tracing nominally on but no reachable Langfuse instance
+(e.g. bare local `uv run` outside compose/Helm) degrades to a silent no-op
+rather than failing.
 """
 
 from __future__ import annotations
@@ -27,9 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def langfuse_enabled() -> bool:
-    if os.getenv("LANGFUSE_TRACING", "").lower() in ("true", "1", "yes"):
-        return True
-    return bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
+    return os.getenv("LANGFUSE_TRACING", "true").lower() not in ("false", "0", "no")
 
 
 def get_langfuse_callback() -> Optional[Any]:

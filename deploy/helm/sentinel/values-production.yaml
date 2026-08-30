@@ -51,6 +51,18 @@ postgres:
   deploy: true
   storage: 20Gi
 
+# Self-hosted Langfuse tracing is on by default (tracing.enabled=true) — still
+# requires real, non-placeholder secrets.langfusePublicKey/langfuseSecretKey
+# (and, with langfuse.deploy=true, langfuseSalt/langfuseEncryptionKey/
+# langfuseInitUserPassword too) via --set / sealed-secrets / existingSecret;
+# the chart fails fast at install time otherwise.
+langfuse:
+  deploy: true
+  clickhouse:
+    storage: 20Gi
+  minio:
+    storage: 20Gi
+
 networkPolicy:
   enabled: true
 
