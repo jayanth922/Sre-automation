@@ -317,6 +317,4 @@ async def run_graph_background_saas(
                      .values(status=JobStatus.FAILED, result=json.dumps({"error": str(e)}))
                  )
              await db.commit()
-
 import os # Required for getenv in initial_state
-

@@ -122,11 +122,11 @@ def _fallback_chat_reply(message: str, incident: models.Incident, cluster: model
     Kept intentionally short and informational; the primary path always goes
     through the LLM-driven narrator so the user gets a teammate-tone reply.
     """
-    status = str(incident.status)
+    incident_status = str(incident.status)
     if hasattr(incident.status, "value"):
-        status = incident.status.value
+        incident_status = incident.status.value
     summary = incident.summary or incident.description or ""
-    suffix = f" Status: {status.replace('_', ' ').lower()}." if status else ""
+    suffix = f" Status: {incident_status.replace('_', ' ').lower()}." if incident_status else ""
     if summary:
         return (
             f"On [{cluster.name}] {incident.title}.{suffix} Quick recap: "
