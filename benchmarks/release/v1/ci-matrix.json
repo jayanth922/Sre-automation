@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "matrix_id": "sentinel-release-contract-v1",
+  "policy": {
+    "path": "policy.json",
+    "sha256": "425afb7aee71b5bc02c568f359db238d039453ed3725b20b996ccc551eb2554a"
+  },
+  "cases": [
+    {
+      "case_id": "safe-candidate-promotes",
+      "change_class": "mixed",
+      "bundle": {
+        "path": "fixtures/safe.json",
+        "sha256": "fcc051933cf269f3a4dc140173b8112bf86bb7c5bc17b727d8145e766aa93d3a"
+      },
+      "expected_status": "PROMOTE"
+    },
+    {
+      "case_id": "regressive-prompt-blocks",
+      "change_class": "prompt",
+      "bundle": {
+        "path": "fixtures/regressive-prompt.json",
+        "sha256": "bab71ea20c38045352933054278270e32158f97550f23f41c03441f53452a007"
+      },
+      "expected_status": "BLOCK"
+    },
+    {
+      "case_id": "regressive-model-blocks",
+      "change_class": "model",
+      "bundle": {
+        "path": "fixtures/regressive-model.json",
+        "sha256": "04f079db76b8d186db180358ea3b4b1a4b2f8e47858f433bce5333d7b8f9ed0e"
+      },
+      "expected_status": "BLOCK"
+    },
+    {
+      "case_id": "regressive-tool-blocks",
+      "change_class": "tool",
+      "bundle": {
+        "path": "fixtures/regressive-tool.json",
+        "sha256": "445fdddab19f57cdd6bba7af14d0bcd5ce1c93deba5831055d7399574ea5d707"
+      },
+      "expected_status": "BLOCK"
+    }
+  ]
+}

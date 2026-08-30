@@ -1,0 +1,98 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel.fullname" . }}-api
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: sentinel-api }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: sentinel-web }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    {{- if .Values.ingress.enabled }}
+    # Ingress controllers typically peer from another namespace; allow API :8080
+    # from the cluster when ingress is enabled (tighten with namespaceSelector
+    # in a values overlay when your controller labels are known).
+    - ports:
+        - { protocol: TCP, port: 8080 }
+    {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector:
+            matchLabels: { app: redis }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector:
+            matchLabels: { app: qdrant }
+      ports:
+        - { protocol: TCP, port: 6333 }
+        - { protocol: TCP, port: 6334 }
+    # MCP edge servers (and optional extraServers) listen on 3000 in-cluster.
+    - to:
+        - podSelector: {}
+      ports:
+        - { protocol: TCP, port: 3000 }
+    - ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel.fullname" . }}-web
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: sentinel-web }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 3000 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: sentinel-api }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sentinel.fullname" . }}-datastores
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["postgres", "redis", "qdrant"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: sentinel-api }
+{{- end }}

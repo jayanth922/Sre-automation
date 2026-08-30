@@ -62,7 +62,9 @@ def configure_logging(debug: Optional[bool] = None) -> bool:
     """
     # Determine debug setting
     if debug is None:
-        debug = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+        from sre_agent.config import parse_bool
+
+        debug = parse_bool(os.getenv("DEBUG"), default=False, name="DEBUG")
 
     # Set log level based on debug setting
     log_level = logging.DEBUG if debug else logging.INFO
@@ -99,4 +101,6 @@ def configure_logging(debug: Optional[bool] = None) -> bool:
 
 def should_show_debug_traces() -> bool:
     """Check if debug traces should be shown."""
-    return os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+    from sre_agent.config import parse_bool
+
+    return parse_bool(os.getenv("DEBUG"), default=False, name="DEBUG")

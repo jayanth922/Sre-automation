@@ -49,6 +49,10 @@ Then follow the notes printed on install (port-forward or ingress URL).
 | Existing secret | `secrets.create=false`, `secrets.existingSecret=<name>` (keys: `SECRET_KEY`, `POSTGRES_PASSWORD`, `LLM_API_KEY`, …) |
 | Private registry | `image.registry`, `imagePullSecrets` |
 | Ingress | `ingress.enabled=true`, `ingress.className`, `ingress.host`, `ingress.tls`; same-origin `/ws` works by default, while `web.wsBase` overrides it |
+| HA / disruption | `api.replicas`, `api.pdb`, `api.autoscaling`, `api.topologySpreadConstraints` (same under `web`) |
+| Durable Redis | `redis.persistence.enabled`, `redis.persistence.storage` |
+| NetworkPolicy | `networkPolicy.enabled=true` |
+| Production profile | `-f deploy/helm/sentinel/values-production.yaml` |
 | Storage | `postgres.storage`, `postgres.storageClass`, `qdrant.storage`, `qdrant.storageClass` |
 | Sizing | `api.resources`, `web.resources`, `mcp.edge.resources`, `*.replicas` |
 | Kubernetes RBAC | `rbac.namespaced.enabled=true`, `rbac.namespaced.namespace=<workload namespace>`; opt in to cross-namespace access with `rbac.clusterWide.enabled=true` |
@@ -69,14 +73,18 @@ helm uninstall sentinel -n sentinel
 
 The agent reaches Kubernetes via in-cluster ServiceAccounts (read-only
 `observer` for the k8s tool, `actuator` for scale/restart) — no kubeconfig is
-mounted. Both are restricted to `rbac.namespaced.namespace` (`meridian` by
-default), while their ServiceAccounts remain in the release namespace. Delete
-is granted only for pods; services, nodes, events, and namespaces cannot be
-deleted. Disable with `rbac.create=false` if you manage RBAC separately.
+mounted. Both are restricted to `rbac.namespaced.namespace` (`default` by
+default; set it to your workload namespace), while their ServiceAccounts remain
+in the release namespace. Delete is granted only for pods; services, nodes,
+events, and namespaces cannot be deleted. Disable with `rbac.create=false` if
+you manage RBAC separately.
 
 After installing into a disposable cluster, verify the actuator's expected
 allow/deny boundaries with:
 
 ```bash
-bash scripts/check_live_rbac.sh sentinel meridian default
+bash scripts/check_live_rbac.sh sentinel default default
 ```
+
+For a reference-client overlay (signals MCP + allowlist), see
+`deploy/examples/meridian/`.

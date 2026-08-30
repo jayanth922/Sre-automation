@@ -2,8 +2,8 @@
 set -euo pipefail
 
 service_account_namespace="${1:-sentinel}"
-target_namespace="${2:-meridian}"
-other_namespace="${3:-default}"
+target_namespace="${2:-default}"
+other_namespace="${3:-kube-system}"
 actuator="system:serviceaccount:${service_account_namespace}:sentinel-actuator"
 
 assert_allowed() {

@@ -26,8 +26,9 @@ from .execution_context import (
 
 # Configure logging if not already configured (e.g., when imported by agent_runtime)
 if not logging.getLogger().handlers:
-    # Check if DEBUG is already set in environment
-    debug_from_env = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+    from .config import parse_bool
+
+    debug_from_env = parse_bool(os.getenv("DEBUG"), default=False, name="DEBUG")
     configure_logging(debug_from_env)
 
 logger = logging.getLogger(__name__)

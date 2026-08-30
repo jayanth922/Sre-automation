@@ -25,8 +25,14 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .confidence_calibration import (
+    ConfidenceCalibrationError,
+    calibrate_confidence,
+    load_calibration_artifact,
+)
 from .execution_context import ExecutionContext
 from .executor import Executor
 from .mutation_gateway import MutationGateContext, authorize_and_execute
@@ -119,6 +125,42 @@ def _walk_metrics(obj: Any) -> Dict[str, Any]:
     return found
 
 
+def _raw_probability(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if 0 <= parsed <= 1 else None
+
+
+def _configured_confidence(
+    raw: Optional[float],
+    *,
+    task: str,
+    environment_variable: str,
+    calibration_path: Optional[Path] = None,
+):
+    configured = calibration_path
+    if configured is None:
+        value = os.getenv(environment_variable, "").strip()
+        configured = Path(value) if value else None
+    if raw is None or configured is None:
+        return None
+    config_fingerprint = os.getenv("SENTINEL_CONFIG_FINGERPRINT", "").strip()
+    if not config_fingerprint:
+        return None
+    try:
+        artifact = load_calibration_artifact(configured)
+        return calibrate_confidence(
+            raw,
+            artifact,
+            task=task,
+            config_fingerprint=config_fingerprint,
+        )
+    except (ConfidenceCalibrationError, OSError) as exc:
+        logger.error("%s confidence calibration unavailable: %s", task, exc)
+        return None
+
+
 @dataclass
 class ActReport:
     severity: str
@@ -130,6 +172,12 @@ class ActReport:
     summary: str = ""
     unknown_telemetry: bool = False
     severity_evidence: List[Dict[str, Any]] = field(default_factory=list)
+    confidence_status: str = "uncalibrated"
+    raw_action_confidence: Optional[float] = None
+    calibrated_action_probability: Optional[float] = None
+    minimum_autonomy_probability: Optional[float] = None
+    calibration_artifact_version: Optional[str] = None
+    calibration_artifact_sha256: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -147,6 +195,9 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
     alert = _get(state, "alert_context")
     labels = _get(alert, "labels", {}) or {}
     annotations = _get(alert, "annotations", {}) or {}
+    severity_label = str(
+        _get(alert, "severity", labels.get("severity", "")) or ""
+    ).lower()
 
     service = str(labels.get("service") or labels.get("app") or "").lower()
     revenue = service in _REVENUE_SERVICES if service else None
@@ -206,6 +257,16 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
             or None
         ),
     }
+
+    # Raw reflector confidence is retained as evidence but cannot affect
+    # severity until a diagnosis-specific calibration artifact maps it.
+    reflector = _get(state, "reflector_analysis")
+    raw_confidence = _raw_probability(_get(reflector, "confidence"))
+    calibrated = _configured_confidence(
+        raw_confidence,
+        task="diagnosis",
+        environment_variable="DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH",
+    )
 
     # Prefer structured metrics from investigation results over labels.
     agent_results = _get(state, "agent_results", {}) or {}
@@ -275,6 +336,7 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
         still_escalating=measured["still_escalating"],
         hypothesis_confidence=confidence,
         evidence=links,
+        hypothesis_confidence_calibrated=calibrated is not None,
     )
 
 
@@ -309,12 +371,29 @@ def _plan_risk_score(plan: Any) -> float:
     return _RISK_BY_LEVEL.get(level, 5.0)
 
 
+def _configured_remediation_confidence(
+    plan: Any,
+    calibration_path: Optional[Path],
+):
+    raw = _raw_probability(_get(plan, "confidence"))
+    calibrated = _configured_confidence(
+        raw,
+        task="remediation",
+        environment_variable="REMEDIATION_CONFIDENCE_CALIBRATION_PATH",
+        calibration_path=calibration_path,
+    )
+    return raw, calibrated
+
+
 def build_act_report(
     state: Any,
     environment: Optional[str] = None,
     evaluate_fn: Optional[Callable[[Any, str, float], Tuple[bool, str]]] = None,
     dry_run: bool = True,
     actor: str = "sre-agent",
+    calibration_path: Optional[Path] = None,
+    calibrated_action_probability: Optional[float] = None,
+    minimum_autonomy_probability: Optional[float] = None,
 ) -> ActReport:
     """Compute severity, gate the plan, and dry-run the autonomous actions."""
     assessment: SeverityAssessment = classify_severity(extract_incident_signals(state))
@@ -338,9 +417,28 @@ def build_act_report(
 
     env = environment or _incident_environment(state)
     risk_score = _plan_risk_score(plan)
+    raw_confidence, calibrated = _configured_remediation_confidence(
+        plan, calibration_path
+    )
+    artifact_version = None
+    artifact_sha256 = None
+    if calibrated is not None:
+        calibrated_action_probability = calibrated.calibrated_probability
+        minimum_autonomy_probability = calibrated.autonomy_threshold
+        artifact_version = calibrated.artifact_version
+        artifact_sha256 = calibrated.artifact_sha256
+    confidence_ready = (
+        calibrated is not None and calibrated.autonomy_threshold is not None
+    )
 
     aggregate, per_action = decide_plan(
-        actions, assessment, env, risk_score, evaluate_fn
+        actions,
+        assessment,
+        env,
+        risk_score,
+        evaluate_fn,
+        calibrated_action_probability,
+        minimum_autonomy_probability,
     )
 
     # Per-cluster blast radius: when this cluster is namespace-scoped, remediation
@@ -389,6 +487,9 @@ def build_act_report(
             "decision": gd.decision.value,
             "reversibility": gd.reversibility.value,
             "reason": gd.reason,
+            "confidence_calibrated": gd.confidence_calibrated,
+            "calibrated_action_probability": gd.calibrated_action_probability,
+            "minimum_autonomy_probability": gd.minimum_autonomy_probability,
         }
         if gd.decision is AutonomyDecision.AUTONOMOUS:
             result = executor.execute(action, gd.decision.value, dry_run=dry_run)
@@ -420,6 +521,12 @@ def build_act_report(
         summary=summary,
         unknown_telemetry=assessment.unknown_telemetry,
         severity_evidence=[item.to_dict() for item in assessment.evidence],
+        confidence_status="calibrated" if confidence_ready else "uncalibrated",
+        raw_action_confidence=raw_confidence,
+        calibrated_action_probability=calibrated_action_probability,
+        minimum_autonomy_probability=minimum_autonomy_probability,
+        calibration_artifact_version=artifact_version,
+        calibration_artifact_sha256=artifact_sha256,
     )
 
 
@@ -484,6 +591,7 @@ async def execute_autonomous_live(
             approved=approved,
             actor=actor,
             incident_id=str(incident_id) if incident_id else None,
+            raw_action_confidence=report.raw_action_confidence,
         )
         res = await authorize_and_execute(
             action,
@@ -506,18 +614,31 @@ async def execute_autonomous_live(
 
 
 def apply_skill_learning(
-    state: Any, report: ActReport, store: Any = None
+    state: Any,
+    report: ActReport,
+    store: Any = None,
+    *,
+    verification_outcome: Any = None,
+    live_results: Any = None,
+    incident_status: Any = None,
+    reviewer_id: Optional[str] = None,
+    run_manifest_sha256: Optional[str] = None,
+    config_fingerprint: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Self-improving loop (project #2): propose prior skills, record this one.
+    """Self-improving loop: propose prior skills; record only verified successes.
 
-    Proposes skills learned from *earlier* incidents of the same class, then
-    records the actions applied in *this* incident as a (possibly recurring)
-    skill. ``store`` is injectable for testing; defaults to the process store.
+    Dry-run, blocked, failed, and unknown outcomes become negative exemplars and
+    never increment successful skill counts. ``store`` is injectable for tests.
     """
     from .skill_store import (
         get_skill_store,
         propose_skills,
         record_successful_remediation,
+    )
+    from .verified_learning import (
+        assess_learning_eligibility,
+        build_negative_exemplar,
+        live_executed_actions,
     )
 
     store = store or get_skill_store()
@@ -525,20 +646,67 @@ def apply_skill_learning(
     incident_id = _get(state, "incident_id") or _get(
         _get(state, "metadata", {}) or {}, "incident_id"
     )
+    metadata = _get(state, "metadata", {}) or {}
+    verification = verification_outcome
+    if verification is None:
+        verification = _get(report, "verification") or metadata.get("verification")
+    if live_results is None:
+        live_results = _get(report, "live_results") or metadata.get("live_results")
+    if config_fingerprint is None:
+        config_fingerprint = (
+            os.getenv("SENTINEL_CONFIG_FINGERPRINT", "").strip() or None
+        )
+    if run_manifest_sha256 is None:
+        run_manifest_sha256 = metadata.get("run_manifest_sha256")
 
-    proposed = propose_skills(
-        store, alert
-    )  # from prior incidents, before recording this one
-    executed = getattr(report, "executed", None) or []
-    recorded = (
-        record_successful_remediation(store, alert, executed, incident_id)
-        if executed
-        else None
+    proposed = propose_skills(store, alert)
+    eligibility = assess_learning_eligibility(
+        act_report=report,
+        verification_outcome=verification,
+        incident_status=incident_status,
+        live_results=live_results,
+        executed=getattr(report, "executed", None) or [],
     )
+    recorded = None
+    negative = None
+    live = live_executed_actions(
+        live_results=live_results,
+        executed=getattr(report, "executed", None) or [],
+    )
+    if eligibility.eligible_for_success and live:
+        recorded = record_successful_remediation(
+            store,
+            alert,
+            live,
+            incident_id,
+            verification_status=eligibility.verification_status or "RESOLVED",
+            reviewer_id=reviewer_id,
+            run_manifest_sha256=run_manifest_sha256,
+            config_fingerprint=config_fingerprint,
+        )
+    elif incident_id:
+        try:
+            negative = build_negative_exemplar(
+                eligibility=eligibility,
+                incident_id=str(incident_id),
+                summary=getattr(report, "summary", "") or eligibility.outcome_class,
+                actions=live
+                or list(getattr(report, "executed", None) or [])
+                or list(getattr(report, "action_reports", None) or []),
+                reviewer_id=reviewer_id,
+                run_manifest_sha256=run_manifest_sha256,
+                config_fingerprint=config_fingerprint,
+            )
+            store.add_negative(negative.to_dict())
+        except Exception as exc:
+            logger.warning("negative exemplar not recorded: %s", exc)
+            negative = None
 
     return {
         "proposed_skills": [s.brief() for s in proposed],
         "recorded_skill": recorded.brief() if recorded else None,
+        "negative_exemplar": negative.to_dict() if negative else None,
+        "learning_eligibility": eligibility.to_dict(),
     }
 
 

@@ -169,6 +169,14 @@ def thread_config(thread_id: str, base: Optional[Dict[str, Any]] = None) -> Opti
         from sre_agent.tracing import tracing_callbacks
 
     cfg = tracing_callbacks(base)
+    metadata = cfg.get("metadata", {}) if isinstance(cfg, dict) else {}
+    if metadata.get("root_trace_id"):
+        try:
+            from .trace_evidence import trace_callbacks
+        except ImportError:
+            from sre_agent.trace_evidence import trace_callbacks
+
+        cfg = trace_callbacks(cfg)
 
     if not checkpointer_enabled():
         return cfg

@@ -1,0 +1,29 @@
+# Example remote backend — copy to backend.tf and fill in.
+# Encrypted remote state is required for any shared / non-disposable use.
+#
+# terraform {
+#   backend "s3" {
+#     bucket         = "your-org-terraform-state"
+#     key            = "sentinel/helm-release/terraform.tfstate"
+#     region         = "us-east-1"
+#     encrypt        = true
+#     kms_key_id     = "arn:aws:kms:us-east-1:ACCOUNT:key/..."
+#     dynamodb_table = "terraform-locks"
+#   }
+# }
+#
+# terraform {
+#   backend "gcs" {
+#     bucket = "your-org-terraform-state"
+#     prefix = "sentinel/helm-release"
+#   }
+# }
+#
+# terraform {
+#   cloud {
+#     organization = "your-org"
+#     workspaces {
+#       name = "sentinel-helm-release"
+#     }
+#   }
+# }

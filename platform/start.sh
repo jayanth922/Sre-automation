@@ -19,7 +19,7 @@ if [ ! -f "$repo_root/.env" ]; then
         exit 1
     fi
     cp "$repo_root/.env.example" "$repo_root/.env"
-    echo -e "${GREEN}✅ .env created. Edit it to set SECRET_KEY and other values.${NC}"
+    echo -e "${GREEN}✅ .env created. Set a real GROQ_API_KEY (or switch LLM_PROVIDER) before continuing.${NC}"
 fi
 
 if ! command -v docker &> /dev/null; then
@@ -32,6 +32,28 @@ fi
 set -a
 source "$repo_root/.env"
 set +a
+
+# Stamp clean local builds with their exact revision. Dirty worktrees remain
+# deliberately unknown so their incident runs cannot be mistaken for
+# reproducible evaluation evidence.
+if [ -z "${SENTINEL_CODE_SHA:-}" ] && git -C "$repo_root" rev-parse HEAD >/dev/null 2>&1; then
+    if [ -n "$(git -C "$repo_root" status --porcelain)" ]; then
+        export SENTINEL_CODE_SHA=unknown
+    else
+        export SENTINEL_CODE_SHA="$(git -C "$repo_root" rev-parse HEAD)"
+    fi
+fi
+
+# Fail closed on invalid LLM / required settings before compose build or migrations.
+echo -e "${GREEN}🔎 Validating startup configuration...${NC}"
+if ! (
+    cd "$repo_root"
+    PYTHONPATH="$repo_root" python3 -m sre_agent.provider_config
+); then
+    echo -e "${RED}❌ Startup configuration is invalid. Fix .env (see messages above) and retry.${NC}"
+    echo -e "${YELLOW}   Supported LLM_PROVIDER: groq | anthropic | openai_compatible${NC}"
+    exit 1
+fi
 
 echo -e "${GREEN}📦 Building SaaS Platform...${NC}"
 cd "$script_dir"

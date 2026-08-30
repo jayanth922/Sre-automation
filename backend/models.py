@@ -11,8 +11,10 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Index,
+    JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -31,6 +33,8 @@ class UserRole(str, Enum):
 
 class ClusterStatus(str, Enum):
     ONLINE = "online"
+    DEGRADED = "degraded"
+    STALE = "stale"
     OFFLINE = "offline"
     MAINTENANCE = "maintenance"
 
@@ -54,7 +58,10 @@ class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
+    DEGRADED = "degraded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    DEAD_LETTER = "dead_letter"
 
 class JobType(str, Enum):
     TOOL_CALL = "tool_call"
@@ -140,8 +147,10 @@ class Cluster(Base):
     execution_context_version: Mapped[int] = mapped_column(
         Integer, default=1, nullable=False
     )
-    status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.ONLINE)
+    status: Mapped[ClusterStatus] = mapped_column(String, default=ClusterStatus.OFFLINE)
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    heartbeat_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    heartbeat_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Customer infrastructure connectivity
@@ -180,25 +189,97 @@ class Cluster(Base):
 
 
 class Job(Base):
-    """Represents a job queued for execution by an Edge Agent."""
+    """Durable investigation/tool job with lease-based ownership."""
     __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id",
+            "idempotency_key",
+            name="uq_jobs_cluster_idempotency_key",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cluster_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clusters.id"), nullable=False)
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    incident_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("incidents.id"), nullable=True, index=True
+    )
     job_type: Mapped[JobType] = mapped_column(String, default=JobType.INVESTIGATION)
-    status: Mapped[JobStatus] = mapped_column(String, default=JobStatus.PENDING)
+    status: Mapped[JobStatus] = mapped_column(String, default=JobStatus.PENDING, index=True)
     payload: Mapped[Optional[str]] = mapped_column(Text)  # JSON payload for the job
     result: Mapped[Optional[str]] = mapped_column(Text)   # JSON result from agent
     logs: Mapped[Optional[str]] = mapped_column(Text)     # Accumulated log lines
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    lease_owner: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="jobs")
+    run_manifest: Mapped[Optional["RunManifest"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+        lazy="selectin",
+    )
 
     def __repr__(self):
         return f"<Job(id='{self.id}', status='{self.status}')>"
+
+
+class RunManifest(Base):
+    """Tamper-evident, write-once provenance for an incident job."""
+
+    __tablename__ = "run_manifests"
+    __table_args__ = (
+        Index("ix_run_manifests_incident_created", "incident_id", "created_at"),
+        Index(
+            "ix_run_manifests_tenant_created",
+            "organization_id",
+            "cluster_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    cluster_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    comparable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    non_comparable_reasons: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    root_trace_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    job: Mapped["Job"] = relationship(back_populates="run_manifest")
 
 
 class Incident(Base):
@@ -306,6 +387,53 @@ class AuditEvent(Base):
 
     def __repr__(self):
         return f"<AuditEvent(action='{self.action_type}', outcome='{self.outcome}')>"
+
+
+class AgentAuditLog(Base):
+    """Flight recorder: immutable MCP/tool execution log for investigations.
+
+    Lives on the canonical Alembic Base so fresh and upgraded databases create
+    the table. Tenant/cluster/incident/run fields make every critical action
+    queryable for mission-control and compliance export.
+    """
+
+    __tablename__ = "agent_audit_logs"
+    __table_args__ = (
+        Index("ix_agent_audit_logs_org_timestamp", "organization_id", "timestamp"),
+        Index("ix_agent_audit_logs_cluster_timestamp", "cluster_id", "timestamp"),
+        Index("ix_agent_audit_logs_incident_timestamp", "incident_id", "timestamp"),
+        Index("ix_agent_audit_logs_run_timestamp", "run_id", "timestamp"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    cluster_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("clusters.id"), nullable=True, index=True
+    )
+    incident_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+
+    agent_name: Mapped[str] = mapped_column(String, nullable=False)
+    tool_name: Mapped[str] = mapped_column(String, nullable=False)
+    tool_args: Mapped[str] = mapped_column(Text)
+
+    status: Mapped[str] = mapped_column(String)  # PENDING, SUCCESS, FAILURE
+    result: Mapped[Optional[str]] = mapped_column(Text)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    def __repr__(self):
+        return (
+            f"<AgentAuditLog(agent='{self.agent_name}', tool='{self.tool_name}', "
+            f"status='{self.status}')>"
+        )
 
 
 class SLO(Base):

@@ -4,8 +4,11 @@
 export interface Cluster {
   id: string
   name: string
-  status: "online" | "offline" | "maintenance"
+  status: "online" | "degraded" | "stale" | "offline" | "maintenance"
   last_heartbeat: string | null
+  heartbeat_source?: string | null
+  heartbeat_reason?: string | null
+  age_seconds?: number | null
   created_at: string
   prometheus_url: string | null
   loki_url: string | null

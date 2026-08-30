@@ -9,13 +9,19 @@ metadata:
   name: sentinel-api
   namespace: sentinel
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: { app: sentinel-api }
   template:
     metadata:
       labels: { app: sentinel-api }
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: sentinel-api }
       containers:
         - name: api
           image: sentinel/api:latest
@@ -23,6 +29,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - >
+              uv run python -m sre_agent.provider_config &&
               uv run alembic upgrade head &&
               exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080
           ports:
@@ -44,18 +51,32 @@ spec:
               value: /app
             - name: PYTHONUNBUFFERED
               value: "1"
+          startupProbe:
+            httpGet: { path: /ping, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
           readinessProbe:
             httpGet: { path: /ping, port: 8080 }
-            initialDelaySeconds: 20
+            initialDelaySeconds: 5
             periodSeconds: 10
-            failureThreshold: 12
+            failureThreshold: 6
           livenessProbe:
             httpGet: { path: /ping, port: 8080 }
-            initialDelaySeconds: 60
+            initialDelaySeconds: 30
             periodSeconds: 20
           resources:
             requests: { cpu: "250m", memory: "512Mi" }
             limits: { cpu: "1", memory: "1536Mi" }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sentinel-api
+  namespace: sentinel
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: sentinel-api }
 ---
 apiVersion: v1
 kind: Service

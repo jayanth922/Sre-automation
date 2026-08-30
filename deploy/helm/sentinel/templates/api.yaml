@@ -4,7 +4,9 @@ metadata:
   name: sentinel-api
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.api.replicas }}
+  {{- end }}
   selector:
     matchLabels: { app: sentinel-api }
   template:
@@ -15,6 +17,9 @@ spec:
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.api.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: api
           image: {{ include "sentinel.image" (dict "root" . "name" "api") }}
@@ -23,6 +28,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - >
+              uv run python -m sre_agent.provider_config &&
               uv run alembic upgrade head &&
               exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080
           ports: [{ containerPort: 8080 }]
@@ -42,14 +48,18 @@ spec:
               value: /app
             - name: PYTHONUNBUFFERED
               value: "1"
+          startupProbe:
+            httpGet: { path: /ping, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
           readinessProbe:
             httpGet: { path: /ping, port: 8080 }
-            initialDelaySeconds: 20
+            initialDelaySeconds: 5
             periodSeconds: 10
-            failureThreshold: 12
+            failureThreshold: 6
           livenessProbe:
             httpGet: { path: /ping, port: 8080 }
-            initialDelaySeconds: 60
+            initialDelaySeconds: 30
             periodSeconds: 20
           resources: {{- toYaml .Values.api.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
@@ -70,3 +80,37 @@ metadata:
 spec:
   selector: { app: sentinel-api }
   ports: [{ port: 8080, targetPort: 8080 }]
+{{- if .Values.api.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sentinel-api
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.api.pdb.minAvailable }}
+  selector:
+    matchLabels: { app: sentinel-api }
+{{- end }}
+{{- if .Values.api.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sentinel-api
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sentinel-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

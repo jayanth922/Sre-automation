@@ -50,6 +50,7 @@ def test_minor_contained_blip_is_low_severity():
         still_escalating=False,
         error_rate_slope=0.0,
         hypothesis_confidence=1.0,
+        hypothesis_confidence_calibrated=True,
     )
     a = classify_severity(signals)
     assert a.severity is Severity.SEV4
@@ -69,6 +70,7 @@ def test_high_impact_low_urgency_is_mid():
         still_escalating=False,
         error_rate_slope=0.0,
         hypothesis_confidence=1.0,
+        hypothesis_confidence_calibrated=True,
     )
     a = classify_severity(signals)
     assert a.impact_bucket == "high"
@@ -86,6 +88,7 @@ def test_low_confidence_rounds_severity_up():
         saturation=0.4,
         error_rate_slope=0.0,
         hypothesis_confidence=1.0,
+        hypothesis_confidence_calibrated=True,
     )
     confident = classify_severity(base_signals)
 
@@ -96,6 +99,22 @@ def test_low_confidence_rounds_severity_up():
     assert (
         int(unsure.severity) == int(confident.severity) - 1
     )  # one level more critical
+
+
+def test_uncalibrated_high_self_confidence_still_rounds_up():
+    assessment = classify_severity(
+        IncidentSignals(
+            affected_services=1,
+            error_rate=0.02,
+            slo_burn_rate=0.5,
+            hypothesis_confidence=1.0,
+            hypothesis_confidence_calibrated=False,
+        )
+    )
+
+    assert assessment.severity is Severity.SEV3
+    assert assessment.confidence_calibrated is False
+    assert "uncalibrated" in assessment.rationale
 
 
 def test_roundup_clamps_at_sev1():

@@ -10,6 +10,10 @@
 
 FROM python:3.12-slim-bookworm
 
+# Release builders pass the source revision. An omitted/unknown value is kept
+# explicit so run manifests become non-comparable instead of inventing a SHA.
+ARG SENTINEL_CODE_SHA=unknown
+
 WORKDIR /app
 
 # Install system deps (wget for healthcheck, git for pip installs)
@@ -35,7 +39,10 @@ COPY edge_mcp_servers/mcp_servers/runbooks_local/runbooks ./runbooks
 
 ENV PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    SENTINEL_CODE_SHA=${SENTINEL_CODE_SHA}
+
+LABEL org.opencontainers.image.revision=${SENTINEL_CODE_SHA}
 
 EXPOSE 8080
 

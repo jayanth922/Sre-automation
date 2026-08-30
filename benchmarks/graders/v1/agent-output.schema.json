@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "causal_chain": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cause": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "cause",
+          "effect"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "diagnosis": {
+      "additionalProperties": false,
+      "properties": {
+        "fault_mode": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "service": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "fault_mode"
+      ],
+      "type": "object"
+    },
+    "evidence": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "claim": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reference": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "reference",
+          "claim"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "timeline": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "event_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "minItems": 2,
+      "type": "array"
+    },
+    "uncertainty": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "unknowns": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "confidence",
+        "unknowns"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "diagnosis",
+    "causal_chain",
+    "evidence",
+    "uncertainty",
+    "timeline"
+  ],
+  "type": "object"
+}

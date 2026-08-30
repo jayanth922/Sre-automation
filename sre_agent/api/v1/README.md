@@ -24,6 +24,14 @@ This folder contains the concrete HTTP routes for the current SaaS contract. If 
 
 The job system orchestrates work across multiple layers. Jobs are queued when the API receives agent invocations or edge operation requests. Each job lifecycle is tracked in the database and can be monitored via the `/jobs` endpoints.
 
+Incident jobs expose immutable run provenance at
+`GET /clusters/{cluster_id}/jobs/{job_id}/manifest`. Compare two runs from the
+same cluster with
+`GET /clusters/{cluster_id}/jobs/{job_id}/manifest/compare/{other_job_id}`.
+The comparison reports configuration and input drift separately. A
+`comparable: false` result includes the exact missing provenance fields and must
+not be treated as evaluation evidence.
+
 ### Job Lifecycle Sequence
 
 ![Job Lifecycle Sequence](../../../docs/architecture/images/job-lifecycle-sequence.svg)

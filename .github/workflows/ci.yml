@@ -29,6 +29,7 @@ jobs:
       SECRET_KEY: ci-secret-key
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel
       LLM_PROVIDER: groq
+      GROQ_API_KEY: ci-test-groq-key
       LIVE_BUS_BACKEND: memory
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +37,58 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Sync dependencies (validates the lockfile)
         run: uv sync --frozen --extra dev
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
         run: uv run python -m compileall backend sre_agent
-      - name: Tests
-        run: uv run pytest -q
+      - name: Unit + existing suite
+        run: uv run pytest -q --ignore=tests/integration
+      - name: Integration layer (P09)
+        run: uv run pytest -q tests/integration -m integration
+
+  release-evaluation:
+    name: Release evaluation contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+      - name: Run frozen candidate and regression matrix
+        run: >-
+          uv run python benchmarks/release_gate.py matrix
+          --matrix benchmarks/release/v1/ci-matrix.json
+          --output reports/release-matrix.json
+      - name: Record changed files
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/sentinel-release-changed-files.txt
+      - name: Require evidence for protected prompt, model, and tool changes
+        if: github.event_name == 'pull_request'
+        run: |
+          bundle_args=()
+          if [[ -f benchmarks/release/candidate/bundle.json ]]; then
+            bundle_args=(--bundle benchmarks/release/candidate/bundle.json)
+          fi
+          uv run python benchmarks/release_gate.py impact \
+            --changed-files /tmp/sentinel-release-changed-files.txt \
+            --policy benchmarks/release/v1/policy.json \
+            --repo-root . \
+            --output reports/release-impact.json \
+            "${bundle_args[@]}"
+      - name: Preserve release-gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evaluation-${{ github.run_id }}
+          path: reports/release-*.json
+          if-no-files-found: warn
+          retention-days: 30
 
   frontend:
     name: Frontend (type-check)
@@ -59,7 +108,7 @@ jobs:
         run: npx tsc --noEmit
 
   manifests:
-    name: Manifests (RBAC scope)
+    name: Manifests (Helm + Kustomize)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +117,30 @@ jobs:
         run: bash scripts/check_helm_rbac.sh
       - name: Verify WebSocket routing defaults
         run: bash scripts/check_helm_ws.sh
+      - name: Verify production-capable Helm chart
+        run: bash scripts/check_helm_production.sh
+      - name: Verify Meridian is not hardcoded in base manifests
+        run: bash scripts/check_no_meridian_defaults.sh
+      - name: Verify Kustomize build
+        run: bash scripts/check_kustomize.sh
+
+  terraform:
+    name: Terraform (Helm module)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - uses: azure/setup-helm@v4
+      - name: Install kind
+        run: |
+          curl -fsSL -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.26.0/kind-linux-amd64
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+      - name: fmt / validate / representative plan
+        run: bash scripts/check_terraform.sh
 
   images:
     name: Images build
@@ -75,6 +148,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build API image
-        run: docker build -f platform/Dockerfile -t sentinel/api:ci .
+        run: docker build --build-arg SENTINEL_CODE_SHA=${{ github.sha }} -f platform/Dockerfile -t sentinel/api:ci .
       - name: Build web image
         run: docker build -f platform/Dockerfile.dashboard -t sentinel/web:ci dashboard

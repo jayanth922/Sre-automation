@@ -10,15 +10,18 @@ single question per action:
     REQUIRES_APPROVAL — must wait for a human at the checkpoint
     BLOCKED     — a hard policy rule forbids it entirely
 
-The decision combines three independent checks, most-restrictive-wins:
+The decision combines four independent checks, most-restrictive-wins:
 
 1. **Hard policy** (delegated to ``policy_engine.evaluate_action``) — existing
    deterministic allow/deny rules, e.g. never scale-to-0 in prod. A block here
    is final.
-2. **Severity gate** (``severity_engine``) — autonomy is only offered for
+2. **Calibrated-confidence gate** — self-reported confidence never authorizes a
+   mutation. A task-specific calibrated remediation probability and measured
+   threshold are required; otherwise the action waits for approval.
+3. **Severity gate** (``severity_engine``) — autonomy is only offered for
    low-severity incidents. This is Jayanth's core requirement: low severity →
    autonomous, higher severity → approval.
-3. **Reversibility floor** — even at low severity, an *irreversible* action is
+4. **Reversibility floor** — even at low severity, an *irreversible* action is
    never auto-executed, and a *risky* action is auto-executed only if it carries
    a concrete rollback plan. This is what makes the autonomy defensible.
 
@@ -31,6 +34,7 @@ tests can pass simple stand-ins — so this file needs no LLM/infra imports.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, List, Optional, Tuple
@@ -72,6 +76,9 @@ class GateDecision:
     reversibility: Reversibility
     allowed_by_policy: bool
     reason: str
+    confidence_calibrated: bool = False
+    calibrated_action_probability: Optional[float] = None
+    minimum_autonomy_probability: Optional[float] = None
 
 
 def _has_rollback_plan(action: Any) -> bool:
@@ -131,6 +138,8 @@ def decide(
     environment: str = "production",
     risk_score: float = 0.0,
     evaluate_fn: Optional[Callable[[Any, str, float], Tuple[bool, str]]] = None,
+    calibrated_action_probability: Optional[float] = None,
+    minimum_autonomy_probability: Optional[float] = None,
 ) -> GateDecision:
     """Decide how a single action may be executed. Most-restrictive-wins."""
     severity = severity_assessment.severity
@@ -165,8 +174,48 @@ def decide(
         )
 
     low_sev = is_low_severity(severity)
+    action_type = str(getattr(action, "action_type", "")).lower()
 
-    # 2. Reversibility floor.
+    # 2. A model's self-reported confidence is not authorization. Mutation
+    # autonomy requires a task-specific calibration artifact with a measured
+    # threshold. Notify-only escalation remains non-mutating.
+    confidence_valid = (
+        isinstance(calibrated_action_probability, (int, float))
+        and not isinstance(calibrated_action_probability, bool)
+        and isinstance(minimum_autonomy_probability, (int, float))
+        and not isinstance(minimum_autonomy_probability, bool)
+        and math.isfinite(float(calibrated_action_probability))
+        and math.isfinite(float(minimum_autonomy_probability))
+        and 0 <= calibrated_action_probability <= 1
+        and 0 <= minimum_autonomy_probability <= 1
+    )
+    if action_type != "escalate" and (
+        not confidence_valid
+        or calibrated_action_probability < minimum_autonomy_probability
+    ):
+        if not confidence_valid:
+            reason = (
+                f"{severity.name}: uncalibrated remediation confidence "
+                "cannot authorize mutation"
+            )
+        else:
+            reason = (
+                f"{severity.name}: calibrated remediation probability "
+                f"{calibrated_action_probability:.3f} is below measured "
+                f"threshold {minimum_autonomy_probability:.3f}"
+            )
+        return GateDecision(
+            decision=AutonomyDecision.REQUIRES_APPROVAL,
+            severity=severity,
+            reversibility=reversibility,
+            allowed_by_policy=True,
+            reason=reason,
+            confidence_calibrated=confidence_valid,
+            calibrated_action_probability=calibrated_action_probability,
+            minimum_autonomy_probability=minimum_autonomy_probability,
+        )
+
+    # 3. Reversibility floor.
     if reversibility is Reversibility.IRREVERSIBLE:
         decision = AutonomyDecision.REQUIRES_APPROVAL
         reason = f"{severity.name}: irreversible action always needs human approval"
@@ -203,6 +252,9 @@ def decide(
         reversibility=reversibility,
         allowed_by_policy=True,
         reason=reason,
+        confidence_calibrated=confidence_valid,
+        calibrated_action_probability=calibrated_action_probability,
+        minimum_autonomy_probability=minimum_autonomy_probability,
     )
 
 
@@ -212,6 +264,8 @@ def decide_plan(
     environment: str = "production",
     risk_score: float = 0.0,
     evaluate_fn: Optional[Callable[[Any, str, float], Tuple[bool, str]]] = None,
+    calibrated_action_probability: Optional[float] = None,
+    minimum_autonomy_probability: Optional[float] = None,
 ) -> Tuple[AutonomyDecision, List[GateDecision]]:
     """Decide a whole plan. The plan is only autonomous if *every* action is.
 
@@ -219,7 +273,15 @@ def decide_plan(
     action blocks the plan; a single REQUIRES_APPROVAL downgrades it to approval.
     """
     per_action = [
-        decide(a, severity_assessment, environment, risk_score, evaluate_fn)
+        decide(
+            a,
+            severity_assessment,
+            environment,
+            risk_score,
+            evaluate_fn,
+            calibrated_action_probability,
+            minimum_autonomy_probability,
+        )
         for a in actions
     ]
     if any(d.decision is AutonomyDecision.BLOCKED for d in per_action):

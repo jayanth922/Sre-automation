@@ -1,0 +1,81 @@
+{
+  "dataset_version": "sentinel-sre-v1",
+  "scenarios": [
+    {
+      "alert": {
+        "alertname": "PaymentProviderDown",
+        "description": "payment-service reports provider_down; checkout 502s are downstream, not a checkout bug.",
+        "service": "payment-service",
+        "severity": "critical",
+        "summary": "Payment provider is down; checkout is cascade-failing"
+      },
+      "allowed_action_types": [
+        "restart",
+        "escalate",
+        "rollback"
+      ],
+      "expected_evidence": [
+        "payment_provider_up reports the dependency unavailable",
+        "checkout failures are correlated to the payment dependency",
+        "payment_provider_up returns to 1 before recovery is credited"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "cleanup": {
+          "path": "/admin/config",
+          "payload": {
+            "provider_down": false
+          }
+        },
+        "inject": {
+          "path": "/admin/config",
+          "payload": {
+            "provider_down": true
+          }
+        },
+        "target": "payment-service"
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "payment_provider_outage",
+      "provenance": {
+        "kind": "synthetic_reference_client",
+        "reference": "docs/PROJECT_CONTEXT.md#target_client-complexity-grown",
+        "source": "Sentinel payment dependency reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_provider_availability",
+        "operator": "gte",
+        "query": "min(payment_provider_up)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 1.0,
+        "unit": "boolean gauge"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "payment",
+          "provider",
+          "downstream",
+          "dependency",
+          "cascade",
+          "upstream"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "dependency",
+        "fault_mode": "provider_outage"
+      },
+      "version": "1.0.0"
+    }
+  ],
+  "schema_version": 1,
+  "split": "holdout"
+}

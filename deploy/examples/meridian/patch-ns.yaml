@@ -1,0 +1,4 @@
+# Move namespaced Roles/RoleBindings from the generic default ns into meridian.
+- op: replace
+  path: /metadata/namespace
+  value: meridian

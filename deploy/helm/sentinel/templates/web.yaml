@@ -4,7 +4,9 @@ metadata:
   name: sentinel-web
   labels: {{- include "sentinel.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.web.autoscaling.enabled }}
   replicas: {{ .Values.web.replicas }}
+  {{- end }}
   selector:
     matchLabels: { app: sentinel-web }
   template:
@@ -15,6 +17,9 @@ spec:
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.web.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: web
           image: {{ include "sentinel.image" (dict "root" . "name" "web") }}
@@ -26,11 +31,19 @@ spec:
               value: "http://sentinel-api:8080"
             - name: NEXT_PUBLIC_WS_BASE
               value: {{ if .Values.web.wsBase }}{{ .Values.web.wsBase | quote }}{{ else if .Values.ingress.enabled }}""{{ else }}"ws://localhost:8080"{{ end }}
+          startupProbe:
+            httpGet: { path: /, port: 3000 }
+            failureThreshold: 30
+            periodSeconds: 5
           readinessProbe:
             httpGet: { path: /, port: 3000 }
-            initialDelaySeconds: 15
+            initialDelaySeconds: 5
             periodSeconds: 10
-            failureThreshold: 12
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
           resources: {{- toYaml .Values.web.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
@@ -50,3 +63,37 @@ metadata:
 spec:
   selector: { app: sentinel-web }
   ports: [{ port: 3000, targetPort: 3000 }]
+{{- if .Values.web.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sentinel-web
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.web.pdb.minAvailable }}
+  selector:
+    matchLabels: { app: sentinel-web }
+{{- end }}
+{{- if .Values.web.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sentinel-web
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sentinel-web
+  minReplicas: {{ .Values.web.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.web.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.web.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

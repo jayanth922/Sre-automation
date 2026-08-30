@@ -1,27 +1,35 @@
-import asyncio
-import json
-import logging
-import os
+"""QUARANTINED alternate investigation runner.
+
+This module historically duplicated SaaS graph execution with a divergent
+feature set (lifecycle publishes, per-cluster metadata). Production must not
+import it for new work.
+
+Use::
+
+    from sre_agent.incident_runner import run_incident_investigation
+
+The symbols below remain only as deprecated forwarders for accidental imports.
+"""
+
+from __future__ import annotations
+
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+import warnings
+from typing import Optional
 
-from .agent_state import AgentState
-from .constants import SREConstants
-from .callbacks import RedisLogCallbackHandler
-from .redis_state_store import get_state_store
-from backend import models, database
-from backend.models import IncidentStatus, JobStatus
-from sqlalchemy import func
+from sre_agent.incident_runner import run_incident_investigation
 
-logger = logging.getLogger(__name__)
+__all__ = ["run_graph_background_saas"]
+
 
 async def run_graph_background_saas(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
     alert_name: str,
-    job_id: Optional[uuid.UUID] = None
+    job_id: Optional[uuid.UUID] = None,
+    **kwargs,
 ):
+<<<<<<< HEAD
     """
     SaaS-aware background execution.
     Writes logs/results to the Postgres Database instead of just Redis.
@@ -62,19 +70,11 @@ async def run_graph_background_saas(
         
         from langchain_core.messages import HumanMessage
 
-        # Resolve the agent "brain" per-cluster: a cluster may override the
-        # provider (and later model/endpoint/key); otherwise the platform default
-        # applies. Only the provider takes effect end-to-end today — model/base_url/
-        # api_key are carried in metadata for the router to honor.
-        from .cluster_context import resolve_llm, resolve_namespace
-        cluster_obj = None
-        try:
-            async with database.AsyncSessionLocal() as _db:
-                cluster_obj = await _db.get(models.Cluster, cluster_id)
-        except Exception as _ce:
-            logger.debug(f"cluster context lookup skipped: {_ce}")
-        llm_ctx = resolve_llm(cluster_obj)
-        llm_provider = llm_ctx["provider"]
+        # Resolve the authorized agent "brain" from the tenant execution context.
+        # Provider/model/base_url/key are enforced against operator allowlists and
+        # recorded exactly in run metadata for UI/trace parity.
+        llm_manifest = runtime.context.llm_manifest()
+        llm_provider = llm_manifest["provider"] or os.getenv("LLM_PROVIDER", "groq")
 
         initial_state: AgentState = {
             "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
@@ -84,8 +84,14 @@ async def run_graph_background_saas(
             "current_query": f"Investigate alert: {alert_name}",
             "metadata": {
                 "llm_provider": llm_provider,
-                "llm_overrides": llm_ctx,
-                "cluster_namespace": resolve_namespace(cluster_obj),
+                "llm": llm_manifest,
+                "llm_overrides": {
+                    "provider": llm_manifest["provider"],
+                    "model": llm_manifest["model"],
+                    "base_url": llm_manifest["base_url"],
+                    "api_key": None,
+                },
+                "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
                 "tools": tools,
                 "cluster_id": str(cluster_id),
@@ -193,20 +199,52 @@ async def run_graph_background_saas(
             elif hasattr(raw_verification, "dict"):
                 verification_serializable = raw_verification.dict()
 
-        # Store completed investigation in Qdrant so future incidents can learn from it
+        # Store completed investigation in Qdrant only after objective verification.
         try:
             from .memory_store import get_memory_store
-            memory = get_memory_store()
-            if memory.is_available():
-                memory.store_incident(
-                    incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
-                    incident_id=str(incident_id),
-                    metadata={
-                        "alert_name": alert_name,
-                        "cluster_id": str(cluster_id),
-                        "resolution": final_response,
-                        "resolved_at": datetime.now(timezone.utc).isoformat(),
-                    },
+            from .verified_learning import (
+                assess_learning_eligibility,
+                build_provenance,
+                memory_metadata_for_promotion,
+            )
+
+            act_report = (current_execution_state.get("metadata") or {}).get("act_report")
+            verification_outcome = (act_report or {}).get(
+                "verification"
+            ) or verification_serializable
+            eligibility = assess_learning_eligibility(
+                act_report=act_report,
+                verification_outcome=verification_outcome,
+                live_results=(act_report or {}).get("live_results"),
+                executed=(act_report or {}).get("executed"),
+            )
+            if eligibility.eligible_for_success:
+                memory = get_memory_store()
+                if memory.is_available():
+                    provenance = build_provenance(
+                        incident_id=str(incident_id),
+                        eligibility=eligibility,
+                        artifact_kind="memory",
+                    )
+                    memory.store_incident(
+                        incident_text=f"Alert: {alert_name}\n\nResolution: {final_response}",
+                        incident_id=str(incident_id),
+                        metadata=memory_metadata_for_promotion(
+                            eligibility=eligibility,
+                            provenance=provenance,
+                            extra={
+                                "alert_name": alert_name,
+                                "cluster_id": str(cluster_id),
+                                "resolution": final_response,
+                                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        ),
+                    )
+            else:
+                logger.info(
+                    "Skipping successful-memory promotion for %s (%s)",
+                    incident_id,
+                    eligibility.outcome_class,
                 )
         except Exception as me:
             logger.warning(f"Failed to store incident in memory: {me}")
@@ -275,3 +313,4 @@ async def run_graph_background_saas(
              await db.commit()
 
 import os # Required for getenv in initial_state
+

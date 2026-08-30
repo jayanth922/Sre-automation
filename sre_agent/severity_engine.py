@@ -108,7 +108,10 @@ class IncidentSignals:
     still_escalating: Optional[bool] = None
 
     # ── Meta ────────────────────────────────────────────────────────
-    hypothesis_confidence: Optional[float] = None  # Reflector confidence
+    # Only empirically calibrated diagnosis probability belongs here. Raw
+    # model self-confidence must remain outside severity policy.
+    hypothesis_confidence: float = 0.0
+    hypothesis_confidence_calibrated: bool = False
     evidence: List[EvidenceLink] = field(default_factory=list)
 
     def unknown_fields(self) -> List[str]:
@@ -118,7 +121,6 @@ class IncidentSignals:
             "slo_burn_rate",
             "slo_breached",
             "saturation",
-            "hypothesis_confidence",
         )
         return [name for name in measured if getattr(self, name) is None]
 
@@ -133,6 +135,7 @@ class SeverityAssessment:
     impact_bucket: Bucket
     urgency_bucket: Bucket
     rounded_up: bool = False
+    confidence_calibrated: bool = False
     rationale: str = ""
     unknown_telemetry: bool = False
     evidence: List[EvidenceLink] = field(default_factory=list)
@@ -305,18 +308,27 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
     base = _MATRIX[(ib, ub)]
     rounded_up = False
     severity = base
-    confidence = signals.hypothesis_confidence
-    if confidence is None or confidence < _CONFIDENCE_ROUNDUP_THRESHOLD:
+    if (
+        not signals.hypothesis_confidence_calibrated
+        or signals.hypothesis_confidence < _CONFIDENCE_ROUNDUP_THRESHOLD
+    ):
         severity = _escalate(base)
         rounded_up = severity != base
 
     rationale = f"impact={impact:.2f}({ib}) × urgency={urgency:.2f}({ub}) → {base.name}"
     if rounded_up:
-        conf_txt = "missing" if confidence is None else f"{confidence:.2f}"
-        rationale += (
-            f"; escalated to {severity.name} "
-            f"(confidence {conf_txt} < {_CONFIDENCE_ROUNDUP_THRESHOLD})"
-        )
+        if signals.hypothesis_confidence_calibrated:
+            rationale += (
+                f"; escalated to {severity.name} "
+                f"(calibrated diagnosis probability "
+                f"{signals.hypothesis_confidence:.2f} < "
+                f"{_CONFIDENCE_ROUNDUP_THRESHOLD})"
+            )
+        else:
+            rationale += (
+                f"; escalated to {severity.name} "
+                "(diagnosis confidence is uncalibrated)"
+            )
     if unknown_telemetry:
         rationale += "; partial unknown fields present"
 
@@ -329,6 +341,7 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
         impact_bucket=ib,
         urgency_bucket=ub,
         rounded_up=rounded_up,
+        confidence_calibrated=signals.hypothesis_confidence_calibrated,
         rationale=rationale,
         unknown_telemetry=unknown_telemetry,
         evidence=list(signals.evidence),
