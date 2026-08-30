@@ -73,13 +73,16 @@ def get_current_time() -> str:
     return datetime.now().isoformat()
 
 
-def build_mcp_server_config(
+async def build_mcp_server_config(
     context: ExecutionContext,
     *,
     service_token: Optional[str] = None,
 ) -> dict[str, dict[str, Any]]:
     """Build a tenant-bound MCP config with mandatory bearer auth."""
+    from .multitenant.relay_auth import build_relay_headers
+
     server_config: dict[str, dict[str, Any]] = {}
+    relay_headers: Optional[dict[str, str]] = None
     for name, uri in context.mcp_endpoints.items():
         if uri.startswith("stdio://"):
             if is_production_runtime():
@@ -94,10 +97,12 @@ def build_mcp_server_config(
             }
             continue
         uri = require_operator_mcp_endpoint(name, uri)
+        if relay_headers is None:
+            relay_headers = await build_relay_headers(context, service_token=service_token)
         server_config[name] = {
             "url": uri,
             "transport": "sse",
-            "headers": dict(context.transport_headers(service_token)),
+            "headers": dict(relay_headers),
         }
     if not server_config:
         raise ValueError(
@@ -106,21 +111,21 @@ def build_mcp_server_config(
     return server_config
 
 
-def create_mcp_client(
+async def create_mcp_client(
     context: Optional[ExecutionContext] = None,
     *,
     service_token: Optional[str] = None,
 ) -> MultiServerMCPClient:
     """
     Create and return MultiServerMCPClient with appropriate transport for each domain.
-    
+
     Supports:
     - HTTP/SSE transport: For native FastMCP servers running in Docker/K8s
     - STDIO transport: For local development (if URI starts with "stdio://")
     """
     execution_context = require_execution_context(context)
     return MultiServerMCPClient(
-        build_mcp_server_config(execution_context, service_token=service_token)
+        await build_mcp_server_config(execution_context, service_token=service_token)
     )
 
 
@@ -166,7 +171,7 @@ async def create_multi_agent_system(
     client = None
     while retry_count < max_retries:
         try:
-            client = create_mcp_client(context)
+            client = await create_mcp_client(context)
             
             # Use get_tools() but handle potential ExceptionGroups from failing servers
             try:

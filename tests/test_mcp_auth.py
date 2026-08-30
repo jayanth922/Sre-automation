@@ -3,14 +3,21 @@
 
 import asyncio
 import importlib.util
+import sys
 from pathlib import Path
 
 
 _ROOT = Path(__file__).resolve().parents[1]
+_EDGE_DIR = _ROOT / "edge_mcp_servers"
 
 
 def _module():
-    path = _ROOT / "edge_mcp_servers" / "mcp_auth.py"
+    # mcp_auth.py does `from relay_credentials import ...` — a flat, same-directory
+    # import that resolves naturally in the container (both files copied to the same
+    # WORKDIR); add the directory to sys.path here so it resolves the same way in-test.
+    if str(_EDGE_DIR) not in sys.path:
+        sys.path.insert(0, str(_EDGE_DIR))
+    path = _EDGE_DIR / "mcp_auth.py"
     spec = importlib.util.spec_from_file_location("_edge_mcp_auth", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -86,9 +93,11 @@ def test_compose_ports_are_loopback_only_and_require_token():
 
 def test_mcp_client_threads_bearer_header_through_server_config():
     source = (_ROOT / "sre_agent" / "multi_agent_langgraph.py").read_text()
-    assert '"headers": dict(context.transport_headers(service_token))' in source
-    assert "context.transport_headers(service_token)" in source
+    assert '"headers": dict(relay_headers)' in source
+    assert "build_relay_headers(context, service_token=service_token)" in source
     executor_source = (_ROOT / "sre_agent" / "executor.py").read_text()
     assert '"headers": execution_context.transport_headers()' in executor_source
     assert "require_operator_mcp_endpoint(server_name, endpoint)" in executor_source
     assert "require_operator_mcp_endpoint(name, uri)" in source
+    relay_auth_source = (_ROOT / "sre_agent" / "multitenant" / "relay_auth.py").read_text()
+    assert "context.transport_headers(service_token)" in relay_auth_source

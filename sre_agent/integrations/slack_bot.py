@@ -75,7 +75,7 @@ async def process_mention(
     return reply
 
 
-def build_slack_app(registry=None):
+def build_slack_app(registry=None, organization: Any = None):
     """Build the Slack Bolt app wired to the SRE agent (lazy import).
 
     `registry` is the shared `WarRoomRegistry` (see `war_room_service.py`)
@@ -85,6 +85,13 @@ def build_slack_app(registry=None):
     always answering cold, and a plain in-thread reply (no @mention — the
     natural way to respond) is captured and routed through the real,
     memory-backed conversational endpoint the dashboard chat already uses.
+
+    `organization` (Phase 4) is the owning `Organization` row: when it has an
+    OAuth-installed bot token (`slack_oauth.resolve_slack_bot_token`), that
+    token is used instead of the static `SLACK_BOT_TOKEN` env var. Bolt's
+    socket-mode `AsyncApp` is bound to one token per process either way, so
+    this only changes *which* token a given process's bot uses — not whether
+    one process can serve many workspaces.
     """
     try:
         from slack_bolt.async_app import AsyncApp  # lazy; optional dependency
@@ -92,8 +99,10 @@ def build_slack_app(registry=None):
         raise RuntimeError("slack_bolt not installed; run: pip install 'slack_bolt>=1.18'") from e
 
     from ..war_room import ThreadRef, route_thread_reply
+    from ..multitenant.slack_oauth import resolve_slack_bot_token
 
-    app = AsyncApp(token=os.getenv("SLACK_BOT_TOKEN"))
+    token = resolve_slack_bot_token(organization) if organization is not None else os.getenv("SLACK_BOT_TOKEN")
+    app = AsyncApp(token=token)
 
     @app.event("app_mention")
     async def _on_mention(event, say):  # pragma: no cover - requires Slack

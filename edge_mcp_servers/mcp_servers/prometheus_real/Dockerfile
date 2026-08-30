@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy server code
 COPY mcp_servers/prometheus_real/server.py .
 COPY mcp_auth.py .
+COPY relay_credentials.py .
 
 # Expose port
 EXPOSE 3000

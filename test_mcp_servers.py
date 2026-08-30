@@ -35,7 +35,7 @@ async def test_mcp_servers():
     logger.info("Starting MCP Server Smoke Test...")
     llm_provider = os.getenv("LLM_PROVIDER", "nvidia")
     
-    client = create_mcp_client()
+    client = await create_mcp_client()
     try:
         tools = None
         last_error = None

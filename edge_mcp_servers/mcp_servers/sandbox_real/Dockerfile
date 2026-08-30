@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY mcp_servers/sandbox_real/guardrails.py .
 COPY mcp_servers/sandbox_real/server.py .
 COPY mcp_auth.py .
+COPY relay_credentials.py .
 
 EXPOSE 3000
 

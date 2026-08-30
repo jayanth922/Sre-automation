@@ -37,6 +37,28 @@ async def get_org_by_id(db: AsyncSession, org_id: uuid.UUID):
     return result.scalars().first()
 
 
+async def get_org_by_slack_team_id(db: AsyncSession, slack_team_id: str):
+    result = await db.execute(
+        select(models.Organization).filter(
+            models.Organization.slack_team_id == slack_team_id
+        )
+    )
+    return result.scalars().first()
+
+
+async def set_org_slack_installation(
+    db: AsyncSession, org_id: uuid.UUID, *, bot_token: str, team_id: str
+):
+    org = await get_org_by_id(db, org_id)
+    if not org:
+        return None
+    org.slack_bot_token = bot_token
+    org.slack_team_id = team_id
+    await db.commit()
+    await db.refresh(org)
+    return org
+
+
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
     """Register a founding admin in a new organization.
 
@@ -141,6 +163,7 @@ async def create_cluster(
         k8s_token=cluster.k8s_token,
         github_token=cluster.github_token,
         github_repo=cluster.github_repo,
+        github_app_installation_id=cluster.github_app_installation_id,
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
         jira_url=cluster.jira_url,
@@ -192,6 +215,7 @@ async def update_cluster(
         "k8s_token",
         "github_token",
         "github_repo",
+        "github_app_installation_id",
         "notion_api_key",
         "notion_database_id",
         "jira_url",

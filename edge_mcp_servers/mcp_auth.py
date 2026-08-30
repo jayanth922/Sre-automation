@@ -28,6 +28,10 @@ class MCPBearerAuthMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            from relay_credentials import capture_relay_credentials
+
+            capture_relay_credentials(scope.get("headers", ()))
         if scope.get("type") == "http" and not bearer_authorized(
             scope.get("headers", ())
         ):

@@ -70,6 +70,47 @@ except Exception as e:
     logger.warning(f"⚠️ GitHub client initialization failed: {e}")
     logger.warning("⚠️ Server will start but tools will fail until GITHUB_TOKEN and GITHUB_REPO are set")
 
+# Bounded cache of relayed (token, repo) -> Repository, so a multi-tenant
+# control plane relaying different clusters' credentials across requests
+# doesn't force a fresh GitHub API lookup on every tool call.
+_relay_repo_cache: Dict[tuple, Any] = {}
+_RELAY_REPO_CACHE_MAX = 8
+
+
+def _active_repo():
+    """The repository to act against for the in-flight request.
+
+    Prefers a per-request relayed credential (one control plane managing
+    many Cluster rows) over this process's static single-tenant
+    GITHUB_TOKEN/GITHUB_REPO configuration, which remains the fallback for
+    a self-hosted deployment that never relays per-cluster credentials.
+    """
+    try:
+        from relay_credentials import get_relay_credential
+    except ImportError:
+        return github_repo
+
+    token = get_relay_credential("github_token")
+    repo_name = get_relay_credential("github_repo")
+    if not token or not repo_name:
+        return github_repo
+
+    cache_key = (token, repo_name)
+    cached = _relay_repo_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        repo = Github(token).get_repo(repo_name)
+    except Exception as e:
+        logger.warning(f"relay: failed to resolve relayed repository {repo_name}: {e}")
+        return github_repo
+
+    if len(_relay_repo_cache) >= _RELAY_REPO_CACHE_MAX:
+        _relay_repo_cache.pop(next(iter(_relay_repo_cache)))
+    _relay_repo_cache[cache_key] = repo
+    return repo
+
 
 # Create FastMCP server
 port = int(os.getenv("HTTP_PORT", "3000"))
@@ -139,14 +180,15 @@ async def handle_list_commits(params: ListCommitsParams) -> str:
     """List commits from repository."""
     logger.info(f"Listing commits (limit: {params.limit})")
 
-    if not github_repo:
+    repo = _active_repo()
+    if not repo:
         return "Error: GitHub client not initialized."
 
     loop = asyncio.get_event_loop()
 
     try:
         # Get commits
-        commits = await loop.run_in_executor(None, github_repo.get_commits)
+        commits = await loop.run_in_executor(None, repo.get_commits)
 
         # Filter and format
         results = []
@@ -190,12 +232,13 @@ async def handle_get_commit(params: GetCommitParams) -> str:
     """Get commit details with diff."""
     logger.info(f"Getting commit: {params.sha}")
 
-    if not github_repo:
+    repo = _active_repo()
+    if not repo:
         return "Error: GitHub client not initialized."
 
     loop = asyncio.get_event_loop()
     try:
-        commit = await loop.run_in_executor(None, github_repo.get_commit, params.sha)
+        commit = await loop.run_in_executor(None, repo.get_commit, params.sha)
 
         # Get diff (patch)
         patch = commit.patch if hasattr(commit, "patch") else None
@@ -227,13 +270,14 @@ async def handle_list_pull_requests(params: ListPullRequestsParams) -> str:
     """List pull requests."""
     logger.info(f"Listing pull requests (state: {params.state}, limit: {params.limit})")
 
-    if not github_repo:
+    repo = _active_repo()
+    if not repo:
         return "Error: GitHub client not initialized."
 
     loop = asyncio.get_event_loop()
     try:
         prs = await loop.run_in_executor(
-            None, github_repo.get_pulls, params.state if params.state != "all" else None
+            None, repo.get_pulls, params.state if params.state != "all" else None
         )
 
         results = []
@@ -270,12 +314,13 @@ async def handle_get_pull_request(params: GetPullRequestParams) -> str:
     """Get pull request details."""
     logger.info(f"Getting pull request: #{params.pr_number}")
 
-    if not github_repo:
+    repo = _active_repo()
+    if not repo:
         return "Error: GitHub client not initialized."
 
     loop = asyncio.get_event_loop()
     try:
-        pr = await loop.run_in_executor(None, github_repo.get_pull, params.pr_number)
+        pr = await loop.run_in_executor(None, repo.get_pull, params.pr_number)
 
         result = {
             "number": pr.number,
@@ -316,7 +361,8 @@ async def handle_list_repository_files(params: ListRepositoryFilesParams) -> str
         f"Listing repository files (path: {params.path!r}, recursive: {params.recursive}, limit: {params.limit})"
     )
 
-    if not github_repo:
+    repo = _active_repo()
+    if not repo:
         return "Error: GitHub client not initialized."
 
     loop = asyncio.get_event_loop()
@@ -328,7 +374,7 @@ async def handle_list_repository_files(params: ListRepositoryFilesParams) -> str
 
         while queue and len(results) < params.limit:
             current_path = queue.pop(0)
-            contents = await loop.run_in_executor(None, github_repo.get_contents, current_path)
+            contents = await loop.run_in_executor(None, repo.get_contents, current_path)
 
             if not isinstance(contents, list):
                 results.append(_format_repo_file_entry(contents))
@@ -346,7 +392,7 @@ async def handle_list_repository_files(params: ListRepositoryFilesParams) -> str
 
         return json.dumps(
             {
-                "repository": github_repo.full_name,
+                "repository": repo.full_name,
                 "path": start_path,
                 "recursive": params.recursive,
                 "files": results,
@@ -366,18 +412,19 @@ async def handle_get_repository_file(params: GetRepositoryFileParams) -> str:
     """Read the contents of a single repository file."""
     logger.info(f"Reading repository file: {params.path}")
 
-    if not github_repo:
+    repo = _active_repo()
+    if not repo:
         return "Error: GitHub client not initialized."
 
     loop = asyncio.get_event_loop()
 
     try:
-        content = await loop.run_in_executor(None, github_repo.get_contents, params.path)
+        content = await loop.run_in_executor(None, repo.get_contents, params.path)
 
         if isinstance(content, list):
             return json.dumps(
                 {
-                    "repository": github_repo.full_name,
+                    "repository": repo.full_name,
                     "path": params.path,
                     "type": "dir",
                     "entries": [_format_repo_file_entry(entry) for entry in content],
@@ -398,7 +445,7 @@ async def handle_get_repository_file(params: GetRepositoryFileParams) -> str:
 
         return json.dumps(
             {
-                "repository": github_repo.full_name,
+                "repository": repo.full_name,
                 "path": params.path,
                 "sha": content.sha,
                 "size": getattr(content, "size", None),
