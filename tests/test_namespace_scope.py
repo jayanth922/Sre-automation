@@ -9,6 +9,7 @@ from sre_agent.execution_context import ExecutionContext
 from sre_agent.namespace_scope import (
     NamespaceScopeError,
     assert_action_namespace,
+    enforce_tool_arguments,
     require_cluster_namespace,
 )
 
@@ -42,6 +43,53 @@ def test_cross_namespace_action_is_rejected(monkeypatch):
     action = SimpleNamespace(parameters={"namespace": "other-tenant"})
     with pytest.raises(NamespaceScopeError, match="outside cluster scope"):
         assert_action_namespace(action, _context("demo-app"))
+
+
+def test_read_tool_namespace_is_injected(monkeypatch):
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    assert enforce_tool_arguments("list_pods", {}, _context()) == {
+        "namespace": "demo-app"
+    }
+
+
+def test_cross_namespace_read_is_rejected(monkeypatch):
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    with pytest.raises(NamespaceScopeError, match="outside cluster scope"):
+        enforce_tool_arguments(
+            "list_pods", {"namespace": "other-tenant"}, _context()
+        )
+
+
+def test_namespace_enumeration_is_rejected():
+    with pytest.raises(NamespaceScopeError, match="Listing cluster namespaces"):
+        enforce_tool_arguments("list_namespaces", {}, _context())
+
+
+def test_metric_query_is_scoped_to_exact_namespace(monkeypatch):
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    scoped = enforce_tool_arguments(
+        "get_metric", {"query": 'rate(http_requests_total{service="api"}[5m])'}, _context()
+    )
+    assert scoped["query"] == (
+        'rate(http_requests_total{namespace="demo-app",service="api"}[5m])'
+    )
+    assert "namespace" not in scoped
+
+
+def test_cross_namespace_metric_query_is_rejected(monkeypatch):
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    with pytest.raises(NamespaceScopeError, match="outside configured namespace"):
+        enforce_tool_arguments(
+            "get_metric",
+            {"query": 'up{namespace="other-tenant"}'},
+            _context(),
+        )
+
+
+def test_empty_query_selector_is_scoped_without_trailing_comma(monkeypatch):
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    scoped = enforce_tool_arguments("query_logs", {"logql": '{} |= "error"'}, _context())
+    assert scoped == {"logql": '{namespace="demo-app"} |= "error"'}
 
 
 def test_from_cluster_fails_closed_without_namespace(monkeypatch):

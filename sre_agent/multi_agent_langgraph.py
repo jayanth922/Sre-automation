@@ -189,9 +189,13 @@ async def create_multi_agent_system(
                 # this client is only used for discovery.
                 pass
 
-            # Wrap MCP tools with retry logic for resilience
+            # Apply resilience, audit, and tenant namespace enforcement.
             from .mcp_tool_wrapper import wrap_all_tools_with_retry
-            mcp_tools = wrap_all_tools_with_retry(all_mcp_tools, max_attempts=3)
+            mcp_tools = wrap_all_tools_with_retry(
+                all_mcp_tools,
+                max_attempts=3,
+                execution_context=context,
+            )
 
             logger.info(f"Retrieved {len(mcp_tools)} tools from MCP")
 

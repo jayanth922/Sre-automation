@@ -26,7 +26,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .audit_context import get_audit_context
+from .audit_context import get_audit_context, note_audit_write_failure
 from backend.models import AgentAuditLog
 # We need a session factory here. For now, we'll do a local import to avoid circular dep
 # or assume the session is handled elsewhere. But for sync logging, we need a session.
@@ -200,7 +200,13 @@ def log_audit_entry(
     Log an audit entry to the database and also push to the live terminal.
     """
     try:
-        incident_id, agent_name = get_audit_context()
+        (
+            incident_id,
+            agent_name,
+            organization_id,
+            cluster_id,
+            run_id,
+        ) = get_audit_context()
         
         # Serialize args/result safely
         args_str = str(args)
@@ -240,7 +246,12 @@ def log_audit_entry(
                 log_entry = AgentAuditLog(
                     id=new_id,
                     timestamp=datetime.now(timezone.utc),
-                    incident_id=incident_id or "general",
+                    organization_id=(
+                        uuid.UUID(str(organization_id)) if organization_id else None
+                    ),
+                    cluster_id=(uuid.UUID(str(cluster_id)) if cluster_id else None),
+                    incident_id=incident_id,
+                    run_id=run_id,
                     agent_name=agent_name or "SRE Agent",
                     tool_name=tool_name,
                     tool_args=args_str,
@@ -251,6 +262,7 @@ def log_audit_entry(
                 return new_id
     except Exception as e:
         logger.error(f"Failed to write audit log: {e}")
+        note_audit_write_failure(str(e))
         return audit_id
 
 
@@ -377,7 +389,56 @@ def wrap_tool_with_circuit_breaker(tool: Any) -> Any:
     return tool
 
 
-def wrap_all_tools_with_retry(tools: list, max_attempts: int = 3) -> list:
+def wrap_tool_with_namespace_scope(tool: Any, context: Any) -> Any:
+    """Enforce the execution context on namespaced MCP tool inputs."""
+    from .namespace_scope import enforce_tool_arguments
+
+    tool_name = getattr(tool, "name", "unknown_tool")
+    original_invoke = getattr(tool, "invoke", None)
+    original_ainvoke = getattr(tool, "ainvoke", None)
+
+    def scoped_call(call_args, call_kwargs):
+        args = list(call_args)
+        kwargs = dict(call_kwargs)
+        if args:
+            args[0] = enforce_tool_arguments(tool_name, args[0], context)
+        elif "input" in kwargs:
+            kwargs["input"] = enforce_tool_arguments(
+                tool_name, kwargs["input"], context
+            )
+        elif "tool_input" in kwargs:
+            kwargs["tool_input"] = enforce_tool_arguments(
+                tool_name, kwargs["tool_input"], context
+            )
+        else:
+            args.append(enforce_tool_arguments(tool_name, {}, context))
+        return tuple(args), kwargs
+
+    if original_invoke is not None:
+        @functools.wraps(original_invoke)
+        def scoped_invoke(*args, **kwargs):
+            scoped_args, scoped_kwargs = scoped_call(args, kwargs)
+            return original_invoke(*scoped_args, **scoped_kwargs)
+
+        object.__setattr__(tool, "invoke", scoped_invoke)
+
+    if original_ainvoke is not None:
+        @functools.wraps(original_ainvoke)
+        async def scoped_ainvoke(*args, **kwargs):
+            scoped_args, scoped_kwargs = scoped_call(args, kwargs)
+            return await original_ainvoke(*scoped_args, **scoped_kwargs)
+
+        object.__setattr__(tool, "ainvoke", scoped_ainvoke)
+
+    return tool
+
+
+def wrap_all_tools_with_retry(
+    tools: list,
+    max_attempts: int = 3,
+    *,
+    execution_context: Any = None,
+) -> list:
     """
     Wrap all tools in a list with:
     1. Retry Logic (Inner)
@@ -399,10 +460,17 @@ def wrap_all_tools_with_retry(tools: list, max_attempts: int = 3) -> list:
         # 2. Add Circuit Breaker (Middle - stops calls if retries keep failing)
         cb_tool = wrap_tool_with_circuit_breaker(retry_tool)
         
-        # 3. Add Audit Logic (Outer - Logs the final outcome)
-        audit_tool = wrap_tool_with_audit(cb_tool)
+        scoped_tool = cb_tool
+        if execution_context is not None:
+            scoped_tool = wrap_tool_with_namespace_scope(cb_tool, execution_context)
+
+        # Audit remains outermost so rejected scope attempts are recorded.
+        audit_tool = wrap_tool_with_audit(scoped_tool)
         
         wrapped_tools.append(audit_tool)
     
-    logger.info(f"Wrapped {len(wrapped_tools)} tools with Retry + CircuitBreaker + Audit")
+    logger.info(
+        "Wrapped %s tools with Retry + CircuitBreaker + Namespace + Audit",
+        len(wrapped_tools),
+    )
     return wrapped_tools
