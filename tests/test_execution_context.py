@@ -45,7 +45,7 @@ def test_context_from_cluster_uses_operator_mcp_routes_and_redacts_credentials(
         notion_api_key=None,
         llm_api_key="llm-super-secret",
         namespace="tenant-a",
-        llm_provider="openai_compatible",
+        llm_provider="gemini",
         llm_model="tenant-model",
         llm_base_url="https://tenant-a.example/v1",
         key_version=2,

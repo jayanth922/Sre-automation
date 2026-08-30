@@ -19,7 +19,7 @@ if [ ! -f "$repo_root/.env" ]; then
         exit 1
     fi
     cp "$repo_root/.env.example" "$repo_root/.env"
-    echo -e "${GREEN}✅ .env created. Set a real GROQ_API_KEY (or switch LLM_PROVIDER) before continuing.${NC}"
+    echo -e "${GREEN}✅ .env created. Set a real ANTHROPIC_API_KEY / GOOGLE_API_KEY before continuing.${NC}"
 fi
 
 if ! command -v docker &> /dev/null; then
@@ -51,7 +51,7 @@ if ! (
     PYTHONPATH="$repo_root" python3 -m sre_agent.provider_config
 ); then
     echo -e "${RED}❌ Startup configuration is invalid. Fix .env (see messages above) and retry.${NC}"
-    echo -e "${YELLOW}   Supported LLM_PROVIDER: groq | anthropic | openai_compatible${NC}"
+    echo -e "${YELLOW}   Supported LLM_PROVIDER: anthropic | gemini${NC}"
     exit 1
 fi
 

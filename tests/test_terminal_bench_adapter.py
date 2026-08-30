@@ -19,11 +19,11 @@ def test_agent_name():
 
 
 def test_env_includes_provider(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "groq")
-    monkeypatch.setenv("GROQ_API_KEY", "secret")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
     env = tba.SRETerminalAgent()._env()
-    assert env["LLM_PROVIDER"] == "groq"
-    assert env["GROQ_API_KEY"] == "secret"
+    assert env["LLM_PROVIDER"] == "anthropic"
+    assert env["ANTHROPIC_API_KEY"] == "secret"
 
 
 def test_run_commands_include_and_escape_instruction():

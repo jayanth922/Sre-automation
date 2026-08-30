@@ -32,12 +32,12 @@ ModelRouterBlocked = model_router.ModelRouterBlocked
 
 @pytest.fixture(autouse=True)
 def _clean_router_env(monkeypatch):
-    """Start each test from a known env: router on, ollama base, no overrides."""
+    """Start each test from a known env: router on, anthropic base, no overrides."""
     for key in list(os.environ):
         if key.startswith("MODEL_ROUTER_"):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("MODEL_ROUTER_ENABLED", "true")
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
 
 
 def test_high_stakes_tasks_route_to_strong():
@@ -68,31 +68,31 @@ def test_complexity_escalates_one_tier():
 def test_disabled_router_falls_back_to_balanced_base_provider(monkeypatch):
     """Disabled router reproduces the pre-router single-model behavior."""
     monkeypatch.setenv("MODEL_ROUTER_ENABLED", "false")
-    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     decision = select_model(TaskType.REFLECTION)
     assert decision.tier is ModelTier.BALANCED
-    assert decision.provider == "groq"
+    assert decision.provider == "gemini"
     assert decision.model_id is None
 
 
 def test_default_provider_from_env(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
-    assert select_model(TaskType.SPECIALIST).provider == "nvidia"
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    assert select_model(TaskType.SPECIALIST).provider == "gemini"
 
 
 def test_explicit_provider_overrides_env(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
-    assert select_model(TaskType.SPECIALIST, provider="groq").provider == "groq"
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    assert select_model(TaskType.SPECIALIST, provider="gemini").provider == "gemini"
 
 
 def test_per_tier_cross_provider_routing(monkeypatch):
     """Strong tier can be pinned to a different provider than the base."""
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
-    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "nvidia")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "gemini")
     decision = select_model(TaskType.PLANNING)  # planning → strong
-    assert decision.provider == "nvidia"
+    assert decision.provider == "gemini"
     # Fast-tier tasks are unaffected and stay on the base provider.
-    assert select_model(TaskType.ROUTING).provider == "ollama"
+    assert select_model(TaskType.ROUTING).provider == "anthropic"
 
 
 def test_per_tier_model_override(monkeypatch):
@@ -102,10 +102,10 @@ def test_per_tier_model_override(monkeypatch):
 
 def test_provider_specific_model_override_wins(monkeypatch):
     """A (tier, provider)-specific override beats the generic tier override."""
-    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("MODEL_ROUTER_STRONG_MODEL", "generic-strong")
-    monkeypatch.setenv("MODEL_ROUTER_STRONG_MODEL_NVIDIA", "nvidia-strong")
-    assert select_model(TaskType.PLANNING).model_id == "nvidia-strong"
+    monkeypatch.setenv("MODEL_ROUTER_STRONG_MODEL_GEMINI", "gemini-strong")
+    assert select_model(TaskType.PLANNING).model_id == "gemini-strong"
 
 
 def test_string_task_type_is_accepted():

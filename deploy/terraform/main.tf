@@ -101,10 +101,10 @@ resource "helm_release" "sentinel" {
     }
     precondition {
       condition = contains(
-        ["groq", "anthropic", "openai_compatible"],
+        ["anthropic", "gemini"],
         var.llm_provider
       )
-      error_message = "llm_provider must be one of: groq, anthropic, openai_compatible."
+      error_message = "llm_provider must be one of: anthropic, gemini."
     }
   }
 }

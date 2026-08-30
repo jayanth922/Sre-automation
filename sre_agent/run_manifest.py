@@ -252,7 +252,7 @@ def build_run_manifest(
     graph_sha = _file_sha256(_REPO_ROOT / "sre_agent" / "graph_builder.py")
     provider = str(
         getattr(execution_context, "llm_provider", None)
-        or os.getenv("LLM_PROVIDER", "groq")
+        or os.getenv("LLM_PROVIDER", "anthropic")
     ).lower()
     sanitized_input = sanitize_for_manifest(input_payload)
     model_routes = _model_routes(provider)
@@ -293,7 +293,7 @@ def build_run_manifest(
             "requested_cluster_model": getattr(execution_context, "llm_model", None),
             "routes": model_routes,
             "fallback_chain": [provider]
-            + [item for item in ("groq", "anthropic") if item != provider],
+            + [item for item in ("anthropic", "gemini") if item != provider],
         },
         "tools": {
             "schema_version": os.getenv(

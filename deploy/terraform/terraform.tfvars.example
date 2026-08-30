@@ -1,7 +1,7 @@
 # Copy to terraform.tfvars (git-ignored). No credential values belong here.
 kube_context         = ""                 # empty = current kube context
 namespace            = "sentinel"
-llm_provider         = "groq"
+llm_provider         = "anthropic"
 image_registry       = "sentinel"
 image_tag            = "latest"
 existing_secret_name = "sentinel-secrets" # create this Secret out-of-band first

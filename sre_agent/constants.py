@@ -18,10 +18,16 @@ logger = logging.getLogger(__name__)
 class ModelConfig(BaseModel):
     """Model configuration constants."""
 
-    # Groq model IDs
-    groq_model_id: str = Field(
-        default=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-        description="Default Groq model ID (override with GROQ_MODEL env var)",
+    # Anthropic (Claude)
+    anthropic_model: str = Field(
+        default=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
+        description="Default Anthropic model ID (override with ANTHROPIC_MODEL)",
+    )
+
+    # Gemini
+    gemini_model: str = Field(
+        default=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        description="Default Gemini model ID (override with GEMINI_MODEL)",
     )
 
     # Model parameters
@@ -44,42 +50,6 @@ class ModelConfig(BaseModel):
         ge=1,
         le=100000,
         description="Max tokens for output formatter LLM calls",
-    )
-
-    # Ollama settings
-    ollama_base_url: str = Field(
-        default=os.getenv("OLLAMA_BASE_URL", "http://ollama:11434"),
-        description="Base URL for Ollama service",
-    )
-    ollama_model: str = Field(
-        default=os.getenv("OLLAMA_MODEL", "gpt-oss:120b-cloud"),
-        description="Ollama model to use",
-    )
-    ollama_num_ctx: int = Field(
-        default=int(os.getenv("OLLAMA_NUM_CTX", "32768")),
-        ge=1,
-        le=131072,
-        description="Ollama context window size",
-    )
-
-    # Gemini settings
-    gemini_model: str = Field(
-        default=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-        description="Default Gemini model ID",
-    )
-
-    # NVIDIA NIM settings
-    nvidia_model: str = Field(
-        default=os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct"),
-        description="NVIDIA NIM model ID",
-    )
-    nvidia_api_key: str = Field(
-        default=os.getenv("NVIDIA_API_KEY", ""),
-        description="NVIDIA NIM API key (from build.nvidia.com)",
-    )
-    nvidia_base_url: str = Field(
-        default=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-        description="NVIDIA NIM/OpenAI-compatible base URL",
     )
 
 
@@ -297,44 +267,32 @@ class SREConstants:
         Returns:
             Dictionary with model configuration
         """
-        if provider == "openai_compatible":
-            # Bring-your-own LLM: any OpenAI-compatible endpoint (vLLM, Ollama's
-            # /v1, LiteLLM proxy, LocalAI, on-prem gateways). Client configures
-            # the base URL, key, and model — we don't dictate the model.
-            import os as _os
-            return {
-                "model_id": kwargs.get("model_id", _os.getenv("LLM_MODEL") or _os.getenv("OPENAI_MODEL") or "gpt-4o-mini"),
-                "api_key": kwargs.get("api_key", _os.getenv("LLM_API_KEY") or _os.getenv("OPENAI_API_KEY") or ""),
-                "base_url": kwargs.get("base_url", _os.getenv("LLM_BASE_URL") or _os.getenv("OPENAI_BASE_URL") or "http://localhost:8000/v1"),
-                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-            }
-
         if provider == "anthropic":
-            import os as _os
             return {
-                "model_id": kwargs.get("model_id", _os.getenv("ANTHROPIC_MODEL") or "claude-3-5-sonnet-latest"),
-                "api_key": kwargs.get("api_key", _os.getenv("ANTHROPIC_API_KEY", "")),
+                "model_id": kwargs.get("model_id", cls.model.anthropic_model),
+                "api_key": kwargs.get("api_key", os.getenv("ANTHROPIC_API_KEY", "")),
                 "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
 
-        if provider != "groq":
-            raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'groq', 'openai_compatible'.")
+        if provider == "gemini":
+            return {
+                "model_id": kwargs.get("model_id", cls.model.gemini_model),
+                "api_key": kwargs.get("api_key", os.getenv("GOOGLE_API_KEY", "")),
+                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
+                "temperature": kwargs.get("temperature", cls.model.default_temperature),
+            }
 
-        return {
-            "model_id": kwargs.get("model_id", cls.model.groq_model_id),
-            "api_key": kwargs.get("api_key"),
-            "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
-            "temperature": kwargs.get("temperature", cls.model.default_temperature),
-        }
+        raise ValueError(
+            f"Unsupported provider: {provider}. Supported: 'anthropic', 'gemini'."
+        )
 
     @classmethod
     def get_output_formatter_config(cls, provider: str, **kwargs) -> dict:
         """Get model configuration for output formatter.
 
         Args:
-            provider: LLM provider (only "groq" is supported)
+            provider: LLM provider (``anthropic`` or ``gemini``)
             **kwargs: Additional configuration overrides
 
         Returns:
@@ -361,7 +319,8 @@ class SREConstants:
 constants = SREConstants()
 
 # Legacy support - individual constants for backward compatibility if needed
-GROQ_MODEL_ID = constants.model.groq_model_id
+ANTHROPIC_MODEL_ID = constants.model.anthropic_model
+GEMINI_MODEL_ID = constants.model.gemini_model
 DEFAULT_TEMPERATURE = constants.model.default_temperature
 DEFAULT_MAX_TOKENS = constants.model.default_max_tokens
 GRAPH_EXECUTION_TIMEOUT_SECONDS = constants.timeouts.graph_execution_timeout_seconds
