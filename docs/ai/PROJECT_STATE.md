@@ -4,7 +4,7 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-All 41 backlog work packages and PR #34 (Anthropic & Gemini-only LLM provider restriction) are fully merged into `master`, passing all 17 CI quality gate jobs.
+Post-integration regression fixes are implemented on `codex/post-integration-regression-fixes` from `master` (`d28a714`) after all 41 backlog packages and PR #34 were merged.
 
 ### Integrated Backlog Tracks & Platform Additions
 - **Foundation (T01–T10):** Multi-agent LangGraph core, MCP adapters, state store, observability, and evaluation baseline.
@@ -27,32 +27,36 @@ All 41 backlog work packages and PR #34 (Anthropic & Gemini-only LLM provider re
 
 ## Completed or verified work
 - Fully merged all 41 backlog work packages and PR #34 to `master`.
-- Cleaned up open pull requests (0 open PRs remaining).
-- All 17 CI check jobs pass green on GitHub Actions (Run #33289533109).
+- Restored namespace enforcement for MCP reads and query selectors, including blocking namespace enumeration.
+- Repaired scoped audit persistence, per-cluster LLM credential validation, canonical durable runner arguments, recurring job-lease renewal, and durable mission-control follow-ups.
+- Restricted the investigation worker to investigation jobs, added release-evaluation and Terraform to the aggregate CI gate, and isolated generated runbooks in ACT integration tests.
 
 ## Active problem
-None. All backlog tasks and PRs merged, test suite 100% green, and all CI gates passing.
+Resolved locally. `benchmarks/release/candidate/bundle.json` was regenerated (`change_class: "tool"`, `candidate.source_digest` recomputed via `release_gate.py digest`) to match the protected `sre_agent/mcp_tool_wrapper.py` change on `codex/post-integration-regression-fixes`. `release_gate.py impact` against `master..HEAD` now reports `PROMOTE`. PR #42 (`codex/post-integration-operational-fixes`, non-protected fixes) is open, `MERGEABLE`/`CLEAN`, all CI checks green, not yet merged. This branch is not yet pushed or opened as a PR.
 
 ## Relevant files
 - `sre_agent/provider_config.py` & `sre_agent/constants.py` (Supported LLM providers)
 - `sre_agent/incident_runner.py` (Canonical entrypoint)
 - `sre_agent/job_worker.py` (Durable job runner)
+- `sre_agent/namespace_scope.py` & `sre_agent/mcp_tool_wrapper.py` (Read isolation and scoped audit)
+- `sre_agent/api/v1/mission_control.py` (Durable follow-up queueing)
 - `sre_agent/severity_engine.py` & `sre_agent/act_phase.py` (Severity & ACT execution)
 - `backend/models.py` & `backend/alembic/versions/` (Database schemas & migrations)
 - `benchmarks/release_gate.py` (Release evaluation contracts)
 - `scripts/check_python_quality.sh` & `scripts/check_module_reachability.py` (CI validation)
 
 ## Verification commands and latest results
-- `uv run pytest -q` -> 662 passed in 4.19s (test coverage 46.20% >= 20%).
+- `uv run pytest -q` -> 673 passed in 3.92s; tracked runbook artifacts remained unchanged.
 - `bash scripts/check_python_quality.sh` -> Ruff critical, Mypy, and compileall pass.
 - `uv run python scripts/check_module_reachability.py` -> 67 reachable, 6 experimental.
 - `bash scripts/check_no_static_secrets.sh` -> Secret scan passed.
-- `bash scripts/check_eval_smoke.sh` -> Eval smoke passed.
+- `bash scripts/check_eval_smoke.sh` -> 33 passed.
 - `bash scripts/check_helm_production.sh` & `check_terraform.sh` -> Manifest & Terraform checks pass.
-- GitHub Actions CI -> All 17 jobs passed (100% green).
+- Release matrix -> PASS; candidate bundle -> PROMOTE in isolation; `release_gate.py impact` against `master..HEAD` -> PROMOTE.
+- `uv run pytest -q` (full suite, re-verified after the bundle fix) -> 674 passed in 4.05s.
 
 ## Known blockers or risks
-- Future changes to prompt templates, model routing, or tools require generating/updating candidate evaluation bundles (`benchmarks/release/candidate/bundle.json`) matching `policy.json` release contracts.
+- None outstanding for this fix. Merging PR #42 and pushing/opening a PR for `codex/post-integration-regression-fixes` are pending user confirmation (shared-state actions), not technical blockers.
 
 ## Next bounded task
-- Ready for new feature development or operational tasks.
+- Merge PR #42, then push `codex/post-integration-regression-fixes` (already rebased on the post-merge `master` since it already contains PR #42's commit) and open its PR; CI's "Release evaluation contract" job should reproduce the local `PROMOTE` result.

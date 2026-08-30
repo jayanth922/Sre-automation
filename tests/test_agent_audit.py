@@ -81,6 +81,38 @@ def test_audit_write_failure_is_visible_for_job_health():
     assert JobStatus.DEGRADED.value == "degraded"
 
 
+def test_tool_audit_writer_persists_full_execution_scope(
+    session: Session, monkeypatch
+):
+    from sre_agent import mcp_tool_wrapper, redis_state_store
+
+    organization_id = uuid.uuid4()
+    cluster_id = uuid.uuid4()
+    set_audit_context(
+        incident_id="inc-scoped",
+        agent_name="KubernetesAgent",
+        organization_id=str(organization_id),
+        cluster_id=str(cluster_id),
+        run_id="job-scoped",
+    )
+    monkeypatch.setattr(mcp_tool_wrapper, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        redis_state_store,
+        "get_state_store",
+        lambda: type("Store", (), {"append_log": lambda *args: None})(),
+    )
+
+    audit_id = mcp_tool_wrapper.log_audit_entry(
+        "list_pods", "PENDING", {"namespace": "demo-app"}
+    )
+    row = session.get(AgentAuditLog, audit_id)
+
+    assert row.organization_id == organization_id
+    assert row.cluster_id == cluster_id
+    assert row.incident_id == "inc-scoped"
+    assert row.run_id == "job-scoped"
+
+
 def test_flight_recorder_rows_are_queryable_by_tenant_and_run(session: Session):
     org_a = uuid.uuid4()
     org_b = uuid.uuid4()
