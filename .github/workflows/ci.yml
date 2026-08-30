@@ -287,8 +287,10 @@ jobs:
       - backend-tests
       - migrations
       - eval-smoke
+      - release-evaluation
       - frontend
       - manifests
+      - terraform
       - images-platform
       - images-edge
     steps:
@@ -298,8 +300,10 @@ jobs:
           echo "backend-tests=${{ needs.backend-tests.result }}"
           echo "migrations=${{ needs.migrations.result }}"
           echo "eval-smoke=${{ needs.eval-smoke.result }}"
+          echo "release-evaluation=${{ needs.release-evaluation.result }}"
           echo "frontend=${{ needs.frontend.result }}"
           echo "manifests=${{ needs.manifests.result }}"
+          echo "terraform=${{ needs.terraform.result }}"
           echo "images-platform=${{ needs.images-platform.result }}"
           echo "images-edge=${{ needs.images-edge.result }}"
           for r in \
@@ -307,8 +311,10 @@ jobs:
             "${{ needs.backend-tests.result }}" \
             "${{ needs.migrations.result }}" \
             "${{ needs.eval-smoke.result }}" \
+            "${{ needs.release-evaluation.result }}" \
             "${{ needs.frontend.result }}" \
             "${{ needs.manifests.result }}" \
+            "${{ needs.terraform.result }}" \
             "${{ needs.images-platform.result }}" \
             "${{ needs.images-edge.result }}"
           do

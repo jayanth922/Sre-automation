@@ -549,7 +549,7 @@ async def send_incident_message(
             "response": assistant_reply,
         }
 
-    await crud.create_incident_timeline_event(
+    human_event = await crud.create_incident_timeline_event(
         db,
         incident_uuid,
         event_type="human_message",
@@ -566,18 +566,27 @@ async def send_incident_message(
         f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
     )
 
-    follow_up_job = await crud.create_job(
-        db,
-        cluster.id,
-        schemas.JobCreate(
-            job_type=models.JobType.INVESTIGATION,
-            payload=json.dumps({
-                "incident_id": incident_id,
-                "alert": message,
-                "triggered_by": "dashboard_chat",
-                "follow_up": True,
-            }),
-        ),
+    # Reuse the original alert scope and enqueue one durable follow-up turn.
+    from sre_agent.incident_timeline import load_incident_chat_context
+    from sre_agent.job_worker import enqueue_and_kick
+
+    follow_up_context = await load_incident_chat_context(str(incident_uuid))
+    follow_up_alert = follow_up_context.get("alert_context") or {}
+    follow_up_job = await enqueue_and_kick(
+        db=db,
+        cluster_id=cluster.id,
+        organization_id=cluster.org_id,
+        incident_id=incident_uuid,
+        alert_name=message,
+        alert_labels=follow_up_alert.get("labels") or {},
+        alert_annotations={
+            "summary": follow_up_alert.get("summary", ""),
+            "description": follow_up_alert.get("description", ""),
+        },
+        alert_starts_at=None,
+        alert_severity=follow_up_alert.get("severity") or "warning",
+        triggered_by="dashboard_chat",
+        idempotency_key=f"follow-up:{incident_uuid}:{human_event.id}",
     )
 
     await crud.create_incident_timeline_event(
@@ -593,29 +602,6 @@ async def send_incident_message(
             "job_id": str(follow_up_job.id),
             "cluster_id": str(cluster.id),
         },
-    )
-
-    from sre_agent.incident_runner import run_incident_investigation
-    # For follow-up investigations on an incident, reuse the original alert's
-    # labels and annotations so the specialists keep the same context they
-    # had during the first pass.
-    from sre_agent.incident_timeline import load_incident_chat_context
-    follow_up_context = await load_incident_chat_context(str(incident_uuid))
-    follow_up_alert = follow_up_context.get("alert_context") or {}
-    asyncio.create_task(
-        run_incident_investigation(
-            incident_id=incident_uuid,
-            cluster_id=cluster.id,
-            alert_name=message,
-            job_id=follow_up_job.id,
-            alert_labels=follow_up_alert.get("labels") or {},
-            alert_annotations={
-                "summary": follow_up_alert.get("summary", ""),
-                "description": follow_up_alert.get("description", ""),
-            },
-            alert_starts_at=None,
-            alert_severity=follow_up_alert.get("severity") or "warning",
-        )
     )
 
     return {

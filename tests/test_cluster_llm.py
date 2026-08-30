@@ -148,3 +148,34 @@ async def test_two_clusters_cache_separate_provider_model_runtimes(monkeypatch):
     assert bundle_a is not bundle_b
     assert bundle_a.context.llm_manifest()["model"] == "gemini-fast"
     assert bundle_b.context.llm_manifest()["model"] == "claude-strong"
+
+
+@pytest.mark.asyncio
+async def test_runtime_accepts_cluster_scoped_provider_key(monkeypatch):
+    from sre_agent import agent_runtime, checkpointer
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    context = ExecutionContext(
+        organization_id="org-a",
+        cluster_id="cluster-a",
+        credentials={"llm_api_key": "tenant-anthropic-key"},
+        namespace="ns-a",
+        allowlist=("ns-a",),
+        llm_provider="anthropic",
+        environment="testing",
+    )
+    graph = object()
+
+    async def fake_checkpointer():
+        return object()
+
+    async def fake_create(*args, **kwargs):
+        return graph, [], None
+
+    monkeypatch.setattr(checkpointer, "get_checkpointer", fake_checkpointer)
+    monkeypatch.setattr(agent_runtime, "create_multi_agent_system", fake_create)
+
+    bundle = await agent_runtime._build_runtime(context)
+
+    assert bundle.context is context
+    assert bundle.graph is graph
