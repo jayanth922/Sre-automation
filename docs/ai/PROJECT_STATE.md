@@ -4,7 +4,9 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-Temporal-orchestrated sandbox for verifying AI-generated code fixes, implemented on `master` (built on top of merged PRs #34/#42/#43). Sandbox is a **log-based recovery oracle only**: replay the log evidence that proved an incident was broken, apply the proposed patch inside an isolated K8s Job, re-run, and diff logs to verdict RESOLVED/REGRESSED/INCONCLUSIVE. Not a general-purpose code interpreter or test runner.
+Five-phase production upgrade track (Jira, observability, memory, multi-tenancy, benchmark) vs. HolmesGPT-class competitors. PR #44 (Temporal sandbox verification) and PR #45 (Slack conversational memory) are merged into `master`. PR #46 (Jira ticketing, phase 1) and PR #47 (Langfuse observability, phase 2) are open, behind `master`, and being rebased/merged next, in that order. Phases 3-5 (memory sophistication, multi-tenant secure access, AIOpsLab benchmark) are not yet started — see the active plan file for full detail on all five phases.
+
+Temporal sandbox (PR #44) is a **log-based recovery oracle only**: replay the log evidence that proved an incident was broken, apply the proposed patch inside an isolated K8s Job, re-run, and diff logs to verdict RESOLVED/REGRESSED/INCONCLUSIVE. Not a general-purpose code interpreter or test runner.
 
 ## Current architecture and invariants
 - **Strict LLM Provider Guard:** `sre_agent.provider_config.SUPPORTED_PROVIDERS` restricts model operations to `anthropic` and `gemini`.
@@ -24,7 +26,7 @@ Temporal-orchestrated sandbox for verifying AI-generated code fixes, implemented
 - Fixed a test-invariant regression: `test_rbac_scope.py`'s pods-only-delete check was scanning the whole Helm RBAC template and choked on the new sandbox Role's legitimate `batch/jobs` delete verb; rescoped the check to exclude the always-rendered sandbox block.
 
 ## Active problem
-None. All plan verification steps are green (see below).
+PR #46 and PR #47 both went `CONFLICTING`/behind `master` once PR #44/#45 merged (same pattern PR #45 hit against PR #44: `benchmarks/release/candidate/bundle.json`'s `source_digest` is full-tree hashed, not diff-based, so any branch behind `master` needs a fresh merge + digest recompute before its release-evaluation gate will pass). Both PRs' CI also only shows 17 checks instead of 18 — harmless: PR #44 added a new `Edge MCP images (sandbox_real)` matrix job, and #46/#47 branched before that landed, so their copy of `.github/workflows/ci.yml` predates it. Resolves itself once each branch merges `master` in.
 
 ## Relevant files
 - `sre_agent/sandbox_workflow.py`, `sre_agent/sandbox_gateway.py`, `sre_agent/temporal_client.py`, `sre_agent/sandbox_worker.py`
@@ -33,15 +35,17 @@ None. All plan verification steps are green (see below).
 - `deploy/helm/sentinel/templates/rbac.yaml`, `temporal-worker.yaml`, `datastores.yaml`; `deploy/k8s/rbac.yaml`
 - `tests/test_sandbox_workflow.py`, `tests/test_sandbox_gateway.py`, `tests/test_sandbox_temporal_workflow.py`, `tests/test_rbac_scope.py`
 - `.github/workflows/ci.yml` (backend-tests: `--extra temporal`)
+- `benchmarks/release_gate.py`, `benchmarks/release/v1/policy.json`, `benchmarks/release/candidate/bundle.json` (release-evidence gate; regenerate `candidate.source_digest` via `uv run python benchmarks/release_gate.py digest --policy benchmarks/release/v1/policy.json --repo-root .` after any merge from `master`)
+- `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` (full 5-phase plan: Jira / Langfuse / memory / multi-tenancy / AIOpsLab benchmark)
 
 ## Verification commands and latest results
-- `uv run pytest -q` -> 693 passed (0 failures; up from 673 pre-milestone).
+- `uv run pytest -q` -> 693 passed, 2 skipped on `master` post PR #44+#45.
 - `uv run python scripts/check_module_reachability.py` -> 71 reachable, 6 experimental.
-- `bash scripts/check_helm_production.sh` -> Helm production capability checks passed.
-- `helm template --set temporal.deploy=true` (with dummy secrets) -> renders cleanly; verified `sentinel-temporal-worker` Deployment (image `sentinel/api:latest`, command `sre_agent.sandbox_worker`), `temporal` server, `mcp-sandbox` edge server, and `sentinel-sandbox` namespace/Role/RoleBinding all present.
+- `bash scripts/check_helm_production.sh` / `bash scripts/check_kustomize.sh` -> pass.
+- `gh pr checks 44` / `gh pr checks 45` -> 18/18 green before merge; both `MERGED`.
 
 ## Known blockers or risks
-None outstanding. A separate, independent milestone (real Slack conversational integration for on-call, PR TBD) lands in parallel — it does not touch any file in this milestone's diff.
+None external. PR #46 (Jira) needs real per-cluster Jira credentials from the user for full end-to-end validation eventually, but code/tests are self-contained and don't block merging. PR #47 (Langfuse) is fully self-hosted, no external account needed.
 
 ## Next bounded task
-Merge this PR. A follow-up doc pass should reconcile this file with the parallel Slack-integration PR once both have landed (this file currently reflects only the Temporal milestone).
+Merge `master` into `feature/jira-ticketing-integration` (PR #46), resolve conflicts (expect `bundle.json` digest, possibly `PROJECT_STATE.md`), recompute release digest, verify CI green, merge. Then repeat for `feature/langfuse-observability` (PR #47), merging the now-updated `master` (including #46) in first.
