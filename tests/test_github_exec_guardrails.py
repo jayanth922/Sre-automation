@@ -23,14 +23,22 @@ def _clean(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
-def test_revert_allowed_with_identifier():
+def test_revert_allowed_with_identifier(monkeypatch):
+    monkeypatch.setenv("GITHUB_EXEC_ALLOWED_REPOS", "org/repo")
     ok, _ = g.guardrail_check("create_revert_pr", "org/repo", {"identifier": "abc123"})
     assert ok is True
 
 
-def test_revert_requires_identifier():
+def test_revert_requires_identifier(monkeypatch):
+    monkeypatch.setenv("GITHUB_EXEC_ALLOWED_REPOS", "org/repo")
     ok, reason = g.guardrail_check("create_revert_pr", "org/repo", {})
     assert ok is False and "commit_sha or pr_number" in reason
+
+
+def test_empty_allow_list_refuses_writes():
+    ok, reason = g.guardrail_check("create_revert_pr", "org/repo", {"identifier": "abc"})
+    assert ok is False
+    assert "empty allow-list" in reason or "ALLOWED_REPOS" in reason
 
 
 def test_disallowed_action_refused():

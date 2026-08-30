@@ -24,9 +24,16 @@ Port **4006**. Tools:
 
 ## Config
 
-`GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_EXEC_ALLOWED_REPOS`, and optionally
-`GITHUB_EXEC_REVERT_LABEL` (a label that triggers your CI revert workflow — the
-live path applies it to auto-trigger the revert; otherwise it returns the manual
-steps rather than force a change).
+`GITHUB_REPO`, `GITHUB_TOKEN`, and `GITHUB_EXEC_ALLOWED_REPOS` (required for live
+writes — empty allow-list refuses mutations). Optional
+`GITHUB_EXEC_REVERT_LABEL` triggers an external CI workflow and returns
+`WORKFLOW_TRIGGERED` (not `CREATED`). Live `create_revert_pr` returns:
+
+| Status | Meaning |
+| --- | --- |
+| `CREATED` | A revert PR was opened (`pr_url` set, `applied=true`) |
+| `WORKFLOW_TRIGGERED` | Label applied to trigger CI; no PR created by this tool |
+| `MANUAL_REQUIRED` | No PR created; `plan` has operator steps |
+| `REFUSED` / `ERROR` | Guardrail or tooling failure |
 
 The agent discovers it via `MCP_GITHUB_EXEC_URI` (e.g. `http://localhost:4006/sse`).

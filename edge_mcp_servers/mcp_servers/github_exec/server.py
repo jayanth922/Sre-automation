@@ -15,14 +15,19 @@ Safety, same model as the k8s executor:
   is inherently safe (it proposes an undo a human/CI still merges).
 - Uses the `gh` CLI for the live path (auth via `GITHUB_TOKEN`).
 
-Full auto-revert of a merge commit is multi-step; the live path opens the revert
-PR via `gh` where supported and otherwise returns the precise manual/CI steps,
-rather than pretend to force a change. Published on host port 4006.
+Live outcomes are typed and truthful:
+- ``CREATED`` — a revert PR was actually opened (includes ``pr_url``).
+- ``MANUAL_REQUIRED`` — no PR was created; operator steps are returned.
+- ``REFUSED`` / ``ERROR`` — guardrail or tooling failure.
+- Optional label workflows return ``WORKFLOW_TRIGGERED``, never ``CREATED``.
+
+Published on host port 4006.
 """
 
 import json
 import logging
 import os
+import re
 import subprocess
 from typing import Optional
 
@@ -39,13 +44,23 @@ port = int(os.getenv("HTTP_PORT", "3000"))
 host = os.getenv("HOST", "0.0.0.0")
 mcp = FastMCP("github-exec-mcp-server", host=host, port=port)
 
+_PR_URL_RE = re.compile(r"https://github\.com/[^\s]+/pull/\d+")
+
 
 def _refused(action: str, reason: str) -> str:
-    return json.dumps({"tool": action, "repo": REPO, "status": "REFUSED", "reason": reason}, indent=2)
+    return json.dumps(
+        {"tool": action, "repo": REPO, "status": "REFUSED", "applied": False, "reason": reason},
+        indent=2,
+    )
 
 
 def _gh(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+
+
+def _extract_pr_url(text: str) -> Optional[str]:
+    match = _PR_URL_RE.search(text or "")
+    return match.group(0) if match else None
 
 
 @mcp.tool()
@@ -56,13 +71,26 @@ async def github_exec_health() -> str:
         gh_ok = _gh(["--version"]).returncode == 0
     except Exception:
         gh_ok = False
-    return json.dumps({"status": "healthy" if gh_ok else "degraded", "gh_cli": gh_ok,
-                       "repo": REPO, "allowed_repos": sorted(allowed_repos())}, indent=2)
+    return json.dumps(
+        {
+            "status": "healthy" if gh_ok else "degraded",
+            "gh_cli": gh_ok,
+            "repo": REPO,
+            "allowed_repos": sorted(allowed_repos()),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
 async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
-    """Open a PR that reverts a bad commit/PR. `identifier` = commit SHA or PR number."""
+    """Open a PR that reverts a bad commit/PR. ``identifier`` = commit SHA or PR number.
+
+    Live success means a revert PR was created (``status=CREATED``, ``pr_url`` set).
+    If GitHub cannot open one, returns ``MANUAL_REQUIRED`` or ``ERROR`` — never a
+    success that only labelled a PR unless ``GITHUB_EXEC_REVERT_LABEL`` is set,
+    which yields the distinct ``WORKFLOW_TRIGGERED`` status.
+    """
     allowed, reason = guardrail_check("create_revert_pr", REPO, {"identifier": identifier})
     if not allowed:
         return _refused("create_revert_pr", reason)
@@ -72,25 +100,139 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
         f"apply the inverse diff, open a PR titled 'Revert {identifier}'"
     )
     if dry_run:
-        return json.dumps({"tool": "create_revert_pr", "repo": REPO, "identifier": identifier,
-                           "dry_run": True, "applied": False, "plan": plan, "status": "DRY_RUN"}, indent=2)
+        return json.dumps(
+            {
+                "tool": "create_revert_pr",
+                "repo": REPO,
+                "identifier": identifier,
+                "dry_run": True,
+                "applied": False,
+                "plan": plan,
+                "status": "DRY_RUN",
+            },
+            indent=2,
+        )
 
-    # Live: best-effort via gh. GitHub has no single-call revert; if the org has a
-    # revert workflow/label, trigger it; otherwise return the precise steps.
     try:
-        label = os.getenv("GITHUB_EXEC_REVERT_LABEL")
-        if label and str(identifier).isdigit():
-            proc = _gh(["pr", "edit", str(identifier), "--add-label", label, "-R", REPO])
-            ok = proc.returncode == 0
-            return json.dumps({"tool": "create_revert_pr", "repo": REPO, "identifier": identifier,
-                               "dry_run": False, "applied": ok, "status": "REVERT_REQUESTED" if ok else "ERROR",
-                               "detail": (proc.stdout + proc.stderr).strip(),
-                               "note": f"labelled PR #{identifier} '{label}' to trigger the revert workflow"}, indent=2)
-        return json.dumps({"tool": "create_revert_pr", "repo": REPO, "identifier": identifier,
-                           "dry_run": False, "applied": False, "status": "MANUAL_REQUIRED",
-                           "plan": plan, "note": "set GITHUB_EXEC_REVERT_LABEL to auto-trigger a revert workflow"}, indent=2)
+        # Preferred path: gh can open a real revert PR for a merged PR number.
+        if str(identifier).isdigit():
+            proc = _gh(
+                [
+                    "pr",
+                    "revert",
+                    str(identifier),
+                    "-R",
+                    REPO,
+                    "--title",
+                    f"Revert #{identifier}",
+                    "--body",
+                    f"Automated revert of PR #{identifier} requested by Sentinel.",
+                ]
+            )
+            detail = (proc.stdout + proc.stderr).strip()
+            pr_url = _extract_pr_url(detail)
+            if proc.returncode == 0 and pr_url:
+                return json.dumps(
+                    {
+                        "tool": "create_revert_pr",
+                        "repo": REPO,
+                        "identifier": identifier,
+                        "dry_run": False,
+                        "applied": True,
+                        "status": "CREATED",
+                        "pr_url": pr_url,
+                        "detail": detail,
+                    },
+                    indent=2,
+                )
+            if proc.returncode == 0 and not pr_url:
+                # Unexpected: command succeeded but no PR URL — do not claim CREATED.
+                return json.dumps(
+                    {
+                        "tool": "create_revert_pr",
+                        "repo": REPO,
+                        "identifier": identifier,
+                        "dry_run": False,
+                        "applied": False,
+                        "status": "MANUAL_REQUIRED",
+                        "plan": plan,
+                        "detail": detail,
+                        "note": "gh pr revert returned success without a PR URL",
+                    },
+                    indent=2,
+                )
+
+            # Optional operator workflow: label triggers an external revert action.
+            # This is NOT create_revert_pr success — typed distinctly.
+            label = os.getenv("GITHUB_EXEC_REVERT_LABEL")
+            if label:
+                label_proc = _gh(["pr", "edit", str(identifier), "--add-label", label, "-R", REPO])
+                label_detail = (label_proc.stdout + label_proc.stderr).strip()
+                if label_proc.returncode == 0:
+                    return json.dumps(
+                        {
+                            "tool": "create_revert_pr",
+                            "repo": REPO,
+                            "identifier": identifier,
+                            "dry_run": False,
+                            "applied": False,
+                            "status": "WORKFLOW_TRIGGERED",
+                            "pr_url": None,
+                            "detail": label_detail,
+                            "note": (
+                                f"labelled PR #{identifier} with '{label}' to trigger an "
+                                "external revert workflow; no revert PR was created by this tool"
+                            ),
+                            "revert_error": detail,
+                        },
+                        indent=2,
+                    )
+
+            return json.dumps(
+                {
+                    "tool": "create_revert_pr",
+                    "repo": REPO,
+                    "identifier": identifier,
+                    "dry_run": False,
+                    "applied": False,
+                    "status": "MANUAL_REQUIRED",
+                    "plan": plan,
+                    "detail": detail,
+                    "note": "gh pr revert failed; open a revert PR manually or fix repo permissions",
+                },
+                indent=2,
+            )
+
+        # Commit SHA: gh has no single-shot "revert this commit as a PR". Be honest.
+        return json.dumps(
+            {
+                "tool": "create_revert_pr",
+                "repo": REPO,
+                "identifier": identifier,
+                "dry_run": False,
+                "applied": False,
+                "status": "MANUAL_REQUIRED",
+                "plan": plan,
+                "note": (
+                    "commit SHA reverts require a local branch + PR; pass a merged PR "
+                    "number for automated `gh pr revert`, or create the revert PR manually"
+                ),
+            },
+            indent=2,
+        )
     except Exception as e:
-        return json.dumps({"tool": "create_revert_pr", "status": "ERROR", "error": str(e)}, indent=2)
+        return json.dumps(
+            {
+                "tool": "create_revert_pr",
+                "repo": REPO,
+                "identifier": identifier,
+                "dry_run": False,
+                "applied": False,
+                "status": "ERROR",
+                "error": str(e),
+            },
+            indent=2,
+        )
 
 
 @mcp.tool()
@@ -100,19 +242,47 @@ async def comment_on_pr(pr_number: int, body: str, dry_run: bool = True) -> str:
     if not allowed:
         return _refused("comment_on_pr", reason)
     if dry_run:
-        return json.dumps({"tool": "comment_on_pr", "repo": REPO, "pr_number": pr_number,
-                           "dry_run": True, "applied": False, "body": body, "status": "DRY_RUN"}, indent=2)
+        return json.dumps(
+            {
+                "tool": "comment_on_pr",
+                "repo": REPO,
+                "pr_number": pr_number,
+                "dry_run": True,
+                "applied": False,
+                "body": body,
+                "status": "DRY_RUN",
+            },
+            indent=2,
+        )
     try:
         proc = _gh(["pr", "comment", str(pr_number), "-R", REPO, "--body", body])
         ok = proc.returncode == 0
-        return json.dumps({"tool": "comment_on_pr", "repo": REPO, "pr_number": pr_number,
-                           "dry_run": False, "applied": ok, "status": "OK" if ok else "ERROR",
-                           "detail": (proc.stdout + proc.stderr).strip()}, indent=2)
+        return json.dumps(
+            {
+                "tool": "comment_on_pr",
+                "repo": REPO,
+                "pr_number": pr_number,
+                "dry_run": False,
+                "applied": ok,
+                "status": "OK" if ok else "ERROR",
+                "detail": (proc.stdout + proc.stderr).strip(),
+            },
+            indent=2,
+        )
     except Exception as e:
-        return json.dumps({"tool": "comment_on_pr", "status": "ERROR", "error": str(e)}, indent=2)
+        return json.dumps(
+            {
+                "tool": "comment_on_pr",
+                "status": "ERROR",
+                "applied": False,
+                "error": str(e),
+            },
+            indent=2,
+        )
 
 
 if __name__ == "__main__":
     logger.info("Starting GitHub-exec MCP server...")
     from mcp_auth import run_authenticated_sse
+
     run_authenticated_sse(mcp, host=host, port=port)

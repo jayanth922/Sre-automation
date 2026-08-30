@@ -103,7 +103,8 @@ services:
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     volumes:
-      - ./mcp_servers/runbooks_local/runbooks:/app/runbooks:ro
+      # rw so SaaS auto-generated runbooks written into this corpus are agent-retrievable
+      - ./mcp_servers/runbooks_local/runbooks:/app/runbooks:rw
     ports:
       - "127.0.0.1:4004:3000"
     networks:
