@@ -563,31 +563,4 @@ class ApprovalRequest(Base):
     )
 
 
-class AgentAuditLog(Base):
-    """Flight recorder: immutable log of MCP tool executions by agents.
 
-    Lives on the canonical ``backend.models.Base`` so Alembic autogenerate and
-    the sync SessionLocal used by ``mcp_tool_wrapper`` share one metadata.
-    """
-
-    __tablename__ = "agent_audit_logs"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    incident_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
-    agent_name: Mapped[str] = mapped_column(String, nullable=False)
-    tool_name: Mapped[str] = mapped_column(String, nullable=False)
-    tool_args: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String)
-    result: Mapped[Optional[str]] = mapped_column(Text)
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
-
-    def __repr__(self):
-        return (
-            f"<AgentAuditLog(agent='{self.agent_name}', tool='{self.tool_name}', "
-            f"status='{self.status}')>"
-        )

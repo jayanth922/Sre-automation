@@ -105,10 +105,16 @@ def test_uncalibrated_high_self_confidence_still_rounds_up():
     assessment = classify_severity(
         IncidentSignals(
             affected_services=1,
+            user_facing=False,
             error_rate=0.02,
+            slo_breached=False,
             slo_burn_rate=0.5,
+            saturation=0.1,
+            still_escalating=False,
+            error_rate_slope=0.0,
             hypothesis_confidence=1.0,
             hypothesis_confidence_calibrated=False,
+            evidence=[evidence("error_rate", 0.02, "metrics")],
         )
     )
 

@@ -52,7 +52,7 @@ def _batch_size() -> int:
 
 async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
     """Run one claimed investigation job and finalize its lease."""
-    from sre_agent.agent_runtime import run_graph_background_saas
+    from sre_agent.incident_runner import run_incident_investigation
 
     payload = job.payload
     handler = payload.get("handler")
@@ -71,7 +71,7 @@ async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
             lease_seconds=default_lease_seconds(),
         )
 
-    await run_graph_background_saas(
+    await run_incident_investigation(
         incident_id=incident_id,
         cluster_id=cluster_id,
         alert_name=alert_name,

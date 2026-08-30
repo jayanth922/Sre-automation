@@ -3,8 +3,10 @@ title: RB-AUTO-latency-inventory-service | inventory-service | Latency
 runbook_id: RB-AUTO-latency-inventory-service
 service: inventory-service
 incident_type: latency
-severity: SEV3
+severity: UNKNOWN
 status: Negative exemplar
+review_state: pending_review
+agent_retrievable: true
 learning_outcome: incomplete
 owner_team: SRE
 incident_id: null
@@ -21,7 +23,7 @@ alert_name: InventorySlowQueries
 impacted_environment: demo-app
 source_of_truth: Auto-generated from incident
 generated_from_incident: unknown
-generated_at: '2026-08-29T22:37:22.082285+00:00'
+generated_at: '2026-08-30T02:31:51.658309+00:00'
 version: '0.1'
 ---
 
@@ -33,7 +35,7 @@ version: '0.1'
 ## Summary
 
 Use this runbook when **InventorySlowQueries** fires on **inventory-service**
-(failure class: *latency*, severity SEV3).
+(failure class: *latency*, severity UNKNOWN).
 
 ## Symptoms
 

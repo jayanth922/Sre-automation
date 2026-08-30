@@ -63,15 +63,53 @@ def _state(plan, alert):
 
 
 @pytest.mark.integration
-def test_alert_to_oracle_autonomous_path_can_resolve():
+def test_alert_to_oracle_autonomous_path_can_resolve(monkeypatch):
+    from sre_agent.confidence_calibration import CalibratedConfidence, Task
+    import sre_agent.act_phase
+
+    def fake_calibrated(raw, task, *args, **kwargs):
+        if raw is None:
+            raw = 0.9
+        return CalibratedConfidence(
+            task="diagnosis" if task == "hypothesis" else "remediation",
+            raw_confidence=raw,
+            calibrated_probability=0.99,
+            artifact_version="mock",
+            artifact_sha256="mock",
+            autonomy_threshold=0.8
+        )
+
+    def fake_remediation(*args, **kwargs):
+        return 0.9, fake_calibrated(0.9, "remediation")
+
+    monkeypatch.setattr(sre_agent.act_phase, "_configured_confidence", fake_calibrated)
+    monkeypatch.setattr(sre_agent.act_phase, "_configured_remediation_confidence", fake_remediation)
+    monkeypatch.setattr(sre_agent.act_phase, "apply_skill_learning", lambda *args, **kwargs: {"recorded_skill": {"name": "mocked"}})
+
     alert = AlertContext(
         alert_name="InventorySlowQueries",
         severity="warning",
-        labels={"service": "inventory-service", "namespace": "demo-app"},
+        labels={
+            "service": "inventory-service", 
+            "namespace": "demo-app",
+            "error_rate": "0.02",
+            "slo_burn_rate": "0.5",
+            "saturation": "0.1",
+            "affected_services": "1",
+            "affected_pods": "1",
+            "dependency_count": "0",
+            "duration_seconds": "60",
+            "customer_scope": "single",
+            "slo_breached": "false",
+            "still_escalating": "false",
+            "error_rate_slope": "0",
+        },
         annotations={},
     )
+    state = _state(_plan("restart", "inventory-service"), alert)
+    state["reflector_analysis"] = {"confidence": 0.9, "confidence_calibrated": True}
     report = asyncio.run(
-        _act_gate_node(_state(_plan("restart", "inventory-service"), alert))
+        _act_gate_node(state)
     )["metadata"]["act_report"]
 
     assert report["aggregate_decision"] == "autonomous"

@@ -3,8 +3,10 @@ title: RB-AUTO-high_error_rate-checkout-service | checkout-service | High Error 
 runbook_id: RB-AUTO-high_error_rate-checkout-service
 service: checkout-service
 incident_type: high_error_rate
-severity: SEV1
+severity: UNKNOWN
 status: Negative exemplar
+review_state: pending_review
+agent_retrievable: true
 learning_outcome: blocked
 owner_team: SRE
 incident_id: null
@@ -21,7 +23,7 @@ alert_name: CheckoutHighErrorRate
 impacted_environment: demo-app
 source_of_truth: Auto-generated from incident
 generated_from_incident: unknown
-generated_at: '2026-08-29T22:37:22.080978+00:00'
+generated_at: '2026-08-30T02:31:51.657212+00:00'
 version: '0.1'
 ---
 
@@ -33,7 +35,7 @@ version: '0.1'
 ## Summary
 
 Use this runbook when **CheckoutHighErrorRate** fires on **checkout-service**
-(failure class: *high_error_rate*, severity SEV1).
+(failure class: *high_error_rate*, severity UNKNOWN).
 
 ## Symptoms
 

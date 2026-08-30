@@ -12,8 +12,7 @@ from sre_agent.incident_runner import CANONICAL_ENTRYPOINT, run_incident_investi
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_CALLERS = [
-    ROOT / "sre_agent" / "api" / "v1" / "alerts.py",
-    ROOT / "sre_agent" / "api" / "v1" / "incidents.py",
+    ROOT / "sre_agent" / "job_worker.py",
     ROOT / "sre_agent" / "api" / "v1" / "mission_control.py",
 ]
 

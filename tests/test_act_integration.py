@@ -56,7 +56,29 @@ def _state(plan, alert):
     }
 
 
-def test_low_severity_reversible_runs_autonomously_and_records_skill():
+def test_low_severity_reversible_runs_autonomously_and_records_skill(monkeypatch):
+    from sre_agent.confidence_calibration import CalibratedConfidence, Task
+    import sre_agent.act_phase
+    
+    def fake_calibrated(raw, task, *args, **kwargs):
+        if raw is None:
+            raw = 0.9
+        return CalibratedConfidence(
+            task="diagnosis" if task == "hypothesis" else "remediation",
+            raw_confidence=raw,
+            calibrated_probability=0.99,
+            artifact_version="mock",
+            artifact_sha256="mock",
+            autonomy_threshold=0.8
+        )
+        
+    def fake_remediation(*args, **kwargs):
+        return 0.9, fake_calibrated(0.9, "remediation")
+    
+    monkeypatch.setattr(sre_agent.act_phase, "_configured_confidence", fake_calibrated)
+    monkeypatch.setattr(sre_agent.act_phase, "_configured_remediation_confidence", fake_remediation)
+    monkeypatch.setattr(sre_agent.act_phase, "apply_skill_learning", lambda *args, **kwargs: {"recorded_skill": {"name": "mocked"}})
+
     # R10: severity is evidence-based — supply a complete calm telemetry set so
     # the gate can classify SEV4 without unknown-field escalation.
     alert = AlertContext(
@@ -80,7 +102,7 @@ def test_low_severity_reversible_runs_autonomously_and_records_skill():
         annotations={},
     )
     state = _state(_plan("restart", "inventory-service"), alert)
-    state["reflector_analysis"] = {"confidence": 0.9}
+    state["reflector_analysis"] = {"confidence": 0.9, "confidence_calibrated": True}
     report = asyncio.run(_act_gate_node(state))["metadata"]["act_report"]
     assert report["aggregate_decision"] == "autonomous"
     assert len(report["executed"]) == 1

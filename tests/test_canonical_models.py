@@ -96,12 +96,12 @@ def test_agent_audit_migration_exists_and_is_head_child():
         / "backend"
         / "alembic"
         / "versions"
-        / "d3e4f5a6b7c8_add_agent_audit_logs.py"
+        / "d3ac85ffcc7d_add_agent_audit_logs.py"
     )
     assert mig.is_file()
     text = mig.read_text(encoding="utf-8")
-    assert 'revision: str = "d3e4f5a6b7c8"' in text
-    assert 'down_revision: Union[str, None] = "c2d3e4f5a6b7"' in text
+    assert 'revision: str = "d3ac85ffcc7d"' in text
+    assert 'down_revision: Union[str, None] = "b1c7ceb2036b"' in text
     assert "agent_audit_logs" in text
 
 
@@ -112,4 +112,4 @@ def test_alembic_single_head_includes_agent_audit():
     cfg = Config(str(ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["d3e4f5a6b7c8"], heads
+    assert heads == ["2253eabf13e3"], heads
