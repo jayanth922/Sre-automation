@@ -9,10 +9,9 @@ real benchmark) from `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md`,
 one PR per phase, no cross-phase file overlap. PR #44 (Temporal sandbox
 verification), PR #45 (Slack conversational memory), PR #46 (Jira ticketing,
 Phase 1), and PR #47 (Langfuse observability, Phase 2) are all merged into
-`master`. Phase 3 (memory sophistication) is code-complete and committed on
-branch `feature/memory-sophistication`, pending push/PR/CI/merge. Phases 4-5
-(multi-tenant secure access, AIOpsLab benchmark) are scoped in the plan file
-but not started.
+`master`, and PR #48 (memory sophistication, Phase 3) is now merged into
+`master` as well. Phases 4-5 (multi-tenant secure access, AIOpsLab benchmark)
+are scoped in the plan file but not started.
 
 Temporal sandbox (PR #44) is a **log-based recovery oracle only**: replay the
 log evidence that proved an incident was broken, apply the proposed patch
@@ -29,15 +28,15 @@ test runner.
 - **Sandbox RBAC:** dedicated `sentinel-sandbox` namespace, least-privilege Role: `batch/jobs` (create/get/list/watch/delete) + `pods/log` (get/list/watch) only.
 - **Jira ticketing (Phase 1, PR #46):** per-Cluster DB-column credentials (`jira_url`/`jira_email`/`jira_api_token`/`jira_project_key`), not global env vars — deviated from the original plan sketch for real multi-tenant SaaS correctness (each customer has their own Jira site). `incidents.jira_issue_key` links incident to ticket.
 - **Observability (Phase 2, PR #47):** `sre_agent/tracing.py::langfuse_enabled()` is **opt-out** (`LANGFUSE_TRACING` defaults truthy). Self-hosted Langfuse (web/worker/clickhouse/minio, reusing the platform's own Postgres as a second logical DB `langfuse` and Redis DB index `/2`) wired in both `platform/docker-compose.yaml` and the Helm chart (`templates/langfuse.yaml`, gated by `.Values.langfuse.deploy`, default `true`). Headless `LANGFUSE_INIT_*` bootstrap auto-provisions org/project/API-keypair/admin-user so tracing works after a fresh boot with zero manual UI steps.
-- **Incident memory (Phase 3, `feature/memory-sophistication`):** `sre_agent/memory_store.py` stores each incident as three separately-embedded named Qdrant vectors (`symptoms`/`root_cause`/`resolution`) in collection `sre_incidents_v2`, tenant-scoped by `organization_id`/`cluster_id` payload fields + Qdrant `Filter` on every search, recency-decayed ranking (`SENTINEL_MEMORY_RECENCY_HALF_LIFE_DAYS`, default 30d half-life), and cross-incident back-links computed at store time via a `root_cause`-similarity lookup. Point IDs are `uuid.uuid5(NAMESPACE, incident_id)` (deterministic across processes), not Python's `hash()` (see `DECISIONS.md`). Embedding bootstrap is unified in `sre_agent/embedding.py` — the process-wide `fastembed` singleton used by `memory_store.py` (`skill_store.py` has no embedding code to unify yet; `edge_mcp_servers/.../runbooks_local/server.py` intentionally keeps its own, since it's a separate customer-deployed container that never imports `sre_agent`).
+- **Incident memory (Phase 3, PR #48, merged):** `sre_agent/memory_store.py` stores each incident as three separately-embedded named Qdrant vectors (`symptoms`/`root_cause`/`resolution`) in collection `sre_incidents_v2`, tenant-scoped by `organization_id`/`cluster_id` payload fields + Qdrant `Filter` on every search, recency-decayed ranking (`SENTINEL_MEMORY_RECENCY_HALF_LIFE_DAYS`, default 30d half-life), and cross-incident back-links computed at store time via a `root_cause`-similarity lookup. Point IDs are `uuid.uuid5(NAMESPACE, incident_id)` (deterministic across processes), not Python's `hash()` (see `DECISIONS.md`). Embedding bootstrap is unified in `sre_agent/embedding.py` — the process-wide `fastembed` singleton used by `memory_store.py` (`skill_store.py` has no embedding code to unify yet; `edge_mcp_servers/.../runbooks_local/server.py` intentionally keeps its own, since it's a separate customer-deployed container that never imports `sre_agent`).
 - **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt/model/tool changes against content-addressed evidence bundles; `candidate.source_digest` is a full-tree hash of files matching `protected_path_rules`, not diff-based — any branch behind `master` needs a fresh merge + digest recompute (`uv run python benchmarks/release_gate.py digest ...`) before the gate passes. Zero protected-path changes → `NOT_REQUIRED` (passes regardless of bundle content).
 - **Module Reachability Governance:** `scripts/check_module_reachability.py`; standalone `python -m` workers with no in-process caller are declared directly as `ENTRY_FILES` roots.
 - **Alembic:** single linear head; PR #46's `db94419c24dc` (Jira columns) now chains after PR #45's `f6a7b8c9d0e1` (Slack columns) — both originally branched from the same parent and required a manual `down_revision` re-point during merge.
 
 ## Completed or verified work
 - All 41 backlog packages + PR #34 (LLM provider restriction), PR #42, PR #43 merged.
-- PR #44: Temporal sandbox verification workflow. PR #45: Slack conversational memory. PR #46: Jira ticketing (Phase 1). PR #47: Langfuse observability (Phase 2). All merged to `master`.
-- Phase 3 (memory sophistication), all three parts done on `feature/memory-sophistication`:
+- PR #44: Temporal sandbox verification workflow. PR #45: Slack conversational memory. PR #46: Jira ticketing (Phase 1). PR #47: Langfuse observability (Phase 2). PR #48: Memory sophistication (Phase 3). All merged to `master`.
+- Phase 3 (memory sophistication, PR #48), all three parts done:
   1. **Tenant filter:** `store_incident()`/`search_similar_incidents()` gained `organization_id`/`cluster_id` kwargs; search builds a Qdrant `Filter`. All 4 real call sites (`agent_runtime.py`, `supervisor.py` x2, `graph_builder.py`) updated. Confirmed the `store_incident_memory`/`recall_similar_incidents` MCP-tool lookups referenced in `supervisor.py`/`graph_builder.py` are speculative (no MCP server in-repo registers those names) — the direct `MemoryStore` path is the only one that executes today.
   2. **Structured payload:** `store_incident()` now takes `symptoms`/`root_cause`/`resolution` instead of one flat `incident_text`, embedded as three named Qdrant vectors in collection `sre_incidents_v2` (renamed from `sre_incidents` — incompatible schema change, no production data to migrate). `search_similar_incidents()` queries all three fields, dedups by `incident_id` keeping the best raw score, then re-ranks by recency-decayed score. Both store call sites (`agent_runtime.py`, `supervisor.py`) updated to pass the three fields from data they already had in scope (`alert_name`/`reflector_analysis.hypothesis`/`final_response` or `plan_hypothesis`).
   3. **Cross-incident back-links:** at store time, a `root_cause`-similarity query finds related past incidents (tenant-scoped, `RELATED_SCORE_THRESHOLD=0.5`, `related_limit=3` default); the new incident's payload gets `related_incident_ids`, and each related incident's own payload is updated (`client.retrieve` + `set_payload`) to back-link the new incident. Surfaced in `format_similar_incidents_for_prompt()`.
@@ -47,7 +46,7 @@ test runner.
   - `.env.example` gained a Qdrant/memory section documenting `QDRANT_URL` (pre-existing, previously undocumented) and the two new optional tuning vars.
 
 ## Active problem
-None. Phase 3 is committed on `feature/memory-sophistication`, not yet pushed. Next action is push + open PR + verify CI green + merge (same flow as PR #44-#47).
+None. Phase 3 (PR #48) merged into `master`. Next milestone is Phase 4 (multi-tenant secure access).
 
 ## Relevant files
 - `sre_agent/memory_store.py` (Phase 3 — structured payload, tenant filter, recency decay, back-links)
@@ -65,14 +64,13 @@ None. Phase 3 is committed on `feature/memory-sophistication`, not yet pushed. N
 - `uv run pytest -q tests/test_memory_store.py` → 13 passed.
 - `uv run ruff check sre_agent/memory_store.py sre_agent/embedding.py` → all checks passed (pre-existing lint debt elsewhere in `supervisor.py`/`agent_runtime.py`/`graph_builder.py` untouched by this diff).
 - `uv run python scripts/check_module_reachability.py` → `Reachability OK: 72 reachable, 6 experimental.`
-- `gh pr checks 44` / `45` / `46` / `47` → all green before merge; all `MERGED`.
+- `gh pr checks 44` / `45` / `46` / `47` / `48` → all green before merge; all `MERGED`.
 
 ## Known blockers or risks
 - None technical. Phase 4 (multi-tenant secure access) will need a real GitHub App + Slack app registration from the user for end-to-end OAuth validation — not needed until that phase.
 
 ## Next bounded task
-Push `feature/memory-sophistication`, open PR, verify CI green, merge (mirroring
-PR #44-#47). Then start Phase 4 (multi-tenant secure access) in a **fresh
+Start Phase 4 (multi-tenant secure access) in a **fresh
 conversation**: new `sre_agent/multitenant/` package (`github_app.py`,
 `slack_oauth.py`, `relay_auth.py`) replacing the single shared
 `MCP_SERVICE_TOKEN` with per-tenant issued credentials, extending
