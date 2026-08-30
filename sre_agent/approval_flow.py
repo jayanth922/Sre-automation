@@ -41,7 +41,9 @@ def canonical_action_json(report_payload: Dict[str, Any]) -> str:
                 for key, item in value.items()
                 # Dry-run audit records include their creation timestamp in this
                 # derived hash. It is evidence, not part of the proposed action.
-                if key != "audit_hash"
+                # Evidence observation timestamps similarly must not destabilize
+                # approval hashes across identical proposals.
+                if key not in {"audit_hash", "observed_at"}
             }
         if isinstance(value, list):
             return [stable(item) for item in value]
@@ -57,7 +59,9 @@ def canonical_action_json(report_payload: Dict[str, Any]) -> str:
 
 
 def compute_action_hash(report_payload: Dict[str, Any]) -> str:
-    return hashlib.sha256(canonical_action_json(report_payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        canonical_action_json(report_payload).encode("utf-8")
+    ).hexdigest()
 
 
 def is_expired(expires_at: datetime, now: Optional[datetime] = None) -> bool:
@@ -107,10 +111,16 @@ def current_approval_interrupt(snapshot: Any) -> Optional[Dict[str, Any]]:
     """Return the active approval interrupt from a LangGraph StateSnapshot."""
     for task in getattr(snapshot, "tasks", ()) or ():
         interrupts = (
-            task.get("interrupts", ()) if isinstance(task, dict) else getattr(task, "interrupts", ())
+            task.get("interrupts", ())
+            if isinstance(task, dict)
+            else getattr(task, "interrupts", ())
         ) or ()
         for item in interrupts:
-            value = item.get("value") if isinstance(item, dict) else getattr(item, "value", None)
+            value = (
+                item.get("value")
+                if isinstance(item, dict)
+                else getattr(item, "value", None)
+            )
             if isinstance(value, dict) and value.get("type") == "approval_required":
                 return value
     return None

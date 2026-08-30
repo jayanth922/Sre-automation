@@ -33,11 +33,17 @@ from .confidence_calibration import (
     calibrate_confidence,
     load_calibration_artifact,
 )
-from .executor import Executor
 from .execution_context import ExecutionContext
+from .executor import Executor
 from .mutation_gateway import MutationGateContext, authorize_and_execute
 from .policy_gate import AutonomyDecision, decide_plan
-from .severity_engine import IncidentSignals, SeverityAssessment, classify_severity
+from .severity_engine import (
+    EvidenceLink,
+    IncidentSignals,
+    SeverityAssessment,
+    classify_severity,
+    evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,69 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _as_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> Optional[int]:
+    number = _as_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y"}:
+        return True
+    if text in {"0", "false", "no", "n"}:
+        return False
+    return None
+
+
+def _walk_metrics(obj: Any) -> Dict[str, Any]:
+    """Collect known metric keys from nested investigation payloads."""
+    found: Dict[str, Any] = {}
+    keys = {
+        "error_rate",
+        "slo_burn_rate",
+        "burn_rate",
+        "saturation",
+        "error_rate_slope",
+        "affected_pods",
+        "affected_services",
+        "slo_breached",
+        "still_escalating",
+        "duration_seconds",
+        "dependency_count",
+        "customer_scope",
+    }
+
+    def visit(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_str = str(key)
+                child_path = f"{path}.{key_str}" if path else key_str
+                if key_str in keys and key_str not in found:
+                    found[key_str] = (value, child_path)
+                visit(value, child_path)
+        elif isinstance(node, list):
+            for idx, item in enumerate(node):
+                visit(item, f"{path}[{idx}]")
+
+    visit(obj, "")
+    return found
 
 
 def _raw_probability(value: Any) -> Optional[float]:
@@ -101,6 +170,8 @@ class ActReport:
     action_reports: List[Dict[str, Any]] = field(default_factory=list)
     executed: List[Dict[str, Any]] = field(default_factory=list)
     summary: str = ""
+    unknown_telemetry: bool = False
+    severity_evidence: List[Dict[str, Any]] = field(default_factory=list)
     confidence_status: str = "uncalibrated"
     raw_action_confidence: Optional[float] = None
     calibrated_action_probability: Optional[float] = None
@@ -113,25 +184,79 @@ class ActReport:
 
 
 def extract_incident_signals(state: Any) -> IncidentSignals:
-    """Best-effort mapping from graph state to severity signals.
+    """Map graph state to severity signals using measured evidence only.
 
-    Conservative by design: it seeds impact/urgency from what is cheaply and
-    reliably available (alert severity, affected service, reflector confidence)
-    and lets the Severity Engine's defaults handle the rest. Richer signal
-    extraction (live error-rate / burn-rate from the metrics results) is a
-    Phase-1 enhancement.
+    Alert severity labels may inform qualitative business scope (e.g. known
+    revenue services) but must never invent error_rate / burn_rate / breadth.
+    Missing telemetry remains ``None`` so the severity engine escalates to
+    UNKNOWN instead of fabricating calm or critical numbers.
     """
+    links: List[EvidenceLink] = []
     alert = _get(state, "alert_context")
     labels = _get(alert, "labels", {}) or {}
+    annotations = _get(alert, "annotations", {}) or {}
     severity_label = str(
         _get(alert, "severity", labels.get("severity", "")) or ""
     ).lower()
 
     service = str(labels.get("service") or labels.get("app") or "").lower()
-    namespace = labels.get("namespace")
+    revenue = service in _REVENUE_SERVICES if service else None
+    if revenue is not None:
+        links.append(
+            evidence(
+                "revenue_impacting",
+                revenue,
+                source=f"service_catalog:{service or 'unknown'}",
+            )
+        )
+        links.append(
+            evidence(
+                "user_facing",
+                revenue,
+                source=f"service_catalog:{service or 'unknown'}",
+            )
+        )
 
-    is_critical = severity_label == "critical"
-    revenue = service in _REVENUE_SERVICES
+    # Explicit measured values from alert annotations / labels only when present.
+    measured = {
+        "error_rate": _as_float(
+            labels.get("error_rate") or annotations.get("error_rate")
+        ),
+        "slo_burn_rate": _as_float(
+            labels.get("slo_burn_rate")
+            or labels.get("burn_rate")
+            or annotations.get("slo_burn_rate")
+            or annotations.get("burn_rate")
+        ),
+        "saturation": _as_float(
+            labels.get("saturation") or annotations.get("saturation")
+        ),
+        "error_rate_slope": _as_float(
+            labels.get("error_rate_slope") or annotations.get("error_rate_slope")
+        ),
+        "affected_pods": _as_int(
+            labels.get("affected_pods") or annotations.get("affected_pods")
+        ),
+        "affected_services": _as_int(
+            labels.get("affected_services") or annotations.get("affected_services")
+        ),
+        "slo_breached": _as_bool(
+            labels.get("slo_breached") or annotations.get("slo_breached")
+        ),
+        "still_escalating": _as_bool(
+            labels.get("still_escalating") or annotations.get("still_escalating")
+        ),
+        "duration_seconds": _as_float(
+            labels.get("duration_seconds") or annotations.get("duration_seconds")
+        ),
+        "dependency_count": _as_int(
+            labels.get("dependency_count") or annotations.get("dependency_count")
+        ),
+        "customer_scope": (
+            str(labels.get("customer_scope") or annotations.get("customer_scope") or "")
+            or None
+        ),
+    }
 
     # Raw reflector confidence is retained as evidence but cannot affect
     # severity until a diagnosis-specific calibration artifact maps it.
@@ -143,24 +268,74 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
         environment_variable="DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH",
     )
 
-    # Count distinct services mentioned across investigation results, floored at 1.
+    # Prefer structured metrics from investigation results over labels.
     agent_results = _get(state, "agent_results", {}) or {}
-    affected_services = (
-        max(1, len({k for k in agent_results.keys()})) if agent_results else 1
-    )
+    discovered = _walk_metrics(agent_results)
+    for key, (value, path) in discovered.items():
+        if key == "burn_rate":
+            key = "slo_burn_rate"
+        if key == "slo_breached" or key == "still_escalating":
+            parsed = _as_bool(value)
+        elif key in {"affected_pods", "affected_services", "dependency_count"}:
+            parsed = _as_int(value)
+        elif key == "customer_scope":
+            parsed = str(value) if value is not None else None
+        else:
+            parsed = _as_float(value)
+        if parsed is None:
+            continue
+        measured[key] = parsed
+        links.append(evidence(key, parsed, source=f"agent_results:{path}"))
+
+    for key, value in measured.items():
+        if value is None:
+            links.append(evidence(key, None, source="missing", unknown=True))
+        elif not any(link.field == key and not link.unknown for link in links):
+            links.append(evidence(key, value, source="alert_labels_or_annotations"))
+
+    # Named service from labels is one affected service — not agent_result keys.
+    if measured["affected_services"] is None and service:
+        measured["affected_services"] = 1
+        links.append(
+            evidence(
+                "affected_services",
+                1,
+                source=f"alert_label:service={service}",
+            )
+        )
+
+    reflector = _get(state, "reflector_analysis")
+    confidence = _as_float(_get(reflector, "confidence"))
+    if confidence is not None:
+        links.append(
+            evidence("hypothesis_confidence", confidence, source="reflector_analysis")
+        )
+    else:
+        links.append(
+            evidence(
+                "hypothesis_confidence",
+                None,
+                source="missing",
+                unknown=True,
+            )
+        )
 
     return IncidentSignals(
-        affected_services=affected_services if service else 1,
-        user_facing=revenue or is_critical,
+        affected_services=measured["affected_services"],
+        affected_pods=measured["affected_pods"],
+        user_facing=revenue,
         revenue_impacting=revenue,
-        error_rate=0.6 if is_critical else 0.2,  # coarse seed from alert severity
-        slo_breached=is_critical,
-        slo_burn_rate=14.4 if is_critical else 1.0,
-        saturation=0.0,
-        still_escalating=is_critical,
-        hypothesis_confidence=(
-            calibrated.calibrated_probability if calibrated is not None else 0.0
-        ),
+        error_rate=measured["error_rate"],
+        slo_breached=measured["slo_breached"],
+        customer_scope=measured["customer_scope"],
+        dependency_count=measured["dependency_count"],
+        duration_seconds=measured["duration_seconds"],
+        slo_burn_rate=measured["slo_burn_rate"],
+        error_rate_slope=measured["error_rate_slope"],
+        saturation=measured["saturation"],
+        still_escalating=measured["still_escalating"],
+        hypothesis_confidence=confidence,
+        evidence=links,
         hypothesis_confidence_calibrated=calibrated is not None,
     )
 
@@ -236,6 +411,8 @@ def build_act_report(
             plan_present=False,
             aggregate_decision=None,
             summary=f"{assessment.severity.name}: no remediation plan in state; ACT skipped.",
+            unknown_telemetry=assessment.unknown_telemetry,
+            severity_evidence=[item.to_dict() for item in assessment.evidence],
         )
 
     env = environment or _incident_environment(state)
@@ -342,6 +519,8 @@ def build_act_report(
         action_reports=action_reports,
         executed=executed,
         summary=summary,
+        unknown_telemetry=assessment.unknown_telemetry,
+        severity_evidence=[item.to_dict() for item in assessment.evidence],
         confidence_status="calibrated" if confidence_ready else "uncalibrated",
         raw_action_confidence=raw_confidence,
         calibrated_action_probability=calibrated_action_probability,

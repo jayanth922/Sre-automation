@@ -51,8 +51,8 @@ class AutonomyDecision(str, Enum):
 
 
 class Reversibility(str, Enum):
-    REVERSIBLE = "reversible"      # trivially undone (restart, rollback, revert)
-    RISKY = "risky"               # undoable only with a plan (config/patch/scale)
+    REVERSIBLE = "reversible"  # trivially undone (restart, rollback, revert)
+    RISKY = "risky"  # undoable only with a plan (config/patch/scale)
     IRREVERSIBLE = "irreversible"  # cannot be safely undone (scale-to-0, destructive)
 
 
@@ -62,8 +62,8 @@ _BASE_REVERSIBILITY: dict[str, Reversibility] = {
     "restart": Reversibility.REVERSIBLE,
     "rollback": Reversibility.REVERSIBLE,
     "revert_commit": Reversibility.REVERSIBLE,
-    "escalate": Reversibility.REVERSIBLE,   # notify-only; no infra mutation
-    "scale": Reversibility.RISKY,           # reversible unless scaling to 0
+    "escalate": Reversibility.REVERSIBLE,  # notify-only; no infra mutation
+    "scale": Reversibility.RISKY,  # reversible unless scaling to 0
     "config_change": Reversibility.RISKY,
     "patch": Reversibility.RISKY,
 }
@@ -118,7 +118,9 @@ def classify_reversibility(action: Any) -> Reversibility:
     return base
 
 
-def _default_policy_eval(action: Any, environment: str, risk_score: float) -> Tuple[bool, str]:
+def _default_policy_eval(
+    action: Any, environment: str, risk_score: float
+) -> Tuple[bool, str]:
     """Lazily delegate to the existing deterministic policy engine.
 
     Imported lazily so this module stays free of the ``agent_state`` /
@@ -126,6 +128,7 @@ def _default_policy_eval(action: Any, environment: str, risk_score: float) -> Tu
     ``evaluate_fn`` to bypass this entirely.
     """
     from .policy_engine import evaluate_action  # lazy
+
     return evaluate_action(action, environment, risk_score)
 
 
@@ -154,6 +157,22 @@ def decide(
         )
 
     reversibility = classify_reversibility(action)
+
+    # Unknown telemetry never grants autonomy — escalate to human approval.
+    if severity is Severity.UNKNOWN or getattr(
+        severity_assessment, "unknown_telemetry", False
+    ):
+        return GateDecision(
+            decision=AutonomyDecision.REQUIRES_APPROVAL,
+            severity=severity,
+            reversibility=reversibility,
+            allowed_by_policy=True,
+            reason=(
+                f"{severity.name}: unknown or incomplete telemetry; "
+                "human approval required (no fabricated severity autonomy)"
+            ),
+        )
+
     low_sev = is_low_severity(severity)
     action_type = str(getattr(action, "action_type", "")).lower()
 
@@ -203,9 +222,15 @@ def decide(
     elif reversibility is Reversibility.RISKY:
         if low_sev and _has_rollback_plan(action):
             decision = AutonomyDecision.AUTONOMOUS
-            reason = f"{severity.name} (low) + risky action with rollback plan → autonomous"
+            reason = (
+                f"{severity.name} (low) + risky action with rollback plan → autonomous"
+            )
         else:
-            missing = "no rollback plan" if not _has_rollback_plan(action) else "high severity"
+            missing = (
+                "no rollback plan"
+                if not _has_rollback_plan(action)
+                else "high severity"
+            )
             decision = AutonomyDecision.REQUIRES_APPROVAL
             reason = f"{severity.name}: risky action needs approval ({missing})"
     else:  # REVERSIBLE
@@ -261,7 +286,10 @@ def decide_plan(
     ]
     if any(d.decision is AutonomyDecision.BLOCKED for d in per_action):
         aggregate = AutonomyDecision.BLOCKED
-    elif all(d.decision is AutonomyDecision.AUTONOMOUS for d in per_action) and per_action:
+    elif (
+        all(d.decision is AutonomyDecision.AUTONOMOUS for d in per_action)
+        and per_action
+    ):
         aggregate = AutonomyDecision.AUTONOMOUS
     else:
         aggregate = AutonomyDecision.REQUIRES_APPROVAL

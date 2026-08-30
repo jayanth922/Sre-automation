@@ -29,7 +29,6 @@ async def run_graph_background_saas(
     job_id: Optional[uuid.UUID] = None,
     **kwargs,
 ):
-<<<<<<< HEAD
     """
     SaaS-aware background execution.
     Writes logs/results to the Postgres Database instead of just Redis.
