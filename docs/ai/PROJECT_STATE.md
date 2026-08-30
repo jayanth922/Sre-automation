@@ -4,59 +4,61 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-Post-integration regression fixes are implemented on `codex/post-integration-regression-fixes` from `master` (`d28a714`) after all 41 backlog packages and PR #34 were merged.
-
-### Integrated Backlog Tracks & Platform Additions
-- **Foundation (T01–T10):** Multi-agent LangGraph core, MCP adapters, state store, observability, and evaluation baseline.
-- **Evaluation & Guardrails (A01–A10):** Run provenance (A01), recovery grading (A02), MTTR/diagnostics statistics (A03–A04), task-specific confidence calibration (A05), prompt-injection & adversarial safety (A06–A07), trace accounting (A08), release evaluation gates (A09), and verified-only learning (A10).
-- **Robustness & Operations (R01–R11):** Mutation gateway & locks (R01), durable job leases (R02), namespace isolation (R03), per-cluster model routing (R04), canonical graph runner (R05), canonical audit log storage & retention (R06), truthful cluster heartbeat (R07), fail-closed admission concurrency (R08), distributed live event bus (R09), evidence-based severity engine (R10), and external incident/PR loops (R11).
-- **Production Platform (P01–P11):** Provider config defaults (P01), typed settings (P02), websocket routing (P03), production Helm chart (P04), Terraform Helm module (P05), generic platform overlays (P06), ORM model consolidation (P07), CI quality gates (P08), integration test layers (P09), dead module reachability enforcement (P10), and truthful documentation & benchmark fixtures (P11).
-- **Supported LLM Providers (PR #34):** Supported providers across the platform are restricted strictly to `anthropic` (default) and `gemini`. Legacy providers (`groq`, `ollama`, `nvidia`, `openai`, `openai_compatible`) fail closed with actionable migration guidance.
+Executing the 5-phase upgrade plan (Jira, observability, memory, multi-tenancy,
+real benchmark) from `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md`,
+one PR per phase, no cross-phase file overlap. Phase 1 (Jira ticketing) merged
+as PR #46. Phase 2 (self-hosted Langfuse observability, wired on by default)
+is complete and open as **PR #47** (`feature/langfuse-observability`,
+commit `a91ca2a`). Phases 3–5 (memory sophistication, multi-tenant secure
+access, AIOpsLab benchmark) are scoped in the plan file but not started.
 
 ## Current architecture and invariants
-- **Strict LLM Provider Guard:** `sre_agent.provider_config.SUPPORTED_PROVIDERS` and `sre_agent.cluster_context.SUPPORTED_LLM_PROVIDERS` restrict model operations to `anthropic` and `gemini`. `validate_startup_config` verifies credentials at CLI/container boot before database migrations or web server startup.
-- **Single Canonical Runner:** All production callers (`sre_agent/job_worker.py`, `mission_control.py`) invoke the LangGraph incident pipeline strictly through `sre_agent.incident_runner.run_incident_investigation`. Historical `sre_agent/agent_runtime_tasks.py` is quarantined as a forwarding shim.
-- **Durable Job Worker Pipeline:** Incidents and investigations run as PostgreSQL lease-backed durable jobs with heartbeat renewals, bounded retry attempts, cancellation, and dead-letter queueing (`sre_agent/job_worker.py`).
-- **Unified ORM & Migration Linearity:** All models inherit from `backend.models.Base`. Audit storage uses `AgentAuditLog` (R06 schema with composite timestamp indexes, superseding P07). Alembic maintains a strict single-head chain terminating at `2253eabf13e3` (`add_cluster_heartbeat_truth`). Obsolete revisions `a9b0c1d2e3f4`, `e6f7a8b9c0d1`, and `d5e6f7a8b9c0` must not be restored.
-- **Distributed Live Events:** `sre_agent.live_events` multiplexes incident lifecycle notifications across API replicas via Redis pub/sub with an in-memory fallback.
-- **Evidence-Based Severity & Fail-Closed Logic:** `sre_agent.severity_engine` derives incident severity solely from measured evidence links (`EvidenceLink`). Missing telemetry escalates to `UNKNOWN` or higher severity; it never fabricates calm values.
-- **Mutation Gateway & Safety:** Cluster writes pass `sre_agent.mutation_gateway` with namespace constraints, tenant isolation, idempotency locks, approval interrupts, and audit logs.
-- **Verified Learning:** `sre_agent.act_phase` mandates verified objective resolution before skills can be promoted to `skill_store`. Uncalibrated confidence fails closed to requiring human approval.
-- **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt, model, and tool changes against content-addressed statistical and adversarial evidence bundles.
-- **Module Reachability Governance:** `scripts/check_module_reachability.py` ensures no unmanaged top-level modules exist in `sre_agent/`. Scaffolding modules (`agent_audit`, `models`, `actor_runtime`, `code_sandbox`, `terminal_agent`, `toolsets`) are tracked in `EXPERIMENTAL`.
+- **Strict LLM Provider Guard:** `sre_agent.provider_config.SUPPORTED_PROVIDERS` / `sre_agent.cluster_context.SUPPORTED_LLM_PROVIDERS` restrict to `anthropic` and `gemini`; `validate_startup_config` checks credentials at boot.
+- **Single Canonical Runner:** all production callers invoke `sre_agent.incident_runner.run_incident_investigation`; `agent_runtime_tasks.py` is a quarantined forwarding shim.
+- **Durable Job Worker Pipeline:** Postgres lease-backed jobs with heartbeats, retries, dead-letter queueing (`sre_agent/job_worker.py`).
+- **Unified ORM & Migration Linearity:** all models inherit `backend.models.Base`; Alembic single-head chain ending `2253eabf13e3`.
+- **Distributed Live Events:** `sre_agent.live_events` via Redis pub/sub with in-memory fallback.
+- **Evidence-Based Severity & Fail-Closed Logic:** `sre_agent.severity_engine` never fabricates calm values from missing telemetry.
+- **Mutation Gateway & Safety:** `sre_agent.mutation_gateway` enforces namespace/tenant scope, idempotency locks, approval interrupts, audit logs.
+- **Verified Learning:** `sre_agent.act_phase` requires verified resolution before `skill_store` promotion.
+- **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt/model/tool changes against content-addressed evidence bundles.
+- **Module Reachability Governance:** `scripts/check_module_reachability.py` blocks unmanaged top-level `sre_agent/` modules.
+- **Observability (new, Phase 2):** `sre_agent/tracing.py::langfuse_enabled()` is now **opt-out** (`LANGFUSE_TRACING` defaults truthy), not opt-in. Self-hosted Langfuse (web/worker/clickhouse/minio, reusing the platform's own Postgres as a second logical DB `langfuse` and Redis DB index `/2`) is wired in both `platform/docker-compose.yaml` and the Helm chart (`templates/langfuse.yaml`, gated by `.Values.langfuse.deploy`, default `true`). Headless `LANGFUSE_INIT_*` bootstrap auto-provisions org/project/API-keypair/admin-user so tracing works after a fresh boot with zero manual UI steps. `secret.yaml` fails Helm install fast if Langfuse secrets are left at placeholder values while `tracing.enabled`/`langfuse.deploy` are true.
 
 ## Completed or verified work
-- Fully merged all 41 backlog work packages and PR #34 to `master`.
-- Restored namespace enforcement for MCP reads and query selectors, including blocking namespace enumeration.
-- Repaired scoped audit persistence, per-cluster LLM credential validation, canonical durable runner arguments, recurring job-lease renewal, and durable mission-control follow-ups.
-- Restricted the investigation worker to investigation jobs, added release-evaluation and Terraform to the aggregate CI gate, and isolated generated runbooks in ACT integration tests.
+- All 41 backlog packages + PR #34 (LLM provider restriction) merged to `master`.
+- PR #42 (post-integration operational fixes) and PR #43 (tenant-scoped MCP audit restore) merged.
+- PR #46: Jira ticketing (Phase 1), per-Cluster DB-column credentials (deviated from global env vars for real multi-tenant SaaS correctness).
+- PR #47: Langfuse observability (Phase 2) — `tracing.py` opt-out flip, `langfuse` added as a hard dependency, full docker-compose stack, full Helm chart addition (`langfuse.yaml`, `_helpers.tpl` helpers `sentinel.langfuseHost`/`langfuseRedisUrl`/`langfuseDbInitContainer`, `values.yaml`/`values-production.yaml`, `secret.yaml` fail-fast checks, `configmap.yaml`, `networkpolicy.yaml` grants), `.env.example` docs, `test_tracing.py` default flipped.
 
 ## Active problem
-Resolved locally. `benchmarks/release/candidate/bundle.json` was regenerated (`change_class: "tool"`, `candidate.source_digest` recomputed via `release_gate.py digest`) to match the protected `sre_agent/mcp_tool_wrapper.py` change on `codex/post-integration-regression-fixes`. `release_gate.py impact` against `master..HEAD` now reports `PROMOTE`. PR #42 (`codex/post-integration-operational-fixes`, non-protected fixes) is open, `MERGEABLE`/`CLEAN`, all CI checks green, not yet merged. This branch is not yet pushed or opened as a PR.
+None. PR #47 is open, verified, and ready for review/merge.
 
 ## Relevant files
-- `sre_agent/provider_config.py` & `sre_agent/constants.py` (Supported LLM providers)
-- `sre_agent/incident_runner.py` (Canonical entrypoint)
-- `sre_agent/job_worker.py` (Durable job runner)
-- `sre_agent/namespace_scope.py` & `sre_agent/mcp_tool_wrapper.py` (Read isolation and scoped audit)
-- `sre_agent/api/v1/mission_control.py` (Durable follow-up queueing)
-- `sre_agent/severity_engine.py` & `sre_agent/act_phase.py` (Severity & ACT execution)
-- `backend/models.py` & `backend/alembic/versions/` (Database schemas & migrations)
-- `benchmarks/release_gate.py` (Release evaluation contracts)
-- `scripts/check_python_quality.sh` & `scripts/check_module_reachability.py` (CI validation)
+- `sre_agent/tracing.py` (Langfuse callback wiring, opt-out default)
+- `platform/docker-compose.yaml` (local self-hosted Langfuse stack)
+- `deploy/helm/sentinel/templates/langfuse.yaml`, `_helpers.tpl`, `secret.yaml`, `configmap.yaml`, `networkpolicy.yaml`, `values.yaml`, `values-production.yaml`
+- `sre_agent/provider_config.py`, `sre_agent/incident_runner.py`, `sre_agent/job_worker.py`, `sre_agent/mutation_gateway.py`, `sre_agent/severity_engine.py`, `sre_agent/act_phase.py` (unchanged core invariants, listed for orientation)
+- `sre_agent/memory_store.py` (Phase 3 target — `search_similar_incidents()` lacks `org_id`/`cluster_id` filtering despite `cluster_id` already in the Qdrant payload)
+- `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` (authoritative phase plan)
 
 ## Verification commands and latest results
-- `uv run pytest -q` -> 673 passed in 3.92s; tracked runbook artifacts remained unchanged.
-- `bash scripts/check_python_quality.sh` -> Ruff critical, Mypy, and compileall pass.
-- `uv run python scripts/check_module_reachability.py` -> 67 reachable, 6 experimental.
-- `bash scripts/check_no_static_secrets.sh` -> Secret scan passed.
-- `bash scripts/check_eval_smoke.sh` -> 33 passed.
-- `bash scripts/check_helm_production.sh` & `check_terraform.sh` -> Manifest & Terraform checks pass.
-- Release matrix -> PASS; candidate bundle -> PROMOTE in isolation; `release_gate.py impact` against `master..HEAD` -> PROMOTE.
-- `uv run pytest -q` (full suite, re-verified after the bundle fix) -> 674 passed in 4.05s.
+- `PYTHONPATH=. uv run pytest -q` → 675 passed.
+- `docker compose -f platform/docker-compose.yaml config --quiet` → exit 0.
+- `helm lint deploy/helm/sentinel` (with required `--set secrets.*`) → 0 failed.
+- `helm template` → 51 non-duplicated manifests, verified in 3 configs (default, `values-production.yaml` overlay, `tracing.enabled=false`+`langfuse.deploy=false` opt-out).
 
 ## Known blockers or risks
-- None outstanding for this fix. Merging PR #42 and pushing/opening a PR for `codex/post-integration-regression-fixes` are pending user confirmation (shared-state actions), not technical blockers.
+- None technical. PR #47 merge is a shared-state action pending user decision.
+- Phase 4 (multi-tenant secure access) will need a real GitHub App + Slack app registration from the user for end-to-end OAuth validation — not needed until that phase.
 
 ## Next bounded task
-- Merge PR #42, then push `codex/post-integration-regression-fixes` (already rebased on the post-merge `master` since it already contains PR #42's commit) and open its PR; CI's "Release evaluation contract" job should reproduce the local `PROMOTE` result.
+Start Phase 3 (memory sophistication) in a **fresh conversation**: fix
+`memory_store.py::search_similar_incidents()`'s missing `org_id`/`cluster_id`
+filter (cross-tenant leak risk), split the flat payload into structured
+separately-embedded fields (root cause / resolution / symptoms) with recency
+decay and cross-incident back-links, and unify the three disconnected
+embedding pipelines (`memory_store.py`, `skill_store.py`, `runbooks_local/server.py`)
+behind one shared `sre_agent/embedding.py`. Fully verifiable locally against
+the Qdrant in `platform/docker-compose.yaml` — no external account needed.
+Read this file plus the plan file's "Phases 3–5" section before starting.
