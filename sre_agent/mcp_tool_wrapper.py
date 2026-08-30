@@ -27,7 +27,7 @@ from tenacity import (
 )
 
 from .audit_context import get_audit_context
-from .models import AgentAuditLog
+from backend.models import AgentAuditLog
 # We need a session factory here. For now, we'll do a local import to avoid circular dep
 # or assume the session is handled elsewhere. But for sync logging, we need a session.
 from backend.database import SessionLocal
