@@ -1,4 +1,9 @@
 # Session Log: NVIDIA NIM Integration + MTTR Benchmark
+
+> **HISTORICAL (P11).** Do not copy hardcoded admin passwords or cluster tokens
+> from this session log. Use `benchmarks/fixtures.py` (`BENCH_BOOTSTRAP=1` or
+> env credentials). Canonical diagrams live under `docs/architecture/`.
+
 **Date:** 2026-05-02  
 **Engineer:** Jayanth Kalyanam
 

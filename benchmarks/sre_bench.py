@@ -22,7 +22,7 @@ Run:
     uv run python benchmarks/sre_bench.py
 
 Config via env (falls back to the bench_mttr defaults):
-    BENCH_BASE_URL, BENCH_ADMIN_EMAIL, BENCH_ADMIN_PASSWORD,
+    BENCH_BASE_URL, BENCH_creds.admin_email, BENCH_creds.admin_password,
     BENCH_CLUSTER_ID, BENCH_CLUSTER_TOKEN, BENCH_RUNS_PER_SCENARIO,
     BENCH_PROMETHEUS_URL, BENCH_ORACLE_RESULTS_PATH
 """
@@ -61,11 +61,6 @@ from sre_agent.confidence_calibration import (  # noqa: E402
 )
 
 # ── Config ──────────────────────────────────────────────────────────────────
-BASE_URL = os.getenv("BENCH_BASE_URL", "http://localhost:8080")
-ADMIN_EMAIL = os.getenv("BENCH_ADMIN_EMAIL", "admin@example.com")
-ADMIN_PASSWORD = os.getenv("BENCH_ADMIN_PASSWORD", "admin")
-CLUSTER_ID = os.getenv("BENCH_CLUSTER_ID", "df4ab154-2b84-4570-93c6-9c9a70ef9baf")
-CLUSTER_TOKEN = os.getenv("BENCH_CLUSTER_TOKEN", "cl_438450df3cb94ea78760f4e005088c2a")
 RUNS_PER_SCENARIO = int(os.getenv("BENCH_RUNS_PER_SCENARIO", "3"))
 PROMETHEUS_URL = os.getenv("BENCH_PROMETHEUS_URL", "http://localhost:9090")
 PROMETHEUS_TOKEN = os.getenv("BENCH_PROMETHEUS_BEARER_TOKEN")
@@ -144,19 +139,19 @@ DATASET = load_dataset(
 SCENARIOS = DATASET.scenarios
 
 
-async def _login(client: httpx.AsyncClient) -> str:
+async def _login(client: httpx.AsyncClient, creds) -> str:
     r = await client.post(
-        f"{BASE_URL}/auth/token",
-        data={"username": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        f"{creds.base_url}/auth/token",
+        data={"username": creds.admin_email, "password": creds.admin_password},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     r.raise_for_status()
     return r.json()["access_token"]
 
 
-async def _incident_ids(client: httpx.AsyncClient, jwt: str) -> set[str]:
+async def _incident_ids(client: httpx.AsyncClient, jwt: str, creds) -> set[str]:
     r = await client.get(
-        f"{BASE_URL}/api/v1/clusters/{CLUSTER_ID}/incidents",
+        f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
         headers={"Authorization": f"Bearer {jwt}"},
     )
     r.raise_for_status()
@@ -164,7 +159,7 @@ async def _incident_ids(client: httpx.AsyncClient, jwt: str) -> set[str]:
 
 
 async def _fire_alert(
-    client: httpx.AsyncClient, spec: ScenarioSpec, started_at: datetime
+    client: httpx.AsyncClient, spec: ScenarioSpec, started_at: datetime, creds
 ) -> None:
     payload = {
         "version": "4",
@@ -186,18 +181,18 @@ async def _fire_alert(
         ],
     }
     r = await client.post(
-        f"{BASE_URL}/api/v1/alerts/webhook",
+        f"{creds.base_url}/api/v1/alerts/webhook",
         json=payload,
-        headers={"Authorization": f"Bearer {CLUSTER_TOKEN}"},
+        headers={"Authorization": f"Bearer {creds.cluster_token}"},
     )
     r.raise_for_status()
 
 
-async def _wait_new_incident(client, jwt, known) -> Optional[dict]:
+async def _wait_new_incident(client, jwt, known, creds) -> Optional[dict]:
     for _ in range(10):
         await asyncio.sleep(2)
         r = await client.get(
-            f"{BASE_URL}/api/v1/clusters/{CLUSTER_ID}/incidents",
+            f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
             headers={"Authorization": f"Bearer {jwt}"},
         )
         r.raise_for_status()
@@ -207,9 +202,9 @@ async def _wait_new_incident(client, jwt, known) -> Optional[dict]:
     return None
 
 
-async def _fetch_incident(client, jwt, incident_id) -> Optional[dict]:
+async def _fetch_incident(client, jwt, incident_id, creds) -> Optional[dict]:
     response = await client.get(
-        f"{BASE_URL}/api/v1/clusters/{CLUSTER_ID}/incidents",
+        f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
         headers={"Authorization": f"Bearer {jwt}"},
     )
     response.raise_for_status()
@@ -283,7 +278,7 @@ async def _wait_for_recovery(
         elapsed += POLL_INTERVAL_SEC
         await _observe_oracle(client, oracle_client, tracker)
 
-        current = await _fetch_incident(client, jwt, incident["id"])
+        current = await _fetch_incident(client, jwt, incident["id"], creds)
         if current is not None:
             latest = current
         application_status = str(latest.get("status") or "").lower()
@@ -301,9 +296,9 @@ async def _wait_for_recovery(
     return latest
 
 
-async def _fetch_transcript(client, jwt, incident_id) -> dict:
+async def _fetch_transcript(client, jwt, incident_id, creds) -> dict:
     r = await client.get(
-        f"{BASE_URL}/api/v1/incidents/{incident_id}/transcript",
+        f"{creds.base_url}/api/v1/incidents/{incident_id}/transcript",
         headers={"Authorization": f"Bearer {jwt}"},
     )
     r.raise_for_status()
@@ -314,7 +309,7 @@ async def _fetch_trace_completeness(client, jwt, incident_id) -> dict:
     deadline = time.monotonic() + ACCOUNTING_WAIT_SEC
     while True:
         response = await client.get(
-            f"{BASE_URL}/api/v1/incidents/{incident_id}/agent-metrics",
+            f"{creds.base_url}/api/v1/incidents/{incident_id}/agent-metrics",
             headers={"Authorization": f"Bearer {jwt}"},
         )
         response.raise_for_status()
@@ -515,7 +510,7 @@ async def _run_trial(
     fault_adapter: Optional[MeridianAdminConfigAdapter],
     spec: ScenarioSpec,
 ):
-    known = await _incident_ids(client, jwt)
+    known = await _incident_ids(client, jwt, creds)
     tracker = RecoveryOracleTracker(spec.recovery_probe, datetime.now(timezone.utc))
     await _observe_oracle(client, oracle_client, tracker, baseline=True)
 
@@ -536,7 +531,7 @@ async def _run_trial(
         tracker.begin(started_at)
 
         try:
-            await _fire_alert(client, spec, started_at)
+            await _fire_alert(client, spec, started_at, creds)
             await _observe_oracle(client, oracle_client, tracker)
         except Exception as exc:
             result = _oracle_result(
@@ -550,7 +545,7 @@ async def _run_trial(
             _record_grade(spec, result, "", [], score)
             return score, f"FAILED (stimulus: {exc})", None
 
-        incident = await _wait_new_incident(client, jwt, known)
+        incident = await _wait_new_incident(client, jwt, known, creds)
         if not incident:
             result = _oracle_result(
                 tracker,
@@ -566,7 +561,7 @@ async def _run_trial(
         latest_incident = await _wait_for_recovery(
             client, jwt, incident, oracle_client, tracker
         )
-        transcript = await _fetch_transcript(client, jwt, incident["id"])
+        transcript = await _fetch_transcript(client, jwt, incident["id"], creds)
         trace_completeness = await _fetch_trace_completeness(
             client, jwt, incident["id"]
         )
@@ -644,8 +639,9 @@ async def run() -> None:
         else None
     )
     async with httpx.AsyncClient(timeout=30) as client:
-        jwt = await _login(client)
-        print(f"  logged in as {ADMIN_EMAIL}\n")
+        creds = await resolve_credentials(client)
+        jwt = await _login(client, creds)
+        print(f"  logged in as {creds.admin_email}\n")
 
         by_name = {spec.name: spec for spec in SCENARIOS}
         schedule = build_trial_schedule(
@@ -669,6 +665,7 @@ async def run() -> None:
                 oracle_client,
                 fault_adapter,
                 spec,
+                creds,
             )
             _record_statistical_trial(
                 spec,

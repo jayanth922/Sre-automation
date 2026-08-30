@@ -35,19 +35,21 @@ Comparison baseline
 
 import asyncio
 import json
+import os
 import statistics
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixtures import BenchConfigError, resolve_credentials  # noqa: E402
+
 # ── Configuration ──────────────────────────────────────────────────────────────
-BASE_URL          = "http://localhost:8080"
-ADMIN_EMAIL       = "admin@example.com"
-ADMIN_PASSWORD    = "admin"
-CLUSTER_ID        = "df4ab154-2b84-4570-93c6-9c9a70ef9baf"
-CLUSTER_TOKEN     = "cl_438450df3cb94ea78760f4e005088c2a"
+# Prefer env / bootstrap fixtures — no static cluster tokens in-repo (P11).
+BASE_URL = os.getenv("BENCH_BASE_URL", "http://localhost:8080")
 
 RUNS_PER_SCENARIO = 3     # pass^k — 3 runs per scenario
                           # NVIDIA NIM (llama-3.3-70b-instruct): generous free credits
@@ -101,28 +103,28 @@ def _fmt(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
-async def _login(client: httpx.AsyncClient) -> str:
+async def _login(client: httpx.AsyncClient, creds) -> str:
     """Login and return a JWT access token."""
     r = await client.post(
-        f"{BASE_URL}/auth/token",
-        data={"username": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        f"{creds.base_url}/auth/token",
+        data={"username": creds.admin_email, "password": creds.admin_password},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     r.raise_for_status()
     return r.json()["access_token"]
 
 
-async def _get_incident_ids(client: httpx.AsyncClient, jwt: str) -> set[str]:
+async def _get_incident_ids(client: httpx.AsyncClient, jwt: str, creds) -> set[str]:
     """Return the set of all current incident IDs for this cluster."""
     r = await client.get(
-        f"{BASE_URL}/api/v1/clusters/{CLUSTER_ID}/incidents",
+        f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
         headers={"Authorization": f"Bearer {jwt}"},
     )
     r.raise_for_status()
     return {inc["id"] for inc in r.json()}
 
 
-async def _fire_alert(client: httpx.AsyncClient, scenario: dict) -> None:
+async def _fire_alert(client: httpx.AsyncClient, scenario: dict, creds) -> None:
     """POST a synthetic Alertmanager webhook payload to trigger an incident."""
     payload = {
         "version": "4",
@@ -142,9 +144,9 @@ async def _fire_alert(client: httpx.AsyncClient, scenario: dict) -> None:
         }],
     }
     r = await client.post(
-        f"{BASE_URL}/api/v1/alerts/webhook",
+        f"{creds.base_url}/api/v1/alerts/webhook",
         json=payload,
-        headers={"Authorization": f"Bearer {CLUSTER_TOKEN}"},
+        headers={"Authorization": f"Bearer {creds.cluster_token}"},
     )
     r.raise_for_status()
     resp = r.json()
@@ -156,13 +158,13 @@ async def _fire_alert(client: httpx.AsyncClient, scenario: dict) -> None:
 
 
 async def _wait_for_new_incident(
-    client: httpx.AsyncClient, jwt: str, known_ids: set[str]
+    client: httpx.AsyncClient, jwt: str, known_ids: set[str], creds
 ) -> Optional[dict]:
     """Poll until a new incident appears and return it."""
     for _ in range(10):
         await asyncio.sleep(2)
         r = await client.get(
-            f"{BASE_URL}/api/v1/clusters/{CLUSTER_ID}/incidents",
+            f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
             headers={"Authorization": f"Bearer {jwt}"},
         )
         r.raise_for_status()
@@ -173,7 +175,7 @@ async def _wait_for_new_incident(
 
 
 async def _wait_for_resolved(
-    client: httpx.AsyncClient, jwt: str, incident_id: str
+    client: httpx.AsyncClient, jwt: str, incident_id: str, creds
 ) -> tuple[Optional[dict], str]:
     """
     Poll until the incident reaches RESOLVED or fails.
@@ -188,7 +190,7 @@ async def _wait_for_resolved(
         await asyncio.sleep(POLL_INTERVAL_SEC)
         elapsed += POLL_INTERVAL_SEC
         r = await client.get(
-            f"{BASE_URL}/api/v1/clusters/{CLUSTER_ID}/incidents",
+            f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
             headers={"Authorization": f"Bearer {jwt}"},
         )
         r.raise_for_status()
@@ -215,8 +217,13 @@ async def run_benchmark() -> None:
     print("=" * 62)
 
     async with httpx.AsyncClient(timeout=30) as client:
-        jwt = await _login(client)
-        print(f"  Logged in as {ADMIN_EMAIL}\n")
+        try:
+            creds = await resolve_credentials(client)
+        except BenchConfigError as exc:
+            print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+            sys.exit(2)
+        jwt = await _login(client, creds)
+        print(f"  Logged in as {creds.admin_email}\n")
 
         run_number = 0
         for scenario_name, scenario in SCENARIOS.items():
@@ -227,17 +234,17 @@ async def run_benchmark() -> None:
                 print(f"   run {k}/{RUNS_PER_SCENARIO}  ", end="", flush=True)
 
                 # Snapshot existing incidents before firing
-                known_ids = await _get_incident_ids(client, jwt)
+                known_ids = await _get_incident_ids(client, jwt, creds)
 
                 # Fire the alert
                 try:
-                    await _fire_alert(client, scenario)
+                    await _fire_alert(client, scenario, creds)
                 except Exception as e:
                     print(f"SKIP (webhook error: {e})")
                     continue
 
                 # Wait for the new incident to appear
-                incident = await _wait_for_new_incident(client, jwt, known_ids)
+                incident = await _wait_for_new_incident(client, jwt, known_ids, creds)
                 if incident is None:
                     print("SKIP (incident not created within 20s)")
                     continue
@@ -246,7 +253,9 @@ async def run_benchmark() -> None:
                 created_at  = _parse_iso(incident["created_at"])
 
                 # Wait for resolution
-                resolved_incident, reason = await _wait_for_resolved(client, jwt, incident_id)
+                resolved_incident, reason = await _wait_for_resolved(
+                    client, jwt, incident_id, creds
+                )
                 if reason == "timeout":
                     print(f"TIMEOUT (>{TIMEOUT_SEC}s)")
                     continue

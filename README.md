@@ -119,10 +119,13 @@ conventions, GitHub repo, Notion runbook database) and point Alertmanager at
 
 - **CI** (`.github/workflows/ci.yml`): lockfile validation, byte-compile,
   `pytest` (against a Postgres service), frontend type-check, image builds.
-- **Benchmarks** (`benchmarks/`): `sre_bench.py` fires scenarios at the live
-  platform and scores resolution rate, MTTR, root-cause / remediation / severity
-  accuracy, and safety against per-scenario ground truth (adapters for
-  ITBench / AIOpsLab). Scoring is pure-function and unit-tested.
+- **Quickstart smoke** (no live cluster): `bash scripts/quickstart_smoke.sh`
+  runs secret scanning, compileall, docs truthfulness tests, and Helm default checks.
+- **Benchmarks** (`benchmarks/`): `sre_bench.py` / `bench_mttr.py` fire scenarios
+  at a live platform. Credentials come from env (`BENCH_ADMIN_*`,
+  `BENCH_CLUSTER_*`) or runtime bootstrap (`BENCH_BOOTSTRAP=1`) via
+  `benchmarks/fixtures.py` — no static cluster tokens are shipped.
+  Scoring is pure-function and unit-tested (`tests/test_bench_scoring.py`).
 
 ## Tech stack
 

@@ -70,6 +70,10 @@ jobs:
         run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
         run: uv run python -m compileall backend sre_agent
+      - name: Secret scan + docs truthfulness
+        run: |
+          bash scripts/check_no_static_secrets.sh
+          uv run pytest -q tests/test_docs_truthfulness.py
       - name: Module reachability (P10)
         run: uv run python scripts/check_module_reachability.py
       - name: Install coverage tooling
