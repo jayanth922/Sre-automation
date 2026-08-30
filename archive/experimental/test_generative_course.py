@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "generative_course.py"
+_MODULE_PATH = Path(__file__).resolve().parent / "generative_course.py"
 _spec = importlib.util.spec_from_file_location("generative_course", _MODULE_PATH)
 gc = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = gc
