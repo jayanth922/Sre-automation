@@ -570,6 +570,10 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
                          payload's `raw_response` when available, falling back
                          to the visible content otherwise.
         prior_summary:   The most recent supervisor "summary" event content.
+        recent_turns:    The last N {"role": "user"|"assistant", "content"}
+                         chat turns, oldest first, so the narrator can resolve
+                         follow-up references ("it", "that") across the
+                         actual conversation, not just investigation state.
 
     This is what the supervisor needs to answer follow-up questions in the
     same incident thread without re-running the whole investigation graph.
@@ -580,6 +584,7 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
         "alert_context": {},
         "agent_results": {},
         "prior_summary": "",
+        "recent_turns": [],
     }
     if not incident_id:
         return empty
@@ -596,6 +601,7 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
                 return empty
 
             events = await crud.get_incident_timeline_events(db, incident_uuid)
+            recent_turns = await crud.get_recent_timeline_turns(db, incident_uuid)
     except Exception as e:
         logger.warning(f"Failed to load incident chat context for {incident_id}: {e}")
         return empty
@@ -652,4 +658,5 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
         "alert_context": alert_context,
         "agent_results": agent_results,
         "prior_summary": prior_summary,
+        "recent_turns": recent_turns,
     }

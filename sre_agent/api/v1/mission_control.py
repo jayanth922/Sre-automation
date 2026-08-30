@@ -154,6 +154,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
         alert_context = chat_context.get("alert_context") or {"alert_name": incident.title}
         prior_summary = chat_context.get("prior_summary") or incident.summary or ""
         incident_status = chat_context.get("incident_status", "") or str(incident.status)
+        recent_turns = chat_context.get("recent_turns") or []
 
         llm = route_llm(TaskType.NARRATION, use_fallback=True)
         normalized = re.sub(r"\s+", " ", message.strip().lower())
@@ -169,6 +170,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
                 alert_context=alert_context,
                 incident_status=incident_status,
                 prior_summary=prior_summary,
+                recent_turns=recent_turns,
             )
 
         return await narrate_followup_answer(
@@ -179,6 +181,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
             agent_results=chat_context.get("agent_results") or {},
             prior_summary=prior_summary,
             incident_status=incident_status,
+            recent_turns=recent_turns,
         )
     except Exception as exc:
         # Never let a chat reply hard-fail; produce a deterministic fallback.
@@ -200,7 +203,7 @@ def _incident_is_closed_for_follow_up(incident: models.Incident) -> bool:
 async def _run_post_summary_follow_up(
     incident_id: uuid.UUID,
     message: str,
-    user: models.User,
+    user_id: Optional[str],
     cluster_id: uuid.UUID,
 ) -> None:
     graph = await get_agent_graph(cluster_id)
@@ -250,7 +253,7 @@ async def _run_post_summary_follow_up(
         },
         "incident_id": str(incident_id),
         "session_id": str(incident_id),
-        "user_id": str(user.id),
+        "user_id": str(user_id) if user_id else None,
         "final_response": None,
     }
 
@@ -404,33 +407,30 @@ async def get_incident_audit_logs(
     return combined_logs
 
 
-@router.post("/{incident_id}/message")
-async def send_incident_message(
-    incident_id: str,
-    payload: schemas.IncidentMessageRequest,
-    user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db),
-    owned_incident: models.Incident = Depends(get_owned_incident),
-):
+async def handle_incident_message(
+    db: AsyncSession,
+    incident: models.Incident,
+    cluster: models.Cluster,
+    message: str,
+    *,
+    source: str = "dashboard_chat",
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Post a follow-up message for an incident and queue a new investigation turn.
+
+    Shared by the dashboard HTTP route and the Slack war-room integration —
+    `source` distinguishes the two in persisted timeline events, `user_id` is
+    best-effort (Slack messages have no per-request JWT-backed user).
     """
-    message = payload.message.strip()
+    message = message.strip()
     if not message:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+        raise ValueError("Message cannot be empty")
 
-    incident_uuid = uuid.UUID(incident_id)
-    incident_obj = owned_incident
-    # Direct unit calls do not resolve FastAPI dependencies. Keep those calls
-    # on the same centralized authorization path instead of duplicating a load.
-    if not hasattr(incident_obj, "id"):
-        incident_obj = await get_owned_incident(incident_uuid, user, db)
+    incident_uuid = incident.id
+    incident_id = str(incident_uuid)
 
-    cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Incident not found")
-
-    if _incident_is_closed_for_follow_up(incident_obj):
+    if _incident_is_closed_for_follow_up(incident):
         await crud.create_incident_timeline_event(
             db,
             incident_uuid,
@@ -438,7 +438,7 @@ async def send_incident_message(
             speaker_role="user",
             title="You",
             content=message,
-            payload={"source": "dashboard_chat", "mode": "post_summary_follow_up"},
+            payload={"source": source, "mode": "post_summary_follow_up"},
         )
 
         from sre_agent.redis_state_store import get_state_store
@@ -452,8 +452,8 @@ async def send_incident_message(
             _run_post_summary_follow_up(
                 incident_uuid,
                 message,
-                user,
-                incident_obj.cluster_id,
+                user_id,
+                incident.cluster_id,
             )
         )
 
@@ -463,7 +463,7 @@ async def send_incident_message(
             "conversation_mode": "assistant",
         }
 
-    if _incident_is_active(incident_obj) and not _is_chat_only_message(message):
+    if _incident_is_active(incident) and not _is_chat_only_message(message):
         queued_event = await crud.create_incident_timeline_event(
             db,
             incident_uuid,
@@ -472,7 +472,7 @@ async def send_incident_message(
             title="You",
             content=message,
             payload={
-                "source": "dashboard_chat",
+                "source": source,
                 "mode": "pending_supervisor",
             },
             pending_supervisor=True,
@@ -486,7 +486,7 @@ async def send_incident_message(
             title="System",
             content="Human input queued for the next supervisor checkpoint.",
             payload={
-                "source": "dashboard_chat",
+                "source": source,
                 "mode": "queued_for_supervisor",
                 "pending_event_id": str(queued_event.id),
             },
@@ -517,10 +517,10 @@ async def send_incident_message(
             speaker_role="user",
             title="You",
             content=message,
-            payload={"source": "dashboard_chat", "mode": "incoming"},
+            payload={"source": source, "mode": "incoming"},
         )
 
-        assistant_reply = await _build_chat_reply(message, incident_obj, cluster)
+        assistant_reply = await _build_chat_reply(message, incident, cluster)
 
         await crud.create_incident_timeline_event(
             db,
@@ -529,7 +529,7 @@ async def send_incident_message(
             speaker_role="supervisor",
             title="Supervisor",
             content=assistant_reply,
-            payload={"source": "dashboard_chat", "mode": "direct_reply"},
+            payload={"source": source, "mode": "direct_reply"},
         )
 
         from sre_agent.redis_state_store import get_state_store
@@ -556,7 +556,7 @@ async def send_incident_message(
         speaker_role="user",
         title="You",
         content=message,
-        payload={"source": "dashboard_chat", "mode": "incoming"},
+        payload={"source": source, "mode": "incoming"},
     )
 
     from sre_agent.redis_state_store import get_state_store
@@ -585,7 +585,7 @@ async def send_incident_message(
         },
         alert_starts_at=None,
         alert_severity=follow_up_alert.get("severity") or "warning",
-        triggered_by="dashboard_chat",
+        triggered_by=source,
         idempotency_key=f"follow-up:{incident_uuid}:{human_event.id}",
     )
 
@@ -597,7 +597,7 @@ async def send_incident_message(
         title="System",
         content="Follow-up queued for investigation.",
         payload={
-            "source": "dashboard_chat",
+            "source": source,
             "mode": "queued_investigation",
             "job_id": str(follow_up_job.id),
             "cluster_id": str(cluster.id),
@@ -609,6 +609,42 @@ async def send_incident_message(
         "incident_id": incident_id,
         "job_id": str(follow_up_job.id),
     }
+
+
+@router.post("/{incident_id}/message")
+async def send_incident_message(
+    incident_id: str,
+    payload: schemas.IncidentMessageRequest,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
+):
+    """
+    Post a follow-up message for an incident and queue a new investigation turn.
+    """
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    incident_uuid = uuid.UUID(incident_id)
+    incident_obj = owned_incident
+    # Direct unit calls do not resolve FastAPI dependencies. Keep those calls
+    # on the same centralized authorization path instead of duplicating a load.
+    if not hasattr(incident_obj, "id"):
+        incident_obj = await get_owned_incident(incident_uuid, user, db)
+
+    cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    return await handle_incident_message(
+        db,
+        incident_obj,
+        cluster,
+        message,
+        source="dashboard_chat",
+        user_id=str(user.id),
+    )
 
 @router.get("/{incident_id}/status")
 async def get_incident_status(

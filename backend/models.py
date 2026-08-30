@@ -162,6 +162,13 @@ class Cluster(Base):
     github_repo: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. org/repo
     notion_api_key: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     notion_database_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Per-customer Jira ticketing (each tenant has its own Jira Cloud site
+    # and project, so this is a Cluster-scoped credential set — same pattern
+    # as the notion_* fields above — not a global platform-wide integration.
+    jira_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    jira_email: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    jira_api_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
+    jira_project_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Observability query conventions (JSON). Null = platform defaults. Lets the
     # platform work against any workload's metric schema, not one demo's.
     metrics_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -294,6 +301,9 @@ class Incident(Base):
     summary: Mapped[Optional[str]] = mapped_column(Text)  # AI-generated summary
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    jira_issue_key: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    slack_channel: Mapped[Optional[str]] = mapped_column(String(64))
+    slack_thread_ts: Mapped[Optional[str]] = mapped_column(String(32))
 
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="incidents")

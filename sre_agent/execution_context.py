@@ -17,6 +17,7 @@ _MCP_ENDPOINT_ENV = {
     "runbooks": "MCP_RUNBOOKS_URI",
     "github": "MCP_GITHUB_URI",
     "github_exec": "MCP_GITHUB_EXEC_URI",
+    "sandbox": "MCP_SANDBOX_URI",
 }
 
 

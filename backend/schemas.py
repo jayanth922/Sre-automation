@@ -141,6 +141,10 @@ class ClusterCreate(BaseModel):
     github_repo: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
+    jira_url: Optional[str] = None
+    jira_email: Optional[str] = None
+    jira_api_token: Optional[str] = None
+    jira_project_key: Optional[str] = None
     # Observability query conventions (service label, metric names, error selector).
     metrics_config: Optional[Dict[str, str]] = None
     # Scope: namespace this cluster represents. Empty = whole cluster (infra).
@@ -161,6 +165,10 @@ class ClusterUpdate(BaseModel):
     github_repo: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
+    jira_url: Optional[str] = None
+    jira_email: Optional[str] = None
+    jira_api_token: Optional[str] = None
+    jira_project_key: Optional[str] = None
     metrics_config: Optional[Dict[str, str]] = None
     namespace: Optional[str] = None
     llm_provider: Optional[str] = None
@@ -181,6 +189,7 @@ class ClusterResponse(BaseModel):
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
     notion_database_id: Optional[str] = None
+    jira_project_key: Optional[str] = None
     metrics_config: Optional[str] = None
     namespace: Optional[str] = None
     # LLM override — provider/model/base_url are safe to echo; the key is write-only.
@@ -210,6 +219,7 @@ class IncidentResponse(BaseModel):
     summary: Optional[str] = None
     created_at: datetime
     resolved_at: Optional[datetime] = None
+    jira_issue_key: Optional[str] = None
 
     class Config:
         from_attributes = True

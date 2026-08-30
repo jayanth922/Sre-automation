@@ -143,6 +143,10 @@ async def create_cluster(
         github_repo=cluster.github_repo,
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
+        jira_url=cluster.jira_url,
+        jira_email=cluster.jira_email,
+        jira_api_token=cluster.jira_api_token,
+        jira_project_key=cluster.jira_project_key,
         metrics_config=(
             _json.dumps(cluster.metrics_config) if cluster.metrics_config else None
         ),
@@ -177,6 +181,7 @@ async def update_cluster(
         "k8s_token",
         "github_token",
         "notion_api_key",
+        "jira_api_token",
         "llm_api_key",
     }
     for field in (
@@ -189,6 +194,10 @@ async def update_cluster(
         "github_repo",
         "notion_api_key",
         "notion_database_id",
+        "jira_url",
+        "jira_email",
+        "jira_api_token",
+        "jira_project_key",
     ):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
@@ -369,6 +378,23 @@ async def create_incident(
     return db_incident
 
 
+async def get_incident_by_id(db: AsyncSession, incident_id: uuid.UUID):
+    result = await db.execute(
+        select(models.Incident).filter(models.Incident.id == incident_id)
+    )
+    return result.scalars().first()
+
+
+async def set_incident_jira_key(db: AsyncSession, incident_id: uuid.UUID, issue_key: str) -> None:
+    await db.execute(
+        models.Incident.__table__
+        .update()
+        .where(models.Incident.id == incident_id)
+        .values(jira_issue_key=issue_key)
+    )
+    await db.commit()
+
+
 def _serialize_timeline_payload(payload: Any) -> Optional[str]:
     if payload is None:
         return None
@@ -474,6 +500,61 @@ async def get_incidents_for_cluster(db: AsyncSession, cluster_id: uuid.UUID):
         .order_by(models.Incident.created_at.desc())
     )
     return result.scalars().all()
+
+
+async def set_incident_slack_thread(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    channel: str,
+    thread_ts: str,
+) -> None:
+    incident = await db.get(models.Incident, incident_id)
+    if incident is None:
+        return
+    incident.slack_channel = channel
+    incident.slack_thread_ts = thread_ts
+    await db.commit()
+
+
+async def get_incidents_with_open_slack_threads(
+    db: AsyncSession,
+) -> List[models.Incident]:
+    result = await db.execute(
+        select(models.Incident).filter(
+            models.Incident.status.in_(
+                [models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]
+            ),
+            models.Incident.slack_channel.isnot(None),
+            models.Incident.slack_thread_ts.isnot(None),
+        )
+    )
+    return result.scalars().all()
+
+
+async def get_recent_timeline_turns(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    limit: int = 12,
+) -> List[Dict[str, str]]:
+    result = await db.execute(
+        select(models.IncidentTimelineEvent)
+        .filter(
+            models.IncidentTimelineEvent.incident_id == incident_id,
+            models.IncidentTimelineEvent.event_type.in_(
+                ["human_message", "assistant_message"]
+            ),
+        )
+        .order_by(models.IncidentTimelineEvent.sequence.desc())
+        .limit(limit)
+    )
+    events = list(reversed(result.scalars().all()))
+    return [
+        {
+            "role": "user" if event.event_type == "human_message" else "assistant",
+            "content": event.content or "",
+        }
+        for event in events
+    ]
 
 
 async def delete_cluster(

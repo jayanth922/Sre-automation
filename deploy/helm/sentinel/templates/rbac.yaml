@@ -12,6 +12,53 @@ metadata:
   name: {{ include "sentinel.actuatorSA" . }}
   namespace: {{ .Release.Namespace }}
   labels: {{- include "sentinel.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sentinel.sandboxSA" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+
+---
+# Sandbox RBAC is always namespace-scoped to a dedicated namespace, regardless
+# of rbac.namespaced/rbac.clusterWide — an ephemeral Job running an
+# AI-generated code fix must never be reachable outside its own sandbox
+# namespace, no matter how the rest of the chart is configured.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.sandbox.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sentinel.fullname" . }}-sandbox
+  namespace: {{ .Values.sandbox.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sentinel.fullname" . }}-sandbox
+  namespace: {{ .Values.sandbox.namespace }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sentinel.fullname" . }}-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sentinel.sandboxSA" . }}
+    namespace: {{ .Release.Namespace }}
 
 {{ if .Values.rbac.namespaced.enabled }}
 ---

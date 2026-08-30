@@ -87,6 +87,11 @@ bench = [
 hermes = [
     "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git",
 ]
+# Temporal-orchestrated code-fix verification sandbox (sre_agent.sandbox_worker).
+# Optional: only the worker container needs it, not the API image.
+temporal = [
+    "temporalio>=1.7.0",
+]
 
 
 
