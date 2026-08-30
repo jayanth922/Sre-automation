@@ -24,6 +24,8 @@ spec:
       serviceAccountName: {{ include "sentinel.observerSA" $root }}
       {{- else if eq (.serviceAccount | default "") "actuator" }}
       serviceAccountName: {{ include "sentinel.actuatorSA" $root }}
+      {{- else if eq (.serviceAccount | default "") "sandbox" }}
+      serviceAccountName: {{ include "sentinel.sandboxSA" $root }}
       {{- end }}
       containers:
         - name: {{ .name }}
