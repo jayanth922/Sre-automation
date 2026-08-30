@@ -2,8 +2,10 @@
 """Unit tests for the Slack transport (project #3). No Slack/MCP needed."""
 
 import asyncio
+import importlib
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,39 @@ _spec = importlib.util.spec_from_file_location("slack_bot", _PKG / "slack_bot.py
 sb = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = sb
 _spec.loader.exec_module(sb)
+
+
+def _install_fake_slack_bolt():
+    """Inject a fake slack_bolt so build_slack_app's real relative imports
+    (from ..war_room import ...) resolve — requires importing the module as
+    part of its real package, unlike the by-path `sb` above."""
+
+    class FakeAsyncApp:
+        def __init__(self, token=None):
+            self.token = token
+            self.handlers = {}
+
+        def event(self, name):
+            def decorator(fn):
+                self.handlers[name] = fn
+                return fn
+
+            return decorator
+
+    fake_pkg = types.ModuleType("slack_bolt")
+    fake_async_app_mod = types.ModuleType("slack_bolt.async_app")
+    fake_async_app_mod.AsyncApp = FakeAsyncApp
+    fake_pkg.async_app = fake_async_app_mod
+    sys.modules["slack_bolt"] = fake_pkg
+    sys.modules["slack_bolt.async_app"] = fake_async_app_mod
+
+
+def _build_real_app_with_registry(registry):
+    _install_fake_slack_bolt()
+    from sre_agent.integrations import slack_bot as real_sb
+
+    importlib.reload(real_sb)
+    return real_sb.build_slack_app(registry)
 
 
 def test_format_reply_modes():
@@ -54,6 +89,68 @@ def test_process_mention_query_path():
 
     reply = asyncio.run(sb.process_mention("<@U1> checkout error rate", None, respond, handler=fake_handler))
     assert "rate(errors[5m])" in reply
+
+
+def test_merged_app_registers_message_handler_only_with_registry():
+    app_without_registry = _build_real_app_with_registry(None)
+    assert "message" not in app_without_registry.handlers
+    assert "app_mention" in app_without_registry.handlers
+
+
+def test_message_handler_ignores_bot_messages_and_non_war_room_threads():
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+    handler = app.handlers["message"]
+
+    posted = []
+
+    async def fake_say(text, thread_ts):
+        posted.append((text, thread_ts))
+
+    async def scenario():
+        # Bot's own message: ignored even inside the tracked thread.
+        await handler({"bot_id": "B1", "channel": "C1", "thread_ts": "T1", "text": "hi"}, fake_say)
+        # No thread_ts at all (a top-level channel message): ignored.
+        await handler({"channel": "C1", "text": "hi"}, fake_say)
+        # Thread not tracked as a war room: ignored.
+        await handler({"channel": "C9", "thread_ts": "T9", "text": "hi"}, fake_say)
+
+    asyncio.run(scenario())
+    assert posted == []
+
+
+def test_message_handler_routes_tracked_war_room_reply():
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+    import sre_agent.war_room as war_room_mod
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+    handler = app.handlers["message"]
+
+    posted = []
+
+    async def fake_say(text, thread_ts):
+        posted.append((text, thread_ts))
+
+    async def fake_default_handler(text, incident_id):
+        assert incident_id == "inc-1"
+        assert text == "what's the error rate?"
+        return {"status": "RESPONDED", "response": "3%."}
+
+    original_handler = war_room_mod._default_handler
+    war_room_mod._default_handler = fake_default_handler
+    try:
+        asyncio.run(
+            handler({"channel": "C1", "thread_ts": "T1", "text": "what's the error rate?"}, fake_say)
+        )
+    finally:
+        war_room_mod._default_handler = original_handler
+
+    assert posted == [("3%.", "T1")]
 
 
 if __name__ == "__main__":

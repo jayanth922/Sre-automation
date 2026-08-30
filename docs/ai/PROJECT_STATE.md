@@ -4,59 +4,48 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-Post-integration regression fixes are implemented on `codex/post-integration-regression-fixes` from `master` (`d28a714`) after all 41 backlog packages and PR #34 were merged.
+Five-phase production upgrade track (Jira, observability, memory, multi-tenancy, benchmark) vs. HolmesGPT-class competitors. PR #44 (Temporal sandbox verification) and PR #45 (Slack conversational memory) are merged into `master`. PR #46 (Jira ticketing, phase 1) and PR #47 (Langfuse observability, phase 2) are open, behind `master`, and being rebased/merged next, in that order. Phases 3-5 (memory sophistication, multi-tenant secure access, AIOpsLab benchmark) are not yet started — see the active plan file for full detail on all five phases.
 
-### Integrated Backlog Tracks & Platform Additions
-- **Foundation (T01–T10):** Multi-agent LangGraph core, MCP adapters, state store, observability, and evaluation baseline.
-- **Evaluation & Guardrails (A01–A10):** Run provenance (A01), recovery grading (A02), MTTR/diagnostics statistics (A03–A04), task-specific confidence calibration (A05), prompt-injection & adversarial safety (A06–A07), trace accounting (A08), release evaluation gates (A09), and verified-only learning (A10).
-- **Robustness & Operations (R01–R11):** Mutation gateway & locks (R01), durable job leases (R02), namespace isolation (R03), per-cluster model routing (R04), canonical graph runner (R05), canonical audit log storage & retention (R06), truthful cluster heartbeat (R07), fail-closed admission concurrency (R08), distributed live event bus (R09), evidence-based severity engine (R10), and external incident/PR loops (R11).
-- **Production Platform (P01–P11):** Provider config defaults (P01), typed settings (P02), websocket routing (P03), production Helm chart (P04), Terraform Helm module (P05), generic platform overlays (P06), ORM model consolidation (P07), CI quality gates (P08), integration test layers (P09), dead module reachability enforcement (P10), and truthful documentation & benchmark fixtures (P11).
-- **Supported LLM Providers (PR #34):** Supported providers across the platform are restricted strictly to `anthropic` (default) and `gemini`. Legacy providers (`groq`, `ollama`, `nvidia`, `openai`, `openai_compatible`) fail closed with actionable migration guidance.
+Temporal sandbox (PR #44) is a **log-based recovery oracle only**: replay the log evidence that proved an incident was broken, apply the proposed patch inside an isolated K8s Job, re-run, and diff logs to verdict RESOLVED/REGRESSED/INCONCLUSIVE. Not a general-purpose code interpreter or test runner.
 
 ## Current architecture and invariants
-- **Strict LLM Provider Guard:** `sre_agent.provider_config.SUPPORTED_PROVIDERS` and `sre_agent.cluster_context.SUPPORTED_LLM_PROVIDERS` restrict model operations to `anthropic` and `gemini`. `validate_startup_config` verifies credentials at CLI/container boot before database migrations or web server startup.
-- **Single Canonical Runner:** All production callers (`sre_agent/job_worker.py`, `mission_control.py`) invoke the LangGraph incident pipeline strictly through `sre_agent.incident_runner.run_incident_investigation`. Historical `sre_agent/agent_runtime_tasks.py` is quarantined as a forwarding shim.
-- **Durable Job Worker Pipeline:** Incidents and investigations run as PostgreSQL lease-backed durable jobs with heartbeat renewals, bounded retry attempts, cancellation, and dead-letter queueing (`sre_agent/job_worker.py`).
-- **Unified ORM & Migration Linearity:** All models inherit from `backend.models.Base`. Audit storage uses `AgentAuditLog` (R06 schema with composite timestamp indexes, superseding P07). Alembic maintains a strict single-head chain terminating at `2253eabf13e3` (`add_cluster_heartbeat_truth`). Obsolete revisions `a9b0c1d2e3f4`, `e6f7a8b9c0d1`, and `d5e6f7a8b9c0` must not be restored.
-- **Distributed Live Events:** `sre_agent.live_events` multiplexes incident lifecycle notifications across API replicas via Redis pub/sub with an in-memory fallback.
-- **Evidence-Based Severity & Fail-Closed Logic:** `sre_agent.severity_engine` derives incident severity solely from measured evidence links (`EvidenceLink`). Missing telemetry escalates to `UNKNOWN` or higher severity; it never fabricates calm values.
-- **Mutation Gateway & Safety:** Cluster writes pass `sre_agent.mutation_gateway` with namespace constraints, tenant isolation, idempotency locks, approval interrupts, and audit logs.
-- **Verified Learning:** `sre_agent.act_phase` mandates verified objective resolution before skills can be promoted to `skill_store`. Uncalibrated confidence fails closed to requiring human approval.
-- **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt, model, and tool changes against content-addressed statistical and adversarial evidence bundles.
-- **Module Reachability Governance:** `scripts/check_module_reachability.py` ensures no unmanaged top-level modules exist in `sre_agent/`. Scaffolding modules (`agent_audit`, `models`, `actor_runtime`, `code_sandbox`, `terminal_agent`, `toolsets`) are tracked in `EXPERIMENTAL`.
+- **Strict LLM Provider Guard:** `sre_agent.provider_config.SUPPORTED_PROVIDERS` restricts model operations to `anthropic` and `gemini`.
+- **Single Canonical Runner:** production callers invoke the LangGraph pipeline via `sre_agent.incident_runner.run_incident_investigation`.
+- **Durable Job Worker Pipeline:** `sre_agent/job_worker.py` — PostgreSQL lease-backed durable jobs.
+- **Mutation Gateway & Safety:** cluster writes pass `sre_agent.mutation_gateway`; sandbox K8s Job lifecycle passes the analogous `sre_agent.sandbox_gateway.authorize_and_provision_sandbox` (same tenant/namespace/idempotency/audit checks, registered in `namespace_scope._NAMESPACE_ARG_TOOLS`).
+- **Code-fix verification workflow:** `sre_agent/sandbox_workflow.py::CodeFixVerificationWorkflow` (Temporal) — 6 activities (baseline → apply_patch → candidate → verify_recovery → emit_verdict → cleanup), each with a bounded `RetryPolicy(maximum_attempts=3)`; `cleanup_activity` runs in `try/finally` so K8s Job teardown is guaranteed even on activity failure. `diff_logs()` is the pure oracle function. Verdict lands via `incident_timeline.emit_timeline_event(event_type="act", ...)` and `resolution_report.code_fix`.
+- **Trigger point:** `sre_agent/graph_builder.py::_act_gate_node` — after ACT phase, scans `action_reports` for a `GITHUB_EXEC_TOOL_MAP` action with sandbox parameters; fires `temporal_client.start_workflow(...)` fire-and-forget (non-blocking on OODA loop), sets `code_fix.status = "VERIFYING"`, or `"INCONCLUSIVE"` gracefully if Temporal is disabled/misconfigured. Never raises into ACT report generation.
+- **Temporal deploy:** self-hosted via Helm (`temporal.deploy` toggle in `values.yaml`), Postgres-backed (`temporal`/`temporal_visibility` DBs in the existing Postgres instance). Worker (`deploy/helm/sentinel/templates/temporal-worker.yaml`) reuses the `sentinel/api` image, runs `python -m sre_agent.sandbox_worker` — no new Dockerfile/CI image job.
+- **Sandbox RBAC:** dedicated `sentinel-sandbox` namespace (always rendered regardless of `rbac.namespaced`/`rbac.clusterWide`), least-privilege Role: `batch/jobs` (create/get/list/watch/delete) + `pods/log` (get/list/watch) only. The actuator's separate pods-only-delete invariant (`tests/test_rbac_scope.py::_assert_delete_is_pods_only`) is scoped to skip this always-rendered sandbox block (it's a distinct ServiceAccount/namespace/concern).
+- **Module Reachability Governance:** `scripts/check_module_reachability.py`; standalone `python -m` workers with no in-process caller (`job_worker.py`, `sandbox_worker.py`) are declared directly as `ENTRY_FILES` roots.
+- **Dependency layering:** `temporalio` is a `temporal` optional extra in `pyproject.toml` (`pip install sre-agent[temporal]`); `kubernetes` client lives only in `edge_mcp_servers/mcp_servers/sandbox_real/requirements.txt`. Neither is in the base lock — CI's `backend-tests` job now runs `uv sync --frozen --extra dev --extra temporal` so the Temporal-dependent tests actually execute (previously would have silently skipped via `pytest.importorskip`).
 
 ## Completed or verified work
-- Fully merged all 41 backlog work packages and PR #34 to `master`.
-- Restored namespace enforcement for MCP reads and query selectors, including blocking namespace enumeration.
-- Repaired scoped audit persistence, per-cluster LLM credential validation, canonical durable runner arguments, recurring job-lease renewal, and durable mission-control follow-ups.
-- Restricted the investigation worker to investigation jobs, added release-evaluation and Terraform to the aggregate CI gate, and isolated generated runbooks in ACT integration tests.
+- All 10 plan components implemented: `sandbox_real` edge MCP server, sandbox RBAC (plain manifest + Helm), `sandbox_gateway.py`, `executor.py` sandbox tool map, `temporal_client.py`, `sandbox_workflow.py`, `graph_builder.py` trigger wiring, self-hosted Temporal Helm deploy + `sandbox_worker.py`, `temporal` optional dependency extra, full test coverage (unit + gateway + Temporal `WorkflowEnvironment` workflow tests).
+- Fixed a genuine production bug found via testing: workflow activities had no bounded retry policy, so Temporal's unbounded default retries would stall guaranteed cleanup indefinitely on a persistently-failing sandbox stage. Fixed with `RetryPolicy(maximum_attempts=3)` on all 6 activity calls.
+- Fixed a test-invariant regression: `test_rbac_scope.py`'s pods-only-delete check was scanning the whole Helm RBAC template and choked on the new sandbox Role's legitimate `batch/jobs` delete verb; rescoped the check to exclude the always-rendered sandbox block.
 
 ## Active problem
-Resolved locally. `benchmarks/release/candidate/bundle.json` was regenerated (`change_class: "tool"`, `candidate.source_digest` recomputed via `release_gate.py digest`) to match the protected `sre_agent/mcp_tool_wrapper.py` change on `codex/post-integration-regression-fixes`. `release_gate.py impact` against `master..HEAD` now reports `PROMOTE`. PR #42 (`codex/post-integration-operational-fixes`, non-protected fixes) is open, `MERGEABLE`/`CLEAN`, all CI checks green, not yet merged. This branch is not yet pushed or opened as a PR.
+PR #46 and PR #47 both went `CONFLICTING`/behind `master` once PR #44/#45 merged (same pattern PR #45 hit against PR #44: `benchmarks/release/candidate/bundle.json`'s `source_digest` is full-tree hashed, not diff-based, so any branch behind `master` needs a fresh merge + digest recompute before its release-evaluation gate will pass). Both PRs' CI also only shows 17 checks instead of 18 — harmless: PR #44 added a new `Edge MCP images (sandbox_real)` matrix job, and #46/#47 branched before that landed, so their copy of `.github/workflows/ci.yml` predates it. Resolves itself once each branch merges `master` in.
 
 ## Relevant files
-- `sre_agent/provider_config.py` & `sre_agent/constants.py` (Supported LLM providers)
-- `sre_agent/incident_runner.py` (Canonical entrypoint)
-- `sre_agent/job_worker.py` (Durable job runner)
-- `sre_agent/namespace_scope.py` & `sre_agent/mcp_tool_wrapper.py` (Read isolation and scoped audit)
-- `sre_agent/api/v1/mission_control.py` (Durable follow-up queueing)
-- `sre_agent/severity_engine.py` & `sre_agent/act_phase.py` (Severity & ACT execution)
-- `backend/models.py` & `backend/alembic/versions/` (Database schemas & migrations)
-- `benchmarks/release_gate.py` (Release evaluation contracts)
-- `scripts/check_python_quality.sh` & `scripts/check_module_reachability.py` (CI validation)
+- `sre_agent/sandbox_workflow.py`, `sre_agent/sandbox_gateway.py`, `sre_agent/temporal_client.py`, `sre_agent/sandbox_worker.py`
+- `sre_agent/graph_builder.py` (`_act_gate_node` trigger), `sre_agent/executor.py` (`GITHUB_EXEC_TOOL_MAP`, sandbox tool map), `sre_agent/resolution_report.py` (`code_fix` field)
+- `edge_mcp_servers/mcp_servers/sandbox_real/`
+- `deploy/helm/sentinel/templates/rbac.yaml`, `temporal-worker.yaml`, `datastores.yaml`; `deploy/k8s/rbac.yaml`
+- `tests/test_sandbox_workflow.py`, `tests/test_sandbox_gateway.py`, `tests/test_sandbox_temporal_workflow.py`, `tests/test_rbac_scope.py`
+- `.github/workflows/ci.yml` (backend-tests: `--extra temporal`)
+- `benchmarks/release_gate.py`, `benchmarks/release/v1/policy.json`, `benchmarks/release/candidate/bundle.json` (release-evidence gate; regenerate `candidate.source_digest` via `uv run python benchmarks/release_gate.py digest --policy benchmarks/release/v1/policy.json --repo-root .` after any merge from `master`)
+- `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` (full 5-phase plan: Jira / Langfuse / memory / multi-tenancy / AIOpsLab benchmark)
 
 ## Verification commands and latest results
-- `uv run pytest -q` -> 673 passed in 3.92s; tracked runbook artifacts remained unchanged.
-- `bash scripts/check_python_quality.sh` -> Ruff critical, Mypy, and compileall pass.
-- `uv run python scripts/check_module_reachability.py` -> 67 reachable, 6 experimental.
-- `bash scripts/check_no_static_secrets.sh` -> Secret scan passed.
-- `bash scripts/check_eval_smoke.sh` -> 33 passed.
-- `bash scripts/check_helm_production.sh` & `check_terraform.sh` -> Manifest & Terraform checks pass.
-- Release matrix -> PASS; candidate bundle -> PROMOTE in isolation; `release_gate.py impact` against `master..HEAD` -> PROMOTE.
-- `uv run pytest -q` (full suite, re-verified after the bundle fix) -> 674 passed in 4.05s.
+- `uv run pytest -q` -> 693 passed, 2 skipped on `master` post PR #44+#45.
+- `uv run python scripts/check_module_reachability.py` -> 71 reachable, 6 experimental.
+- `bash scripts/check_helm_production.sh` / `bash scripts/check_kustomize.sh` -> pass.
+- `gh pr checks 44` / `gh pr checks 45` -> 18/18 green before merge; both `MERGED`.
 
 ## Known blockers or risks
-- None outstanding for this fix. Merging PR #42 and pushing/opening a PR for `codex/post-integration-regression-fixes` are pending user confirmation (shared-state actions), not technical blockers.
+None external. PR #46 (Jira) needs real per-cluster Jira credentials from the user for full end-to-end validation eventually, but code/tests are self-contained and don't block merging. PR #47 (Langfuse) is fully self-hosted, no external account needed.
 
 ## Next bounded task
-- Merge PR #42, then push `codex/post-integration-regression-fixes` (already rebased on the post-merge `master` since it already contains PR #42's commit) and open its PR; CI's "Release evaluation contract" job should reproduce the local `PROMOTE` result.
+Merge `master` into `feature/jira-ticketing-integration` (PR #46), resolve conflicts (expect `bundle.json` digest, possibly `PROJECT_STATE.md`), recompute release digest, verify CI green, merge. Then repeat for `feature/langfuse-observability` (PR #47), merging the now-updated `master` (including #46) in first.

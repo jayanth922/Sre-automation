@@ -276,6 +276,81 @@ async def _act_gate_node(
                         getattr(tool_caller, "mcp_client", None)
                     )
 
+        # Code-fix verification sandbox: a reflector hypothesis that proposes a
+        # code-level change (revert_commit/revert_pr/comment_pr) gets a
+        # fire-and-forget Temporal workflow that replays the log evidence
+        # against the unpatched and patched code to answer "did this actually
+        # fix it?" — independent of EXECUTOR_LIVE, since it never touches a
+        # live cluster, only an isolated sandbox namespace. The verdict lands
+        # later via incident_timeline.emit_timeline_event, possibly after this
+        # report is already returned.
+        if incident_id and report.plan_present:
+            try:
+                from .executor import GITHUB_EXEC_TOOL_MAP
+                from .temporal_client import start_workflow, temporal_enabled
+
+                code_action = next(
+                    (
+                        a
+                        for a in report_payload.get("action_reports", [])
+                        if a.get("action_type") in GITHUB_EXEC_TOOL_MAP
+                    ),
+                    None,
+                )
+                if code_action is not None:
+                    params = code_action.get("parameters") or {}
+                    patch = params.get("patch") or params.get("diff")
+                    runner_image = params.get("sandbox_runner_image")
+                    baseline_command = params.get("sandbox_baseline_command")
+                    candidate_command = params.get("sandbox_candidate_command")
+                    failure_signature = params.get("sandbox_failure_signature")
+                    if not temporal_enabled():
+                        report_payload["code_fix"] = {
+                            "status": "INCONCLUSIVE",
+                            "detail": "Sandbox verification is disabled (TEMPORAL_ENABLED=false).",
+                            "diff": patch,
+                        }
+                    elif not all([patch, runner_image, baseline_command, candidate_command, failure_signature]):
+                        report_payload["code_fix"] = {
+                            "status": "INCONCLUSIVE",
+                            "detail": "Proposed fix is missing sandbox verification parameters "
+                            "(patch/runner image/commands/failure signature); skipping sandbox run.",
+                            "diff": patch,
+                        }
+                    else:
+                        from .execution_context import require_execution_context
+                        from .sandbox_workflow import CodeFixVerificationInput, CodeFixVerificationWorkflow
+
+                        ctx = require_execution_context(execution_context)
+
+                        workflow_input = CodeFixVerificationInput(
+                            incident_id=str(incident_id),
+                            organization_id=str(ctx.organization_id),
+                            cluster_id=str(ctx.cluster_id),
+                            runner_image=str(runner_image),
+                            baseline_command=list(baseline_command),
+                            candidate_command=list(candidate_command),
+                            patch=str(patch),
+                            failure_signature=str(failure_signature),
+                        )
+                        workflow_id = f"code-fix-verify-{incident_id}-{current_action_hash[:12]}"
+                        started_id = await start_workflow(
+                            CodeFixVerificationWorkflow.run,
+                            [workflow_input],
+                            workflow_id=workflow_id,
+                        )
+                        report_payload["code_fix"] = (
+                            {"status": "VERIFYING", "workflow_id": started_id, "diff": patch}
+                            if started_id
+                            else {
+                                "status": "INCONCLUSIVE",
+                                "detail": "Sandbox verification could not be started.",
+                                "diff": patch,
+                            }
+                        )
+            except Exception as sandbox_err:
+                logger.warning(f"Code-fix sandbox verification failed to start (non-fatal): {sandbox_err}")
+
         # Self-improving loop: propose prior skills and record only verified successes.
         report_payload["proposed_skills"] = []
         report_payload["recorded_skill"] = None

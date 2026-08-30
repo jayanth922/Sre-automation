@@ -302,6 +302,8 @@ class Incident(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     jira_issue_key: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    slack_channel: Mapped[Optional[str]] = mapped_column(String(64))
+    slack_thread_ts: Mapped[Optional[str]] = mapped_column(String(32))
 
     # Relationships
     cluster: Mapped["Cluster"] = relationship(back_populates="incidents")

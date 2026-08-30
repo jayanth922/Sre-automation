@@ -27,6 +27,9 @@ ENTRY_FILES = [
     SRE / "agent_runtime_tasks.py",
     SRE / "graph_builder.py",
     SRE / "multi_agent_langgraph.py",
+    # Standalone `python -m` worker processes: never imported by the API
+    # itself, so they need to be declared as their own reachability roots.
+    SRE / "sandbox_worker.py",
 ]
 
 

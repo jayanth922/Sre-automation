@@ -4,3 +4,13 @@ metadata:
   name: sentinel
   labels:
     app.kubernetes.io/part-of: sentinel
+---
+# Dedicated, isolated namespace for ephemeral code-fix verification Jobs.
+# Never reused for a real customer workload — untrusted AI-generated code
+# runs here and only here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinel-sandbox
+  labels:
+    app.kubernetes.io/part-of: sentinel

@@ -1,7 +1,7 @@
 """Add Jira ticketing fields (per-cluster credentials, per-incident issue key).
 
 Revision ID: db94419c24dc
-Revises: 2253eabf13e3
+Revises: f6a7b8c9d0e1
 Create Date: 2026-08-30 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "db94419c24dc"
-down_revision: Union[str, None] = "2253eabf13e3"
+down_revision: Union[str, None] = "f6a7b8c9d0e1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
