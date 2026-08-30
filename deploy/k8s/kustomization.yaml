@@ -1,6 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: sentinel
+# No global `namespace:` transformer: every resource below already declares
+# its own explicit `metadata.namespace` (sentinel, or sentinel-sandbox for
+# the sandbox RBAC in rbac.yaml). Kustomize's namespace transformer also
+# renames any `Namespace`-kind resource's `metadata.name` to match, which
+# would collide the "sentinel" and "sentinel-sandbox" Namespace objects into
+# one, and would silently re-namespace the sandbox Role/RoleBinding into
+# "sentinel" — defeating the sandbox's isolation guarantee.
 resources:
   - namespace.yaml
   - config.yaml

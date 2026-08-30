@@ -52,6 +52,17 @@ GITHUB_EXEC_TOOL_MAP: Dict[str, str] = {
     "comment_pr": "comment_on_pr",
 }
 
+# Sandbox verification → sandbox MCP server tools (K8s Job lifecycle for the
+# Temporal-orchestrated code-fix verification workflow). Not reachable through
+# Executor._aexecute_unchecked — the workflow calls these via
+# sandbox_gateway.authorize_and_provision_sandbox, never directly.
+SANDBOX_TOOL_MAP: Dict[str, str] = {
+    "provision": "sandbox_provision",
+    "status": "sandbox_status",
+    "logs": "sandbox_logs",
+    "teardown": "sandbox_teardown",
+}
+
 
 class ExecutionMode(str):
     DRY_RUN = "dry_run"
@@ -421,3 +432,12 @@ async def build_github_exec_tool_caller(
 ):
     """Tool caller bound to this tenant's GitHub executor MCP server."""
     return await build_mcp_tool_caller(context, "github_exec", uri=uri)
+
+
+async def build_sandbox_tool_caller(
+    context: Optional[ExecutionContext] = None,
+    *,
+    uri: Optional[str] = None,
+):
+    """Tool caller bound to this tenant's sandbox MCP server."""
+    return await build_mcp_tool_caller(context, "sandbox", uri=uri)

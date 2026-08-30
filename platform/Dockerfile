@@ -30,6 +30,12 @@ RUN uv sync --frozen --no-dev
 # LLM_PROVIDER=anthropic. Groq / openai_compatible work without it.
 RUN uv pip install --no-cache "langchain-anthropic>=0.2.0"
 
+# Temporal client/worker SDK. Same image doubles as the sandbox workflow
+# worker (see deploy/helm/sentinel/templates/temporal-worker.yaml) with a
+# different entrypoint, so it needs this even though the API process itself
+# never imports sre_agent.sandbox_workflow directly.
+RUN uv pip install --no-cache "temporalio>=1.7.0"
+
 # Copy application code — only platform-relevant modules
 COPY sre_agent/ ./sre_agent/
 COPY backend/   ./backend/
