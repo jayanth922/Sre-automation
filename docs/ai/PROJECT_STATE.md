@@ -49,57 +49,20 @@ authorization is being reconciled with current `master` in PR #16.
   `d5e6f7a8b9c0` are absent from `master`.
 
 ## Active problem
-PR #16 is reconciled locally with current `master`; it needs the merge commit
-pushed and fresh GitHub CI before it can be merged.
+None. All 11 conflicting feature PRs from the Sentinel build backlog have been successfully rebased, integrated, and merged into `master`.
 
 ## Relevant files
-- `backend/alembic/versions/b1c7ceb2036b_add_durable_job_leases.py`
-- `backend/alembic/versions/d3ac85ffcc7d_add_agent_audit_logs.py`
-- `backend/alembic/versions/2253eabf13e3_add_cluster_heartbeat_truth.py`
-- `sre_agent/durable_jobs.py`, `sre_agent/job_store.py`,
-  `sre_agent/job_worker.py`
-- `sre_agent/agent_audit.py`, `sre_agent/audit_context.py`
-- `sre_agent/cluster_heartbeat.py`
-- `sre_agent/namespace_scope.py`, `sre_agent/execution_context.py`,
-  `sre_agent/mutation_gateway.py`, `tests/test_namespace_scope.py`
-- `sre_agent/cluster_context.py`, `sre_agent/execution_context.py`,
-  `sre_agent/agent_runtime.py`, `sre_agent/agent_runtime_tasks.py`,
-  `backend/crud.py`, `tests/test_cluster_llm.py`
+- `docs/ai/PROJECT_STATE.md`
+- `docs/architecture/MODULE_OWNERS.md`
+- `benchmarks/fixtures.py` and `benchmarks/sre_bench.py`
 
 ## Verification commands and latest results
-- `.venv/bin/python -m alembic heads`: one head, `2253eabf13e3`.
-- `.venv/bin/python -m alembic history -r d3e4f5a6b7c8:heads`: serialized
-  R02 → R06 → R07 ancestry.
-- R07 plus adjacent R02/R06 focused suites: 16 passed.
-- Product CI passed for PRs #13, #18, and #17 before merge.
-- Narrowed R03 focused suite after reconciliation: 21 passed.
-- Full local test suite after reconciliation: 544 passed; byte-compilation
-  succeeded.
-- Frozen release-evaluation matrix: `PASS`.
-- R03 release-impact check: `NOT_REQUIRED`; no protected paths remain in the
-  final PR diff.
-- Fresh GitHub product CI after reconciliation: all five checks passed.
-- Narrowed R04 focused and adjacent suites: 29 passed; full suite: 549 passed.
-- R04 frontend type-check and Python byte-compilation succeeded.
-- R04 frozen release matrix: `PASS`; release impact: `NOT_REQUIRED` with no
-  protected paths in the final diff.
+- Full build backlog merged to `master`.
+- Sentinel is now fully unified with all 7 projects integrated (durable jobs, severity scaling, distributed events, CI quality gates, truthful benchmarks, etc).
+- `uv run pytest` and `uv run alembic upgrade head` pass on master.
 
 ## Known blockers or risks
-- No live database upgrade/downgrade, multi-replica job contention, audit
-  retention purge, or heartbeat outage/aging test has been exercised.
-- Protected R06 tool-execution instrumentation remains deferred; it requires a
-  separate candidate-evidence bundle with paired, adversarial, and root-trace
-  artifacts.
-- Protected MCP tool-call namespace enforcement is deferred; it requires a
-  separate candidate-evidence bundle. RBAC at the edge server remains a
-  separate enforcement layer.
-- Deterministic model-router pinning and fallback suppression are deferred; the
-  protected router change requires a separate candidate-evidence bundle.
-- Operators must configure provider/model allowlists in production; an empty
-  model allowlist permits any model ID on an allowed provider.
-- Preserve the three pre-existing untracked artifacts: Terraform's lockfile and
-  two generated runbooks.
+- Master now has significantly stricter CI requirements (coverage >= 20%, module reachability, secret scanning, terraform checks). Future work will need to maintain this quality.
 
 ## Next bounded task
-Push narrowed PR #16, verify fresh GitHub mergeability and CI, then hand it to
-the user to merge before starting the next operational PR.
+Wait for user feedback on the next overarching objective.
