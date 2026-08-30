@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple, cast
 
 _MCP_ENDPOINT_ENV = {
     "k8s": "MCP_K8S_URI",
@@ -232,12 +232,15 @@ class ExecutionContext:
         """Exact authorized LLM settings for traces/UI (no secrets)."""
         from .cluster_context import llm_manifest
 
-        return llm_manifest(
-            {
-                "provider": self.llm_provider,
-                "model": self.llm_model,
-                "base_url": self.llm_base_url,
-            }
+        return cast(
+            dict[str, Optional[str]],
+            llm_manifest(
+                {
+                    "provider": self.llm_provider,
+                    "model": self.llm_model,
+                    "base_url": self.llm_base_url,
+                }
+            ),
         )
 
 
