@@ -196,10 +196,25 @@ fixes, non-blocking (`LANGFUSE_TRACING=false`).
   still worth doing.
 
 ## Next bounded task
-No live-data testing is currently possible (see blockers above) — this is
-a natural stopping point for that thread of work. Pick one:
-1. Restart whatever serves `host.docker.internal:9090`/`:3100` locally (or
-   tell the next session what it is) so a real resolve-outcome test can run.
-2. Run `uv run pytest -q` and `ruff check` on the 6 bug-fix files from
-   commit `1d8ea60` — deferred all session, doesn't need any live stack.
-3. Something else — reprioritize.
+Stand up the Meridian demo app **inside the codespace** so telemetry no
+longer depends on the laptop at all:
+1. The user's local `host.docker.internal:9090`/`:3100` telemetry came from
+   a Kubernetes cluster run via **OrbStack** (macOS-only, can't run in a
+   Codespace) hosting the **Meridian demo app**:
+   https://github.com/jayanth922/meridian-shop (public repo — "production-
+   standard e-commerce demo/target app: services, monitoring stack, load
+   generator, MCP signals server" — likely ships its own Prometheus/Loki
+   and self-generates traffic, so no separate data-faking needed).
+2. Plan: install `kind` in the codespace (pure Linux, works over Codespaces'
+   existing Docker — no OrbStack dependency), deploy `meridian-shop` into
+   it, apply this repo's `deploy/examples/meridian` overlay to point
+   Sentinel at it, then update the `clusters` row's `prometheus_url`/
+   `loki_url` from `host.docker.internal:*` to the in-cluster/NodePort
+   addresses.
+3. Not yet started — deploy method used on OrbStack (`kubectl apply` vs.
+   Helm vs. script) not yet confirmed; check `meridian-shop`'s own
+   README/manifests first.
+
+Fallback, if the above stalls: `uv run pytest -q` and `ruff check` on the 6
+bug-fix files from commit `1d8ea60` — deferred all session, needs no live
+stack.
