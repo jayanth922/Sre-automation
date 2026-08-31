@@ -10,7 +10,7 @@ agent runtime, and the tool servers all deploy together into one namespace, and
 no telemetry leaves the client's infrastructure.
 
 Design principle throughout: **orchestrate, don't override.** Clients bring their
-own LLM, their own MCP tool servers, their own runbooks (Notion or local), and
+own LLM, their own MCP tool servers, their own runbooks (Notion), and
 their own metric conventions — Sentinel adapts to them.
 
 ## What it does
@@ -27,7 +27,7 @@ their own metric conventions — Sentinel adapts to them.
   else requires human approval. Live actions are verified against the metrics
   afterward. Read-only by default.
 - **Memory + runbooks.** Skill memory recalls what resolved similar incidents;
-  runbooks come from the client's Notion database or a local corpus and feed RAG.
+  runbooks come from the client's Notion database and feed RAG.
 - **Two front doors.** A live web console and a Slack on-call bot both write to
   the same incident conversation.
 
@@ -98,7 +98,58 @@ Claude and fast narration on Gemini.
   to the exact source digest of what changed; a change without matching
   evidence fails closed instead of shipping unverified.
 
-## Deploy (same-machine Kubernetes)
+## Quickstart — try it locally
+
+The fastest way to see Sentinel running is two Docker Compose stacks on your
+own machine: the **edge relay** (tool servers that reach your
+Prometheus/Loki/GitHub/runbooks) and the **platform** (API, agent, dashboard,
+Postgres/Redis/Qdrant, and a self-hosted Langfuse — all bundled, nothing to
+provision separately).
+
+```bash
+git clone <this-repo-url> && cd Sre-automation
+
+# 1. Configure the platform. The LLM key is the only thing you must set.
+cp .env.example .env
+#   - set ANTHROPIC_API_KEY (or GOOGLE_API_KEY + LLM_PROVIDER=gemini)
+#   - generate a real CREDENTIAL_ENCRYPTION_KEY (cluster secrets are encrypted
+#     at rest with it — Settings will fail to save without one):
+python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
+#   - pick any value for MCP_SERVICE_TOKEN — it must match edge_mcp_servers/.env below
+
+# 2. Configure the edge relay — this is what points at your infrastructure.
+cp edge_mcp_servers/.env.example edge_mcp_servers/.env
+#   - set PROMETHEUS_URL / LOKI_URL / GITHUB_TOKEN / GITHUB_REPO for your stack
+#   - set the same MCP_SERVICE_TOKEN as .env above
+#   (defaults point at host.docker.internal, so a Prometheus/Loki already
+#   running on your machine works with no edits)
+
+# 3. Start both stacks.
+cd edge_mcp_servers && ./start.sh && cd ..   # tool servers on :4000-4006
+cd platform && ./start.sh && cd ..           # API :8080, dashboard :3002
+```
+
+Then open **http://localhost:3002** and register — the first sign-up creates
+your organization and makes you its admin. Add a cluster in Settings
+(endpoints, metric conventions, GitHub repo, and optionally a Notion runbook
+database, a Jira project for ticketing, or a GitHub App install — all
+per-cluster, none required to start). From there, either point your
+Alertmanager at `POST http://localhost:8080/api/v1/alerts/webhook` with the
+cluster's token, or just wait — the built-in health monitor opens an incident
+on its own once it sees a breach.
+
+- API docs: http://localhost:8080/docs
+- Every LLM/tool call traced automatically: http://localhost:3030 (Langfuse)
+- Stop everything: `platform/stop.sh` and `edge_mcp_servers/stop.sh`
+- Logs: `docker compose -f platform/docker-compose.yaml logs -f sre-agent-api`
+
+Nothing here reaches the public internet except your LLM provider and
+whatever you connect (GitHub, Notion, Jira, Slack) — Postgres, Redis, Qdrant,
+and Langfuse all run locally in these two stacks. This is the same design as
+production, just on one machine: when you're ready to run it for real inside
+your own infrastructure, move to the Kubernetes deploy below.
+
+## Deploy to production (same-machine Kubernetes)
 
 Build the images once, then pick one:
 
@@ -135,9 +186,12 @@ conventions, GitHub repo, Notion runbook database) and point Alertmanager at
   `openai`, `openai_compatible`) is still configured.
 - **MCP tools** — register your own servers via `MCP_SERVERS_JSON`, merged with
   the built-ins.
-- **Runbooks** — a cluster's Notion database, or the local markdown corpus.
-- **Slack** — set the bot + app tokens to mirror incidents into your on-call
-  channel and let engineers steer via `@mention`.
+- **Runbooks** — a cluster's Notion database; no runbooks without it.
+- **Jira** — set a cluster's Jira URL/email/API token/project key to file a
+  ticket per incident and link it back from the incident page.
+- **Slack** — either a global bot token (self-hosted), or "Add to Slack"
+  OAuth from the dashboard's Team page (multi-tenant) to mirror incidents
+  into your on-call channel and let engineers steer via `@mention`.
 - **Datastores** — deploy the bundled Postgres/Redis/Qdrant, or bring your own
   (`*.deploy=false` + external endpoints).
 
