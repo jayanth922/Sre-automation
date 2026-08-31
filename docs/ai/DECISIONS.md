@@ -150,3 +150,41 @@
   `Cluster`/credentials object through every MCP tool handler signature, or
   giving each `Cluster` its own edge deployment (defeats the point of a
   shared control plane and multiplies operational cost per tenant).
+
+## AIOpsLab adapter plays back one investigation, not a live shell loop (Phase 5)
+
+- **Decision:** `benchmarks/aiopslab_adapter.py` does not reuse
+  `sre_bench.py`'s fire-webhook/poll-oracle harness pattern, even though that
+  was the plan's original sketch for this phase. Reading the live package
+  (github.com/microsoft/AIOpsLab: `orchestrator.py`, `parser.py`, the four
+  `tasks/*.py` files) showed AIOpsLab is an in-process orchestrator that owns
+  fault injection/workload/eval itself and drives a registered agent
+  turn-by-turn via `agent.get_action(state: str) -> str`, parsing one
+  markdown-fenced Python-call action per turn (`exec_shell(...)` /
+  `submit(...)`). `SREAIOpsLabAgent.get_action` runs our pipeline once on the
+  first turn, then plays back a fixed queue of AIOpsLab action strings built
+  from that single investigation — for the mitigation task, one
+  `exec_shell(...)` per already-executed remediation command (replaying
+  `sre_agent/executor.py::build_command()`'s output verbatim), then the
+  task-appropriate `submit(...)` (shape differs per task: detection/
+  localization/analysis/mitigation each have a distinct `submit()` payload).
+- **Reason:** Our pipeline investigates and remediates as one shot against
+  its own MCP-tool surface; it is not a turn-by-turn shell-driving agent the
+  way AIOpsLab's reference GPT client is. Building a true step-by-step
+  `exec_shell` explorer that reasons live off AIOpsLab's own tool output
+  would mean re-implementing investigation logic against a second, unrelated
+  tool surface — out of scope for a benchmark adapter.
+- **Consequences:** AIOpsLab's own `eval()` grades the *submitted* answer
+  (and, for mitigation, post-`exec_shell` cluster state) against its ground
+  truth and returns `TTD`/`TTL`/`TTA`/`TTM` plus accuracy fields —
+  `from_aiopslab_run()` only normalizes that dict for reporting; it does not
+  score independently the way `scoring.py::score_run` does for our own
+  harness. A live run needs `aiopslab` installed (not a project dependency,
+  same as `terminal-bench`) plus a local kind/minikube cluster with Helm —
+  `run_problem()` raises a clear `RuntimeError` when the package is missing;
+  `aiopslab_available()` lets callers check first.
+- **Rejected alternative:** Forcing the `sre_bench.py` webhook+oracle shape
+  onto AIOpsLab by wrapping its cluster behind our own alert-webhook API —
+  not possible without forking AIOpsLab's orchestrator, which owns the
+  cluster lifecycle end-to-end and never exposes an HTTP surface to fire
+  synthetic alerts at.
