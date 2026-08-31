@@ -22,6 +22,15 @@ router = APIRouter(
     dependencies=[Depends(get_current_user_and_org)],
 )
 
+# Separate router (same file, sibling prefix) for org-level info such as
+# whether Slack is connected — kept out of the /members prefix since it's
+# not member data.
+organization_router = APIRouter(
+    prefix="/organization",
+    tags=["organization"],
+    dependencies=[Depends(get_current_user_and_org)],
+)
+
 
 @router.get("", response_model=List[schemas.OrgMemberResponse])
 async def list_members(
@@ -30,6 +39,18 @@ async def list_members(
 ):
     """List all members of the caller's organization."""
     return await crud.get_users_for_org(db, user.org_id)
+
+
+@organization_router.get("", response_model=schemas.OrgResponse)
+async def get_organization(
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+):
+    """Return the caller's organization, including Slack-connected status."""
+    org = await crud.get_org_by_id(db, user.org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
 
 
 async def _member_in_org(db: AsyncSession, member_id: uuid.UUID, org_id: uuid.UUID) -> models.User:

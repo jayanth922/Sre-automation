@@ -26,6 +26,13 @@ export interface Cluster {
   llm_base_url: string | null
 }
 
+export interface Org {
+  id: string
+  name: string
+  created_at: string
+  slack_team_id: string | null
+}
+
 export type Severity = "critical" | "high" | "medium" | "low"
 export type IncidentStatusT = "open" | "investigating" | "resolved"
 

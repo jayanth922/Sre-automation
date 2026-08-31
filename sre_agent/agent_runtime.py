@@ -316,6 +316,7 @@ app.include_router(recommendations_router.router, prefix="/api/v1")
 # Organization member management (list roster, assign roles, deactivate)
 from sre_agent.api.v1 import members as members_router
 app.include_router(members_router.router, prefix="/api/v1")
+app.include_router(members_router.organization_router, prefix="/api/v1")
 
 # WebSocket ticket minting (see sre_agent/ws_auth.py)
 from sre_agent.api.v1 import ws_tickets as ws_tickets_router

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import { api, useAuth } from "@/lib/auth-context"
 import { ConsolePage } from "@/components/console/ConsolePage"
 import { SectionTitle, Spinner, Empty, ErrorNote } from "@/components/console/ui"
-import { timeAgo } from "@/lib/console"
+import { timeAgo, type Org } from "@/lib/console"
 
 interface Member {
   id: string
@@ -21,6 +21,7 @@ export default function TeamPage() {
   const meId = user?.user_id ?? ""
 
   const [members, setMembers] = useState<Member[] | null>(null)
+  const [org, setOrg] = useState<Org | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [slackConnecting, setSlackConnecting] = useState(false)
@@ -36,9 +37,19 @@ export default function TeamPage() {
     }
   }, [])
 
+  const loadOrg = useCallback(async () => {
+    try {
+      const r = await api.get<Org>("/organization")
+      setOrg(r.data)
+    } catch {
+      /* org info is a nice-to-have; Slack section falls back to no status */
+    }
+  }, [])
+
   useEffect(() => {
     load()
-  }, [load])
+    loadOrg()
+  }, [load, loadOrg])
 
   const mutate = async (m: Member, action: () => Promise<unknown>) => {
     setBusy(m.id)
@@ -81,9 +92,13 @@ export default function TeamPage() {
               }
             }}
           >
-            {slackConnecting ? "Redirecting…" : "Add to Slack"}
+            {slackConnecting ? "Redirecting…" : org?.slack_team_id ? "Reconnect Slack" : "Add to Slack"}
           </button>
-          {!isAdmin && <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>only admins can connect Slack</span>}
+          {org?.slack_team_id ? (
+            <span className="sx-badge ok">connected · {org.slack_team_id}</span>
+          ) : (
+            !isAdmin && <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>only admins can connect Slack</span>
+          )}
         </div>
         {slackErr && <ErrorNote>{slackErr}</ErrorNote>}
 
