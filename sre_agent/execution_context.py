@@ -132,6 +132,7 @@ class ExecutionContext:
                     cluster, "github_app_installation_id"
                 ),
                 "notion_api_key": _value(cluster, "notion_api_key"),
+                "notion_database_id": _value(cluster, "notion_database_id"),
                 "llm_api_key": llm.get("api_key") or _value(cluster, "llm_api_key"),
             }.items()
             if value
@@ -176,6 +177,8 @@ class ExecutionContext:
                 for name, value in {
                     "llm_api_key": llm.get("api_key") or os.getenv("LLM_API_KEY"),
                     "github_token": os.getenv("GITHUB_TOKEN"),
+                    "notion_api_key": os.getenv("NOTION_API_KEY"),
+                    "notion_database_id": os.getenv("NOTION_DATABASE_ID"),
                 }.items()
                 if value
             },

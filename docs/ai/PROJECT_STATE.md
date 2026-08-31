@@ -15,8 +15,17 @@ not a PR — user asked to commit and move on rather than open one):
 `benchmarks/aiopslab_adapter.py` + `tests/test_aiopslab_adapter.py`, written
 after reading the live AIOpsLab package (its real API diverges from the
 plan's original sketch — see `docs/ai/DECISIONS.md`'s "AIOpsLab adapter
-plays back one investigation, not a live shell loop" entry). No next
-milestone has been chosen yet — see "Next bounded task".
+plays back one investigation, not a live shell loop" entry).
+
+Post-Phase-5 (still on `master`, **not yet committed**): a Notion-only
+runbooks migration, per the user's instruction "regarding runbooks, remove
+local uploads of runbooks. only hosted on notion." All three runbook
+consumers (human catalog API, the agent's live `search_runbooks` MCP tool,
+the self-learning generative-runbook writer) now read/write Notion
+exclusively — the local markdown corpus is deleted. See "Current
+architecture" below and `docs/ai/DECISIONS.md`'s "Runbooks migrated to
+Notion-only hosting" entry. No next milestone chosen yet — see "Next
+bounded task".
 
 Real end-to-end OAuth validation for Phase 4 (an actual GitHub App + Slack
 app registered by the user) is intentionally deferred — user is configuring
@@ -38,7 +47,8 @@ test runner.
 - **Sandbox RBAC:** dedicated `sentinel-sandbox` namespace, least-privilege Role: `batch/jobs` (create/get/list/watch/delete) + `pods/log` (get/list/watch) only.
 - **Jira ticketing (Phase 1, PR #46):** per-Cluster DB-column credentials (`jira_url`/`jira_email`/`jira_api_token`/`jira_project_key`), not global env vars — deviated from the original plan sketch for real multi-tenant SaaS correctness (each customer has their own Jira site). `incidents.jira_issue_key` links incident to ticket.
 - **Observability (Phase 2, PR #47):** `sre_agent/tracing.py::langfuse_enabled()` is **opt-out** (`LANGFUSE_TRACING` defaults truthy). Self-hosted Langfuse (web/worker/clickhouse/minio, reusing the platform's own Postgres as a second logical DB `langfuse` and Redis DB index `/2`) wired in both `platform/docker-compose.yaml` and the Helm chart (`templates/langfuse.yaml`, gated by `.Values.langfuse.deploy`, default `true`). Headless `LANGFUSE_INIT_*` bootstrap auto-provisions org/project/API-keypair/admin-user so tracing works after a fresh boot with zero manual UI steps.
-- **Incident memory (Phase 3, PR #48, merged):** `sre_agent/memory_store.py` stores each incident as three separately-embedded named Qdrant vectors (`symptoms`/`root_cause`/`resolution`) in collection `sre_incidents_v2`, tenant-scoped by `organization_id`/`cluster_id` payload fields + Qdrant `Filter` on every search, recency-decayed ranking (`SENTINEL_MEMORY_RECENCY_HALF_LIFE_DAYS`, default 30d half-life), and cross-incident back-links computed at store time via a `root_cause`-similarity lookup. Point IDs are `uuid.uuid5(NAMESPACE, incident_id)` (deterministic across processes), not Python's `hash()` (see `DECISIONS.md`). Embedding bootstrap is unified in `sre_agent/embedding.py` — the process-wide `fastembed` singleton used by `memory_store.py` (`skill_store.py` has no embedding code to unify yet; `edge_mcp_servers/.../runbooks_local/server.py` intentionally keeps its own, since it's a separate customer-deployed container that never imports `sre_agent`).
+- **Incident memory (Phase 3, PR #48, merged):** `sre_agent/memory_store.py` stores each incident as three separately-embedded named Qdrant vectors (`symptoms`/`root_cause`/`resolution`) in collection `sre_incidents_v2`, tenant-scoped by `organization_id`/`cluster_id` payload fields + Qdrant `Filter` on every search, recency-decayed ranking (`SENTINEL_MEMORY_RECENCY_HALF_LIFE_DAYS`, default 30d half-life), and cross-incident back-links computed at store time via a `root_cause`-similarity lookup. Point IDs are `uuid.uuid5(NAMESPACE, incident_id)` (deterministic across processes), not Python's `hash()` (see `DECISIONS.md`). Embedding bootstrap is unified in `sre_agent/embedding.py` — the process-wide `fastembed` singleton used by `memory_store.py` (`skill_store.py` has no embedding code to unify yet; the runbooks MCP server no longer embeds anything — see the Notion-only runbooks bullet below).
+- **Runbooks migrated to Notion-only hosting (post-Phase-5, uncommitted):** the local markdown corpus (`edge_mcp_servers/mcp_servers/runbooks_local/`) and `sre_agent/runbooks_corpus.py` are deleted; `sre_agent/notion_runbooks.py` (raw `httpx` Notion REST calls, no SDK) is now the sole runbook source for all three consumers: (1) `sre_agent/api/v1/runbooks.py` — the human catalog API, `[]`/404 if a cluster has no Notion database configured, no local fallback; (2) `edge_mcp_servers/mcp_servers/runbooks_notion/server.py` (new, replaces `runbooks_local`) — serves the same `search_runbooks`/`get_runbook_content`/etc. tool names via lexical-only search (no embeddings, since Notion has no cheap full-content search), so `context_builder.py`/`graph_builder.py`'s by-name tool lookups needed no changes; (3) `sre_agent/runbook_generator.py`'s `write_runbook`/`write_runbook_generative` are now `async`, publish via `notion_runbooks.upsert_notion_runbook` (upsert-by-title: archive any same-titled page, then create — Notion has no atomic replace), and take an `execution_context` to read per-cluster Notion creds; a cluster with none configured just skips generation (non-fatal). Notion credentials extend the existing Phase-4 per-cluster relay pattern (`relay_auth.py`/`relay_credentials.py`: new `X-Sentinel-Relay-Notion-{Key,Database}` headers), relayed-over-static-env-var precedence unchanged. See `docs/ai/DECISIONS.md`.
 - **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt/model/tool changes against content-addressed evidence bundles; `candidate.source_digest` is a full-tree hash of files matching `protected_path_rules`, not diff-based — any branch behind `master` needs a fresh merge + digest recompute (`uv run python benchmarks/release_gate.py digest ...`) before the gate passes. Zero protected-path changes → `NOT_REQUIRED` (passes regardless of bundle content).
 - **Module Reachability Governance:** `scripts/check_module_reachability.py`; standalone `python -m` workers with no in-process caller are declared directly as `ENTRY_FILES` roots.
 - **Alembic:** single linear head; PR #46's `db94419c24dc` (Jira columns) now chains after PR #45's `f6a7b8c9d0e1` (Slack columns) — both originally branched from the same parent and required a manual `down_revision` re-point during merge. Phase 4's `a3f7c1d9b2e4` (GitHub App installation ID, Slack OAuth columns) chains after `db94419c24dc` and is the current sole head on `master`.
@@ -70,16 +80,27 @@ test runner.
   unit-tested (`tests/test_aiopslab_adapter.py`, 16 tests, all pure/offline —
   no `aiopslab` package or cluster needed) — committed directly to `master`
   (`42ddec1`). All 5 phases of the upgrade plan are now done.
+- Runbooks-to-Notion migration (uncommitted): all changes described above
+  implemented and verified — `uv run pytest -q` (764 passed, 2 skipped),
+  `ruff check` clean on every touched file, module reachability OK, release-
+  gate digest regenerated and `impact` reports `PROMOTE`. Not yet committed —
+  awaiting the user's go-ahead (git safety protocol: no commit instruction
+  given for this body of work).
 
 ## Active problem
-None. All 5 phases merged/committed. Real GitHub App/Slack app registration
-and end-to-end OAuth validation (Phase 4) are deferred until the user
-configures those externally. Phase 5's AIOpsLab adapter has never been run
-against the real package/cluster (unit-tested only) — live benchmarking is
-deferred until the user brings up the full cluster (their words: "when i run
-the entire cluster, we will do the benchmarking").
+None currently blocking. Real GitHub App/Slack app registration and
+end-to-end OAuth validation (Phase 4) are deferred until the user configures
+those externally. Phase 5's AIOpsLab adapter has never been run against the
+real package/cluster (unit-tested only) — live benchmarking is deferred until
+the user brings up the full cluster (their words: "when i run the entire
+cluster, we will do the benchmarking"). The runbooks-to-Notion migration
+(above) is implemented and verified but sits uncommitted pending user
+confirmation.
 
 ## Relevant files
+- `sre_agent/notion_runbooks.py`, `sre_agent/runbook_generator.py`, `sre_agent/api/v1/runbooks.py`, `edge_mcp_servers/mcp_servers/runbooks_notion/` (runbooks-to-Notion migration, uncommitted)
+- `sre_agent/execution_context.py`, `sre_agent/multitenant/relay_auth.py`, `edge_mcp_servers/relay_credentials.py` (Notion creds added to the Phase-4 relay pattern, uncommitted)
+- `tests/test_runbook_generator.py` (rewritten for async Notion publish, uncommitted); `sre_agent/runbooks_corpus.py` + `tests/test_runbooks_corpus.py` deleted
 - `benchmarks/aiopslab_adapter.py`, `tests/test_aiopslab_adapter.py` (Phase 5, committed `42ddec1`)
 - `sre_agent/multitenant/{github_app,slack_oauth,relay_auth}.py` (Phase 4, merged)
 - `sre_agent/api/v1/multitenant.py` (Phase 4, merged — Slack/GitHub App install+callback routes)
@@ -97,12 +118,9 @@ the entire cluster, we will do the benchmarking").
 - `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` (authoritative phase plan)
 
 ## Verification commands and latest results
-- `uv run pytest -q` → 766 passed, 2 skipped (750 baseline from PR #49 + 16 new Phase 5 adapter tests, 0 regressions).
-- `uv run ruff check benchmarks/aiopslab_adapter.py tests/test_aiopslab_adapter.py` → all checks passed.
-- `uv run python scripts/check_module_reachability.py` → `Reachability OK: 72 reachable, 6 experimental.` (unchanged — `benchmarks/` is outside this governance scan, same as the other adapters).
-- `benchmarks/release/v1/policy.json`'s `protected_path_rules` do not cover `benchmarks/**` → release-gate digest regeneration not required for this change (`NOT_REQUIRED` path).
-- Alembic: `a3f7c1d9b2e4` confirmed as sole head on `master`, chained after `db94419c24dc` (unchanged by Phase 5, no schema touched).
-- PR #49 CI: all checks passed, including `benchmarks/release_gate.py`'s "Release evaluation contract" — required a fixture `change_class`/`source_digest` regeneration (`benchmarks/release/candidate/bundle.json`) since this PR's edge-server changes fall under the "tool" protected-path category; same fix pattern as prior commits `e63ed84`/`8fdea10`/`82659a7`.
+- Latest (runbooks-to-Notion migration, uncommitted): `uv run pytest -q` → 764 passed, 2 skipped, 0 failures. `ruff check` on every touched file → clean (repo's only ruff findings are pre-existing `graph_builder.py` whitespace/import-sort issues outside this diff). `scripts/check_module_reachability.py` → `Reachability OK: 71 reachable, 6 experimental.` `release_gate.py digest` regenerated `candidate/bundle.json`'s `source_digest` (protected path `edge_mcp_servers/mcp_servers/**` changed); `release_gate.py impact` → `PROMOTE`.
+- Alembic: `a3f7c1d9b2e4` remains sole head on `master` (no schema touched by Phase 5 or the runbooks migration).
+- Release-gate fixture regeneration is a recurring step whenever `edge_mcp_servers/mcp_servers/**` changes (protected "tool" path) — same pattern applied for PR #49 and again here.
 
 ## Known blockers or risks
 - Real end-to-end OAuth validation (an actual GitHub App + Slack app
@@ -120,9 +138,12 @@ the entire cluster, we will do the benchmarking").
   time the user has that cluster up (their stated plan).
 
 ## Next bounded task
-None chosen yet — the 5-phase plan is complete. When the user brings up the
-full cluster, resume with a live `benchmarks/aiopslab_adapter.py::run_problem()`
-smoke test against a real AIOpsLab problem id. Otherwise, no open work on
-Phase 4 unless the user reports an issue while configuring/running GitHub
-App or Slack integration; ask the user what's next before starting anything
-new.
+Report the runbooks-to-Notion migration to the user and ask before
+committing (nothing in this body of work has an explicit commit instruction
+yet). If the user wants the broader "fix any shortcomings... make sure the
+project workflow doesn't break" instruction pursued further beyond runbooks,
+scope that as its own bounded task rather than an open-ended full-repo audit
+— this file's "Known blockers or risks" section already lists the known
+gaps. Otherwise: when the user brings up the full cluster, resume with a
+live `benchmarks/aiopslab_adapter.py::run_problem()` smoke test against a
+real AIOpsLab problem id.

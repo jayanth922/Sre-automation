@@ -19,9 +19,9 @@ environment fallback.
 See ``edge_mcp_servers/relay_credentials.py`` for the receiving side — kept
 deliberately dependency-free (it must not import ``sre_agent``, since
 ``edge_mcp_servers`` is a separately deployed container; the same constraint
-already applies to ``edge_mcp_servers/mcp_servers/runbooks_local/server.py``,
-which keeps its own embedding code rather than importing
-``sre_agent.embedding``). Header names are duplicated as string constants on
+already applies to ``edge_mcp_servers/mcp_servers/runbooks_notion/server.py``,
+which keeps its own Notion REST client rather than importing
+``sre_agent.notion_runbooks``). Header names are duplicated as string constants on
 both sides rather than shared via import for that reason — keep them in
 sync by hand.
 """
@@ -43,6 +43,8 @@ GITHUB_TOKEN_HEADER = "X-Sentinel-Relay-Github-Token"
 GITHUB_REPO_HEADER = "X-Sentinel-Relay-Github-Repo"
 K8S_API_SERVER_HEADER = "X-Sentinel-Relay-K8s-Api-Server"
 K8S_TOKEN_HEADER = "X-Sentinel-Relay-K8s-Token"
+NOTION_API_KEY_HEADER = "X-Sentinel-Relay-Notion-Key"
+NOTION_DATABASE_ID_HEADER = "X-Sentinel-Relay-Notion-Database"
 
 
 async def build_relay_headers(
@@ -64,5 +66,11 @@ async def build_relay_headers(
     if k8s_api_server and k8s_token:
         headers[K8S_API_SERVER_HEADER] = k8s_api_server
         headers[K8S_TOKEN_HEADER] = k8s_token
+
+    notion_api_key = context.credentials.get("notion_api_key")
+    notion_database_id = context.credentials.get("notion_database_id")
+    if notion_api_key and notion_database_id:
+        headers[NOTION_API_KEY_HEADER] = notion_api_key
+        headers[NOTION_DATABASE_ID_HEADER] = notion_database_id
 
     return headers

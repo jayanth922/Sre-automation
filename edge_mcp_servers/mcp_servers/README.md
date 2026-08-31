@@ -20,7 +20,7 @@ The servers are designed to be run individually or through [../docker-compose.ya
 - [prometheus_real/](prometheus_real/) exposes Prometheus queries and metrics lookup.
 - [loki_real/](loki_real/) exposes log search and log context lookup.
 - [github_real/](github_real/) exposes GitHub repository intelligence.
-- [runbooks_local/](runbooks_local/) exposes repository-backed operational runbooks.
+- [runbooks_notion/](runbooks_notion/) exposes operational runbooks hosted in the cluster's Notion database.
 
 ## Runtime Expectations
 

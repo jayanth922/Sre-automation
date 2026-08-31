@@ -267,7 +267,7 @@ jobs:
           - k8s_real
           - loki_real
           - prometheus_real
-          - runbooks_local
+          - runbooks_notion
           - sandbox_real
     steps:
       - uses: actions/checkout@v4

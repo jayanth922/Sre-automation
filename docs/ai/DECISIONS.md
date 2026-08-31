@@ -135,7 +135,7 @@
   credential parameter through would touch far more surface area than the
   two functions that actually gate all GitHub/K8s tool calls.
 - **Consequences:** `edge_mcp_servers` still must never import `sre_agent`
-  (see `runbooks_local/server.py`'s existing precedent) — header name
+  (see `runbooks_notion/server.py`'s existing precedent) — header name
   constants are duplicated as plain strings on both sides and must be kept
   in sync by hand. GitHub tokens now also come from a GitHub App
   installation (`sre_agent/multitenant/github_app.py`) when
@@ -188,3 +188,45 @@
   not possible without forking AIOpsLab's orchestrator, which owns the
   cluster lifecycle end-to-end and never exposes an HTTP surface to fire
   synthetic alerts at.
+
+## Runbooks migrated to Notion-only hosting
+
+- **Decision:** Deleted the local markdown runbook corpus entirely
+  (`edge_mcp_servers/mcp_servers/runbooks_local/`, `sre_agent/runbooks_corpus.py`)
+  across all three consumers, not just the human-facing catalog API: (1)
+  `sre_agent/api/v1/runbooks.py` now reads only via `sre_agent/notion_runbooks.py`,
+  returning an empty list / 404 for a cluster with no Notion database
+  configured, no local fallback; (2) the agent's live-investigation RAG tool
+  is now served by `edge_mcp_servers/mcp_servers/runbooks_notion/server.py`
+  (new, replaces `runbooks_local`), keeping the exact tool names/signatures
+  (`search_runbooks` et al.) so `context_builder.py`/`graph_builder.py`'s
+  by-name tool lookups needed no changes; (3) `sre_agent/runbook_generator.py`'s
+  `write_runbook`/`write_runbook_generative` became `async` and publish via
+  the new `notion_runbooks.upsert_notion_runbook` instead of writing a local
+  `.md` file. Notion credentials extend the existing per-cluster relay
+  pattern from "Per-cluster credentials relay over the MCP transport" above
+  (new `X-Sentinel-Relay-Notion-{Key,Database}` headers, same
+  relayed-over-static-env-var precedence, same edge-side bounded cache
+  convention) rather than inventing a separate mechanism.
+- **Reason:** User instruction: "regarding runbooks, remove local uploads of
+  runbooks. only hosted on notion." Production teams already keep runbooks in
+  Notion; a local file corpus was redundant, went stale independently of the
+  source of truth, and — since `edge_mcp_servers/mcp_servers/*` images ship to
+  customers — meant shipping a fixed example corpus baked into the container.
+- **Consequences:** The Notion-backed MCP server does lexical-only search (no
+  `fastembed`/embeddings), a deliberate simplification versus the old local
+  server, since Notion's REST API has no cheap full-content search without
+  per-page fetches. `upsert_notion_runbook` implements "upsert" as
+  archive-then-create (Notion has no atomic replace-content call), which
+  leaves a trash-recoverable archived page behind each time an auto-generated
+  runbook's signature regenerates — acceptable given Notion's API limits. A
+  cluster with no Notion database configured simply has no runbooks and no
+  generative-runbook writes; this is a behavior change from the old
+  local-corpus fallback, which always had *something* to serve. No schema is
+  assumed on the Notion database beyond "there is a title property" —
+  service/incident-type/severity are only set when the database has a
+  same-named property.
+- **Rejected alternative:** Keeping the local corpus as a fallback when Notion
+  isn't configured — rejected because it directly contradicts the user's
+  "only hosted on notion" instruction and would leave two divergent runbook
+  sources to keep in sync.

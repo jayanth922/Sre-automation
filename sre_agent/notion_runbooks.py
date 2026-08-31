@@ -117,3 +117,122 @@ async def get_notion_runbook(api_key: str, page_id: str) -> Dict[str, Any]:
     rb = _page_to_runbook(page)
     rb["content"] = _blocks_to_markdown(blocks) or "(empty runbook)"
     return rb
+
+
+def _markdown_to_blocks(markdown: str, limit: int = 95) -> List[Dict[str, Any]]:
+    """Best-effort inverse of ``_blocks_to_markdown`` for writing generated
+    runbooks into Notion. ``limit`` stays under the API's 100-children-per-call cap.
+    """
+    blocks: List[Dict[str, Any]] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.rstrip()
+        if not line or len(blocks) >= limit:
+            continue
+        if line.startswith("### "):
+            blocks.append(_rich_block("heading_3", line[4:]))
+        elif line.startswith("## "):
+            blocks.append(_rich_block("heading_2", line[3:]))
+        elif line.startswith("# "):
+            blocks.append(_rich_block("heading_1", line[2:]))
+        elif line.startswith("- ") or line.startswith("* "):
+            blocks.append(_rich_block("bulleted_list_item", line[2:]))
+        elif line.startswith("> "):
+            blocks.append(_rich_block("quote", line[2:]))
+        else:
+            blocks.append(_rich_block("paragraph", line))
+    return blocks
+
+
+def _rich_block(block_type: str, text: str) -> Dict[str, Any]:
+    return {
+        "object": "block",
+        "type": block_type,
+        block_type: {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]},
+    }
+
+
+def _find_key(schema: Dict[str, Any], *names: str) -> Optional[str]:
+    lower = {k.lower(): k for k in schema.keys()}
+    for n in names:
+        if n.lower() in lower:
+            return lower[n.lower()]
+    return None
+
+
+def _property_value(prop_type: str, value: str) -> Dict[str, Any]:
+    if prop_type == "select":
+        return {"select": {"name": value[:100]}}
+    if prop_type == "status":
+        return {"status": {"name": value[:100]}}
+    if prop_type == "multi_select":
+        return {"multi_select": [{"name": v.strip()[:100]} for v in value.split(",") if v.strip()]}
+    return {"rich_text": [{"type": "text", "text": {"content": value[:2000]}}]}
+
+
+async def _database_schema(client: httpx.AsyncClient, api_key: str, database_id: str) -> Dict[str, Any]:
+    resp = await client.get(f"{_BASE}/databases/{database_id}", headers=_headers(api_key))
+    resp.raise_for_status()
+    return resp.json().get("properties", {}) or {}
+
+
+async def upsert_notion_runbook(
+    api_key: str,
+    database_id: str,
+    *,
+    title: str,
+    markdown_body: str,
+    service: str = "",
+    incident_type: str = "",
+    severity: str = "",
+) -> Dict[str, Any]:
+    """Create or replace this cluster's Notion page for an auto-generated runbook.
+
+    Matches an existing page by exact title — auto-generated titles are
+    deterministic per (failure_class, service), mirroring the old local
+    corpus's one-file-per-signature overwrite. Notion has no single-call
+    "replace this page's content" operation, so a matching page is archived
+    before the replacement is created (recoverable from Notion's trash, not
+    deleted outright).
+
+    No schema assumptions beyond "there is a title property" — service/
+    incident_type/severity are only set when the database actually has a
+    same-named property (of whatever type it was configured as).
+    """
+    body = markdown_body.split("---", 2)[2].strip() if markdown_body.startswith("---") else markdown_body
+
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        schema = await _database_schema(client, api_key, database_id)
+        title_key = _find_key(schema, "title") or next(
+            (k for k, v in schema.items() if v.get("type") == "title"), "Name"
+        )
+        properties: Dict[str, Any] = {
+            title_key: {"title": [{"type": "text", "text": {"content": title[:2000]}}]}
+        }
+        for label, value in (("service", service), ("incident type", incident_type), ("severity", severity)):
+            if not value:
+                continue
+            key = _find_key(schema, label, label.replace(" ", "_"))
+            if key:
+                properties[key] = _property_value(schema[key].get("type", "rich_text"), value)
+
+        existing = await list_notion_runbooks(api_key, database_id)
+        existing_id = next((rb["id"] for rb in existing if rb.get("title") == title), None)
+        if existing_id:
+            archive_resp = await client.patch(
+                f"{_BASE}/pages/{existing_id}", headers=_headers(api_key), json={"archived": True}
+            )
+            archive_resp.raise_for_status()
+
+        create_resp = await client.post(
+            f"{_BASE}/pages",
+            headers=_headers(api_key),
+            json={
+                "parent": {"database_id": database_id},
+                "properties": properties,
+                "children": _markdown_to_blocks(body),
+            },
+        )
+        create_resp.raise_for_status()
+        page = create_resp.json()
+
+    return _page_to_runbook(page)

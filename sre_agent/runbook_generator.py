@@ -5,15 +5,20 @@ Generative runbooks (project #5: generative courses/UI, applied to SRE).
 The video's #5 is auto-generating structured learning content (a course) for any
 topic. The operational analogue — and the one that actually compounds value here
 — is auto-generating a **runbook / postmortem** from every resolved incident and
-writing it into the runbooks corpus. That closes a learning loop: the Planner's
-runbook RAG (`search_runbooks`) then finds the agent's own generated guidance the
-next time that class of incident recurs, so the system teaches itself.
+publishing it into the cluster's Notion runbook database (upserted by title —
+see `sre_agent/notion_runbooks.py::upsert_notion_runbook`). That closes a
+learning loop: the Planner's runbook RAG (`search_runbooks`, served by
+`edge_mcp_servers/mcp_servers/runbooks_notion`) then finds the agent's own
+generated guidance the next time that class of incident recurs, so the system
+teaches itself — as long as the cluster has a Notion runbook database
+configured; a cluster without one simply skips generation (see `write_runbook`).
 
-The generated markdown mirrors the existing runbooks' YAML-frontmatter format so
-the runbooks MCP server indexes it (it keys search off `alert_name`, `service`,
-`tags`, etc.). Generation is deterministic (assembled from the structured data
-the investigation already produced) so it always succeeds and is fully testable;
-no LLM call is required.
+Generation is deterministic (assembled from the structured data the
+investigation already produced) so it always succeeds and is fully testable;
+no LLM call is required. The YAML-frontmatter markdown shape is kept because
+`generate_runbook_markdown` predates Notion-only hosting and some fields
+(the frontmatter dict) are reused directly as Notion page properties — see
+`_frontmatter`/`_publish_to_notion`.
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -247,28 +251,51 @@ async def generate_runbook_llm(inp: RunbookInput, llm: Any) -> str:
     )
 
 
-def runbooks_dir() -> Path:
-    """Where generated runbooks are written (same corpus the MCP/API read)."""
-    from sre_agent.runbooks_corpus import default_runbooks_dir
-
-    return default_runbooks_dir()
-
-
-def write_runbook(inp: RunbookInput, target_dir: Optional[Path] = None) -> Path:
-    """Generate (deterministic) and write the runbook markdown; returns the path."""
-    target_dir = Path(target_dir) if target_dir else runbooks_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / runbook_filename(inp)
-    path.write_text(generate_runbook_markdown(inp), encoding="utf-8")
-    logger.info(f"📝 RunbookGenerator: wrote {path.name}")
-    return path
+def _notion_creds(execution_context: Any) -> tuple[Optional[str], Optional[str]]:
+    if execution_context is None:
+        return None, None
+    creds = getattr(execution_context, "credentials", {}) or {}
+    return creds.get("notion_api_key"), creds.get("notion_database_id")
 
 
-async def write_runbook_generative(inp: RunbookInput, llm: Any, target_dir: Optional[Path] = None) -> Path:
-    """LLM-author the runbook and write it (deterministic fallback inside)."""
-    target_dir = Path(target_dir) if target_dir else runbooks_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / runbook_filename(inp)
-    path.write_text(await generate_runbook_llm(inp, llm), encoding="utf-8")
-    logger.info(f"📝 RunbookGenerator: wrote {path.name} (generative)")
-    return path
+async def _publish_to_notion(inp: RunbookInput, markdown: str, execution_context: Any) -> Optional[str]:
+    """Upsert the generated runbook into this cluster's Notion database.
+
+    Returns the Notion page URL, or ``None`` when the cluster has no Notion
+    runbook database configured — generation is skipped, not an error, since
+    there is no local corpus left to fall back to.
+    """
+    api_key, database_id = _notion_creds(execution_context)
+    if not (api_key and database_id):
+        logger.info("RunbookGenerator: no Notion runbook database configured for this cluster; skipping")
+        return None
+
+    from .notion_runbooks import upsert_notion_runbook
+
+    fm = _frontmatter(inp)
+    page = await upsert_notion_runbook(
+        api_key,
+        database_id,
+        title=str(fm["title"]),
+        markdown_body=markdown,
+        service=inp.service,
+        incident_type=inp.failure_class,
+        severity=inp.severity,
+    )
+    return page.get("path") or page.get("id")
+
+
+async def write_runbook(inp: RunbookInput, execution_context: Any = None) -> Optional[str]:
+    """Generate (deterministic) and upsert the runbook into Notion; returns the page URL."""
+    published = await _publish_to_notion(inp, generate_runbook_markdown(inp), execution_context)
+    if published:
+        logger.info(f"📝 RunbookGenerator: wrote {runbook_id(inp)} -> {published}")
+    return published
+
+
+async def write_runbook_generative(inp: RunbookInput, llm: Any, execution_context: Any = None) -> Optional[str]:
+    """LLM-author the runbook (deterministic fallback inside) and upsert it into Notion."""
+    published = await _publish_to_notion(inp, await generate_runbook_llm(inp, llm), execution_context)
+    if published:
+        logger.info(f"📝 RunbookGenerator: wrote {runbook_id(inp)} -> {published} (generative)")
+    return published

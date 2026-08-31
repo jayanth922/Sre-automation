@@ -410,23 +410,25 @@ async def _act_gate_node(
                     from .model_router import TaskType, route_llm
 
                     rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
-                    path = await write_runbook_generative(rb_input, rb_llm)
+                    published = await write_runbook_generative(rb_input, rb_llm, execution_context)
                 except Exception:
-                    path = write_runbook(rb_input)
-                report_payload["generated_runbook"] = path.name
-                logger.info(f"📝 ACT: generated verified runbook {path.name}")
+                    published = await write_runbook(rb_input, execution_context)
+                report_payload["generated_runbook"] = published
+                if published:
+                    logger.info(f"📝 ACT: generated verified runbook -> {published}")
             else:
                 rb_input.verification_status = str(
                     eligibility.get("outcome_class") or "incomplete"
                 )
-                path = write_runbook(rb_input)
+                published = await write_runbook(rb_input, execution_context)
                 report_payload["generated_runbook"] = None
-                report_payload["negative_runbook"] = path.name
-                logger.info(
-                    "📝 ACT: wrote negative runbook %s (%s)",
-                    path.name,
-                    eligibility.get("outcome_class"),
-                )
+                report_payload["negative_runbook"] = published
+                if published:
+                    logger.info(
+                        "📝 ACT: wrote negative runbook -> %s (%s)",
+                        published,
+                        eligibility.get("outcome_class"),
+                    )
         except Exception as rb_err:
             logger.warning(f"Runbook generation failed (non-fatal): {rb_err}")
 

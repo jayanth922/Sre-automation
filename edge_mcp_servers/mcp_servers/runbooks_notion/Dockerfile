@@ -1,4 +1,4 @@
-# Customer MCP Tool Server — Local Markdown Runbooks
+# Customer MCP Tool Server — Notion Runbooks
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -9,19 +9,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY mcp_servers/runbooks_local/requirements.txt .
+COPY mcp_servers/runbooks_notion/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
-COPY mcp_servers/runbooks_local/server.py .
+COPY mcp_servers/runbooks_notion/server.py .
 COPY mcp_auth.py .
 COPY relay_credentials.py .
-# Bake the runbook corpus into the image (compose mounts it as a volume; in
-# Kubernetes there is no host mount, so it must ship in the image).
-COPY mcp_servers/runbooks_local/runbooks ./runbooks
-ENV RUNBOOKS_DIR=/app/runbooks
 
 # Expose port
 EXPOSE 3000

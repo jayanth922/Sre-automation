@@ -138,11 +138,42 @@ def test_generate_runbook_llm_falls_back_on_failure():
     assert "## Summary" in md and "kubectl rollout undo" in md
 
 
-def test_write_runbook_to_tmp(tmp_path):
-    path = write_runbook(_inp(), target_dir=tmp_path)
-    assert path.exists()
-    fm = yaml.safe_load(path.read_text().split("---", 2)[1])
-    assert fm["runbook_id"] == "RB-AUTO-high_error_rate-checkout-service"
+@dataclass
+class FakeExecutionContext:
+    credentials: Dict[str, str] = field(default_factory=dict)
+
+
+def test_write_runbook_skips_without_notion_config():
+    published = asyncio.run(write_runbook(_inp(), execution_context=None))
+    assert published is None
+
+    published = asyncio.run(write_runbook(_inp(), execution_context=FakeExecutionContext()))
+    assert published is None
+
+
+def test_write_runbook_publishes_to_notion(monkeypatch):
+    calls = []
+
+    async def fake_upsert(api_key, database_id, *, title, markdown_body, service, incident_type, severity):
+        calls.append(
+            dict(
+                api_key=api_key, database_id=database_id, title=title,
+                service=service, incident_type=incident_type, severity=severity,
+            )
+        )
+        return {"id": "notion-page-id", "path": "https://notion.so/notion-page-id"}
+
+    monkeypatch.setattr("sre_agent.notion_runbooks.upsert_notion_runbook", fake_upsert)
+
+    ctx = FakeExecutionContext(credentials={"notion_api_key": "secret", "notion_database_id": "db-1"})
+    published = asyncio.run(write_runbook(_inp(), execution_context=ctx))
+
+    assert published == "https://notion.so/notion-page-id"
+    assert len(calls) == 1
+    assert calls[0]["api_key"] == "secret"
+    assert calls[0]["database_id"] == "db-1"
+    assert calls[0]["service"] == "checkout-service"
+    assert calls[0]["incident_type"] == "high_error_rate"
 
 
 if __name__ == "__main__":

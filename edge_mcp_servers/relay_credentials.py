@@ -25,12 +25,16 @@ GITHUB_TOKEN_HEADER = b"x-sentinel-relay-github-token"
 GITHUB_REPO_HEADER = b"x-sentinel-relay-github-repo"
 K8S_API_SERVER_HEADER = b"x-sentinel-relay-k8s-api-server"
 K8S_TOKEN_HEADER = b"x-sentinel-relay-k8s-token"
+NOTION_API_KEY_HEADER = b"x-sentinel-relay-notion-key"
+NOTION_DATABASE_ID_HEADER = b"x-sentinel-relay-notion-database"
 
 _RELAY_HEADER_NAMES = {
     GITHUB_TOKEN_HEADER: "github_token",
     GITHUB_REPO_HEADER: "github_repo",
     K8S_API_SERVER_HEADER: "k8s_api_server",
     K8S_TOKEN_HEADER: "k8s_token",
+    NOTION_API_KEY_HEADER: "notion_api_key",
+    NOTION_DATABASE_ID_HEADER: "notion_database_id",
 }
 
 _relay_credentials: "ContextVar[Dict[str, str]]" = ContextVar(

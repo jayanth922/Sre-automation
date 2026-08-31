@@ -205,7 +205,8 @@ spec:
   selector: { app: mcp-github-exec }
   ports: [{ port: 3000, targetPort: 3000 }]
 ---
-# ── mcp-runbooks (corpus baked into image) ───────────────────────────────────
+# ── mcp-runbooks (Notion-hosted; static creds are the single-tenant fallback,
+#    SaaS clusters relay per-cluster Notion creds over MCP instead) ───────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -225,7 +226,10 @@ spec:
           env:
             - { name: HOST, value: "0.0.0.0" }
             - { name: HTTP_PORT, value: "3000" }
-            - { name: RUNBOOKS_DIR, value: "/app/runbooks" }
+            - name: NOTION_API_KEY
+              valueFrom: { secretKeyRef: { name: sentinel-secrets, key: NOTION_API_KEY, optional: true } }
+            - name: NOTION_DATABASE_ID
+              valueFrom: { secretKeyRef: { name: sentinel-secrets, key: NOTION_DATABASE_ID, optional: true } }
           readinessProbe:
             tcpSocket: { port: 3000 }
             initialDelaySeconds: 5

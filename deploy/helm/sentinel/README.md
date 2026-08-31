@@ -18,7 +18,7 @@ Postgres/Redis if you run them, or let the chart deploy the basics.
     case $s in
       k8s) d=k8s_real;; executor) d=executor_real;; prometheus) d=prometheus_real;;
       loki) d=loki_real;; github) d=github_real;; github-exec) d=github_exec;;
-      runbooks) d=runbooks_local;;
+      runbooks) d=runbooks_notion;;
     esac
     docker build -t sentinel/mcp-$s:latest edge_mcp_servers/mcp_servers/$d
   done

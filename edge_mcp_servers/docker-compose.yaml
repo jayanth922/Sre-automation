@@ -96,15 +96,14 @@ services:
   mcp-runbooks:
     build:
       context: .
-      dockerfile: mcp_servers/runbooks_local/Dockerfile
+      dockerfile: mcp_servers/runbooks_notion/Dockerfile
     container_name: mcp-runbooks
     environment:
-      - RUNBOOKS_DIR=/app/runbooks
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
-    volumes:
-      # rw so SaaS auto-generated runbooks written into this corpus are agent-retrievable
-      - ./mcp_servers/runbooks_local/runbooks:/app/runbooks:rw
+      # Static single-tenant fallback; per-cluster creds are relayed over MCP for SaaS.
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
     ports:
       - "127.0.0.1:4004:3000"
     networks:

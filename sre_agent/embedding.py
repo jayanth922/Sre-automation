@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Shared text-embedding bootstrap for Sentinel's vector-backed stores.
 
-Previously each Qdrant-backed store (memory_store.py, and separately
-edge_mcp_servers/mcp_servers/runbooks_local/server.py) instantiated its own
-`fastembed.TextEmbedding` model. This module is the single in-process
-embedding singleton for everything that runs inside the sre_agent package —
-memory_store.py uses it, and any future Qdrant-backed skill_store.py should
-too.
+Previously each Qdrant-backed store instantiated its own
+`fastembed.TextEmbedding` model (memory_store.py, and separately the former
+local-corpus runbooks MCP server, replaced by
+edge_mcp_servers/mcp_servers/runbooks_notion/server.py, which queries Notion
+directly and does not use embeddings at all). This module is the single
+in-process embedding singleton for everything that runs inside the sre_agent
+package — memory_store.py uses it, and any future Qdrant-backed
+skill_store.py should too.
 
-edge_mcp_servers/mcp_servers/runbooks_local/server.py intentionally keeps its
-own independent bootstrap: it ships as a standalone "customer MCP tool
-server" container (see its Dockerfile) that copies only its own server.py
-and never imports sre_agent, so it cannot depend on this module without
-bundling the whole sre_agent package into a customer-facing image.
+Any edge_mcp_servers/mcp_servers/* server that did need its own embedding
+bootstrap would keep it independent: those ship as standalone "customer MCP
+tool server" containers (see each Dockerfile) that never import sre_agent,
+so they cannot depend on this module without bundling the whole sre_agent
+package into a customer-facing image.
 """
 
 import logging

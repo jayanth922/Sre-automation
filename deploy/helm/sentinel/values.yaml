@@ -48,6 +48,11 @@ secrets:
   googleApiKey: ""
   nvidiaApiKey: ""
   githubToken: ""
+  # Static single-tenant fallback for the runbooks server; SaaS clusters relay
+  # per-cluster Notion creds over MCP instead (blank is fine for self-hosted
+  # deployments with no Notion runbook database — generation/lookup just skips).
+  notionApiKey: ""
+  notionDatabaseId: ""
   # Optional Slack war-room (bot token enables incident mirroring; app token for replies)
   slackBotToken: ""
   slackAppToken: ""
@@ -92,7 +97,7 @@ mcp:
       - { name: mcp-loki, image: mcp-loki, configEnv: [ LOKI_URL ] }
       - { name: mcp-github, image: mcp-github, secretEnv: [ GITHUB_TOKEN ] }
       - { name: mcp-github-exec, image: mcp-github-exec, secretEnv: [ GITHUB_TOKEN ] }
-      - { name: mcp-runbooks, image: mcp-runbooks, env: [ { name: RUNBOOKS_DIR, value: /app/runbooks } ] }
+      - { name: mcp-runbooks, image: mcp-runbooks, secretEnv: [ NOTION_API_KEY, NOTION_DATABASE_ID ] }
       - { name: mcp-sandbox, image: mcp-sandbox, serviceAccount: sandbox,
           configEnv: [ SANDBOX_NAMESPACE, SANDBOX_ALLOWED_IMAGES, SANDBOX_MAX_ACTIVE_DEADLINE_SECONDS ] }
 
