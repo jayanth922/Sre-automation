@@ -4,18 +4,19 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-Executing the 5-phase upgrade plan (Jira, observability, memory, multi-tenancy,
-real benchmark) from `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md`,
-one PR per phase, no cross-phase file overlap. PR #44 (Temporal sandbox
-verification), PR #45 (Slack conversational memory), PR #46 (Jira ticketing,
-Phase 1), PR #47 (Langfuse observability, Phase 2), PR #48 (memory
-sophistication, Phase 3), and PR #49 (multi-tenant secure access, Phase 4)
-are all merged into `master`. Phase 5 (AIOpsLab benchmark) is implemented on
-`master` (not yet a PR — see "Next bounded task"): `benchmarks/aiopslab_adapter.py`
-+ `tests/test_aiopslab_adapter.py`, written after reading the live AIOpsLab
-package (its real API diverges from the plan's original sketch — see
-`docs/ai/DECISIONS.md`'s "AIOpsLab adapter plays back one investigation, not
-a live shell loop" entry).
+The 5-phase upgrade plan (Jira, observability, memory, multi-tenancy, real
+benchmark) from `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` is
+**complete**. PR #44 (Temporal sandbox verification), PR #45 (Slack
+conversational memory), PR #46 (Jira ticketing, Phase 1), PR #47 (Langfuse
+observability, Phase 2), PR #48 (memory sophistication, Phase 3), and PR #49
+(multi-tenant secure access, Phase 4) are merged into `master`. Phase 5
+(AIOpsLab benchmark) was committed directly to `master` (commit `42ddec1`,
+not a PR — user asked to commit and move on rather than open one):
+`benchmarks/aiopslab_adapter.py` + `tests/test_aiopslab_adapter.py`, written
+after reading the live AIOpsLab package (its real API diverges from the
+plan's original sketch — see `docs/ai/DECISIONS.md`'s "AIOpsLab adapter
+plays back one investigation, not a live shell loop" entry). No next
+milestone has been chosen yet — see "Next bounded task".
 
 Real end-to-end OAuth validation for Phase 4 (an actual GitHub App + Slack
 app registered by the user) is intentionally deferred — user is configuring
@@ -67,18 +68,19 @@ test runner.
 - PR #44: Temporal sandbox verification. PR #45: Slack conversational memory. PR #46: Jira ticketing (Phase 1). PR #47: Langfuse observability (Phase 2). PR #48: Memory sophistication (Phase 3, tenant-filtered/structured/back-linked Qdrant memory — see `sre_agent/memory_store.py` and `docs/ai/DECISIONS.md`). PR #49: Multi-tenant secure access (Phase 4 — see "Current architecture" bullet above). All merged to `master`.
 - Phase 5 (AIOpsLab benchmark): `benchmarks/aiopslab_adapter.py` written and
   unit-tested (`tests/test_aiopslab_adapter.py`, 16 tests, all pure/offline —
-  no `aiopslab` package or cluster needed) — implemented on `master`, not
-  yet committed/PR'd (see "Next bounded task").
+  no `aiopslab` package or cluster needed) — committed directly to `master`
+  (`42ddec1`). All 5 phases of the upgrade plan are now done.
 
 ## Active problem
-None. Phase 4 is merged and verified. Real GitHub App/Slack app registration
-and end-to-end OAuth validation are deferred until the user configures those
-externally; the user has said they'll report back if issues surface while
-running the application. Phase 5's adapter code is done and tested but not
-yet committed — see "Next bounded task".
+None. All 5 phases merged/committed. Real GitHub App/Slack app registration
+and end-to-end OAuth validation (Phase 4) are deferred until the user
+configures those externally. Phase 5's AIOpsLab adapter has never been run
+against the real package/cluster (unit-tested only) — live benchmarking is
+deferred until the user brings up the full cluster (their words: "when i run
+the entire cluster, we will do the benchmarking").
 
 ## Relevant files
-- `benchmarks/aiopslab_adapter.py`, `tests/test_aiopslab_adapter.py` (Phase 5, implemented, not yet committed)
+- `benchmarks/aiopslab_adapter.py`, `tests/test_aiopslab_adapter.py` (Phase 5, committed `42ddec1`)
 - `sre_agent/multitenant/{github_app,slack_oauth,relay_auth}.py` (Phase 4, merged)
 - `sre_agent/api/v1/multitenant.py` (Phase 4, merged — Slack/GitHub App install+callback routes)
 - `edge_mcp_servers/relay_credentials.py` (Phase 4, merged — dependency-free edge-side contextvar capture)
@@ -115,12 +117,12 @@ yet committed — see "Next bounded task".
   a live kind/minikube cluster (neither is available in this environment) —
   only unit-tested against the API contract read from the live GitHub repo.
   `run_problem()`/`Orchestrator` wiring should get a smoke check the first
-  time someone has that cluster up.
+  time the user has that cluster up (their stated plan).
 
 ## Next bounded task
-Commit Phase 5's `benchmarks/aiopslab_adapter.py` +
-`tests/test_aiopslab_adapter.py` and open its PR (same one-PR-per-phase
-convention as Phases 1-4) — this is the last of the 5-phase plan, so also
-update this file's "Current milestone" to reflect the plan as complete once
-merged. No open work on Phase 4 unless the user reports an issue while
-configuring/running GitHub App or Slack integration.
+None chosen yet — the 5-phase plan is complete. When the user brings up the
+full cluster, resume with a live `benchmarks/aiopslab_adapter.py::run_problem()`
+smoke test against a real AIOpsLab problem id. Otherwise, no open work on
+Phase 4 unless the user reports an issue while configuring/running GitHub
+App or Slack integration; ask the user what's next before starting anything
+new.
