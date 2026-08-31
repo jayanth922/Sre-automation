@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useParams } from "next/navigation"
 import { api, useAuth } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
+import { useCluster } from "@/components/console/ClusterContext"
 import { ConsolePage } from "@/components/console/ConsolePage"
 import { Spinner, useFreshness } from "@/components/console/ui"
 import {
@@ -53,6 +54,7 @@ function pretty(s: string): string {
 export default function IncidentConsolePage() {
   const { id, incidentId } = useParams<{ id: string; incidentId: string }>()
   const { user } = useAuth()
+  const cluster = useCluster()
   const { events: liveEvents, connected } = useLiveStream(incidentId)
   const [tx, setTx] = useState<Transcript | null>(null)
   const [status, setStatus] = useState<GraphStatus | null>(null)
@@ -200,6 +202,17 @@ export default function IncidentConsolePage() {
             <span className="sx-mono" style={{ fontSize: 12, color: "var(--ink2)" }}>
               opened {timeAgo(inc.created_at)} · {inc.resolved_at ? `resolved in ${elapsed(inc.created_at, inc.resolved_at)}` : `${elapsed(inc.created_at)} elapsed`}
             </span>
+            {inc.jira_issue_key && (
+              <a
+                href={`${cluster?.jira_url ? cluster.jira_url.replace(/\/+$/, "") : ""}/browse/${inc.jira_issue_key}`}
+                target="_blank"
+                rel="noreferrer"
+                className="sx-badge"
+                style={{ textDecoration: "none" }}
+              >
+                {inc.jira_issue_key} ↗
+              </a>
+            )}
           </div>
 
           {inc.description && (

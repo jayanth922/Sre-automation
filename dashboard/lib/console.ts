@@ -14,7 +14,11 @@ export interface Cluster {
   loki_url: string | null
   k8s_api_server: string | null
   github_repo: string | null
+  github_app_installation_id?: string | null
   notion_database_id: string | null
+  jira_url: string | null
+  jira_email: string | null
+  jira_project_key: string | null
   metrics_config: string | null
   namespace: string | null
   llm_provider: string | null
@@ -35,6 +39,7 @@ export interface Incident {
   summary: string | null
   created_at: string
   resolved_at: string | null
+  jira_issue_key: string | null
 }
 
 export interface TimelineEvent {

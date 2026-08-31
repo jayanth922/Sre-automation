@@ -195,6 +195,8 @@ class ClusterResponse(BaseModel):
     github_repo: Optional[str] = None
     github_app_installation_id: Optional[str] = None
     notion_database_id: Optional[str] = None
+    jira_url: Optional[str] = None
+    jira_email: Optional[str] = None
     jira_project_key: Optional[str] = None
     metrics_config: Optional[str] = None
     namespace: Optional[str] = None

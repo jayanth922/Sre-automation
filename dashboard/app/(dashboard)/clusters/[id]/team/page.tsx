@@ -23,6 +23,8 @@ export default function TeamPage() {
   const [members, setMembers] = useState<Member[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [slackConnecting, setSlackConnecting] = useState(false)
+  const [slackErr, setSlackErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -61,6 +63,30 @@ export default function TeamPage() {
   return (
     <ConsolePage title="Team">
       <div style={{ maxWidth: 820 }}>
+        <SectionTitle title="Slack" meta="incident notifications for your organization" />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 26 }}>
+          <button
+            className="sx-btn"
+            style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+            disabled={!isAdmin || slackConnecting}
+            onClick={async () => {
+              setSlackConnecting(true)
+              setSlackErr(null)
+              try {
+                const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
+                window.location.href = data.install_url
+              } catch {
+                setSlackErr("Could not start the Slack install flow.")
+                setSlackConnecting(false)
+              }
+            }}
+          >
+            {slackConnecting ? "Redirecting…" : "Add to Slack"}
+          </button>
+          {!isAdmin && <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>only admins can connect Slack</span>}
+        </div>
+        {slackErr && <ErrorNote>{slackErr}</ErrorNote>}
+
         <SectionTitle
           title="Members"
           meta={isAdmin ? "assign roles and manage access" : "everyone in your organization"}

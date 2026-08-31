@@ -33,7 +33,7 @@ export default function RunbooksPage() {
       {loading ? (
         <Spinner />
       ) : runbooks.length === 0 ? (
-        <Empty>No runbooks found in the corpus.</Empty>
+        <Empty>No runbooks found. Configure a Notion runbook database for this cluster in Settings, or add pages to it.</Empty>
       ) : (
         <>
           <SectionTitle
@@ -48,7 +48,7 @@ export default function RunbooksPage() {
                 <th className="l">Service</th>
                 <th className="l">Incident type</th>
                 <th className="l">Severity</th>
-                <th className="l">ID</th>
+                <th className="l">Notion</th>
               </tr>
             </thead>
             <tbody>
@@ -64,15 +64,21 @@ export default function RunbooksPage() {
                     {r.incident_type}
                   </td>
                   <td className="l">{r.severity}</td>
-                  <td className="l" style={{ color: "var(--ink3)" }}>
-                    {r.id}
+                  <td className="l">
+                    {r.path && r.path.startsWith("http") ? (
+                      <a href={r.path} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "var(--ink2)" }}>
+                        Open ↗
+                      </a>
+                    ) : (
+                      <span style={{ color: "var(--ink3)" }}>{r.path}</span>
+                    )}
                   </td>
                 </tr>
               ))}
               {shown.length === 0 && (
                 <tr>
                   <td className="l" colSpan={5} style={{ color: "var(--ink3)" }}>
-                    No runbooks match “{q}”.
+                    No runbooks match "{q}".
                   </td>
                 </tr>
               )}

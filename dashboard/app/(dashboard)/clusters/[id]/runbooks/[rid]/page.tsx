@@ -45,7 +45,7 @@ export default function RunbookDetailPage() {
       {loading ? (
         <Spinner />
       ) : notFound || !rb ? (
-        <Empty>Runbook “{rid}” not found in the corpus.</Empty>
+        <Empty>Runbook "{rid}" not found in Notion.</Empty>
       ) : (
         <div style={{ maxWidth: 820 }}>
           <div className="sx-card" style={{ marginTop: 14, display: "flex", gap: 24, flexWrap: "wrap" }}>
@@ -65,6 +65,14 @@ export default function RunbookDetailPage() {
               <div className="sx-label">ID</div>
               <div className="sx-mono">{rb.id}</div>
             </div>
+            {rb.path && rb.path.startsWith("http") && (
+              <div>
+                <div className="sx-label">Notion</div>
+                <a href={rb.path} target="_blank" rel="noreferrer" className="sx-mono">
+                  Open in Notion ↗
+                </a>
+              </div>
+            )}
           </div>
           <div
             className="sx-card"
