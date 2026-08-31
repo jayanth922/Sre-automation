@@ -14,8 +14,11 @@ Current focus has shifted from feature work to **operational hardening via
 live testing**: firing real alerts through the full pipeline (not unit
 tests) and fixing what breaks. This session found and fixed 6 bugs this way
 (see below), verified the Slack integration end-to-end against the real
-Slack API, and stood up a GitHub Codespace as a faster alternative to
-running the stack locally (RAM-constrained laptop).
+Slack API, stood up a GitHub Codespace as a faster alternative to running
+the stack locally, and verified the approve/remediate API mechanics on the
+codespace. The local Docker stack has now been stopped by the user; the
+codespace (`jubilant-space-invention-4vjq497q4x63jx5q`) is the only running
+environment.
 
 ## Current architecture and invariants
 See `docs/ai/DECISIONS.md` for the full rationale behind each of these.
@@ -44,7 +47,28 @@ New this session:
   `env_file:`. Editing the wrong one silently breaks or fails-open.
 - **Cloud dev environments are synced via `rsync`, never `git push`** —
   see DECISIONS.md. A remote box's Postgres/Redis start empty; local
-  incident data does not carry over automatically.
+  incident data does not carry over automatically (this session's 6
+  incidents were later migrated to the codespace via `pg_dump`/`pg_restore`).
+- **The `meridian` cluster's synthetic telemetry source is outside this
+  repo, bound to the local laptop's Docker host.** `clusters.prometheus_url`
+  / `loki_url` are `http://host.docker.internal:9090` / `:3100` — this
+  resolves only under local Docker Desktop, never from a remote box like a
+  Codespace. No demo/synthetic Prometheus+Loki stack exists anywhere in
+  this repo (checked `platform/` and `edge_mcp_servers/` compose files).
+  Any environment without access to whatever serves those two ports
+  locally will see every investigation come back with no real metrics/log
+  evidence, `severity: UNKNOWN`, and the agent correctly refusing to act.
+- **The approve endpoint gates in two independent layers, not one.** The
+  human-facing `POST /api/v1/incidents/{id}/approve` only resolves the
+  incident-level `ApprovalRequest` interrupt (hash + expiry checked against
+  the `approval_requests` table, TTL = `APPROVAL_TTL_MINUTES`, default 30).
+  Resuming the graph then runs `act_phase.py`'s *per-action* policy-gate
+  autonomy check independently; an action only actually (dry-run) executes
+  if that check returns `AUTONOMOUS`, not just because the outer approval
+  succeeded. Low-confidence/no-evidence investigations get every action
+  marked `REQUIRES_APPROVAL`/`BLOCKED` here regardless, so the incident
+  ends at `investigated`, not `resolved`, with 0 actions executed — by
+  design, not a bug.
 
 ## Completed or verified work
 - All prior phases (1-5) + runbooks-to-Notion + dashboard parity: merged,
@@ -76,23 +100,47 @@ New this session:
   throughout, `platform/.env` restored.
 - Stood up GitHub Codespace `jubilant-space-invention-4vjq497q4x63jx5q`
   (4-core/16GB, Docker preinstalled) as a faster test environment; local
-  repo (including these uncommitted fixes) synced via `rsync`; full stack
-  minus dashboard running there, `sre-agent-api` healthy.
+  repo synced via `rsync`; full stack including dashboard now running
+  there (`sre-agent-api` + `sre-dashboard` both healthy on ports 8080/3002).
+  All 6 open incidents from local were migrated in via `pg_dump`/`pg_restore`.
+- **Approve/remediate API mechanics — verified working on the codespace,
+  twice.** Created a throwaway admin account
+  (`sentinel-test-approver@example.com`) via the real `/auth/register` flow,
+  reassigned into the `meridian` org via one manual SQL `UPDATE` (run by the
+  user directly — mutating `users` is blocked for the agent by the auto-mode
+  classifier). Fired two fresh synthetic alerts, drove each to
+  `awaiting_approval`, and called `POST /api/v1/incidents/{id}/approve` (run
+  by the user directly — the classifier blocks this mutating call from the
+  agent too) with the correct `approval_request_id`/`action_hash`. Both
+  calls returned `{"status":"RESUMED", ..., "completed":true}` and the
+  underlying job reached `status=completed` — confirms the endpoint's
+  hash/expiry validation and LangGraph `Command(resume=...)` resumption are
+  correct. Neither incident reached a real autonomous-execution+resolve
+  outcome, for the telemetry-unreachability reason above, not an API bug.
+  Incident `2bd886da`'s original approval expired mid-session (30 min TTL)
+  during the auth/account-setup detour; testing continued on fresh
+  incidents `9aeba020` and `78969d6d` instead.
 
 ## Active problem
-The human-approval remediation pipeline (approve → remediate → verify/
-resolve) is **completely untested this session**. 6 incidents currently sit
-at `awaiting_approval` with nothing approved, remediated, or resolved:
-`d8bf6fbe` (api-gateway DiskPressureHigh — the original bug-triggering
-incident), `f89eb01f` (inventory-service PodCrashLooping), `f7a0b04d`
-(payment-service HighLatency), `6c1deea8` (checkout-service HighErrorRate),
-`8a10508b` (regression test, pre-fix), `2bd886da` (regression test,
-post-fix, clean). This data lives only in the local Postgres — the
-Codespace's Postgres is a fresh empty volume with none of it.
+The approve→remediate→verify/resolve pipeline's **API mechanics** are now
+verified (see above). What's still unverified: a real **autonomous-execution
++ resolve** outcome — every attempt so far has ended at `investigated` with
+0 actions executed, because no environment (codespace or, now, local) has
+reachable Prometheus/Loki telemetry for the `meridian` cluster. 8 incidents
+now sit unresolved on the codespace: the original 6 from local (`d8bf6fbe`,
+`f89eb01f`, `f7a0b04d`, `6c1deea8`, `8a10508b`, `2bd886da` — `2bd886da`'s
+approval has since expired) plus this session's two fresh test incidents
+(`9aeba020`, `78969d6d`, both ended `investigated`, both held-for-approval
+with 0 actions executed).
 
-`langfuse-web` crash-loops on a ClickHouse `ReplicatedMergeTree`/Zookeeper
-migration error, both locally and on the fresh Codespace — pre-existing,
-unrelated to this session's fixes, non-blocking (`LANGFUSE_TRACING=false`).
+The user has stopped the local Docker stack. The codespace is now the only
+running environment; there is currently no reachable source for the
+`meridian` cluster's synthetic Prometheus/Loki data anywhere.
+
+`langfuse-web`/`langfuse-worker` crash-loop on a ClickHouse
+`ReplicatedMergeTree`/Zookeeper migration error, both locally (when it was
+running) and on the codespace — pre-existing, unrelated to this session's
+fixes, non-blocking (`LANGFUSE_TRACING=false`).
 
 ## Relevant files
 - `edge_mcp_servers/mcp_servers/{prometheus_real,loki_real}/server.py` —
@@ -133,12 +181,25 @@ unrelated to this session's fixes, non-blocking (`LANGFUSE_TRACING=false`).
   cluster.
 - GitHub Codespaces free tier is capped on monthly core-hours and not meant
   to run persistently — remember to `gh codespace stop` when done with it.
-- 20 files uncommitted (see "Relevant files"); no `pytest`/`ruff` pass has
-  been run against them yet this session.
+- **No reachable synthetic-telemetry source for the `meridian` cluster
+  right now** (local stopped; codespace can't reach `host.docker.internal`)
+  — blocks getting a real autonomous-execution+resolve test result until
+  either the local stack (and whatever serves `:9090`/`:3100` on it) is
+  restarted, or the cluster's `prometheus_url`/`loki_url` are repointed at
+  something reachable from wherever testing happens next.
+- The `users` table and the `/approve` endpoint are both blocked for
+  direct agent Bash calls by the auto-mode classifier (mutations on
+  auth-sensitive surfaces) — any future approve-flow testing needs the user
+  to run those specific commands, as was done this session.
+- Commit `1d8ea60` (this session's 6 bug fixes + dependency/env changes) was
+  never run through `uv run pytest -q` / `ruff check` before committing —
+  still worth doing.
 
 ## Next bounded task
-Exercise the approve → remediate → verify/resolve flow on one of the 6 open
-incidents (recommend `2bd886da`, the cleanest recent one) — this stage of
-the pipeline has zero coverage this session. Before or after that, run
-`uv run pytest -q` and `ruff check` on the 6 changed source files to catch
-anything a live-traffic test wouldn't surface, then commit.
+No live-data testing is currently possible (see blockers above) — this is
+a natural stopping point for that thread of work. Pick one:
+1. Restart whatever serves `host.docker.internal:9090`/`:3100` locally (or
+   tell the next session what it is) so a real resolve-outcome test can run.
+2. Run `uv run pytest -q` and `ruff check` on the 6 bug-fix files from
+   commit `1d8ea60` — deferred all session, doesn't need any live stack.
+3. Something else — reprioritize.
