@@ -230,3 +230,58 @@
   isn't configured — rejected because it directly contradicts the user's
   "only hosted on notion" instruction and would leave two divergent runbook
   sources to keep in sync.
+
+## Anthropic extended-thinking `AIMessage.content` is normalized at the two consumer sites, not one shared helper
+
+- **Decision:** `sre_agent/agent_nodes.py` (specialist message capture) and
+  `sre_agent/supervisor.py` (final synthesis capture) each independently
+  detect `isinstance(content, list)` and join only `type == "text"` blocks,
+  rather than adding a single shared normalization utility.
+- **Reason:** Both call sites are small, already-distinct extraction points
+  (one per streamed chunk in a specialist's message loop, one on a single
+  final LLM response), and `sre_agent/narrative.py::_invoke_llm()` already
+  has its own independent (correct) version of this same normalization —
+  three call sites already existed with this pattern in some form before this
+  fix; consolidating now would touch more surface than the bug required.
+- **Consequences:** Any *new* code path that reads `.content` off an
+  Anthropic `AIMessage` and assumes `str` needs the same guard added by hand
+  — this is a landmine that can recur. Search for `\.content\b` assignments
+  from `AIMessage`/`response` objects before trusting `.strip()`/string ops
+  on them.
+- **Rejected alternative:** A shared `normalize_ai_content()` helper in
+  `sre_agent/llm_utils.py` — deferred as unnecessary scope for a bug fix;
+  worth doing if a fourth call site turns up.
+
+## MCP server output capping applies to instant queries too, not just range queries
+
+- **Decision:** Prometheus's `get_metric` (instant PromQL) and
+  `get_golden_signals` now cap result size via `_cap_vector_result()`
+  (`MAX_INSTANT_SERIES = 50`, then a byte-size fallback), mirroring the
+  existing `_downsample_range_result()` cap on `get_metric_range`. Loki's
+  `_cap_logs()` was fixed to handle the zero-result case (`while True:`
+  instead of `while capped:`, which was falsy — and so skipped entirely — on
+  an empty list).
+- **Reason:** An under-filtered instant query can match thousands of series,
+  each carrying a full label set; this caused the same class of LLM-context
+  overflow the range-query cap was already built to prevent, plus a separate
+  crash (`**None` from the empty-list case) that only manifested on queries
+  legitimately returning zero results.
+- **Consequences:** Any new Prometheus/Loki MCP tool that returns raw
+  query results needs to run through one of these capping helpers before
+  being handed to the LLM — this is now the established pattern for this
+  codebase, not a one-off fix.
+
+## Cloud dev environments are populated via `rsync`, not `git push`
+
+- **Decision:** When standing up a remote VM/Codespace to run this stack
+  faster, the local working tree (including uncommitted changes) is copied
+  over with `rsync -e ssh --exclude .git ...`, not by pushing a branch.
+- **Reason:** Keeps in-progress, unreviewed work off GitHub and out of git
+  history entirely, consistent with the standing "never commit/push without
+  explicit instruction" policy — syncing files bypasses git, so it carries no
+  such implication.
+- **Consequences:** A remote environment set up this way has no relationship
+  to `origin` until/unless something is later committed and pushed on
+  purpose; its Postgres/Redis/etc. volumes start empty, so any incident data
+  created locally (e.g. the regression-test incidents from this session) does
+  not exist there unless separately dumped/restored.

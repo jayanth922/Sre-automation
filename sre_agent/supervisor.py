@@ -315,12 +315,18 @@ class SupervisorAgent:
     def __init__(
         self,
         llm_provider: str = "anthropic",
+        tools: Optional[List[Any]] = None,
         **llm_kwargs,
     ):
         self.llm_provider = llm_provider
         self.llm = self._create_llm(**llm_kwargs)
         self.system_prompt = _read_supervisor_prompt()
         self.formatter = create_formatter(llm_provider=llm_provider)
+        # Live tool objects — kept off checkpointed graph state (never
+        # serializable), so nodes that need to invoke a tool directly (e.g.
+        # store_incident_memory here, search_runbooks in the planner) close
+        # over them at graph-build time instead.
+        self.tools = tools or []
 
         # Memory system removed
         self.memory_client = None
@@ -1482,6 +1488,16 @@ You can:
             )
 
             final_response = response.content
+            if isinstance(final_response, list):
+                # Extended-thinking / multi-block Anthropic responses return
+                # content as a list of blocks (thinking, tool_use, text, ...)
+                # rather than a plain string — build_supervisor_summary_content
+                # below calls .strip() on this, so normalize to text now.
+                final_response = "".join(
+                    block.get("text", "")
+                    for block in final_response
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
 
         supervisor_summary = (
             "I merged the specialist replies into one conclusion and am handing the "
@@ -1538,7 +1554,7 @@ You can:
                 executed=(act_report or {}).get("executed"),
             )
             if eligibility.eligible_for_success:
-                tools = metadata.get("tools", [])
+                tools = self.tools
                 store_tool = None
                 for tool in tools:
                     tool_name = getattr(tool, "name", "")

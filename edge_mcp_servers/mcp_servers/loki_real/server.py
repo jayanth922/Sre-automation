@@ -32,6 +32,36 @@ host = os.getenv("HOST", "0.0.0.0")
 
 mcp = FastMCP("Loki Logs", host=host, port=port)
 
+MAX_MESSAGE_CHARS = 2000
+MAX_RESPONSE_CHARS = 200_000
+
+
+def _cap_logs(logs: list, total_count: int) -> dict:
+    """Cap per-message length and total serialized size so a crash-looping
+    pod spewing large repeated stack traces can't blow the LLM context."""
+    capped = []
+    message_truncated = False
+    for entry in logs:
+        msg = entry.get("message", "")
+        if len(msg) > MAX_MESSAGE_CHARS:
+            entry = {**entry, "message": msg[:MAX_MESSAGE_CHARS] + " …[truncated]"}
+            message_truncated = True
+        capped.append(entry)
+
+    logs_truncated = False
+    while True:
+        payload = {
+            "logs": capped,
+            "count": total_count,
+            "logs_returned": len(capped),
+            "logs_truncated": logs_truncated,
+            "message_truncated": message_truncated,
+        }
+        if len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS or len(capped) <= 1:
+            return payload
+        capped = capped[: max(1, len(capped) // 2)]
+        logs_truncated = True
+
 
 def _parse_time(time_str: Optional[str]) -> int:
     """
@@ -142,8 +172,7 @@ def query_logs(
 
         result = {
             "query": logql,
-            "logs": logs[:limit],
-            "count": len(logs),
+            **_cap_logs(logs[:limit], len(logs)),
         }
 
         return json.dumps(result, indent=2)

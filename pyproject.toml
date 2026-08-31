@@ -62,6 +62,11 @@ dependencies = [
     # package is required too, or the callback silently fails to construct.
     "langfuse>=3.0.0",
     "langchain>=1.0.0",
+
+    # Slack war-room forwarding + interactive bot (sre_agent/war_room_service.py,
+    # sre_agent/integrations/slack_bot.py). No-op at runtime unless SLACK_BOT_TOKEN
+    # (and SLACK_APP_TOKEN for the Socket Mode bot) are configured.
+    "slack-bolt>=1.18.0",
 ]
 
 [project.optional-dependencies]

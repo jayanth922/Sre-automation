@@ -40,8 +40,6 @@ RUN uv pip install --no-cache "temporalio>=1.7.0"
 COPY sre_agent/ ./sre_agent/
 COPY backend/   ./backend/
 COPY alembic.ini ./
-# Runbook corpus — the console's runbook catalog reads this at /app/runbooks
-COPY edge_mcp_servers/mcp_servers/runbooks_local/runbooks ./runbooks
 
 ENV PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -299,10 +299,25 @@ class BaseAgentNode:
                                         and hasattr(msg, "__class__")
                                         and "AIMessage" in str(msg.__class__)
                                     ):
-                                        agent_response = msg.content
-                                        logger.info(
-                                            f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
-                                        )
+                                        content = msg.content
+                                        if isinstance(content, list):
+                                            # Extended-thinking / multi-block Anthropic
+                                            # responses return content as a list of blocks
+                                            # (thinking, tool_use, text, ...) rather than a
+                                            # plain string. Downstream code (narrative.py,
+                                            # incident_timeline.py) expects agent_response
+                                            # to be a str, so keep only the text blocks.
+                                            content = "".join(
+                                                block.get("text", "")
+                                                for block in content
+                                                if isinstance(block, dict)
+                                                and block.get("type") == "text"
+                                            )
+                                        if content:
+                                            agent_response = content
+                                            logger.info(
+                                                f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
+                                            )
 
                         elif "tools" in chunk:
                             tools_step = chunk["tools"]

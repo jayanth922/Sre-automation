@@ -31,6 +31,75 @@ prom_client = None
 last_connection_attempt = 0
 CONNECTION_RETRY_INTERVAL = 10  # Seconds between retries
 
+# A high-cardinality query (broad label matcher) crossed with a fine step over
+# a long window can return thousands of series x thousands of points each —
+# one real run blew a 1M-token LLM context by 2.4x from a single tool result.
+# Cap what goes back to the agent; note when we've cut something so it knows
+# the data is a sample, not the full series.
+MAX_METRIC_SERIES = 20
+MAX_POINTS_PER_SERIES = 120
+
+
+def _downsample_range_result(result: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Cap series count and points-per-series on a Prometheus range-query result."""
+    total_series = len(result)
+    series_truncated = total_series > MAX_METRIC_SERIES
+    kept = result[:MAX_METRIC_SERIES]
+
+    points_truncated = False
+    downsampled = []
+    for series in kept:
+        values = series.get("values", [])
+        if len(values) > MAX_POINTS_PER_SERIES:
+            points_truncated = True
+            # Evenly-spaced subsample so the shape of the series over time
+            # is preserved instead of just keeping the earliest window.
+            step = len(values) / MAX_POINTS_PER_SERIES
+            values = [values[int(i * step)] for i in range(MAX_POINTS_PER_SERIES)]
+        downsampled.append({**series, "values": values})
+
+    return {
+        "result": downsampled,
+        "series_returned": len(downsampled),
+        "series_total": total_series,
+        "series_truncated": series_truncated,
+        "points_per_series_truncated": points_truncated,
+        "points_per_series_cap": MAX_POINTS_PER_SERIES,
+    }
+
+
+# get_metric_range downsamples via _downsample_range_result above, but an
+# instant/vector query (get_metric) has no time-axis to downsample — an
+# under-filtered PromQL query can still match thousands of series and each
+# one carries a full label set, so this caps series count the same way.
+MAX_INSTANT_SERIES = 50
+
+
+def _cap_vector_result(result: Any) -> Dict[str, Any]:
+    """Cap series count (and, as a last resort, serialized size) on an
+    instant PromQL query result so a broad/unfiltered match can't blow the
+    LLM context the way an uncapped range query once did."""
+    if not isinstance(result, list):
+        return {"result": result}
+
+    total = len(result)
+    kept = result[:MAX_INSTANT_SERIES]
+    payload = {
+        "result": kept,
+        "series_returned": len(kept),
+        "series_total": total,
+        "series_truncated": total > MAX_INSTANT_SERIES,
+    }
+
+    max_chars = 200_000
+    while True:
+        text = json.dumps(payload, indent=2, default=str)
+        if len(text) <= max_chars or len(payload["result"]) <= 1:
+            return payload
+        payload["result"] = payload["result"][: max(1, len(payload["result"]) // 2)]
+        payload["series_truncated"] = True
+
+
 def get_prom_client() -> Optional[PrometheusConnect]:
     """
     Get Prometheus client, attempting to initialize if necessary.
@@ -184,7 +253,7 @@ async def get_metric(query: str, time: str = None) -> str:
         else:
             result = await loop.run_in_executor(None, client.custom_query, query)
 
-        return json.dumps(result, indent=2, default=str)
+        return json.dumps(_cap_vector_result(result), indent=2, default=str)
     except Exception as e:
         # Try to expose HTTP status / body so the agent can distinguish
         # "your PromQL is malformed" (400/422 from Prometheus) from
@@ -250,7 +319,16 @@ async def get_metric_range(query: str, start_time: str, end_time: str, step: str
             end_dt,
             step,
         )
-        return json.dumps(result, indent=2, default=str)
+        payload = _downsample_range_result(result)
+        text = json.dumps(payload, indent=2, default=str)
+        # Last-resort safety net: even a capped series/points count can be
+        # huge if label sets are verbose. Hard-cap the serialized size too.
+        max_chars = 200_000
+        if len(text) > max_chars:
+            payload["result"] = payload["result"][: max(1, len(payload["result"]) // 2)]
+            payload["series_truncated"] = True
+            text = json.dumps(payload, indent=2, default=str)[:max_chars]
+        return text
     except Exception as e:
         status = getattr(getattr(e, "response", None), "status_code", None)
         body = ""
@@ -334,7 +412,7 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
                 result = await loop.run_in_executor(None, client.custom_query, query)
             results[signal_name] = {
                 "query": query,
-                "value": result,
+                "value": _cap_vector_result(result),
             }
         except Exception as e:
             logger.warning(f"Failed to query {signal_name}: {e}")

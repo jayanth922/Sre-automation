@@ -99,7 +99,6 @@ def _create_anthropic_llm(config: Dict[str, Any]):
     return ChatAnthropic(
         model=config["model_id"],
         api_key=api_key,
-        temperature=config["temperature"],
         max_tokens=config.get("max_tokens", 4096),
     )
 
