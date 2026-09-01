@@ -20,11 +20,12 @@ the real ``AgentState`` / ``RemediationPlan`` and with lightweight test doubles.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -34,8 +35,8 @@ from .confidence_calibration import (
     load_calibration_artifact,
 )
 from .execution_context import ExecutionContext
-from .executor import Executor
-from .mutation_gateway import MutationGateContext, authorize_and_execute
+from .executor import EXECUTOR_TOOL_MAP, Executor
+from .mutation_gateway import MutationGateContext, MutationRejected, authorize_and_execute
 from .policy_gate import AutonomyDecision, decide_plan
 from .severity_engine import (
     EvidenceLink,
@@ -60,6 +61,31 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _with_target(action: Any, target: str) -> Any:
+    """Return a copy of ``action`` with ``.target`` overridden.
+
+    Tolerates pydantic models (real ``RemediationAction``), dataclasses and
+    plain dicts (test doubles), and generic objects.
+    """
+    if isinstance(action, dict):
+        return {**action, "target": target}
+    if is_dataclass(action) and not isinstance(action, type):
+        return dataclass_replace(action, target=target)
+    if hasattr(action, "model_copy"):
+        return action.model_copy(update={"target": target})
+    if hasattr(action, "copy"):
+        try:
+            return action.copy(update={"target": target})
+        except TypeError:
+            pass
+    clone = copy.copy(action)
+    try:
+        clone.target = target
+    except Exception:
+        return action
+    return clone
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -556,6 +582,19 @@ async def execute_autonomous_live(
     environment = str(getattr(context, "environment", "production") or "production")
     risk_score = _plan_risk_score(plan)
 
+    # The Planner's `target` field is free text (a display description, not a
+    # schema-validated k8s object name) and has been observed to contain
+    # colon-suffixed sub-resource descriptors, pod names with random hash
+    # suffixes, and trailing parenthetical clarifications — none of which are
+    # valid k8s resource names. The alert's own `service`/`app` label is the
+    # one canonical, non-LLM-generated resource identifier tied to this
+    # incident, so k8s-mutating actions use it as the live target instead of
+    # trusting the Planner's free text.
+    alert_labels = _get(_get(state, "alert_context"), "labels", {}) or {}
+    canonical_service = str(
+        alert_labels.get("service") or alert_labels.get("app") or ""
+    ).strip()
+
     results: List[Dict[str, Any]] = []
     for index, (action, arep) in enumerate(zip(actions, report.action_reports)):
         allowed_decisions = {AutonomyDecision.AUTONOMOUS.value}
@@ -593,14 +632,41 @@ async def execute_autonomous_live(
             incident_id=str(incident_id) if incident_id else None,
             raw_action_confidence=report.raw_action_confidence,
         )
-        res = await authorize_and_execute(
-            action,
-            gate_context,
-            context,
-            tool_caller,
-            github_caller,
-            idempotency_key,
-        )
+        live_action = action
+        if canonical_service and action_payload["action_type"] in EXECUTOR_TOOL_MAP:
+            live_action = _with_target(action, canonical_service)
+        try:
+            res = await authorize_and_execute(
+                live_action,
+                gate_context,
+                context,
+                tool_caller,
+                github_caller,
+                idempotency_key,
+            )
+        except MutationRejected as exc:
+            # A rejection at the authorization boundary (e.g. an action type
+            # with no live tool mapping) is per-action, not systemic — record
+            # it and keep executing the rest of the plan's actions instead of
+            # aborting the whole batch.
+            logger.warning(
+                "Live action %d (%s on %s) rejected: %s: %s",
+                index,
+                action_payload["action_type"],
+                action_payload["target"],
+                exc.code,
+                exc.detail,
+            )
+            results.append(
+                {
+                    "action_type": action_payload["action_type"],
+                    "target": action_payload["target"],
+                    "status": "REFUSED",
+                    "command": "",
+                    "detail": f"{exc.code}: {exc.detail}",
+                }
+            )
+            continue
         results.append(
             {
                 "action_type": res.action_type,

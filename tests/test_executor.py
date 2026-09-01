@@ -13,8 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sre_agent.executor import (  # noqa: E402
     Executor,
+    _live_args,
     build_command,
     build_rollback_command,
+    classify_live_response,
 )
 
 
@@ -111,6 +113,66 @@ def test_aexecute_live_without_caller_is_error_not_silent():
     ex = Executor()
     res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=None))
     assert res.status == "ERROR"
+
+
+# ── _live_args target parsing ───────────────────────────────────────────────
+
+def test_live_args_bare_name_passthrough():
+    args = _live_args(FakeAction("restart", target="checkout-service"))
+    assert args["name"] == "checkout-service"
+
+
+def test_live_args_strips_colon_subresource_suffix():
+    args = _live_args(FakeAction("restart", target="checkout-service:process-handler-pods"))
+    assert args["name"] == "checkout-service"
+
+
+def test_live_args_extracts_name_from_descriptive_phrase():
+    target = "checkout-service pods (targeted canary subset only, e.g. one pod from replicaset 859599c74b)"
+    args = _live_args(FakeAction("restart", target=target))
+    assert args["name"] == "checkout-service"
+
+
+def test_live_args_uppercase_target_is_lowercased():
+    args = _live_args(FakeAction("restart", target="Checkout-Service"))
+    assert args["name"] == "checkout-service"
+
+
+# ── classify_live_response: real MCP content-block shape ───────────────────
+# The MCP SDK wraps a tool's JSON payload as a list of plain dicts like
+# {"type": "text", "text": "<json>", "id": ...} — captured verbatim from a
+# live restart_deployment call that actually succeeded at the cluster level
+# but was misclassified as ERROR before this fix (the parser only recursed
+# into "result"/"data"/"content" keys, never "text").
+
+def test_classify_live_response_unwraps_mcp_text_content_block_success():
+    response = [
+        {
+            "type": "text",
+            "text": (
+                '{"tool":"restart","name":"checkout-service","namespace":"meridian",'
+                '"dry_run":false,"applied":true,'
+                '"kubectl_equivalent":"kubectl rollout restart deployment/checkout-service -n meridian",'
+                '"status":"OK","restartedAt":"2026-09-01T21:54:32.426055+00:00"}'
+            ),
+            "id": "lc_e8f5309e-5ea5-435b-81f1-e950933fe481",
+        }
+    ]
+    status, detail = classify_live_response(response)
+    assert status == "EXECUTED"
+    assert "checkout-service" in detail
+
+
+def test_classify_live_response_unwraps_mcp_text_content_block_refusal():
+    response = [
+        {
+            "type": "text",
+            "text": '{"tool":"patch_resource_limits","namespace":"meridian","status":"REFUSED","reason":"provide at least one of memory/cpu"}',
+            "id": "lc_86f291ee-c27f-43e5-9b2b-5b91a6ba497e",
+        }
+    ]
+    status, detail = classify_live_response(response)
+    assert status == "REFUSED"
 
 
 def test_aexecute_unmapped_action_is_skipped():
