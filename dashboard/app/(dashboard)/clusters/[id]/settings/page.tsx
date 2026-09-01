@@ -39,10 +39,6 @@ export default function SettingsPage() {
     github_repo: "",
     notion_database_id: "",
     notion_api_key: "",
-    jira_url: "",
-    jira_email: "",
-    jira_api_token: "",
-    jira_project_key: "",
     namespace: "",
     llm_provider: "",
     llm_model: "",
@@ -51,6 +47,9 @@ export default function SettingsPage() {
   })
   const [ghInstalling, setGhInstalling] = useState(false)
   const [ghErr, setGhErr] = useState<string | null>(null)
+  const [slackTeamId, setSlackTeamId] = useState<string | null>(null)
+  const [slackInstalling, setSlackInstalling] = useState(false)
+  const [slackErr, setSlackErr] = useState<string | null>(null)
   const [metrics, setMetrics] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -75,6 +74,13 @@ export default function SettingsPage() {
   }, [checkConnections])
 
   useEffect(() => {
+    api
+      .get<{ slack_team_id: string | null }>("/organization")
+      .then(({ data }) => setSlackTeamId(data.slack_team_id ?? null))
+      .catch(() => setSlackTeamId(null))
+  }, [])
+
+  useEffect(() => {
     if (!cluster) return
     setEndpoints({
       name: cluster.name ?? "",
@@ -83,10 +89,6 @@ export default function SettingsPage() {
       github_repo: cluster.github_repo ?? "",
       notion_database_id: cluster.notion_database_id ?? "",
       notion_api_key: "",
-      jira_url: cluster.jira_url ?? "",
-      jira_email: cluster.jira_email ?? "",
-      jira_api_token: "",
-      jira_project_key: cluster.jira_project_key ?? "",
       namespace: cluster.namespace ?? "",
       llm_provider: cluster.llm_provider ?? "",
       llm_model: cluster.llm_model ?? "",
@@ -117,10 +119,6 @@ export default function SettingsPage() {
         github_repo: endpoints.github_repo || undefined,
         notion_database_id: endpoints.notion_database_id || undefined,
         notion_api_key: endpoints.notion_api_key || undefined,
-        jira_url: endpoints.jira_url || undefined,
-        jira_email: endpoints.jira_email || undefined,
-        jira_api_token: endpoints.jira_api_token || undefined,
-        jira_project_key: endpoints.jira_project_key || undefined,
         metrics_config: cleanMetrics,
         // Sent even when blank so they can be cleared (revert to whole-cluster /
         // platform default). The API key is write-only: only sent when entered.
@@ -237,12 +235,12 @@ export default function SettingsPage() {
 
         <SectionTitle title="Scope" meta="what this cluster monitors" />
         <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Leave blank to monitor the whole cluster (infra-level). Set a namespace to scope this cluster to one application — its metrics, service view, and remediation blast radius are limited to that namespace. That&apos;s how multiple apps on the same Kubernetes each become their own cluster.
+          Required. Every cluster is scoped to one Kubernetes namespace — its metrics, service view, and remediation blast radius are limited to that namespace. That&apos;s how multiple apps on the same Kubernetes each become their own cluster, and how tenants stay isolated from each other.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 320 }}>
           <div>
             <label className="sx-label">Namespace</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(whole cluster)" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
+            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="e.g. production" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
           </div>
         </div>
 
@@ -256,8 +254,7 @@ export default function SettingsPage() {
             <select className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
               <option value="">Platform default</option>
               <option value="anthropic">anthropic (Claude)</option>
-              <option value="groq">groq</option>
-              <option value="openai_compatible">openai_compatible (self-hosted)</option>
+              <option value="gemini">gemini</option>
             </select>
           </div>
           <div>
@@ -289,28 +286,35 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <SectionTitle title="Jira" meta="ticketing (optional)" />
+        <SectionTitle title="Slack" meta="incident notifications for the organization" />
         <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          When configured, Sentinel files a Jira issue for incidents and links it back on the incident page. Use an
-          email + API token pair from an Atlassian account with permission to create issues in the target project.
+          Connect Slack once per organization — every cluster&apos;s incidents post to it. Opens a Slack window to pick the workspace and channel.
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-          <div>
-            <label className="sx-label">Jira URL</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="https://your-org.atlassian.net" value={endpoints.jira_url} onChange={(e) => setEndpoints({ ...endpoints, jira_url: e.target.value })} />
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              className="sx-btn"
+              style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+              disabled={slackInstalling}
+              onClick={async () => {
+                setSlackInstalling(true)
+                setSlackErr(null)
+                try {
+                  const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
+                  window.location.href = data.install_url
+                } catch {
+                  setSlackErr("Could not start the Slack install flow.")
+                  setSlackInstalling(false)
+                }
+              }}
+            >
+              {slackInstalling ? "Redirecting…" : slackTeamId ? "Reconnect Slack" : "Connect Slack"}
+            </button>
+            <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>
+              {slackTeamId ? `connected (${slackTeamId})` : "not connected"}
+            </span>
           </div>
-          <div>
-            <label className="sx-label">Jira email</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="bot@your-org.com" value={endpoints.jira_email} onChange={(e) => setEndpoints({ ...endpoints, jira_email: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label">Jira project key</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="OPS" value={endpoints.jira_project_key} onChange={(e) => setEndpoints({ ...endpoints, jira_project_key: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label">Jira API token</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.jira_project_key ? "•••••• (set — leave blank to keep)" : "token"} value={endpoints.jira_api_token} onChange={(e) => setEndpoints({ ...endpoints, jira_api_token: e.target.value })} />
-          </div>
+          {slackErr && <div className="sx-dry" style={{ textAlign: "left", marginTop: 6, color: "var(--crit)" }}>{slackErr}</div>}
         </div>
 
         <SectionTitle title="Observability profile" meta="your Prometheus conventions" />

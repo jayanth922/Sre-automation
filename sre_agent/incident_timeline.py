@@ -181,7 +181,24 @@ def _normalize_specialist_finding(
     }
 
 
-def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[str]]:
+_THRESHOLD_CONTEXT_RE = re.compile(
+    r"\b(threshold|trigger(?:s|ed)?|alert(?:s|ed)? at|alert(?:s|ed)? when|"
+    r"configured|baseline|target|sla|slo|should be|expected|runbook|"
+    r"limit|budget|policy)\b",
+    re.IGNORECASE,
+)
+
+
+def _mention_kind(text: str, start: int, end: int) -> str:
+    """Classify a numeric mention as a configured 'threshold' or an
+    'observed' measurement, based on nearby context words, so a runbook's
+    documented threshold isn't treated as conflicting with an actually
+    observed value for the same metric."""
+    window = text[max(0, start - 40): end + 10]
+    return "threshold" if _THRESHOLD_CONTEXT_RE.search(window) else "observed"
+
+
+def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[Tuple[str, str]]]:
     patterns = {
         "error rate": [
             r"(?:error rate|errors?)\D{0,24}(\d+(?:\.\d+)?%)",
@@ -200,28 +217,42 @@ def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[str]]:
             r"(\d+(?:\.\d+)?%)\D{0,24}(?:memory(?: usage| utilization)?|memory|mem)",
         ],
     }
-    facts: Dict[str, List[str]] = {}
+    facts: Dict[str, List[Tuple[str, str]]] = {}
     for label, label_patterns in patterns.items():
-        values: List[str] = []
+        seen: set = set()
+        mentions: List[Tuple[str, str]] = []
         for pattern in label_patterns:
             for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
                 value = re.sub(r"\s+", " ", match.group(1).strip().lower())
-                if value not in values:
-                    values.append(value)
-        if values:
-            facts[label] = values
+                kind = _mention_kind(text or "", match.start(), match.end())
+                if (value, kind) not in seen:
+                    seen.add((value, kind))
+                    mentions.append((value, kind))
+        if mentions:
+            facts[label] = mentions
     return facts
 
 
 def _detect_conflicting_numeric_facts(texts: Sequence[str]) -> Dict[str, List[str]]:
-    combined: Dict[str, List[str]] = {}
+    """Flag a label as conflicting only when two or more DISTINCT *observed*
+    values are seen for it. A runbook-quoted threshold/config value is never
+    compared against an observed measurement — they describe different
+    things (a limit vs. a reading) and are not a real conflict."""
+    combined: Dict[str, List[Tuple[str, str]]] = {}
     for text in texts:
-        for label, values in _extract_numeric_fact_mentions(text).items():
+        for label, mentions in _extract_numeric_fact_mentions(text).items():
             known = combined.setdefault(label, [])
-            for value in values:
-                if value not in known:
-                    known.append(value)
-    return {label: values for label, values in combined.items() if len(values) > 1}
+            for mention in mentions:
+                if mention not in known:
+                    known.append(mention)
+
+    conflicts: Dict[str, List[str]] = {}
+    for label, mentions in combined.items():
+        observed_values = [value for value, kind in mentions if kind == "observed"]
+        distinct_observed = list(dict.fromkeys(observed_values))
+        if len(distinct_observed) > 1:
+            conflicts[label] = distinct_observed
+    return conflicts
 
 
 def _alert_context_to_text(alert_context: Any) -> str:

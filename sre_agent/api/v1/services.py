@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import crud, database, models
 from sre_agent.api.v1.auth_deps import get_current_user_and_org
 from sre_agent import metrics_profile as mp
+from sre_agent.multitenant.slack_oauth import resolve_slack_bot_token
 
 router = APIRouter(
     prefix="/clusters",
@@ -137,8 +138,8 @@ async def get_cluster_connections(
     db: AsyncSession = Depends(database.get_db),
 ) -> Dict[str, Any]:
     """Preflight for a cluster's integrations — actively checks whether Prometheus,
-    Loki, GitHub, and Notion are reachable/authorized, and whether Alertmanager has
-    delivered anything. Lets a new user see at a glance if their setup is wired,
+    Loki, GitHub, Notion, and Slack are reachable/authorized, and whether Alertmanager
+    has delivered anything. Lets a new user see at a glance if their setup is wired,
     instead of discovering it's broken only when an incident fails to open."""
     import os
     import asyncio
@@ -151,6 +152,8 @@ async def get_cluster_connections(
     gh_token = os.getenv("GITHUB_TOKEN")
     notion_db = cluster.notion_database_id
     notion_key = cluster.notion_api_key
+    org = await crud.get_org_by_id(db, user.org_id)
+    slack_token = resolve_slack_bot_token(org) if org else None
 
     def _row(name, configured, ok, detail):
         return {"name": name, "configured": configured, "ok": ok, "detail": detail}
@@ -211,6 +214,22 @@ async def get_cluster_connections(
         except Exception as e:
             return _row("Notion runbooks", True, False, f"Unreachable: {type(e).__name__}.")
 
+    async def check_slack(client):
+        if not slack_token:
+            return _row("Slack", False, None, "Not connected — incident updates won't post to Slack.")
+        try:
+            r = await client.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {slack_token}"},
+            )
+            payload = r.json()
+            if payload.get("ok"):
+                team = payload.get("team") or "workspace"
+                return _row("Slack", True, True, f"Connected to {team}.")
+            return _row("Slack", True, False, f"Auth failed: {payload.get('error', 'unknown_error')}.")
+        except Exception as e:
+            return _row("Slack", True, False, f"Unreachable: {type(e).__name__}.")
+
     def check_alerts():
         hb = cluster.last_heartbeat
         source = getattr(cluster, "heartbeat_source", None)
@@ -231,12 +250,12 @@ async def get_cluster_connections(
         return _row("Alerts (Alertmanager)", True, True if ok and source == "alertmanager" else None, detail)
 
     async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-        prom_r, loki_r, gh_r, notion_r = await asyncio.gather(
-            check_prometheus(client), check_loki(client), check_github(client), check_notion(client)
+        prom_r, loki_r, gh_r, notion_r, slack_r = await asyncio.gather(
+            check_prometheus(client), check_loki(client), check_github(client), check_notion(client), check_slack(client)
         )
 
     return {
-        "checks": [prom_r, loki_r, check_alerts(), gh_r, notion_r],
+        "checks": [prom_r, loki_r, check_alerts(), gh_r, notion_r, slack_r],
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 

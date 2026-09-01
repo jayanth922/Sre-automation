@@ -583,6 +583,19 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
             current_query = msg.content
             break
 
+    # Fall back to the already-set query, or the alert context, rather than
+    # silently discarding it as "" when no HumanMessage is found in
+    # `messages` (e.g. after a checkpoint reload or an OODA re-entry).
+    if not current_query:
+        current_query = state.get("current_query") or ""
+    if not current_query:
+        alert_ctx = state.get("alert_context")
+        alert_name = getattr(alert_ctx, "alert_name", None) or (
+            alert_ctx.get("alert_name") if isinstance(alert_ctx, dict) else None
+        )
+        if alert_name:
+            current_query = f"Investigate alert: {alert_name}"
+
     # Determine if this is an alert-driven investigation
     alert_context = state.get("alert_context")
     is_alert_driven = alert_context is not None
@@ -969,7 +982,7 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
-async def _planner_node(state: AgentState) -> Dict[str, Any]:
+async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, Any]:
     """
     PlannerNode: Generates structured RemediationPlan based on reflector analysis.
     Implements the DECIDE phase of OODA loop.
@@ -999,8 +1012,10 @@ async def _planner_node(state: AgentState) -> Dict[str, Any]:
     runbook_content = ""
     source_runbook_url = None
     
-    # Try to find the search tool in metadata
-    tools = state.get("metadata", {}).get("tools", [])
+    # Tools are passed in directly at graph-build time (closed over by the
+    # node registration below) rather than stored in checkpointed state —
+    # live tool objects (with bound clients/closures) are never serializable,
+    # so putting them in `state.metadata` breaks any durable checkpointer.
     search_tool = next((t for t in tools if "search_runbooks" in getattr(t, "name", "")), None)
     
     if search_tool and alert_context:
@@ -1297,7 +1312,7 @@ def build_multi_agent_graph(
 
     # Create supervisor (for backward compatibility and routing)
     supervisor = SupervisorAgent(
-        llm_provider=llm_provider, **llm_kwargs
+        llm_provider=llm_provider, tools=tools, **llm_kwargs
     )
 
     # Create agent nodes with filtered tools and metadata from constants
@@ -1383,7 +1398,12 @@ def build_multi_agent_graph(
             "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → approval_gate → act_gate → END"
         )
         workflow.add_node("reflector", _observed("reflector", _reflector_node))
-        workflow.add_node("planner", _observed("planner", _planner_node))
+
+        async def context_planner_node(state: AgentState) -> Dict[str, Any]:
+            return await _planner_node(state, tools)
+
+        workflow.add_node("planner", _observed("planner", context_planner_node))
+
         async def context_act_gate(state: AgentState) -> Dict[str, Any]:
             return await _act_gate_node(state, execution_context)
 

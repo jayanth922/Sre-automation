@@ -575,7 +575,6 @@ async def invoke_agent(request: InvocationRequest):
             "agent_results": {},
             "current_query": user_prompt,
             "metadata": {
-                "tools": tools,
                 "cluster_id": runtime.context.cluster_id,
                 "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
@@ -836,12 +835,9 @@ async def approve_remediation(session_id: str):
                 HumanMessage(content="Remediation plan approved, resuming execution")
             ]
         
-        # Ensure metadata has tools
         if "metadata" not in current_state:
             current_state["metadata"] = {}
-        if "tools" not in current_state["metadata"]:
-            current_state["metadata"]["tools"] = tools
-        
+
         final_response = ""
         execution_results = None
         verification_result = None
@@ -1285,7 +1281,6 @@ async def _run_graph_impl(
                 "llm_provider": runtime.context.llm_provider
                 or os.getenv("LLM_PROVIDER", "anthropic"),
                 "llm": runtime.context.llm_manifest(),
-                "tools": tools,
                 "organization_id": runtime.context.organization_id,
                 "cluster_id": str(cluster_id),
                 "incident_id": str(incident_id),
@@ -1850,7 +1845,6 @@ async def webhook_alert(
                 "current_query": f"Investigate alert: {enriched_context.alert_name}",
                 "metadata": {
                     "llm_provider": llm_provider,
-                    "tools": tools,
                 },
                 "requires_collaboration": True,
                 "agents_invoked": [],

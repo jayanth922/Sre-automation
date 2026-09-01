@@ -4,146 +4,217 @@
 Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
 
 ## Current milestone
-The 5-phase upgrade plan (Jira, observability, memory, multi-tenancy, real
-benchmark) from `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` is
-**complete**. PR #44 (Temporal sandbox verification), PR #45 (Slack
-conversational memory), PR #46 (Jira ticketing, Phase 1), PR #47 (Langfuse
-observability, Phase 2), PR #48 (memory sophistication, Phase 3), and PR #49
-(multi-tenant secure access, Phase 4) are merged into `master`. Phase 5
-(AIOpsLab benchmark) was committed directly to `master` (commit `42ddec1`,
-not a PR — user asked to commit and move on rather than open one):
-`benchmarks/aiopslab_adapter.py` + `tests/test_aiopslab_adapter.py`, written
-after reading the live AIOpsLab package (its real API diverges from the
-plan's original sketch — see `docs/ai/DECISIONS.md`'s "AIOpsLab adapter
-plays back one investigation, not a live shell loop" entry).
+The 5-phase upgrade plan is complete and merged (PRs #44-#49), plus
+post-plan work: runbooks migrated to Notion-only hosting (`f75196d`),
+dashboard UI brought to parity with the backend — Notion/Jira/Slack/GitHub
+App surfaces (`a0e0ff6`, `0d48f11`), and a README quickstart (`90d81ce`).
+`master` HEAD is `90d81ce`.
 
-Post-Phase-5 (still on `master`, **not yet committed**): a Notion-only
-runbooks migration, per the user's instruction "regarding runbooks, remove
-local uploads of runbooks. only hosted on notion." All three runbook
-consumers (human catalog API, the agent's live `search_runbooks` MCP tool,
-the self-learning generative-runbook writer) now read/write Notion
-exclusively — the local markdown corpus is deleted. See "Current
-architecture" below and `docs/ai/DECISIONS.md`'s "Runbooks migrated to
-Notion-only hosting" entry. No next milestone chosen yet — see "Next
-bounded task".
-
-Real end-to-end OAuth validation for Phase 4 (an actual GitHub App + Slack
-app registered by the user) is intentionally deferred — user is configuring
-those later; token-scope logic and all regression tests are verified locally
-without them.
-
-Temporal sandbox (PR #44) is a **log-based recovery oracle only**: replay the
-log evidence that proved an incident was broken, apply the proposed patch
-inside an isolated K8s Job, re-run, and diff logs to verdict
-RESOLVED/REGRESSED/INCONCLUSIVE. Not a general-purpose code interpreter or
-test runner.
+Current focus has shifted from feature work to **operational hardening via
+live testing**: firing real alerts through the full pipeline (not unit
+tests) and fixing what breaks. This session found and fixed 6 bugs this way
+(see below), verified the Slack integration end-to-end against the real
+Slack API, stood up a GitHub Codespace as a faster alternative to running
+the stack locally, and verified the approve/remediate API mechanics on the
+codespace. The local Docker stack has now been stopped by the user; the
+codespace (`jubilant-space-invention-4vjq497q4x63jx5q`) is the only running
+environment.
 
 ## Current architecture and invariants
-- **Strict LLM Provider Guard:** `sre_agent.provider_config.SUPPORTED_PROVIDERS` restricts model operations to `anthropic` and `gemini`.
-- **Single Canonical Runner:** production callers invoke the LangGraph pipeline via `sre_agent.incident_runner.run_incident_investigation`.
-- **Durable Job Worker Pipeline:** `sre_agent/job_worker.py` — PostgreSQL lease-backed durable jobs.
-- **Mutation Gateway & Safety:** cluster writes pass `sre_agent.mutation_gateway`; sandbox K8s Job lifecycle passes the analogous `sre_agent.sandbox_gateway.authorize_and_provision_sandbox` (same tenant/namespace/idempotency/audit checks, registered in `namespace_scope._NAMESPACE_ARG_TOOLS`).
-- **Code-fix verification workflow:** `sre_agent/sandbox_workflow.py::CodeFixVerificationWorkflow` (Temporal) — 6 activities (baseline → apply_patch → candidate → verify_recovery → emit_verdict → cleanup), each with a bounded `RetryPolicy(maximum_attempts=3)`; `cleanup_activity` runs in `try/finally`. `diff_logs()` is the pure oracle function.
-- **Sandbox RBAC:** dedicated `sentinel-sandbox` namespace, least-privilege Role: `batch/jobs` (create/get/list/watch/delete) + `pods/log` (get/list/watch) only.
-- **Jira ticketing (Phase 1, PR #46):** per-Cluster DB-column credentials (`jira_url`/`jira_email`/`jira_api_token`/`jira_project_key`), not global env vars — deviated from the original plan sketch for real multi-tenant SaaS correctness (each customer has their own Jira site). `incidents.jira_issue_key` links incident to ticket.
-- **Observability (Phase 2, PR #47):** `sre_agent/tracing.py::langfuse_enabled()` is **opt-out** (`LANGFUSE_TRACING` defaults truthy). Self-hosted Langfuse (web/worker/clickhouse/minio, reusing the platform's own Postgres as a second logical DB `langfuse` and Redis DB index `/2`) wired in both `platform/docker-compose.yaml` and the Helm chart (`templates/langfuse.yaml`, gated by `.Values.langfuse.deploy`, default `true`). Headless `LANGFUSE_INIT_*` bootstrap auto-provisions org/project/API-keypair/admin-user so tracing works after a fresh boot with zero manual UI steps.
-- **Incident memory (Phase 3, PR #48, merged):** `sre_agent/memory_store.py` stores each incident as three separately-embedded named Qdrant vectors (`symptoms`/`root_cause`/`resolution`) in collection `sre_incidents_v2`, tenant-scoped by `organization_id`/`cluster_id` payload fields + Qdrant `Filter` on every search, recency-decayed ranking (`SENTINEL_MEMORY_RECENCY_HALF_LIFE_DAYS`, default 30d half-life), and cross-incident back-links computed at store time via a `root_cause`-similarity lookup. Point IDs are `uuid.uuid5(NAMESPACE, incident_id)` (deterministic across processes), not Python's `hash()` (see `DECISIONS.md`). Embedding bootstrap is unified in `sre_agent/embedding.py` — the process-wide `fastembed` singleton used by `memory_store.py` (`skill_store.py` has no embedding code to unify yet; the runbooks MCP server no longer embeds anything — see the Notion-only runbooks bullet below).
-- **Runbooks migrated to Notion-only hosting (post-Phase-5, uncommitted):** the local markdown corpus (`edge_mcp_servers/mcp_servers/runbooks_local/`) and `sre_agent/runbooks_corpus.py` are deleted; `sre_agent/notion_runbooks.py` (raw `httpx` Notion REST calls, no SDK) is now the sole runbook source for all three consumers: (1) `sre_agent/api/v1/runbooks.py` — the human catalog API, `[]`/404 if a cluster has no Notion database configured, no local fallback; (2) `edge_mcp_servers/mcp_servers/runbooks_notion/server.py` (new, replaces `runbooks_local`) — serves the same `search_runbooks`/`get_runbook_content`/etc. tool names via lexical-only search (no embeddings, since Notion has no cheap full-content search), so `context_builder.py`/`graph_builder.py`'s by-name tool lookups needed no changes; (3) `sre_agent/runbook_generator.py`'s `write_runbook`/`write_runbook_generative` are now `async`, publish via `notion_runbooks.upsert_notion_runbook` (upsert-by-title: archive any same-titled page, then create — Notion has no atomic replace), and take an `execution_context` to read per-cluster Notion creds; a cluster with none configured just skips generation (non-fatal). Notion credentials extend the existing Phase-4 per-cluster relay pattern (`relay_auth.py`/`relay_credentials.py`: new `X-Sentinel-Relay-Notion-{Key,Database}` headers), relayed-over-static-env-var precedence unchanged. See `docs/ai/DECISIONS.md`.
-- **Release Evaluation Contract:** `benchmarks/release_gate.py` gates prompt/model/tool changes against content-addressed evidence bundles; `candidate.source_digest` is a full-tree hash of files matching `protected_path_rules`, not diff-based — any branch behind `master` needs a fresh merge + digest recompute (`uv run python benchmarks/release_gate.py digest ...`) before the gate passes. Zero protected-path changes → `NOT_REQUIRED` (passes regardless of bundle content).
-- **Module Reachability Governance:** `scripts/check_module_reachability.py`; standalone `python -m` workers with no in-process caller are declared directly as `ENTRY_FILES` roots.
-- **Alembic:** single linear head; PR #46's `db94419c24dc` (Jira columns) now chains after PR #45's `f6a7b8c9d0e1` (Slack columns) — both originally branched from the same parent and required a manual `down_revision` re-point during merge. Phase 4's `a3f7c1d9b2e4` (GitHub App installation ID, Slack OAuth columns) chains after `db94419c24dc` and is the current sole head on `master`.
-- **AIOpsLab benchmark adapter (Phase 5, implemented, not yet PR'd):**
-  `benchmarks/aiopslab_adapter.py` — AIOpsLab (github.com/microsoft/AIOpsLab)
-  is an in-process orchestrator that owns fault injection/workload/eval
-  itself and drives a registered agent turn-by-turn via
-  `agent.get_action(state: str) -> str`, one markdown-fenced action per turn
-  (`exec_shell(...)` / `submit(...)`), graded internally into
-  `TTD`/`TTL`/`TTA`/`TTM` + accuracy fields. `SREAIOpsLabAgent` runs our
-  pipeline once via an injected `agent_invoke` (same
-  `Callable[[Dict], Awaitable[Dict]]` shape `itbench_adapter.py` uses), then
-  plays back a queue of AIOpsLab action strings: for the `mitigation` task,
-  one `exec_shell(...)` per already-executed remediation command (replaying
-  `sre_agent/executor.py::build_command()`'s output verbatim), then the
-  task-appropriate `submit(...)` (`build_submit_action`, one shape per of the
-  4 task types: detection/localization/analysis/mitigation — checked against
-  the live `aiopslab/orchestrator/tasks/*.py` sources). `aiopslab` is not a
-  project dependency (lazy import, `aiopslab_available()` guard,
-  `run_problem()` raises clearly without it) — a live run needs it installed
-  plus a local kind/minikube cluster with Helm. See
-  `docs/ai/DECISIONS.md`'s Phase 5 entry for the full rationale.
-- **Multi-tenant secure access (Phase 4, PR #49, merged):** new `sre_agent/multitenant/` package — `github_app.py` mints short-lived (~1h) GitHub App installation tokens (RS256 JWT via `python-jose`, already a dependency) when `Cluster.github_app_installation_id` is set, falling back non-fatally to the stored `github_token` PAT on any failure; `slack_oauth.py` implements Slack's "Add to Slack" OAuth v2 flow, storing a per-`Organization` bot token/team ID (`slack_bot_token`/`slack_team_id`, new encrypted/plain columns) instead of only the global `SLACK_BOT_TOKEN` env var; `relay_auth.py::build_relay_headers()` relays one cluster's resolved GitHub/K8s credentials as `X-Sentinel-Relay-*` headers alongside the existing tenant-identity headers on each investigation's fresh MCP connection (`build_mcp_server_config`/`create_mcp_client` are now `async def` for this). Edge side: `edge_mcp_servers/relay_credentials.py` (new, dependency-free — never imports `sre_agent`) captures those headers into a `contextvars.ContextVar` from the existing bearer-auth ASGI middleware (`mcp_auth.py`); `github_real/server.py::_active_repo()` and `k8s_real/server.py::_relay_api_client()` are the only two choke points that read them back, each a small bounded cache (max 8 entries), falling back to the static single-tenant `GITHUB_TOKEN`/`KUBECONFIG` env-var path when nothing was relayed. New API routes (`sre_agent/api/v1/multitenant.py`) let an authenticated user start each flow (`GET /api/v1/organizations/slack/install-url`, `GET /api/v1/clusters/{id}/github-app/install-url`) and an unauthenticated callback finish it (`GET /api/v1/organizations/slack/callback`, `GET /api/v1/clusters/github-app/callback`) — CSRF/identity state is a short-lived (10 min) signed JWT via `backend.auth.create_access_token`/`decode_access_token` (a `purpose` claim scopes it), not server-side session storage, so it works across multiple API workers. See `docs/ai/DECISIONS.md`'s "Per-cluster credentials relay over the MCP transport" entry for the full rationale.
+See `docs/ai/DECISIONS.md` for the full rationale behind each of these.
+Unchanged from prior sessions: strict LLM provider guard
+(`sre_agent.provider_config.SUPPORTED_PROVIDERS`), single canonical runner
+(`sre_agent.incident_runner.run_incident_investigation`), durable
+Postgres-lease job worker (`sre_agent/job_worker.py`), mutation/sandbox
+gateways, per-cluster Jira/Notion/relay credential patterns, Qdrant-backed
+tenant-scoped incident memory, Alembic single head (`a3f7c1d9b2e4`).
+
+New this session:
+- **MCP servers must cap output size for every query shape, not just
+  range queries.** Prometheus's `get_metric` (instant) and
+  `get_golden_signals` now go through `_cap_vector_result()`; Loki's
+  `_cap_logs()` now handles the zero-result case correctly. See
+  DECISIONS.md.
+- **Anthropic extended-thinking responses return `AIMessage.content` as a
+  list of blocks, not a string.** Any code touching `.content` off an
+  `AIMessage`/LLM response must guard for this (`isinstance(content, list)`,
+  extract `type == "text"` blocks) before doing string ops. Fixed at the two
+  real call sites: `agent_nodes.py` (~line 296) and `supervisor.py` (~line
+  1490). `narrative.py::_invoke_llm()` already had this guard.
+- **Two separate `.env` files exist and are easy to confuse:**
+  `platform/.env` is compose-time variable substitution only;
+  the repo-root `.env` holds the real secrets containers read via
+  `env_file:`. Editing the wrong one silently breaks or fails-open.
+- **Cloud dev environments are synced via `rsync`, never `git push`** —
+  see DECISIONS.md. A remote box's Postgres/Redis start empty; local
+  incident data does not carry over automatically (this session's 6
+  incidents were later migrated to the codespace via `pg_dump`/`pg_restore`).
+- **The `meridian` cluster's synthetic telemetry source is outside this
+  repo, bound to the local laptop's Docker host.** `clusters.prometheus_url`
+  / `loki_url` are `http://host.docker.internal:9090` / `:3100` — this
+  resolves only under local Docker Desktop, never from a remote box like a
+  Codespace. No demo/synthetic Prometheus+Loki stack exists anywhere in
+  this repo (checked `platform/` and `edge_mcp_servers/` compose files).
+  Any environment without access to whatever serves those two ports
+  locally will see every investigation come back with no real metrics/log
+  evidence, `severity: UNKNOWN`, and the agent correctly refusing to act.
+- **The approve endpoint gates in two independent layers, not one.** The
+  human-facing `POST /api/v1/incidents/{id}/approve` only resolves the
+  incident-level `ApprovalRequest` interrupt (hash + expiry checked against
+  the `approval_requests` table, TTL = `APPROVAL_TTL_MINUTES`, default 30).
+  Resuming the graph then runs `act_phase.py`'s *per-action* policy-gate
+  autonomy check independently; an action only actually (dry-run) executes
+  if that check returns `AUTONOMOUS`, not just because the outer approval
+  succeeded. Low-confidence/no-evidence investigations get every action
+  marked `REQUIRES_APPROVAL`/`BLOCKED` here regardless, so the incident
+  ends at `investigated`, not `resolved`, with 0 actions executed — by
+  design, not a bug.
 
 ## Completed or verified work
-- All 41 backlog packages + PR #34 (LLM provider restriction), PR #42, PR #43 merged.
-- PR #44: Temporal sandbox verification. PR #45: Slack conversational memory. PR #46: Jira ticketing (Phase 1). PR #47: Langfuse observability (Phase 2). PR #48: Memory sophistication (Phase 3, tenant-filtered/structured/back-linked Qdrant memory — see `sre_agent/memory_store.py` and `docs/ai/DECISIONS.md`). PR #49: Multi-tenant secure access (Phase 4 — see "Current architecture" bullet above). All merged to `master`.
-- Phase 5 (AIOpsLab benchmark): `benchmarks/aiopslab_adapter.py` written and
-  unit-tested (`tests/test_aiopslab_adapter.py`, 16 tests, all pure/offline —
-  no `aiopslab` package or cluster needed) — committed directly to `master`
-  (`42ddec1`). All 5 phases of the upgrade plan are now done.
-- Runbooks-to-Notion migration (uncommitted): all changes described above
-  implemented and verified — `uv run pytest -q` (764 passed, 2 skipped),
-  `ruff check` clean on every touched file, module reachability OK, release-
-  gate digest regenerated and `impact` reports `PROMOTE`. Not yet committed —
-  awaiting the user's go-ahead (git safety protocol: no commit instruction
-  given for this body of work).
+- All prior phases (1-5) + runbooks-to-Notion + dashboard parity: merged,
+  see git log.
+- **Slack integration — verified end-to-end against the live Slack API**
+  (not just log-absence-of-error): bot posted incident-open + streamed an
+  8-message timeline into thread `C0BUTRSPY3A` in `#all-sentinel`, confirmed
+  via `conversations.replies`.
+- **6 bugs found via live alert traffic and fixed, this session:**
+  1. Loki `query_logs` context-overflow cap (fixed a 2.4M-token blowup from
+     crash-loop logs).
+  2. Loki `_cap_logs` crash on empty results (`**None` from a falsy-empty-list
+     `while`).
+  3. Prometheus `get_metric`/`get_golden_signals` had no output cap (likely
+     source of a "1.1M tokens > 1M max" overflow).
+  4. **Uniform crash across all 4 specialist agents** from extended-thinking
+     list-typed `.content` — fixed in `agent_nodes.py` + `supervisor.py`.
+     Verified via regression alert `DiskPressureCritical2` → incident
+     `2bd886da-b1b7-4884-ac18-5c069f35a949`: clean single-attempt run,
+     zero `'list' object has no attribute 'strip'` occurrences in the full
+     timeline or container logs (prior attempt `8a10508b` hit this exact
+     error on all 3 investigating specialists before the fix).
+  5. False-positive numeric-fact conflict detection in
+     `incident_timeline.py` (threshold-vs-observed disambiguation).
+  6. Empty "Objective: the incident" fallback in
+     `graph_builder.py::_prepare_initial_state`.
+- `platform/.env` operational incident: wrong-file edit broke compose-time
+  substitution; root-caused, repo-root `.env` secrets confirmed untouched
+  throughout, `platform/.env` restored.
+- Stood up GitHub Codespace `jubilant-space-invention-4vjq497q4x63jx5q`
+  (4-core/16GB, Docker preinstalled) as a faster test environment; local
+  repo synced via `rsync`; full stack including dashboard now running
+  there (`sre-agent-api` + `sre-dashboard` both healthy on ports 8080/3002).
+  All 6 open incidents from local were migrated in via `pg_dump`/`pg_restore`.
+- **Approve/remediate API mechanics — verified working on the codespace,
+  twice.** Created a throwaway admin account
+  (`sentinel-test-approver@example.com`) via the real `/auth/register` flow,
+  reassigned into the `meridian` org via one manual SQL `UPDATE` (run by the
+  user directly — mutating `users` is blocked for the agent by the auto-mode
+  classifier). Fired two fresh synthetic alerts, drove each to
+  `awaiting_approval`, and called `POST /api/v1/incidents/{id}/approve` (run
+  by the user directly — the classifier blocks this mutating call from the
+  agent too) with the correct `approval_request_id`/`action_hash`. Both
+  calls returned `{"status":"RESUMED", ..., "completed":true}` and the
+  underlying job reached `status=completed` — confirms the endpoint's
+  hash/expiry validation and LangGraph `Command(resume=...)` resumption are
+  correct. Neither incident reached a real autonomous-execution+resolve
+  outcome, for the telemetry-unreachability reason above, not an API bug.
+  Incident `2bd886da`'s original approval expired mid-session (30 min TTL)
+  during the auth/account-setup detour; testing continued on fresh
+  incidents `9aeba020` and `78969d6d` instead.
 
 ## Active problem
-None currently blocking. Real GitHub App/Slack app registration and
-end-to-end OAuth validation (Phase 4) are deferred until the user configures
-those externally. Phase 5's AIOpsLab adapter has never been run against the
-real package/cluster (unit-tested only) — live benchmarking is deferred until
-the user brings up the full cluster (their words: "when i run the entire
-cluster, we will do the benchmarking"). The runbooks-to-Notion migration
-(above) is implemented and verified but sits uncommitted pending user
-confirmation.
+The approve→remediate→verify/resolve pipeline's **API mechanics** are now
+verified (see above). What's still unverified: a real **autonomous-execution
++ resolve** outcome — every attempt so far has ended at `investigated` with
+0 actions executed, because no environment (codespace or, now, local) has
+reachable Prometheus/Loki telemetry for the `meridian` cluster. 8 incidents
+now sit unresolved on the codespace: the original 6 from local (`d8bf6fbe`,
+`f89eb01f`, `f7a0b04d`, `6c1deea8`, `8a10508b`, `2bd886da` — `2bd886da`'s
+approval has since expired) plus this session's two fresh test incidents
+(`9aeba020`, `78969d6d`, both ended `investigated`, both held-for-approval
+with 0 actions executed).
+
+The user has stopped the local Docker stack. The codespace is now the only
+running environment; there is currently no reachable source for the
+`meridian` cluster's synthetic Prometheus/Loki data anywhere.
+
+`langfuse-web`/`langfuse-worker` crash-loop on a ClickHouse
+`ReplicatedMergeTree`/Zookeeper migration error, both locally (when it was
+running) and on the codespace — pre-existing, unrelated to this session's
+fixes, non-blocking (`LANGFUSE_TRACING=false`).
 
 ## Relevant files
-- `sre_agent/notion_runbooks.py`, `sre_agent/runbook_generator.py`, `sre_agent/api/v1/runbooks.py`, `edge_mcp_servers/mcp_servers/runbooks_notion/` (runbooks-to-Notion migration, uncommitted)
-- `sre_agent/execution_context.py`, `sre_agent/multitenant/relay_auth.py`, `edge_mcp_servers/relay_credentials.py` (Notion creds added to the Phase-4 relay pattern, uncommitted)
-- `tests/test_runbook_generator.py` (rewritten for async Notion publish, uncommitted); `sre_agent/runbooks_corpus.py` + `tests/test_runbooks_corpus.py` deleted
-- `benchmarks/aiopslab_adapter.py`, `tests/test_aiopslab_adapter.py` (Phase 5, committed `42ddec1`)
-- `sre_agent/multitenant/{github_app,slack_oauth,relay_auth}.py` (Phase 4, merged)
-- `sre_agent/api/v1/multitenant.py` (Phase 4, merged — Slack/GitHub App install+callback routes)
-- `edge_mcp_servers/relay_credentials.py` (Phase 4, merged — dependency-free edge-side contextvar capture)
-- `edge_mcp_servers/mcp_auth.py`, `edge_mcp_servers/mcp_servers/{github_real,k8s_real}/server.py`, all 8 `edge_mcp_servers/mcp_servers/*/Dockerfile` (Phase 4 — relay wiring)
-- `backend/models.py`, `backend/schemas.py`, `backend/crud.py`, `backend/alembic/versions/a3f7c1d9b2e4_*.py` (Phase 4 — `github_app_installation_id`, `slack_bot_token`, `slack_team_id`)
-- `sre_agent/execution_context.py`, `sre_agent/multi_agent_langgraph.py` (Phase 4 — credentials folded into `ExecutionContext`, MCP client builder now `async`)
-- `sre_agent/integrations/slack_bot.py` (Phase 4 — `build_slack_app(organization=...)` resolves the OAuth-installed token when given one)
-- `tests/test_multitenant_{github_app,slack_oauth,relay_auth}.py` (Phase 4, merged); `tests/test_mcp_auth.py`, `tests/test_canonical_models.py` (Phase 4 — updated for the new relay import + Alembic head)
-- `docs/ai/DECISIONS.md` "Per-cluster credentials relay over the MCP transport" entry, `.env.example` (Phase 4 documentation)
-- `sre_agent/memory_store.py`, `sre_agent/embedding.py` (Phase 3, merged)
-- `sre_agent/tracing.py`, `platform/docker-compose.yaml`, `deploy/helm/sentinel/templates/langfuse.yaml` (Phase 2, merged)
-- `sre_agent/integrations/jira.py`, `sre_agent/api/v1/tickets.py` (Phase 1, merged — structural template Phase 4's API routes followed)
-- `benchmarks/release_gate.py`, `benchmarks/release/v1/policy.json`, `benchmarks/release/candidate/bundle.json`
-- `/Users/jayan/.claude/plans/groovy-toasting-cupcake.md` (authoritative phase plan)
+- `edge_mcp_servers/mcp_servers/{prometheus_real,loki_real}/server.py` —
+  capping fixes (uncommitted)
+- `sre_agent/agent_nodes.py` (~line 296-318), `sre_agent/supervisor.py`
+  (~line 1490) — extended-thinking content-list fix (uncommitted)
+- `sre_agent/incident_timeline.py`, `sre_agent/graph_builder.py` — bugs 5/6
+  (uncommitted)
+- `pyproject.toml`, `uv.lock` — `slack-bolt` dependency added (uncommitted)
+- `platform/docker-compose.yaml`, `platform/.env`, repo-root `.env` — env
+  split incident (uncommitted)
+- dashboard `page.tsx` files — uncommitted, predates this session's bug-fix
+  work, not yet investigated in this session
 
 ## Verification commands and latest results
-- Latest (runbooks-to-Notion migration, uncommitted): `uv run pytest -q` → 764 passed, 2 skipped, 0 failures. `ruff check` on every touched file → clean (repo's only ruff findings are pre-existing `graph_builder.py` whitespace/import-sort issues outside this diff). `scripts/check_module_reachability.py` → `Reachability OK: 71 reachable, 6 experimental.` `release_gate.py digest` regenerated `candidate/bundle.json`'s `source_digest` (protected path `edge_mcp_servers/mcp_servers/**` changed); `release_gate.py impact` → `PROMOTE`.
-- Alembic: `a3f7c1d9b2e4` remains sole head on `master` (no schema touched by Phase 5 or the runbooks migration).
-- Release-gate fixture regeneration is a recurring step whenever `edge_mcp_servers/mcp_servers/**` changes (protected "tool" path) — same pattern applied for PR #49 and again here.
+- Regression-test pattern used throughout: fire an alert via
+  `/Users/jayan/.claude/jobs/3f02b96f/tmp/fire_alert.py` with a **distinct**
+  `alertname` (same-name re-fires get deduped into the existing open
+  incident, not a fresh run) → poll
+  `SELECT status FROM incidents WHERE id=...` /
+  `SELECT status, attempt_count FROM jobs WHERE incident_id=... ORDER BY
+  created_at DESC LIMIT 1` until terminal → pull
+  `incident_timeline_events` (`event_type || '|' || title || '|' ||
+  content`) into a file and grep for the specific error text, plus
+  `docker logs sre-agent-api --since <window> | grep -i
+  "attributeerror\|has no attribute\|Error in .* Agent"`.
+- Latest run (`2bd886da`): `awaiting_approval`, `attempt_count=1`, 0 matches
+  in both the timeline grep and the container-log grep — the fix is
+  confirmed, not just assumed from silence.
+- No `pytest`/`ruff`/release-gate run this session (the work was
+  live-integration bug-fixing against a running stack, not a code-review
+  pass) — worth running before any of this gets committed for real.
 
 ## Known blockers or risks
-- Real end-to-end OAuth validation (an actual GitHub App + Slack app
-  registered by the user) has not been done — token-scope logic and all
-  regression tests are verified locally without them. User is configuring
-  the GitHub App and Slack app separately and will report back if issues
-  come up running the application.
-- The Slack OAuth callback and GitHub App callback routes return bare
-  JSON (no frontend redirect UX yet — no `FRONTEND_URL` convention existed
-  in this repo to redirect to; deferred as a separate frontend task).
-- Phase 5's adapter has never been run against the real `aiopslab` package or
-  a live kind/minikube cluster (neither is available in this environment) —
-  only unit-tested against the API contract read from the live GitHub repo.
-  `run_problem()`/`Orchestrator` wiring should get a smoke check the first
-  time the user has that cluster up (their stated plan).
+- Real end-to-end OAuth validation (GitHub App + Slack app) still deferred
+  to the user, per prior sessions.
+- Phase 5's AIOpsLab adapter still never run against the real package/live
+  cluster.
+- GitHub Codespaces free tier is capped on monthly core-hours and not meant
+  to run persistently — remember to `gh codespace stop` when done with it.
+- **No reachable synthetic-telemetry source for the `meridian` cluster
+  right now** (local stopped; codespace can't reach `host.docker.internal`)
+  — blocks getting a real autonomous-execution+resolve test result until
+  either the local stack (and whatever serves `:9090`/`:3100` on it) is
+  restarted, or the cluster's `prometheus_url`/`loki_url` are repointed at
+  something reachable from wherever testing happens next.
+- The `users` table and the `/approve` endpoint are both blocked for
+  direct agent Bash calls by the auto-mode classifier (mutations on
+  auth-sensitive surfaces) — any future approve-flow testing needs the user
+  to run those specific commands, as was done this session.
+- Commit `1d8ea60` (this session's 6 bug fixes + dependency/env changes) was
+  never run through `uv run pytest -q` / `ruff check` before committing —
+  still worth doing.
 
 ## Next bounded task
-Report the runbooks-to-Notion migration to the user and ask before
-committing (nothing in this body of work has an explicit commit instruction
-yet). If the user wants the broader "fix any shortcomings... make sure the
-project workflow doesn't break" instruction pursued further beyond runbooks,
-scope that as its own bounded task rather than an open-ended full-repo audit
-— this file's "Known blockers or risks" section already lists the known
-gaps. Otherwise: when the user brings up the full cluster, resume with a
-live `benchmarks/aiopslab_adapter.py::run_problem()` smoke test against a
-real AIOpsLab problem id.
+Stand up the Meridian demo app **inside the codespace** so telemetry no
+longer depends on the laptop at all:
+1. The user's local `host.docker.internal:9090`/`:3100` telemetry came from
+   a Kubernetes cluster run via **OrbStack** (macOS-only, can't run in a
+   Codespace) hosting the **Meridian demo app**:
+   https://github.com/jayanth922/meridian-shop (public repo — "production-
+   standard e-commerce demo/target app: services, monitoring stack, load
+   generator, MCP signals server" — likely ships its own Prometheus/Loki
+   and self-generates traffic, so no separate data-faking needed).
+2. Plan: install `kind` in the codespace (pure Linux, works over Codespaces'
+   existing Docker — no OrbStack dependency), deploy `meridian-shop` into
+   it, apply this repo's `deploy/examples/meridian` overlay to point
+   Sentinel at it, then update the `clusters` row's `prometheus_url`/
+   `loki_url` from `host.docker.internal:*` to the in-cluster/NodePort
+   addresses.
+3. Not yet started — deploy method used on OrbStack (`kubectl apply` vs.
+   Helm vs. script) not yet confirmed; check `meridian-shop`'s own
+   README/manifests first.
+
+Fallback, if the above stalls: `uv run pytest -q` and `ruff check` on the 6
+bug-fix files from commit `1d8ea60` — deferred all session, needs no live
+stack.

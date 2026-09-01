@@ -20,7 +20,7 @@ class ModelConfig(BaseModel):
 
     # Anthropic (Claude)
     anthropic_model: str = Field(
-        default=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
+        default=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
         description="Default Anthropic model ID (override with ANTHROPIC_MODEL)",
     )
 

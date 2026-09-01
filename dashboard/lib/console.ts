@@ -176,9 +176,12 @@ export function sev(s: Severity) {
   return SEV[s] ?? SEV.medium
 }
 
-export function statusBadge(s: IncidentStatusT): { label: string; cls: string } {
+export function statusBadge(s: IncidentStatusT, summary?: string | null): { label: string; cls: string } {
   if (s === "resolved") return { label: "Resolved", cls: "ok" }
   if (s === "investigating") return { label: "Investigating", cls: "sel" }
+  if (s === "open" && summary?.startsWith("Investigation Attempt Failed")) {
+    return { label: "Investigation failed", cls: "warn" }
+  }
   return { label: "Open", cls: "crit" }
 }
 

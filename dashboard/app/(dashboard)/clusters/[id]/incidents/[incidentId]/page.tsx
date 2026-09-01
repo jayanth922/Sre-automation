@@ -159,7 +159,7 @@ export default function IncidentConsolePage() {
 
   const inc = tx.incident
   const sv = sev(inc.severity)
-  const sb = statusBadge(inc.status)
+  const sb = statusBadge(inc.status, inc.summary)
   const events = tx.events
   const isAdmin = (user?.role ?? "member") === "admin"
   const awaitingApproval = status?.status === "WAITING_APPROVAL"

@@ -12,7 +12,7 @@ export default function HomeGate() {
   const [clusters, setClusters] = useState<Cluster[] | null>(null)
   const [creating, setCreating] = useState(false)
   const [token, setToken] = useState<string | null>(null)
-  const [form, setForm] = useState({ name: "", prometheus_url: "", loki_url: "", github_repo: "", github_token: "" })
+  const [form, setForm] = useState({ name: "" })
   const [createdId, setCreatedId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
@@ -33,12 +33,7 @@ export default function HomeGate() {
     setErr(null)
     setCreating(true)
     try {
-      const payload: Record<string, string> = { name: form.name }
-      if (form.prometheus_url) payload.prometheus_url = form.prometheus_url
-      if (form.loki_url) payload.loki_url = form.loki_url
-      if (form.github_repo) payload.github_repo = form.github_repo
-      if (form.github_token) payload.github_token = form.github_token
-      const { data } = await api.post<{ id: string; name: string; token: string }>("/clusters", payload)
+      const { data } = await api.post<{ id: string; name: string; token: string }>("/clusters", { name: form.name })
       setToken(data.token)
       setCreatedId(data.id)
     } catch (e) {
@@ -108,7 +103,7 @@ export default function HomeGate() {
         </div>
         <h1 style={{ fontSize: 24, fontWeight: 600, margin: "18px 0 6px" }}>Connect a cluster</h1>
         <p style={{ color: "var(--ink2)", fontSize: 13.5, marginTop: 0, marginBottom: 24, lineHeight: 1.6 }}>
-          Register your infrastructure endpoints. Sentinel opens incidents from your telemetry — point your Alertmanager webhook at the platform with the token you receive.
+          Give it a name to get a cluster token — Prometheus, Loki, GitHub, Slack, Notion and everything else are configured afterward, from the cluster&apos;s Settings page.
         </p>
 
         {!token ? (
@@ -116,18 +111,6 @@ export default function HomeGate() {
             <div>
               <label className="sx-label">Cluster name</label>
               <input className="sx-input" placeholder="prod-us-east" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            </div>
-            <div>
-              <label className="sx-label">Prometheus URL</label>
-              <input className="sx-input" placeholder="https://prometheus.your-infra:9090" value={form.prometheus_url} onChange={(e) => setForm({ ...form, prometheus_url: e.target.value })} />
-            </div>
-            <div>
-              <label className="sx-label">Loki URL</label>
-              <input className="sx-input" placeholder="https://loki.your-infra:3100" value={form.loki_url} onChange={(e) => setForm({ ...form, loki_url: e.target.value })} />
-            </div>
-            <div>
-              <label className="sx-label">GitHub repo (optional)</label>
-              <input className="sx-input" placeholder="org/repo" value={form.github_repo} onChange={(e) => setForm({ ...form, github_repo: e.target.value })} />
             </div>
             {err && <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", padding: 14 }}>{err}</div>}
             <button className="sx-btn primary" style={{ maxWidth: 180 }} onClick={create} disabled={creating || !form.name.trim()}>
@@ -139,14 +122,14 @@ export default function HomeGate() {
             <div className="sx-card" style={{ borderColor: "var(--ok)", background: "var(--ok-t)" }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Cluster connected</div>
               <p style={{ fontSize: 12.5, color: "#2f5238", margin: "0 0 10px", lineHeight: 1.6 }}>
-                Save this cluster token — it authenticates your Alertmanager webhook and won’t be shown again.
+                Save this cluster token — it authenticates your Alertmanager webhook and won’t be shown again. Head to Settings next to wire up Prometheus, Loki, and the rest.
               </p>
               <div className="sx-mono" style={{ background: "var(--paper)", border: "1px solid var(--rule2)", padding: "10px 12px", borderRadius: 2, fontSize: 12, wordBreak: "break-all" }}>
                 {token}
               </div>
             </div>
-            <button className="sx-btn primary" style={{ maxWidth: 180, marginTop: 16 }} onClick={() => createdId && router.push(`/clusters/${createdId}`)}>
-              Open console →
+            <button className="sx-btn primary" style={{ maxWidth: 180, marginTop: 16 }} onClick={() => createdId && router.push(`/clusters/${createdId}/settings`)}>
+              Open settings →
             </button>
           </div>
         )}

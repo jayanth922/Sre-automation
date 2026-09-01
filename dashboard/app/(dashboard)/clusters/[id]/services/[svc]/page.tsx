@@ -93,7 +93,7 @@ export default function ServiceDetailPage() {
               ) : (
                 related.map((i) => {
                   const sv = sev(i.severity)
-                  const sb = statusBadge(i.status)
+                  const sb = statusBadge(i.status, i.summary)
                   return (
                     <Link key={i.id} href={`/clusters/${id}/incidents/${i.id}`} className="sx-inc">
                       <div className={`sv ${sv.cls}`}>{sv.label}</div>
