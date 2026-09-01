@@ -271,6 +271,45 @@
   being handed to the LLM — this is now the established pattern for this
   codebase, not a one-off fix.
 
+## Live-execution target parsing and MCP response classification must handle real Planner/SDK shapes, not just the tested subset (Task #16)
+
+- **Decision:** `sre_agent/executor.py::_live_args()` extracts a k8s resource
+  name from a Planner `target` string via a leading DNS-1123-label regex
+  (`_K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?")` on the
+  lowercased target), not by splitting on `:`. Separately,
+  `classify_live_response()`'s `_structured_payload()` now recurses into a
+  `"text"` **key** (in addition to `"result"`/`"data"`/`"content"`) on any
+  `Mapping`, because the MCP SDK's real content-block response is a list of
+  plain dicts shaped `{"type":"text","text":"<json>","id":...}` — the
+  JSON-encoded tool payload lives under that key, not under a `.text`
+  *attribute* (the pre-existing `getattr(value, "text", None)` fallback only
+  ever fires for SDK objects, never plain dicts, so it silently never ran).
+- **Reason:** Both bugs were only found by validating a genuine end-to-end
+  live run (Task #16) against real telemetry instead of trusting dry-run/
+  mocked-response tests. Real Planner `target` strings are free-form English
+  (e.g. `"checkout-service pods (targeted canary subset only, ...)"`), not
+  the `"<deployment>:<sub-resource>"` shape the old colon-split fix assumed.
+  And the `_structured_payload()` gap meant **every** live MCP tool response
+  — genuine successes and legitimate policy refusals alike — fell through to
+  `return None`, so `classify_live_response()` reported `"ERROR"`
+  regardless of what actually happened; this had been silently
+  misclassifying `patch_resource_limits` refusals as errors all along, not
+  just restarts.
+- **Consequences:** A third, smaller fix rides along: the WARNING log line
+  in `_aexecute_unchecked()` previously dropped the `detail` string computed
+  by `classify_live_response()`, making the true failure/refusal reason
+  invisible in logs at any level — it's now appended to the log line. Any
+  future MCP tool integration must be validated against the SDK's actual
+  content-block wrapping (a list of `{"type":"text","text":...}` dicts), not
+  an idealized flat-dict mock, or this exact class of false-ERROR
+  misclassification will recur. Covered by 6 new unit tests in
+  `tests/test_executor.py` using the exact captured real MCP payloads (full
+  suite: 780 passed / 2 skipped).
+- **Rejected alternative:** Trusting the dry-run test suite alone as
+  sufficient validation for live execution — it could not have caught
+  either bug, since both are shape mismatches between mocked test fixtures
+  and the real Planner/MCP SDK's actual output.
+
 ## Cloud dev environments are populated via `rsync`, not `git push`
 
 - **Decision:** When standing up a remote VM/Codespace to run this stack
