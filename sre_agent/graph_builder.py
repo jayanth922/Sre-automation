@@ -914,15 +914,20 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         structured_llm = llm.with_structured_output(
             ReflectorAnalysis, method="function_calling"
         )
+        reflector_system_prompt = (
+            "You are an expert SRE analyst. Analyze investigation "
+            "findings and identify root causes.\n\n"
+            f"{UNTRUSTED_EVIDENCE_POLICY}"
+        )
+        if llm_provider == "anthropic":
+            from .model_router import cached_system_message
+
+            reflector_system_message = cached_system_message(reflector_system_prompt)
+        else:
+            reflector_system_message = SystemMessage(content=reflector_system_prompt)
         analysis = await structured_llm.ainvoke(
             [
-                SystemMessage(
-                    content=(
-                        "You are an expert SRE analyst. Analyze investigation "
-                        "findings and identify root causes.\n\n"
-                        f"{UNTRUSTED_EVIDENCE_POLICY}"
-                    )
-                ),
+                reflector_system_message,
                 HumanMessage(content=reflection_prompt),
             ]
         )
@@ -1200,14 +1205,19 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
         structured_llm = llm.with_structured_output(
             RemediationPlan, method="function_calling"
         )
+        planner_system_prompt = (
+            "You are an expert SRE planner. Create safe, actionable "
+            f"remediation plans.\n\n{UNTRUSTED_EVIDENCE_POLICY}"
+        )
+        if llm_provider == "anthropic":
+            from .model_router import cached_system_message
+
+            planner_system_message = cached_system_message(planner_system_prompt)
+        else:
+            planner_system_message = SystemMessage(content=planner_system_prompt)
         plan = await structured_llm.ainvoke(
             [
-                SystemMessage(
-                    content=(
-                        "You are an expert SRE planner. Create safe, actionable "
-                        f"remediation plans.\n\n{UNTRUSTED_EVIDENCE_POLICY}"
-                    )
-                ),
+                planner_system_message,
                 HumanMessage(content=planning_prompt),
             ]
         )

@@ -57,7 +57,7 @@ def _cap_logs(logs: list, total_count: int) -> dict:
             "logs_truncated": logs_truncated,
             "message_truncated": message_truncated,
         }
-        if len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS or len(capped) <= 1:
+        if len(json.dumps(payload, separators=(",", ":"))) <= MAX_RESPONSE_CHARS or len(capped) <= 1:
             return payload
         capped = capped[: max(1, len(capped) // 2)]
         logs_truncated = True
@@ -175,7 +175,7 @@ def query_logs(
             **_cap_logs(logs[:limit], len(logs)),
         }
 
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Loki API error: {e}")
@@ -285,7 +285,7 @@ def analyze_log_patterns(
         "sample_matches": pattern_matches[:10] if pattern_matches else [],
     }
 
-    return json.dumps(result, indent=2)
+    return json.dumps(result, separators=(",", ":"))
 
 
 if __name__ == "__main__":

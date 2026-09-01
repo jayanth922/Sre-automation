@@ -58,7 +58,7 @@ def _safe_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     try:
-        return json.dumps(value, default=str, indent=2)
+        return json.dumps(value, default=str, separators=(",", ":"))
     except Exception:
         return str(value)
 

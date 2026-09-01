@@ -153,5 +153,91 @@ def test_route_llm_raises_when_blocked():
         model_router.route_llm(TaskType.PLANNING, request=RequestContext(off_policy=True))
 
 
+# --- Prompt caching helpers ---------------------------------------------------
+
+
+def test_cache_control_marker_default_enabled(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    marker = model_router.cache_control_marker()
+    assert marker == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_cache_control_marker_disabled(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "false")
+    assert model_router.cache_control_marker() is None
+
+
+def test_cache_control_marker_custom_ttl(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_TTL", "5m")
+    assert model_router.cache_control_marker() == {"type": "ephemeral", "ttl": "5m"}
+
+
+def test_cache_control_marker_invalid_ttl_falls_back(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_TTL", "bogus")
+    assert model_router.cache_control_marker() == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_cached_system_message_tags_content(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    msg = model_router.cached_system_message("static system prompt")
+    assert isinstance(msg.content, list)
+    assert msg.content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert msg.content[0]["text"] == "static system prompt"
+
+
+def test_cached_system_message_noop_when_disabled(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "false")
+    msg = model_router.cached_system_message("static system prompt")
+    assert msg.content == "static system prompt"
+
+
+def test_cached_system_message_noop_on_empty_content(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    msg = model_router.cached_system_message("")
+    assert msg.content == ""
+
+
+def test_cached_tools_tags_last_tool(monkeypatch):
+    from langchain_core.tools import tool
+
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+
+    @tool
+    def tool_a(x: str) -> str:
+        """A tool."""
+        return x
+
+    @tool
+    def tool_b(x: str) -> str:
+        """B tool."""
+        return x
+
+    tagged = model_router.cached_tools([tool_a, tool_b])
+    assert (tagged[0].extras or {}).get("cache_control") is None
+    assert tagged[1].extras.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+    # Original list/tools are untouched (new list, copied last tool).
+    assert (tool_b.extras or {}).get("cache_control") is None
+
+
+def test_cached_tools_noop_when_disabled(monkeypatch):
+    from langchain_core.tools import tool
+
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "false")
+
+    @tool
+    def tool_a(x: str) -> str:
+        """A tool."""
+        return x
+
+    tagged = model_router.cached_tools([tool_a])
+    assert tagged == [tool_a]
+    assert (tagged[0].extras or {}).get("cache_control") is None
+
+
+def test_cached_tools_noop_on_empty_list(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    assert model_router.cached_tools([]) == []
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

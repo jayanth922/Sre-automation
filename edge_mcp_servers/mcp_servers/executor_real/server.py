@@ -95,7 +95,7 @@ def _apps_api() -> Optional[client.AppsV1Api]:
 def _refused(action: str, namespace: str, reason: str) -> str:
     return json.dumps(
         {"tool": action, "namespace": namespace, "status": "REFUSED", "reason": reason},
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -128,7 +128,7 @@ async def executor_health() -> str:
             "allowed_namespaces": sorted(allowed_namespaces()),
             "min_replicas": int(os.getenv("EXECUTOR_MIN_REPLICAS", "1")),
         },
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -158,10 +158,10 @@ async def restart_deployment(name: str, namespace: str = "demo-app", dry_run: bo
             "tool": "restart", "name": name, "namespace": namespace,
             "dry_run": dry_run, "applied": not dry_run,
             "kubectl_equivalent": kubectl, "status": "OK", "restartedAt": now,
-        }, indent=2)
+        }, separators=(",", ":"))
     except ApiException as e:
         return json.dumps({"tool": "restart", "status": "ERROR", "kubectl_equivalent": kubectl,
-                           "code": e.status, "reason": e.reason}, indent=2)
+                           "code": e.status, "reason": e.reason}, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -185,10 +185,10 @@ async def scale_deployment(name: str, replicas: int, namespace: str = "demo-app"
             "tool": "scale", "name": name, "namespace": namespace, "replicas": int(replicas),
             "dry_run": dry_run, "applied": not dry_run,
             "kubectl_equivalent": kubectl, "status": "OK",
-        }, indent=2)
+        }, separators=(",", ":"))
     except ApiException as e:
         return json.dumps({"tool": "scale", "status": "ERROR", "kubectl_equivalent": kubectl,
-                           "code": e.status, "reason": e.reason}, indent=2)
+                           "code": e.status, "reason": e.reason}, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -228,10 +228,10 @@ async def patch_resource_limits(
             "container": container, "limits": limits,
             "dry_run": dry_run, "applied": not dry_run,
             "kubectl_equivalent": kubectl, "status": "OK",
-        }, indent=2)
+        }, separators=(",", ":"))
     except ApiException as e:
         return json.dumps({"tool": "patch_resource_limits", "status": "ERROR",
-                           "kubectl_equivalent": kubectl, "code": e.status, "reason": e.reason}, indent=2)
+                           "kubectl_equivalent": kubectl, "code": e.status, "reason": e.reason}, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -252,7 +252,7 @@ async def rollback_deployment(name: str, namespace: str = "demo-app", dry_run: b
             "dry_run": True, "applied": False,
             "kubectl_equivalent": kubectl,
             "status": "DRY_RUN", "detail": "Would run the command; not executed.",
-        }, indent=2)
+        }, separators=(",", ":"))
 
     try:
         proc = await asyncio.to_thread(
@@ -266,10 +266,10 @@ async def rollback_deployment(name: str, namespace: str = "demo-app", dry_run: b
             "kubectl_equivalent": kubectl,
             "status": "OK" if proc.returncode == 0 else "ERROR",
             "stdout": proc.stdout.strip(), "stderr": proc.stderr.strip(),
-        }, indent=2)
+        }, separators=(",", ":"))
     except Exception as e:
         return json.dumps({"tool": "rollback", "status": "ERROR",
-                           "kubectl_equivalent": kubectl, "error": str(e)}, indent=2)
+                           "kubectl_equivalent": kubectl, "error": str(e)}, separators=(",", ":"))
 
 
 if __name__ == "__main__":

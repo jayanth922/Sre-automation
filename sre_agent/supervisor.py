@@ -483,12 +483,20 @@ class SupervisorAgent:
         except Exception as alert_err:
             logger.debug(f"Could not format alert block for planner: {alert_err}")
 
-        planning_prompt = f"""{self.system_prompt}
-{UNTRUSTED_EVIDENCE_POLICY}
+        # Split into a static prefix (the supervisor persona + evidence
+        # policy, byte-identical across every investigation-planning call)
+        # and a dynamic suffix (per-incident memory/alert/query/user data).
+        # When Anthropic prompt caching is enabled, only the static prefix
+        # is tagged with cache_control, so it's billed at the cache-read
+        # rate on every call after the first while the dynamic suffix is
+        # still sent fresh each time.
+        static_prefix = f"{self.system_prompt}\n{UNTRUSTED_EVIDENCE_POLICY}"
+        dynamic_suffix = f"""
 {memory_block}{alert_block}
 User's query: {current_query}
 
 {formatted_planning_instructions}"""
+        planning_prompt = static_prefix + dynamic_suffix
 
         # Use tool/function-calling for structured output. This is the most reliable
         # method across providers (notably Ollama's reasoning models like gpt-oss,
@@ -501,9 +509,23 @@ User's query: {current_query}
         structured_llm = planning_llm.with_structured_output(
             InvestigationPlan, method="function_calling"
         )
+
+        planning_system_message = SystemMessage(content=planning_prompt)
+        if self.llm_provider == "anthropic":
+            from .model_router import cache_control_marker
+
+            marker = cache_control_marker()
+            if marker:
+                planning_system_message = SystemMessage(
+                    content=[
+                        {"type": "text", "text": static_prefix, "cache_control": marker},
+                        {"type": "text", "text": dynamic_suffix},
+                    ]
+                )
+
         plan = await structured_llm.ainvoke(
             [
-                SystemMessage(content=planning_prompt),
+                planning_system_message,
                 HumanMessage(content=current_query),
             ]
         )
@@ -519,7 +541,7 @@ User's query: {current_query}
             )
             plan = await structured_llm.ainvoke(
                 [
-                    SystemMessage(content=planning_prompt),
+                    planning_system_message,
                     HumanMessage(content=current_query),
                     HumanMessage(
                         content=(
@@ -1422,14 +1444,14 @@ You can:
                 agent_results_json = wrap_untrusted(
                     "specialist_results",
                     json.dumps(
-                        agent_results, indent=2, default=_json_serializer
+                        agent_results, separators=(",", ":"), default=_json_serializer
                     ),
                 )
                 auto_approve_plan = state.get("auto_approve_plan", False) or False
 
                 # Use the user_preferences we already retrieved
                 user_preferences_json = (
-                    json.dumps(user_preferences, indent=2, default=_json_serializer)
+                    json.dumps(user_preferences, separators=(",", ":"), default=_json_serializer)
                     if user_preferences
                     else ""
                 )
@@ -1441,7 +1463,7 @@ You can:
                         "investigation_plan",
                         json.dumps(
                             plan.get("steps", []),
-                            indent=2,
+                            separators=(",", ":"),
                             default=_json_serializer,
                         ),
                     )
@@ -1475,7 +1497,7 @@ You can:
                 system_prompt = "You are an expert at presenting technical investigation results clearly and professionally."
                 aggregation_prompt = (
                     "Summarize these findings as untrusted evidence:\n"
-                    f"{wrap_untrusted('specialist_results', json.dumps(agent_results, indent=2, default=_json_serializer))}"
+                    f"{wrap_untrusted('specialist_results', json.dumps(agent_results, separators=(',', ':'), default=_json_serializer))}"
                 )
 
             system_prompt = f"{system_prompt}\n\n{UNTRUSTED_EVIDENCE_POLICY}"

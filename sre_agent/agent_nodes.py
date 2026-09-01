@@ -124,8 +124,20 @@ class BaseAgentNode:
         )
         self.llm = _create_llm(llm_provider, **llm_kwargs)
 
+        # Tag the tool catalog for Anthropic prompt caching: this specialist's
+        # tool set is stable across its entire multi-turn tool-calling loop
+        # (and identical across incidents), so caching it turns every
+        # follow-up round-trip in the loop into a ~90%-cheaper cache read
+        # instead of a full-price re-send. No-op for non-Anthropic providers
+        # or when ANTHROPIC_PROMPT_CACHE_ENABLED=false.
+        agent_tools = self.tools
+        if llm_provider == "anthropic":
+            from .model_router import cached_tools
+
+            agent_tools = cached_tools(self.tools)
+
         # Create the react agent
-        self.agent = create_react_agent(self.llm, self.tools)
+        self.agent = create_react_agent(self.llm, agent_tools)
 
     def _get_system_prompt(self) -> str:
         """Get system prompt for this agent using prompt loader."""
@@ -209,8 +221,15 @@ class BaseAgentNode:
             all_messages = []
             agent_response = ""
 
-            # Add system prompt and user prompt
-            system_message = SystemMessage(content=self._get_system_prompt())
+            # Add system prompt and user prompt. The system prompt is static
+            # per agent type (no per-incident data), so it's tagged for
+            # Anthropic prompt caching alongside the tool catalog above.
+            if self.llm_provider == "anthropic":
+                from .model_router import cached_system_message
+
+                system_message = cached_system_message(self._get_system_prompt())
+            else:
+                system_message = SystemMessage(content=self._get_system_prompt())
             user_message = HumanMessage(content=agent_prompt)
 
             # Stream the agent execution to capture tool calls with timeout

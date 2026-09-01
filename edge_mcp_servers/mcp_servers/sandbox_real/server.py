@@ -79,7 +79,7 @@ def _core_api() -> Optional[client.CoreV1Api]:
 def _refused(action: str, namespace: str, reason: str) -> str:
     return json.dumps(
         {"tool": action, "namespace": namespace, "status": "REFUSED", "reason": reason},
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -134,7 +134,7 @@ async def sandbox_health() -> str:
             detail = str(e)
     return json.dumps(
         {"status": "healthy" if ok else "unhealthy", "detail": detail, "namespace": sandbox_namespace()},
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -169,12 +169,12 @@ async def sandbox_provision(
                 "tool": "provision", "job_name": name, "namespace": namespace,
                 "dry_run": dry_run, "applied": not dry_run, "status": "OK",
             },
-            indent=2,
+            separators=(",", ":"),
         )
     except ApiException as e:
         return json.dumps(
             {"tool": "provision", "job_name": name, "status": "ERROR", "code": e.status, "reason": e.reason},
-            indent=2,
+            separators=(",", ":"),
         )
 
 
@@ -191,11 +191,11 @@ async def sandbox_status(job_name: str, namespace: str = "sentinel-sandbox") -> 
         if e.status == 404:
             return json.dumps(
                 {"tool": "status", "job_name": job_name, "namespace": namespace, "status": "NOT_FOUND"},
-                indent=2,
+                separators=(",", ":"),
             )
         return json.dumps(
             {"tool": "status", "job_name": job_name, "status": "ERROR", "code": e.status, "reason": e.reason},
-            indent=2,
+            separators=(",", ":"),
         )
 
     js = job.status
@@ -212,7 +212,7 @@ async def sandbox_status(job_name: str, namespace: str = "sentinel-sandbox") -> 
             "tool": "status", "job_name": job_name, "namespace": namespace, "status": state,
             "active": js.active or 0, "succeeded": js.succeeded or 0, "failed": js.failed or 0,
         },
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -230,12 +230,12 @@ async def sandbox_logs(job_name: str, namespace: str = "sentinel-sandbox", tail_
     except ApiException as e:
         return json.dumps(
             {"tool": "logs", "job_name": job_name, "status": "ERROR", "code": e.status, "reason": e.reason},
-            indent=2,
+            separators=(",", ":"),
         )
     if not pods.items:
         return json.dumps(
             {"tool": "logs", "job_name": job_name, "namespace": namespace, "status": "NOT_FOUND", "logs": ""},
-            indent=2,
+            separators=(",", ":"),
         )
 
     pod_name = pods.items[0].metadata.name
@@ -245,12 +245,12 @@ async def sandbox_logs(job_name: str, namespace: str = "sentinel-sandbox", tail_
         )
         return json.dumps(
             {"tool": "logs", "job_name": job_name, "namespace": namespace, "status": "OK", "logs": logs},
-            indent=2,
+            separators=(",", ":"),
         )
     except ApiException as e:
         return json.dumps(
             {"tool": "logs", "job_name": job_name, "status": "ERROR", "code": e.status, "reason": e.reason},
-            indent=2,
+            separators=(",", ":"),
         )
 
 
@@ -265,16 +265,16 @@ async def sandbox_teardown(job_name: str, namespace: str = "sentinel-sandbox") -
         await asyncio.to_thread(
             api.delete_namespaced_job, job_name, namespace, propagation_policy="Background"
         )
-        return json.dumps({"tool": "teardown", "job_name": job_name, "namespace": namespace, "status": "OK"}, indent=2)
+        return json.dumps({"tool": "teardown", "job_name": job_name, "namespace": namespace, "status": "OK"}, separators=(",", ":"))
     except ApiException as e:
         if e.status == 404:
             return json.dumps(
                 {"tool": "teardown", "job_name": job_name, "namespace": namespace, "status": "OK", "detail": "already gone"},
-                indent=2,
+                separators=(",", ":"),
             )
         return json.dumps(
             {"tool": "teardown", "job_name": job_name, "status": "ERROR", "code": e.status, "reason": e.reason},
-            indent=2,
+            separators=(",", ":"),
         )
 
 
