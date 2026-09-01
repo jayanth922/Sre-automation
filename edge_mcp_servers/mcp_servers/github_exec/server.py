@@ -50,7 +50,7 @@ _PR_URL_RE = re.compile(r"https://github\.com/[^\s]+/pull/\d+")
 def _refused(action: str, reason: str) -> str:
     return json.dumps(
         {"tool": action, "repo": REPO, "status": "REFUSED", "applied": False, "reason": reason},
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -78,7 +78,7 @@ async def github_exec_health() -> str:
             "repo": REPO,
             "allowed_repos": sorted(allowed_repos()),
         },
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -110,7 +110,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                 "plan": plan,
                 "status": "DRY_RUN",
             },
-            indent=2,
+            separators=(",", ":"),
         )
 
     try:
@@ -143,7 +143,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                         "pr_url": pr_url,
                         "detail": detail,
                     },
-                    indent=2,
+                    separators=(",", ":"),
                 )
             if proc.returncode == 0 and not pr_url:
                 # Unexpected: command succeeded but no PR URL — do not claim CREATED.
@@ -159,7 +159,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                         "detail": detail,
                         "note": "gh pr revert returned success without a PR URL",
                     },
-                    indent=2,
+                    separators=(",", ":"),
                 )
 
             # Optional operator workflow: label triggers an external revert action.
@@ -185,7 +185,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                             ),
                             "revert_error": detail,
                         },
-                        indent=2,
+                        separators=(",", ":"),
                     )
 
             return json.dumps(
@@ -200,7 +200,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                     "detail": detail,
                     "note": "gh pr revert failed; open a revert PR manually or fix repo permissions",
                 },
-                indent=2,
+                separators=(",", ":"),
             )
 
         # Commit SHA: gh has no single-shot "revert this commit as a PR". Be honest.
@@ -218,7 +218,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                     "number for automated `gh pr revert`, or create the revert PR manually"
                 ),
             },
-            indent=2,
+            separators=(",", ":"),
         )
     except Exception as e:
         return json.dumps(
@@ -231,7 +231,7 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
                 "status": "ERROR",
                 "error": str(e),
             },
-            indent=2,
+            separators=(",", ":"),
         )
 
 
@@ -252,7 +252,7 @@ async def comment_on_pr(pr_number: int, body: str, dry_run: bool = True) -> str:
                 "body": body,
                 "status": "DRY_RUN",
             },
-            indent=2,
+            separators=(",", ":"),
         )
     try:
         proc = _gh(["pr", "comment", str(pr_number), "-R", REPO, "--body", body])
@@ -267,7 +267,7 @@ async def comment_on_pr(pr_number: int, body: str, dry_run: bool = True) -> str:
                 "status": "OK" if ok else "ERROR",
                 "detail": (proc.stdout + proc.stderr).strip(),
             },
-            indent=2,
+            separators=(",", ":"),
         )
     except Exception as e:
         return json.dumps(
@@ -277,7 +277,7 @@ async def comment_on_pr(pr_number: int, body: str, dry_run: bool = True) -> str:
                 "applied": False,
                 "error": str(e),
             },
-            indent=2,
+            separators=(",", ":"),
         )
 
 

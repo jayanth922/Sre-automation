@@ -518,7 +518,7 @@ async def handle_get_pod_status(params: GetPodStatusParams) -> str:
             "start_time": pod.status.start_time.isoformat() if pod.status.start_time else None,
         }
 
-        return json.dumps(result, indent=2, default=str)
+        return json.dumps(result, separators=(",", ":"), default=str)
     except Exception as e:
         logger.error(f"Error getting pod status: {e}")
         return f"Error getting pod status: {e}"
@@ -563,7 +563,7 @@ async def handle_get_deployment_status(params: GetDeploymentStatusParams) -> str
             ],
         }
 
-        return json.dumps(result, indent=2, default=str)
+        return json.dumps(result, separators=(",", ":"), default=str)
     except Exception as e:
         logger.error(f"Error getting deployment status: {e}")
         return f"Error getting deployment status: {e}"
@@ -609,7 +609,7 @@ async def handle_get_node_status(params: GetNodeStatusParams) -> str:
             }
             result.append(node_info)
 
-        return json.dumps(result, indent=2, default=str)
+        return json.dumps(result, separators=(",", ":"), default=str)
     except Exception as e:
         logger.error(f"Error getting node status: {e}")
         return f"Error getting node status: {e}"
@@ -626,7 +626,7 @@ async def handle_list_namespaces(params: ListNamespacesParams) -> str:
     try:
         namespace_list = await asyncio.to_thread(api.list_namespace)
         namespaces = [_format_namespace_entry(namespace) for namespace in namespace_list.items[: params.limit]]
-        return json.dumps({"count": len(namespaces), "namespaces": namespaces}, indent=2, default=str)
+        return json.dumps({"count": len(namespaces), "namespaces": namespaces}, separators=(",", ":"), default=str)
     except Exception as e:
         logger.error(f"Error listing namespaces: {e}")
         return f"Error listing namespaces: {e}"
@@ -658,7 +658,7 @@ async def handle_list_pods(params: ListPodsParams) -> str:
         pods = [_format_pod_entry(pod) for pod in pod_list.items[: params.limit]]
         return json.dumps(
             {"count": len(pods), "namespace": params.namespace, "pods": pods},
-            indent=2,
+            separators=(",", ":"),
             default=str,
         )
     except Exception as e:
@@ -692,7 +692,7 @@ async def handle_list_services(params: ListServicesParams) -> str:
         services = [_format_service_entry(service) for service in service_list.items[: params.limit]]
         return json.dumps(
             {"count": len(services), "namespace": params.namespace, "services": services},
-            indent=2,
+            separators=(",", ":"),
             default=str,
         )
     except Exception as e:
@@ -717,7 +717,7 @@ async def handle_list_deployments(params: ListDeploymentsParams) -> str:
         deployments = [_format_deployment_entry(deployment) for deployment in deployment_list.items[: params.limit]]
         return json.dumps(
             {"count": len(deployments), "namespace": params.namespace, "deployments": deployments},
-            indent=2,
+            separators=(",", ":"),
             default=str,
         )
     except Exception as e:
@@ -752,7 +752,7 @@ async def handle_list_events(params: ListEventsParams) -> str:
         events = events[: params.limit]
         return json.dumps(
             {"count": len(events), "namespace": params.namespace, "events": events},
-            indent=2,
+            separators=(",", ":"),
             default=str,
         )
     except Exception as e:
@@ -770,7 +770,7 @@ async def handle_get_service_endpoints(params: GetServiceEndpointsParams) -> str
 
     try:
         endpoints = await asyncio.to_thread(api.read_namespaced_endpoints, params.service_name, params.namespace)
-        return json.dumps(_format_endpoints_entry(endpoints), indent=2, default=str)
+        return json.dumps(_format_endpoints_entry(endpoints), separators=(",", ":"), default=str)
     except Exception as e:
         logger.error(f"Error getting service endpoints: {e}")
         return f"Error getting service endpoints: {e}"
@@ -804,7 +804,7 @@ async def handle_get_pod_logs(params: GetPodLogsParams) -> str:
                 "timestamps": params.timestamps,
                 "content": log_text,
             },
-            indent=2,
+            separators=(",", ":"),
         )
     except Exception as e:
         logger.error(f"Error reading pod logs: {e}")
@@ -829,18 +829,18 @@ async def check_k8s_health() -> str:
                 "status": "healthy",
                 "message": "Connected to Kubernetes Cluster",
                 "mode": "in-cluster" if not os.getenv("KUBECONFIG") else "kubeconfig"
-            }, indent=2)
+            }, separators=(",", ":"))
         except Exception as e:
              return json.dumps({
                 "status": "unhealthy",
                 "error": str(e),
                 "message": "Client initialized but API unreachable"
-            }, indent=2)
+            }, separators=(",", ":"))
     else:
         return json.dumps({
             "status": "unhealthy",
             "message": "Failed to initialize Kubernetes client. Retrying automatically..."
-        }, indent=2)
+        }, separators=(",", ":"))
 
 
 @mcp.tool()

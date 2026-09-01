@@ -360,7 +360,7 @@ async def _search_runbooks_impl(
 
 def _pack_response(tool_name: str, query: str, results: List[Dict[str, Any]]) -> str:
     payload = {"query": query, "tool": tool_name, "count": len(results), "results": results}
-    return json.dumps(payload, indent=2)
+    return json.dumps(payload, separators=(",", ":"))
 
 
 port = int(os.getenv("HTTP_PORT", "3000"))
@@ -399,20 +399,20 @@ async def get_runbook_content(page_id: str) -> str:
     logger.info("Getting Notion runbook content: %s", page_id)
     api_key, database_id = _active_notion_creds()
     if not api_key or not database_id:
-        return json.dumps({"error": "No Notion credentials configured for this cluster"}, indent=2)
+        return json.dumps({"error": "No Notion credentials configured for this cluster"}, separators=(",", ":"))
 
     resolved_id = await _resolve_page_id(page_id, api_key, database_id)
     if not resolved_id:
-        return json.dumps({"error": f"Runbook not found: {page_id}"}, indent=2)
+        return json.dumps({"error": f"Runbook not found: {page_id}"}, separators=(",", ":"))
 
     try:
         page, content = await _fetch_page_content(api_key, resolved_id)
     except Exception as exc:
-        return json.dumps({"error": f"Failed to fetch runbook {page_id}: {exc}"}, indent=2)
+        return json.dumps({"error": f"Failed to fetch runbook {page_id}: {exc}"}, separators=(",", ":"))
 
     rb = _page_to_runbook(page)
     rb["content"] = content
-    return json.dumps(rb, indent=2)
+    return json.dumps(rb, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -423,7 +423,7 @@ async def get_incident_playbook(incident_type: str) -> str:
     if not results:
         return json.dumps(
             {"incident_type": incident_type, "message": "No playbook found for this incident type", "results": []},
-            indent=2,
+            separators=(",", ":"),
         )
     return await get_runbook_content(results[0]["runbook_id"])
 
@@ -457,7 +457,7 @@ async def get_troubleshooting_guide(
     logger.info("Getting troubleshooting guide: %s", composed_query)
     top = await _top_result_content(query, incident_type, service, keyword)
     if not top:
-        return json.dumps({"query": composed_query, "message": "No troubleshooting guide found", "results": []}, indent=2)
+        return json.dumps({"query": composed_query, "message": "No troubleshooting guide found", "results": []}, separators=(",", ":"))
     rb, content = top
     section = _extract_section(content, ["troubleshooting", "step-by-step resolution", "resolution"])
     return json.dumps(
@@ -469,7 +469,7 @@ async def get_troubleshooting_guide(
             "section": section or content,
             "path": rb["path"],
         },
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -485,7 +485,7 @@ async def get_escalation_procedures(
     logger.info("Getting escalation procedures: %s", composed_query)
     top = await _top_result_content(query, incident_type, service, keyword)
     if not top:
-        return json.dumps({"query": composed_query, "message": "No escalation procedures found", "results": []}, indent=2)
+        return json.dumps({"query": composed_query, "message": "No escalation procedures found", "results": []}, separators=(",", ":"))
     rb, content = top
     section = _extract_section(content, ["escalation", "escalation path", "contacts"])
     return json.dumps(
@@ -498,7 +498,7 @@ async def get_escalation_procedures(
             "escalation_channel": rb.get("escalation_channel", ""),
             "path": rb["path"],
         },
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -514,7 +514,7 @@ async def get_common_resolutions(
     logger.info("Getting common resolutions: %s", composed_query)
     top = await _top_result_content(query, incident_type, service, keyword)
     if not top:
-        return json.dumps({"query": composed_query, "message": "No common resolutions found", "results": []}, indent=2)
+        return json.dumps({"query": composed_query, "message": "No common resolutions found", "results": []}, separators=(",", ":"))
     rb, content = top
     section = _extract_section(content, ["rollback or recovery", "rollback", "verification", "common resolution", "remediation"])
     return json.dumps(
@@ -526,7 +526,7 @@ async def get_common_resolutions(
             "section": section or content,
             "path": rb["path"],
         },
-        indent=2,
+        separators=(",", ":"),
     )
 
 

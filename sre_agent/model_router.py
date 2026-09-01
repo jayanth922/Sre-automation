@@ -351,3 +351,69 @@ def route_llm(
             )
         )
     return account(create_llm_with_error_handling(decision.provider, **llm_kwargs))
+
+
+# --- Anthropic prompt caching -------------------------------------------------
+#
+# ``langchain_anthropic`` ships an official ``AnthropicPromptCachingMiddleware``,
+# but it targets ``langchain.agents.create_agent`` (LangChain v1's agent
+# framework). This codebase builds agents with ``langgraph.prebuilt.
+# create_react_agent`` and plain ``.ainvoke()`` calls, neither of which accepts
+# middleware, so we replicate the middleware's tagging logic by hand: tag the
+# last content block of a static system prompt, and the last tool in a tool
+# list, with Anthropic's ``cache_control`` marker. Anthropic caches everything
+# up to and including a tagged block, so a single trailing marker is enough to
+# cover an entire (unchanging) system prompt or tool catalog. Sub-1024-token
+# prompts silently skip caching (no error, no extra cost), so it's always safe
+# to tag a block whether or not it will actually reach the cacheable minimum.
+
+
+def _prompt_cache_enabled() -> bool:
+    return os.getenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _prompt_cache_ttl() -> str:
+    ttl = os.getenv("ANTHROPIC_PROMPT_CACHE_TTL", "1h").strip().lower()
+    return ttl if ttl in ("5m", "1h") else "1h"
+
+
+def cache_control_marker() -> Optional[Dict[str, str]]:
+    """The ``cache_control`` value to tag a static block with, or ``None`` when
+    prompt caching is disabled (``ANTHROPIC_PROMPT_CACHE_ENABLED=false``)."""
+    if not _prompt_cache_enabled():
+        return None
+    return {"type": "ephemeral", "ttl": _prompt_cache_ttl()}
+
+
+def cached_system_message(content: str):
+    """Build a ``SystemMessage`` whose content is tagged for Anthropic prompt
+    caching. Only worth calling with prompt text that is identical across
+    calls (a static instruction block) — dynamic, per-incident content should
+    stay out of the tagged block or the cache will never hit."""
+    from langchain_core.messages import SystemMessage
+
+    marker = cache_control_marker()
+    if not marker or not content:
+        return SystemMessage(content=content)
+    return SystemMessage(content=[{"type": "text", "text": content, "cache_control": marker}])
+
+
+def cached_tools(tools: List) -> List:
+    """Return ``tools`` with the last entry tagged for Anthropic prompt
+    caching, so the whole tool-definition block (sent as one contiguous
+    span) is cached alongside the system prompt. No-op if caching is
+    disabled, the list is empty, or the last entry isn't a ``BaseTool``."""
+    marker = cache_control_marker()
+    if not marker or not tools:
+        return tools
+    from langchain_core.tools import BaseTool
+
+    last = tools[-1]
+    if not isinstance(last, BaseTool):
+        return tools
+    new_extras = {**(getattr(last, "extras", None) or {}), "cache_control": marker}
+    return [*tools[:-1], last.model_copy(update={"extras": new_extras})]

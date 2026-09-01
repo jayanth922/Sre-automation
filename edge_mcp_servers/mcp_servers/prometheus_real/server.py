@@ -93,7 +93,7 @@ def _cap_vector_result(result: Any) -> Dict[str, Any]:
 
     max_chars = 200_000
     while True:
-        text = json.dumps(payload, indent=2, default=str)
+        text = json.dumps(payload, separators=(",", ":"), default=str)
         if len(text) <= max_chars or len(payload["result"]) <= 1:
             return payload
         payload["result"] = payload["result"][: max(1, len(payload["result"]) // 2)]
@@ -214,13 +214,13 @@ async def check_prometheus_health() -> str:
             "status": "healthy",
             "url": url,
             "message": "Connected to Prometheus"
-        }, indent=2)
+        }, separators=(",", ":"))
     else:
         return json.dumps({
             "status": "unhealthy",
             "url": url,
             "message": "Failed to connect to Prometheus. Check PROMETHEUS_URL and network connectivity."
-        }, indent=2)
+        }, separators=(",", ":"))
 
 @mcp.tool()
 async def get_metric(query: str, time: str = None) -> str:
@@ -253,7 +253,7 @@ async def get_metric(query: str, time: str = None) -> str:
         else:
             result = await loop.run_in_executor(None, client.custom_query, query)
 
-        return json.dumps(_cap_vector_result(result), indent=2, default=str)
+        return json.dumps(_cap_vector_result(result), separators=(",", ":"), default=str)
     except Exception as e:
         # Try to expose HTTP status / body so the agent can distinguish
         # "your PromQL is malformed" (400/422 from Prometheus) from
@@ -320,14 +320,14 @@ async def get_metric_range(query: str, start_time: str, end_time: str, step: str
             step,
         )
         payload = _downsample_range_result(result)
-        text = json.dumps(payload, indent=2, default=str)
+        text = json.dumps(payload, separators=(",", ":"), default=str)
         # Last-resort safety net: even a capped series/points count can be
         # huge if label sets are verbose. Hard-cap the serialized size too.
         max_chars = 200_000
         if len(text) > max_chars:
             payload["result"] = payload["result"][: max(1, len(payload["result"]) // 2)]
             payload["series_truncated"] = True
-            text = json.dumps(payload, indent=2, default=str)[:max_chars]
+            text = json.dumps(payload, separators=(",", ":"), default=str)[:max_chars]
         return text
     except Exception as e:
         status = getattr(getattr(e, "response", None), "status_code", None)
@@ -421,7 +421,7 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
                 "error": str(e),
             }
 
-    return json.dumps(results, indent=2, default=str)
+    return json.dumps(results, separators=(",", ":"), default=str)
 
 
 if __name__ == "__main__":

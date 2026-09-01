@@ -182,7 +182,7 @@ class SREOutputFormatter:
             if user_preferences:
                 import json
 
-                prefs_text = json.dumps(user_preferences, indent=2, default=str)
+                prefs_text = json.dumps(user_preferences, separators=(",", ":"), default=str)
                 results_text += f"\n\n**User Preferences:**\n{prefs_text}\n"
 
             # Get prompts from prompt loader

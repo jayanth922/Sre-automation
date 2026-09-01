@@ -222,7 +222,7 @@ async def handle_list_commits(params: ListCommitsParams) -> str:
             results.append(commit_data)
             count += 1
 
-        return json.dumps({"commits": results}, indent=2)
+        return json.dumps({"commits": results}, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error listing commits: {e}")
         return f"Error listing commits: {e}"
@@ -260,7 +260,7 @@ async def handle_get_commit(params: GetCommitParams) -> str:
             "diff": patch,
         }
 
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error getting commit: {e}")
         return f"Error getting commit: {e}"
@@ -304,7 +304,7 @@ async def handle_list_pull_requests(params: ListPullRequestsParams) -> str:
             results.append(pr_data)
             count += 1
 
-        return json.dumps({"pull_requests": results}, indent=2)
+        return json.dumps({"pull_requests": results}, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error listing pull requests: {e}")
         return f"Error listing pull requests: {e}"
@@ -337,7 +337,7 @@ async def handle_get_pull_request(params: GetPullRequestParams) -> str:
             "merged": pr.merged,
         }
 
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error getting pull request: {e}")
         return f"Error getting pull request: {e}"
@@ -398,7 +398,7 @@ async def handle_list_repository_files(params: ListRepositoryFilesParams) -> str
                 "files": results,
                 "count": len(results),
             },
-            indent=2,
+            separators=(",", ":"),
         )
     except GithubException as e:
         logger.error(f"Error listing repository files: {e}")
@@ -429,7 +429,7 @@ async def handle_get_repository_file(params: GetRepositoryFileParams) -> str:
                     "type": "dir",
                     "entries": [_format_repo_file_entry(entry) for entry in content],
                 },
-                indent=2,
+                separators=(",", ":"),
             )
 
         raw_content = content.decoded_content
@@ -453,7 +453,7 @@ async def handle_get_repository_file(params: GetRepositoryFileParams) -> str:
                 "truncated": truncated,
                 "content": text,
             },
-            indent=2,
+            separators=(",", ":"),
         )
     except GithubException as e:
         logger.error(f"Error reading repository file: {e}")
