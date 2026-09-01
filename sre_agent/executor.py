@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Mapping, Optional
@@ -156,14 +157,27 @@ def _github_args(action: Any) -> Dict[str, Any]:
     return {"dry_run": False}
 
 
+# Planner targets are frequently not a bare k8s object name: sometimes
+# "<deployment>:<sub-resource descriptor>" (e.g.
+# "checkout-service:process-handler-pods"), sometimes a full descriptive
+# phrase (e.g. "checkout-service pods (targeted canary subset only, ...)").
+# A k8s object name is a DNS-1123 label (lowercase alphanumeric + '-'), so
+# the leading run of valid label characters is the real resource name in
+# either case — this subsumes the old colon-only split.
+_K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?")
+
+
 def _live_args(action: Any) -> Dict[str, Any]:
     """Build the executor-MCP tool arguments for a live (real) execution."""
     params = getattr(action, "parameters", None) or {}
     if not isinstance(params, dict):
         params = {}
     action_type = str(getattr(action, "action_type", "")).lower()
+    target = str(getattr(action, "target", "")).strip()
+    match = _K8S_NAME_RE.match(target.lower())
+    resource_name = match.group(0) if match else target
     args: Dict[str, Any] = {
-        "name": str(getattr(action, "target", "")),
+        "name": resource_name,
         "namespace": params.get("namespace", "default"),
         "dry_run": False,  # live apply (the MCP server still validates server-side)
     }
@@ -174,7 +188,7 @@ def _live_args(action: Any) -> Dict[str, Any]:
         except (TypeError, ValueError):
             args["replicas"] = 1
     if action_type in ("patch", "config_change"):
-        args["container"] = params.get("container", str(getattr(action, "target", "")))
+        args["container"] = params.get("container", resource_name)
         if params.get("memory"):
             args["memory"] = params["memory"]
         if params.get("cpu"):
@@ -201,7 +215,11 @@ def _structured_payload(value: Any) -> Optional[Dict[str, Any]]:
         payload = dict(value)
         if "status" in payload or "applied" in payload:
             return payload
-        for key in ("result", "data", "content"):
+        # MCP SDK content blocks are plain dicts like {"type": "text", "text":
+        # "<json>", "id": ...} — the JSON-encoded tool payload lives under the
+        # "text" *key*, not a ".text" attribute (that's only handled below for
+        # SDK objects). Recurse into it like any other wrapper key.
+        for key in ("result", "data", "content", "text"):
             if key in payload:
                 nested = _structured_payload(payload[key])
                 if nested is not None:
@@ -358,7 +376,7 @@ class Executor:
                 )
             else:
                 logger.warning(
-                    f"⛔ Executor[live/{backend}]: {tool_name} → {status.lower()}"
+                    f"⛔ Executor[live/{backend}]: {tool_name} → {status.lower()}: {detail}"
                 )
             return _result(status, detail)
         except Exception as e:
