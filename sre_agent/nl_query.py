@@ -237,6 +237,105 @@ def build_incident_message_payload(incident_id: str, text: str) -> Tuple[str, Di
     return f"/api/v1/incidents/{incident_id}/message", {"message": text}
 
 
+# ── Ad hoc chat (no tracked incident): genuine LLM conversation ──────────────
+# In-thread replies inside a tracked incident already get a real, memory-backed
+# conversation via mission_control.handle_incident_message (see war_room.py).
+# This is the *other* case: a bare @mention or DM with no incident context,
+# which used to silently fall through classify_chat_message's default "steer"
+# branch and get answered with a misleading "I'll fold that into the live
+# investigation" reply even though there's no investigation to fold into.
+_CHAT_SYSTEM_PROMPT = (
+    "You are Sentinel, an on-call SRE assistant embedded in Slack. Reply "
+    "conversationally and concisely (2-4 sentences, plain text — no markdown "
+    "headers). You are not currently inside a tracked incident investigation, "
+    "so never claim to be investigating, executing, or steering anything; if "
+    "the user wants to steer or ask about a live incident, tell them to "
+    "mention you inside that incident's thread instead. Answer general "
+    "SRE/on-call questions helpfully, and say so plainly if you don't know "
+    "something rather than inventing details."
+)
+
+_CHAT_HISTORY_TURNS = 6  # user+assistant pairs of memory kept per session
+
+_CHAT_FALLBACK_REPLY = (
+    "I don't have a live LLM connection configured right now, so I can't hold "
+    "a full conversation — but I'm listening. Mention me inside an incident "
+    "thread to steer or ask about that investigation, or ask a direct metric "
+    "question (e.g. \"what's the checkout error rate?\")."
+)
+
+
+async def generate_chat_reply_llm(
+    text: str, *, history: Optional[List[str]] = None, llm: Any = None
+) -> Optional[str]:
+    """Generate a conversational reply for ad hoc chat (no tracked incident).
+
+    Best-effort: returns None (never raises) if no LLM is available or the
+    call fails, so callers can fall back to a graceful canned reply.
+    """
+    if llm is None:
+        return None
+    try:
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    except Exception:
+        return None
+
+    messages: List[Any] = [SystemMessage(content=_CHAT_SYSTEM_PROMPT)]
+    for line in (history or [])[-_CHAT_HISTORY_TURNS * 2 :]:
+        if line.startswith("assistant: "):
+            messages.append(AIMessage(content=line[len("assistant: ") :]))
+        elif line.startswith("user: "):
+            messages.append(HumanMessage(content=line[len("user: ") :]))
+    messages.append(HumanMessage(content=text))
+
+    try:
+        response = await llm.ainvoke(messages)
+        reply = (getattr(response, "content", "") or "").strip()
+        return reply or None
+    except Exception as e:
+        logger.warning(f"NLQuery: chat reply generation failed ({e})")
+        return None
+
+
+async def _handle_ad_hoc_chat(
+    text: str, *, llm: Any = None, session_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """The 'chat' mode: no tracked incident, so hold a genuine short-memory
+    conversation instead of pretending to steer an investigation."""
+    history: List[str] = []
+    store = None
+    if session_key:
+        try:
+            from .redis_state_store import get_state_store
+
+            store = get_state_store()
+            history = store.get_logs(session_key)
+        except Exception as e:
+            logger.warning(f"NLQuery: chat history unavailable ({e})")
+
+    resolved_llm = llm
+    if resolved_llm is None:
+        try:
+            from .llm_utils import create_llm_with_fallback
+
+            resolved_llm = create_llm_with_fallback()
+        except Exception as e:
+            logger.warning(f"NLQuery: no LLM available for chat reply ({e})")
+
+    reply = await generate_chat_reply_llm(text, history=history, llm=resolved_llm)
+    if reply is None:
+        return {"mode": "chat", "reply": _CHAT_FALLBACK_REPLY, "llm_used": False}
+
+    if store is not None:
+        try:
+            store.append_log(session_key, f"user: {text}")
+            store.append_log(session_key, f"assistant: {reply}")
+        except Exception as e:
+            logger.warning(f"NLQuery: failed to persist chat history ({e})")
+
+    return {"mode": "chat", "reply": reply, "llm_used": True}
+
+
 # ── Runtime integration ──────────────────────────────────────────────────────
 async def answer_metric_question(question: str, metrics_uri: Optional[str] = None) -> NLQueryResult:
     """End-to-end: run an NL query against the live Prometheus MCP server."""
@@ -246,13 +345,24 @@ async def answer_metric_question(question: str, metrics_uri: Optional[str] = Non
     return await run_nl_query(question, tool_caller=caller)
 
 
-async def handle_chat_message(text: str, incident_id: Optional[str] = None) -> Dict[str, Any]:
+async def handle_chat_message(
+    text: str,
+    incident_id: Optional[str] = None,
+    *,
+    llm: Any = None,
+    session_key: Optional[str] = None,
+) -> Dict[str, Any]:
     """Dispatch a chat message (the Slack/Buzz 'AI member' behavior).
 
-    - query   → run a verified NL metric query and return the result.
-    - steer   → shape a POST to the incident message endpoint (human-checkpoint).
-    - greeting→ acknowledge.
+    - query    → run a verified NL metric query and return the result.
+    - steer    → shape a POST to the incident message endpoint (human-checkpoint),
+                 when there's a tracked incident to steer.
+    - chat     → no tracked incident: a genuine LLM-driven conversational reply
+                 with short-term memory (see _handle_ad_hoc_chat).
+    - greeting → acknowledge.
     The chat transport calls this; the transport itself is deployment-specific.
+    `llm`/`session_key` are optional: without them the 'chat' path degrades to
+    a graceful canned reply (no crash, no misleading "steer" language).
     """
     route = classify_chat_message(text)
     mode = route["mode"]
@@ -270,4 +380,6 @@ async def handle_chat_message(text: str, incident_id: Optional[str] = None) -> D
     if mode == "steer" and incident_id:
         path, body = build_incident_message_payload(incident_id, text)
         return {"mode": "steer", "post": {"path": path, "body": body}}
+    if mode == "steer" and not incident_id:
+        return await _handle_ad_hoc_chat(text, llm=llm, session_key=session_key)
     return {"mode": mode}

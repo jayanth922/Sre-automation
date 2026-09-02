@@ -147,5 +147,71 @@ def test_handle_chat_message_greeting():
     assert out["mode"] == "greeting"
 
 
+# ── ad hoc chat (no tracked incident): genuine LLM conversation ─────────────
+class _CapturingChatLLM:
+    """Records the messages it was invoked with, for asserting history shape."""
+
+    def __init__(self, content: str):
+        self._content = content
+        self.seen_messages = None
+
+    async def ainvoke(self, messages):
+        self.seen_messages = messages
+
+        class _Resp:
+            def __init__(self, content):
+                self.content = content
+
+        return _Resp(self._content)
+
+
+def test_generate_chat_reply_llm_returns_none_without_llm():
+    assert asyncio.run(nl.generate_chat_reply_llm("hello there")) is None
+
+
+def test_generate_chat_reply_llm_returns_none_on_failure():
+    class _BrokenLLM:
+        async def ainvoke(self, messages):
+            raise RuntimeError("provider down")
+
+    assert asyncio.run(nl.generate_chat_reply_llm("anything", llm=_BrokenLLM())) is None
+
+
+def test_generate_chat_reply_llm_returns_reply_and_replays_history():
+    llm = _CapturingChatLLM("Sure — here's what I know.")
+    history = ["user: what does sentinel do", "assistant: I watch your services."]
+    reply = asyncio.run(nl.generate_chat_reply_llm("tell me more", history=history, llm=llm))
+    assert reply == "Sure — here's what I know."
+    # system + 2 replayed history turns + the new user message
+    assert len(llm.seen_messages) == 4
+    assert llm.seen_messages[-1].content == "tell me more"
+
+
+def test_handle_chat_message_no_incident_falls_back_gracefully_without_llm():
+    # No incident_id and no LLM configured/injectable: must not crash and must
+    # not claim to be steering a nonexistent investigation.
+    out = asyncio.run(nl.handle_chat_message("tell me a joke"))
+    assert out["mode"] == "chat"
+    assert out["llm_used"] is False
+    assert "Mention me inside an incident" in out["reply"]
+
+
+def test_handle_chat_message_no_incident_uses_injected_llm():
+    llm = _CapturingChatLLM("Sure, ask away!")
+    out = asyncio.run(nl.handle_chat_message("tell me a joke", llm=llm))
+    assert out == {"mode": "chat", "reply": "Sure, ask away!", "llm_used": True}
+
+
+def test_handle_chat_message_with_incident_id_still_steers_not_chats():
+    # Regression guard: an incident_id present must keep using the 'steer'
+    # path even though the underlying text would otherwise hit the same
+    # default classify_chat_message fallback as the no-incident chat case.
+    out = asyncio.run(
+        nl.handle_chat_message("tell me a joke", incident_id="inc-1", llm=_CapturingChatLLM("x"))
+    )
+    assert out["mode"] == "steer"
+    assert out["post"]["path"] == "/api/v1/incidents/inc-1/message"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

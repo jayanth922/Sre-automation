@@ -33,12 +33,14 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-Handler = Callable[[str, Optional[str]], Awaitable[Dict[str, Any]]]
+Handler = Callable[..., Awaitable[Dict[str, Any]]]
 
 
-async def _default_handler(text: str, incident_id: Optional[str]) -> Dict[str, Any]:
+async def _default_handler(
+    text: str, incident_id: Optional[str], session_key: Optional[str] = None
+) -> Dict[str, Any]:
     from ..nl_query import handle_chat_message
-    return await handle_chat_message(text, incident_id)
+    return await handle_chat_message(text, incident_id, session_key=session_key)
 
 
 def format_reply(result: Dict[str, Any]) -> str:
@@ -54,6 +56,8 @@ def format_reply(result: Dict[str, Any]) -> str:
         return f"Generated `{result.get('promql')}` but couldn't execute it: {result.get('error', '')}".strip()
     if mode == "steer":
         return "Got it — I'll fold that into the live investigation at the next checkpoint."
+    if mode == "chat":
+        return result.get("reply") or "Sorry, I didn't understand that."
     return "Sorry, I didn't understand that."
 
 
@@ -66,10 +70,21 @@ async def process_mention(
     incident_id: Optional[str],
     respond: Callable[[str], Awaitable[Any]],
     handler: Optional[Handler] = None,
+    session_key: Optional[str] = None,
 ) -> str:
-    """Route a mention through the dispatcher and post the reply. Returns the reply."""
+    """Route a mention through the dispatcher and post the reply. Returns the reply.
+
+    `session_key` (e.g. a stable channel+user id) enables short-term memory for
+    the ad hoc 'chat' path (see nl_query._handle_ad_hoc_chat); omitted entirely
+    from the handler call when not provided, so injected test handlers with the
+    original 2-arg (text, incident_id) signature keep working unchanged.
+    """
     handler = handler or _default_handler
-    result = await handler(_strip_mention(text), incident_id)
+    stripped = _strip_mention(text)
+    if session_key is not None:
+        result = await handler(stripped, incident_id, session_key=session_key)
+    else:
+        result = await handler(stripped, incident_id)
     reply = format_reply(result)
     await respond(reply)
     return reply
@@ -111,9 +126,11 @@ def build_slack_app(registry=None, organization: Any = None):
             thread_ts=event.get("thread_ts") or event.get("ts", ""),
         )
         incident_id = registry.incident_for(thread) if registry else None
+        session_key = f"slack-chat:{event.get('channel', '')}:{event.get('user', 'anon')}"
         await process_mention(
             event.get("text", ""), incident_id,
             respond=lambda msg: say(text=msg, thread_ts=event.get("ts")),
+            session_key=session_key,
         )
 
     if registry is not None:
