@@ -64,6 +64,42 @@ def test_format_reply_invalid_query():
     assert "bad metric" in r
 
 
+def test_format_reply_chat_mode_uses_llm_reply_verbatim():
+    r = sb.format_reply({"mode": "chat", "reply": "I'm not sure — can you clarify?", "llm_used": True})
+    assert r == "I'm not sure — can you clarify?"
+
+
+def test_process_mention_without_session_key_calls_two_arg_handler():
+    """Backward-compat: omitting session_key must not break handlers with the
+    original (text, incident_id) signature."""
+    posted = {}
+
+    async def respond(msg):
+        posted["msg"] = msg
+
+    async def fake_handler(text, incident_id):
+        return {"mode": "chat", "reply": "hey"}
+
+    reply = asyncio.run(sb.process_mention("<@U1> hi", None, respond, handler=fake_handler))
+    assert reply == "hey"
+
+
+def test_process_mention_with_session_key_passes_it_through():
+    seen = {}
+
+    async def respond(_):
+        pass
+
+    async def fake_handler(text, incident_id, session_key=None):
+        seen["session_key"] = session_key
+        return {"mode": "chat", "reply": "hey"}
+
+    asyncio.run(
+        sb.process_mention("<@U1> hi", None, respond, handler=fake_handler, session_key="slack-chat:C1:U1")
+    )
+    assert seen["session_key"] == "slack-chat:C1:U1"
+
+
 def test_process_mention_strips_mention_and_replies():
     posted = {}
 
