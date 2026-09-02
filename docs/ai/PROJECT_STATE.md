@@ -1,168 +1,161 @@
 # PROJECT_STATE.md
 
 ## Project objective
-Make Sentinel truthful, tenant-isolated, reproducible, and production-operable.
+Make Sentinel truthful, tenant-isolated, reproducible, and production-operable
+— a genuinely production-grade, resume-flagship SRE agent platform, not an
+"educational subset" of the tools it mirrors (`docs/COMPETITIVE_AUDIT.md`).
 
 ## Current milestone
-Task #16: **DONE.** Verified a genuine end-to-end happy path (investigate →
-plan → human-approve → live-execute → resolve) against real telemetry on
-the GitHub Codespace `jubilant-space-invention-4vjq497q4x63jx5q`
-(`/workspaces/Sre-automation`). Confirmed via `restart_deployment` on
-`checkout-service` reported `EXECUTED`, independently verified at the k8s
-level (new ReplicaSet rolled out, timestamp matching the approval).
-`.env` safety flags reverted and verified (see below). Next: decide with
-user whether to commit the session's fixes to git.
+Production-grade upgrade pass across the tracked concepts
+(`decision-production-grade-upgrade` memory). Status as of 2026-09-02,
+reconciled after discovering origin/master was 12 commits ahead of this
+checkout (PRs #50/#51/#52, merged) plus 3 more local checkpoint commits —
+see "Sync note" below.
 
-## Completed or verified work
-1. **MCP networking fix** — widened 7 `edge_mcp_servers/docker-compose.yaml`
-   port bindings for `host.docker.internal` connectivity. Confirmed working.
-2. **Loop-abort fix** (`sre_agent/act_phase.py` ~596-630) — one action's
-   `MutationRejected` no longer aborts the whole batch. Confirmed live.
-3. **Restart-target parsing fix (widened)** — Planner targets for `restart`
-   actions are free-form, not just `"<deployment>:<sub-resource>"`
-   (observed live: full descriptive phrases like `"checkout-service pods
-   (targeted canary subset only, ...)"`, and pod-with-ReplicaSet-hash
-   names). `_live_args()` (`sre_agent/executor.py`) now extracts the
-   leading valid DNS-1123 label via regex instead of splitting on `:`,
-   which subsumes the old colon-only fix. **Validated live**: confirmed
-   `restart_deployment → applied` and, independently, a real new
-   ReplicaSet rolled out on `checkout-service` at the k8s level.
-4. **`classify_live_response` payload-parsing fix** — `_structured_payload()`
-   didn't recurse into the MCP SDK's actual content-block shape
-   (`{"type":"text","text":"<json>"}` — JSON under a `text` *key*, not a
-   `.text` *attribute*), so genuine tool successes **and** refusals were
-   both misreported as `ERROR`. This silently affected every live
-   execution, not just restarts (retroactively explains why
-   `patch_resource_limits` always showed `error` instead of `refused`).
-   Fixed by recursing into the `"text"` key too. Also fixed: the WARNING
-   log line was discarding the `detail` string that would have surfaced
-   this immediately — now logged. Both fixes covered by unit tests using
-   the exact captured real MCP response payloads
-   (`tests/test_executor.py`); full suite 780 passed / 2 skipped, 0
-   regressions.
-5. **Cost optimization, round 1 (model-tier + caching)** —
-   `MODEL_ROUTER_FAST_MODEL=claude-haiku-4-5-20251001` in codespace `.env`
-   routes ROUTING/NARRATION/GREETING to Haiku 4.5 instead of Sonnet 5;
-   SPECIALIST/AGGREGATION/REFLECTION/PLANNING (quality-critical) untouched.
-   Hand-rolled Anthropic prompt caching in `sre_agent/model_router.py`
-   (`cache_control_marker()`, `cached_system_message()`, `cached_tools()`
-   — `langchain_anthropic`'s official middleware only supports
-   `langchain.agents.create_agent`, not the `create_react_agent` this
-   codebase uses). Applied to specialist system prompts + tool catalogs
-   (`agent_nodes.py`), Reflector/Planner system messages
-   (`graph_builder.py`), and the supervisor's investigation-planning
-   prompt split into a cached static prefix + uncached dynamic suffix
-   (`supervisor.py`). Deliberately skipped supervisor's aggregation call
-   (no stable static prefix). Config: `ANTHROPIC_PROMPT_CACHE_ENABLED`
-   (default true), `ANTHROPIC_PROMPT_CACHE_TTL` (default `1h`).
-6. **Cost optimization, round 2 (payload size)** — every MCP tool response
-   (7 servers: k8s, prometheus, loki, github, runbooks, github-exec,
-   executor) and 5 sre_agent prompt-builder sites (`output_formatter.py`,
-   `narrative.py`, `supervisor.py`) were serializing JSON with `indent=2`
-   before it entered Claude's context — pure whitespace, zero information
-   value. Replaced with compact `separators=(",", ":")` everywhere (79 +
-   5 call sites). Same data, smaller payload, no quality impact.
+**Done and merged to origin/master:**
+- **Task #16 (live-fire validation)** — a genuine end-to-end happy path
+  (investigate → plan → human-approve → live-execute → resolve) verified
+  against real telemetry on Codespace `jubilant-space-invention-4vjq497q4x63jx5q`
+  (`/workspaces/Sre-automation`, `kind-meridian` cluster). `restart_deployment`
+  on `checkout-service` reported `EXECUTED`, independently confirmed at the
+  k8s level (new ReplicaSet, timestamp matched). Root-cause fixes: restart-
+  target parsing widened to free-form Planner text (`executor.py::_live_args`,
+  DNS-1123-label regex), and `classify_live_response`'s payload parser fixed
+  to recurse into the MCP SDK's real `{"type":"text","text":...}` content-
+  block shape (was misreporting both successes and refusals as `ERROR`).
+  Full root-cause writeup in `docs/ai/DECISIONS.md`. `.env` safety flags
+  (`EXECUTOR_LIVE=false`, `SENTINEL_CLUSTER_ENVIRONMENT=production`) were
+  reverted after the test and verified.
+- **Model tiering + prompt caching** — `sre_agent/model_router.py` routes
+  ROUTING/NARRATION/GREETING to Haiku 4.5, keeps SPECIALIST/AGGREGATION/
+  REFLECTION/PLANNING on Sonnet 5; hand-rolled Anthropic prompt-caching
+  helpers (`cache_control_marker`, `cached_system_message`, `cached_tools`)
+  applied across `agent_nodes.py`, `graph_builder.py`, `supervisor.py`. This
+  is model-**tier** routing within Anthropic, not yet cross-**provider**
+  routing — see Next bounded task.
+- **Payload compaction** — all 7 MCP servers + 5 prompt-builder sites emit
+  compact JSON instead of `indent=2`, no quality impact.
+- **Temporal-orchestrated code-fix verification** —
+  `sre_agent/sandbox_workflow.py::CodeFixVerificationWorkflow` +
+  `temporal_client.py` + `sandbox_worker.py`, committed `5822c07`, wired
+  fire-and-forget into `graph_builder.py` (~line 290) whenever a proposed
+  fix has a code-level action with sandbox params. Runs an unpatched
+  baseline (must reproduce the failure signature), applies the patch, reruns,
+  diffs logs → RESOLVED/REGRESSED/INCONCLUSIVE. This is the user's actual
+  "temporal thing" ask (verify logs + resulting state are clean, not a
+  rollback) — confirmed 2026-09-02, no further work needed. 8/10 tests pass
+  without the optional `temporalio` extra installed; the other 2 just need
+  `pip install sre-agent[temporal]` to spin up a `WorkflowEnvironment`.
+- **Runbook RAG + NL-query production grade** — genuine vector search
+  replacing keyword-only match (`sre_agent/runbook_index.py`, new
+  `sre_runbooks_v1` Qdrant collection, queried by the Planner in
+  `graph_builder.py` alongside existing MCP keyword search; incident-memory
+  context added to `runbook_generator.py::generate_runbook_llm`), plus live
+  Prometheus metric-catalog grounding and real-parser PromQL validation (two
+  new MCP tools, `list_metric_names`/`validate_promql_syntax`, in
+  `edge_mcp_servers/mcp_servers/prometheus_real/server.py`) with an LLM
+  generation fallback for unmapped questions — all opt-in, default behavior
+  unchanged. Committed `d7f9511`, pushed as **PR #53**
+  (`feature/nlquery-rag-production-grade`, not yet merged).
+- **Ad hoc Slack chat, genuine conversation** — the in-thread/incident-scoped
+  conversation (`war_room.py` →
+  `mission_control.handle_incident_message`) was already sophisticated and
+  untouched. The real gap was the *other* path — a bare @mention or DM with
+  no tracked incident — which silently hit `classify_chat_message`'s default
+  `"steer"` fallback and got a misleading "I'll fold that into the live
+  investigation" reply with no investigation to fold into.
+  `nl_query.py::handle_chat_message` now branches `steer`-with-no-
+  `incident_id` into `_handle_ad_hoc_chat`: a real LLM reply
+  (`generate_chat_reply_llm`, `create_llm_with_fallback` pattern, same
+  graceful-degradation-to-canned-reply on no provider as the rest of this
+  file) with short-term multi-turn memory via `RedisStateStore.append_log`/
+  `get_logs` keyed by a per-channel-per-user session key
+  (`slack-chat:{channel}:{user}`, set in `slack_bot.py`'s `_on_mention`).
+  `classify_chat_message`'s classification rules themselves are untouched
+  (all 4 pre-existing assertions in `test_classify_chat_message_modes` still
+  pass unmodified) — only the dispatch of the existing `"steer"` mode when
+  there's no incident to steer changed. `slack_bot.py::format_reply` gained
+  a `"chat"` mode branch; `process_mention`'s `session_key` param is
+  additive/optional so old 2-arg test handlers keep working. 789/789 passed
+  on this branch, 2 skipped (unchanged, `temporalio` optional extra) — 9 new
+  tests across `test_nl_query.py`/`test_slack_bot.py`. Committed on
+  `feature/slack-adhoc-chat-memory`, **PR #2** raised against `master`
+  (independent of PR #53 — split via a 3-way `git merge-file` against
+  `d7f9511`/`6a065ff` so the two PRs share no overlapping hunks and neither
+  should conflict when merged in either order).
 
-All of #4/#5: tested (774 passed/2 skipped locally), deployed via
-SSH-stdin streaming + checksum verification (not `gh codespace cp`,
-unreliable), `sre-agent-api` + all 7 `mcp-*` containers rebuilt and
-healthy. `sre-agent-api` lives in `platform/docker-compose.yaml`; MCP
-servers in `edge_mcp_servers/docker-compose.yaml`.
-
-**Known unrelated issue surfaced during rebuild**: `sre-langfuse-web` /
-`sre-langfuse-worker` are crash-looping (ClickHouse `ON CLUSTER default`
-migration error — no Zookeeper config in this cluster). Pre-existing
-environment issue, not caused by this session's changes, doesn't affect
-`sre-agent-api` or the incident pipeline (Langfuse is optional LLM
-tracing only) — flagged, not fixed, out of scope.
+**Sync note (2026-09-02):** this checkout had drifted 12 commits behind
+`origin/master` (this session's RAG/NL-query work was done on the stale
+base). Resolved via `git fetch` + `git stash -u` + `git merge --ff-only`
++ `git stash pop`; only this file conflicted (code merged clean). All of
+the above is now reconciled into one accurate picture.
 
 ## Current architecture and invariants
-See `docs/ai/DECISIONS.md`. Two independent ACT-phase gates
-(`PolicyEngine.evaluate_action()` / `policy_gate.decide()`), plus
-`EXECUTOR_LIVE` env var gating `execute_autonomous_live()` for real kubectl
-mutations post-approval. `EXECUTOR_TOOL_MAP` (`sre_agent/executor.py:38-44`)
-routes `action_type` → live MCP tool name; `config_change` and `patch` BOTH
-map to `patch_resource_limits` (semantic mismatch for non-resource-limit
-changes — live tool correctly refuses rather than fabricating params; not
-yet revisited).
+Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
+`policy_gate.decide()`), plus `EXECUTOR_LIVE` env var gating
+`execute_autonomous_live()`. `EXECUTOR_TOOL_MAP` (`executor.py:38-44`) routes
+`action_type` → live MCP tool name. See `docs/ai/DECISIONS.md` for the full
+rationale log (Task #16 root causes, cloud-dev-env-via-rsync convention).
 
 ## Active problem
-None. Task #16 validated live and `.env` safety flags reverted (see below).
-Awaiting user decision on git commit (see Next bounded task).
+None. **The entire expanded 4-item scope is now done**: model router
+(tiering + genuine cross-provider), live-fire validation, Slack
+conversational chat, Temporal code-fix verification. Re-checked
+cross-provider claim directly against code (not just memory) before
+starting new work — `model_router.py::_tier_provider`/
+`_tier_model_override` (per-tier `MODEL_ROUTER_<TIER>_PROVIDER` override,
+per-tier-per-provider model pin) plus `litellm_backend.py` (full LiteLLM
+100+-provider backend, wired into `route_llm()`) were already committed in
+`dadce79` — same "already done, just needed verification" pattern as the
+Temporal item last checkpoint. 35/35 tests pass across
+`test_model_router.py` + `test_litellm_backend.py`, including dedicated
+cross-provider assertions (`test_per_tier_cross_provider_routing`,
+`test_provider_specific_model_override_wins`). No code changed this pass —
+verification only.
 
-**Post-revert verification (this session)**: `/workspaces/Sre-automation/.env`
-restored to `EXECUTOR_LIVE="false"` (code default per `run_manifest.py`/
-`graph_builder.py`) and `SENTINEL_CLUSTER_ENVIRONMENT=production` (documented
-default per `.env.example`; also `execution_context.py`'s fail-closed
-normalization target for any unset/unrecognized value). `sre-agent-api`
-recreated, reached `healthy`, zero errors in logs, `docker exec ... env`
-confirms both values loaded correctly. Read `policy_engine.py`'s rule set
-first to confirm this restores intended PROD guardrails (blocks `restart`
-when `risk_score >= 3.0` — every observed action this session logged `risk:
-5.0`, so restarts are now fully blocked in PROD; also blocks `delete`,
-scale-to-zero, and `rollback` without explicit approval) without breaking
-the investigate/plan/approve pipeline — only the ACT phase's live-mutation
-permissiveness is affected, which is the intended, correct behavior.
-A DB read against incident `15566b09` right after recreation transiently
-showed `status=verification_unknown` — checked `docker logs`, confirmed
-benign: the reconciler's next pass immediately flipped it to `resolved`
-("Reconciled resolved alert 'CheckoutHighErrorRate' → incident 15566b09
-(verification_unknown → resolved)"). Normal transient reconciliation state,
-not caused by the revert.
-
-**Dashboard access**: `dashboard/` (Next.js, `platform/docker-compose.yaml`
-service `dashboard`, port 3002) is now running on the codespace — start
-with `docker compose up -d dashboard` in `platform/` if stopped. Seeded
-demo credentials (`admin@example.com`/`admin`) do NOT exist (seeding never
-ran against a non-empty DB); the real login is `jayanth.kalyanam@sjsu.edu`
-(protected — never reset/touch this account's password) or the synthetic
-`sentinel-test-approver@example.com` fixture account (both role=admin, org
-`0a687543-4721-46b4-a82c-80479279ebad`, the only org in this deployment).
-Approval requests expire ~30 min — an expired one returns HTTP 410 on
-click and flips `approval_requests.status` to `expired`; the incident
-itself stays `awaiting_approval` and needs the resolve→refire recipe below
-for a fresh window.
+Per standing instruction (`decision-production-grade-upgrade` memory):
+production-grade backend work is done; AIOpsLab domain benchmark and
+UI/UX are next, previously deferred until backend was fully complete.
 
 ## Relevant files
-- `sre_agent/act_phase.py`, `sre_agent/executor.py` — restart-target +
-  loop-abort + classify_live_response fixes.
 - `sre_agent/model_router.py`, `agent_nodes.py`, `graph_builder.py`,
-  `supervisor.py`, `output_formatter.py`, `narrative.py`,
-  `tests/test_model_router.py` — cost-optimization work (rounds 1 + 2).
-- `edge_mcp_servers/mcp_servers/{k8s_real,prometheus_real,loki_real,
-  github_real,runbooks_notion,github_exec,executor_real}/server.py` —
-  compact-JSON payload fix (round 2).
-- `edge_mcp_servers/docker-compose.yaml` — MCP port-binding fix.
-- All of the above: applied and deployed, **not yet committed to git**.
-- `/workspaces/Sre-automation/.env` (codespace) — reverted to
-  `EXECUTOR_LIVE="false"`, `SENTINEL_CLUSTER_ENVIRONMENT=production`
-  (safe/default values). Live testing requires flipping these again.
+  `supervisor.py` — model tiering + caching.
+- `sre_agent/sandbox_workflow.py`, `temporal_client.py`, `sandbox_worker.py`
+  — Temporal code-fix verification (done).
+- `sre_agent/nl_query.py`, `runbook_index.py`, `runbook_generator.py` —
+  RAG/NL-query work, PR #53 (`feature/nlquery-rag-production-grade`).
+- `sre_agent/nl_query.py::_handle_ad_hoc_chat`/`generate_chat_reply_llm`,
+  `sre_agent/integrations/slack_bot.py` — ad hoc Slack chat memory,
+  PR #2 (`feature/slack-adhoc-chat-memory`).
+- `sre_agent/litellm_backend.py` — cross-provider router extension point.
+- `docs/ai/DECISIONS.md` — durable technical decisions log, check before
+  re-deriving root causes already documented there.
 
 ## Known blockers or risks
-- Approval requests expire in ~30 min — check for lapsed approvals before
-  assuming one is still actionable after a gap.
-- GitHub Codespaces free tier is capped on core-hours.
-- `sre-langfuse-web`/`worker` crash-looping (see above) — cosmetic only.
+- `sre-langfuse-web`/`worker` crash-looping (ClickHouse `ON CLUSTER default`
+  migration, no Zookeeper) — pre-existing, cosmetic only, doesn't affect the
+  incident pipeline.
+- GitHub Codespaces free tier is capped on core-hours — `gh codespace stop`
+  when idle. Codespace `jubilant-space-invention-4vjq497q4x63jx5q` confirmed
+  reachable and `Available` as of 2026-09-02.
+- Approval requests expire ~30 min — see resolve→refire recipe below if
+  re-testing live execution.
 
 ## Next bounded task
-Task #16 is done, `.env` safety flags reverted and verified. Remaining:
-decide with user whether/how to commit the accumulated fixes to git (MCP
-networking, loop-abort, restart-target parsing, classify_live_response,
-cost optimization rounds 1+2 — none committed yet, all deployed only to
-the codespace; see `docs/ai/DECISIONS.md` for the two Task #16 root-cause
-fixes as durable technical decisions). After that: per
-[[decision-production-grade-upgrade]], the production-grade upgrade pass
-across the 7 tracked concepts is the natural next milestone — confirm with
-user before starting.
+Expanded 4-item scope is complete and both remaining feature branches are
+now committed and raised as PRs (#53 RAG/NL-query, PR #2 ad hoc Slack chat —
+see "Relevant files" for branch names). Next milestone (confirm with user
+before starting, per standing instruction): **AIOpsLab domain benchmark** or
+**UI/UX improvements** — both previously deferred until backend was fully
+done.
 
-## Resolve→refire recipe (for re-testing checkout-service fault)
+## Resolve→refire recipe (for re-testing checkout-service fault, on the
+Codespace's `kind-meridian` cluster)
 1. `kubectl set env deployment/checkout-service -n meridian ERROR_RATE=0`
 2. Poll `kubectl exec -n meridian deploy/prometheus -- wget -qO-
-   http://localhost:9090/api/v1/alerts` until no `alertname` (~2-5 min,
-   5-min rolling window).
+   http://localhost:9090/api/v1/alerts` until no `alertname` (~2-5 min).
 3. Confirm incident status flips to `resolved` in Postgres.
 4. `kubectl set env deployment/checkout-service -n meridian ERROR_RATE=0.6`
-   to fire a genuinely new incident (dedup matches by title on
-   non-resolved incidents only). Planner's proposed actions are
-   non-deterministic across identical fault runs — may need multiple
-   cycles to get a specific action type in the plan.
+   to fire a genuinely new incident (dedup matches by title on non-resolved
+   incidents only). Planner's proposed actions are non-deterministic across
+   identical fault runs.
