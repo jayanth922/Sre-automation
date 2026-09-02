@@ -424,6 +424,63 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
     return json.dumps(results, separators=(",", ":"), default=str)
 
 
+@mcp.tool()
+async def list_metric_names() -> str:
+    """
+    List every metric name currently exposed by this Prometheus (its live
+    catalog), so a caller can validate a generated PromQL query against what
+    this cluster actually has rather than a fixed guess.
+    """
+    client = get_prom_client()
+    if not client:
+        return json.dumps({"metric_names": [], "error": "Could not connect to Prometheus"})
+
+    try:
+        loop = asyncio.get_event_loop()
+        names = await loop.run_in_executor(None, client.all_metrics)
+        return json.dumps({"metric_names": sorted(names)})
+    except Exception as e:
+        logger.warning(f"Failed to list metric names: {e}")
+        return json.dumps({"metric_names": [], "error": str(e)})
+
+
+@mcp.tool()
+async def validate_promql_syntax(query: str) -> str:
+    """
+    Validate a PromQL query's grammar using Prometheus's own parser
+    (GET /api/v1/format_query), rather than a regex approximation. Returns
+    {"valid": true} on success, or {"valid": false, "error": "..."} with
+    Prometheus's own parse error otherwise.
+    """
+    prometheus_url = os.getenv("PROMETHEUS_URL")
+    if not prometheus_url:
+        return json.dumps({"valid": False, "error": "PROMETHEUS_URL not set"})
+
+    try:
+        import requests
+
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(
+            None,
+            lambda: requests.get(
+                f"{prometheus_url.rstrip('/')}/api/v1/format_query",
+                params={"query": query},
+                timeout=10,
+            ),
+        )
+        if resp.status_code == 200:
+            return json.dumps({"valid": True})
+        try:
+            body = resp.json()
+            error = body.get("error", resp.text)
+        except ValueError:
+            error = resp.text
+        return json.dumps({"valid": False, "error": error})
+    except Exception as e:
+        logger.warning(f"PromQL syntax validation request failed: {e}")
+        return json.dumps({"valid": False, "error": f"validation request failed: {e}"})
+
+
 if __name__ == "__main__":
     logger.info("Starting FastMCP server execution...")
     

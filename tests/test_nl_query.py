@@ -213,5 +213,170 @@ def test_handle_chat_message_with_incident_id_still_steers_not_chats():
     assert out["post"]["path"] == "/api/v1/incidents/inc-1/message"
 
 
+# ── production-grade augmentation: live catalog, real parser, LLM fallback ──
+class _FakeLLM:
+    """Minimal stand-in for a langchain chat model's .ainvoke()."""
+
+    def __init__(self, content: str):
+        self._content = content
+
+    async def ainvoke(self, messages):
+        class _Resp:
+            def __init__(self, content):
+                self.content = content
+
+        return _Resp(self._content)
+
+
+def test_fetch_metric_catalog_returns_frozenset_from_tool():
+    async def fake(tool, args):
+        assert tool == "list_metric_names"
+        return {"metric_names": ["http_requests_total", "custom_business_metric"]}
+
+    catalog = asyncio.run(nl.fetch_metric_catalog(fake))
+    assert catalog == frozenset({"http_requests_total", "custom_business_metric"})
+
+
+def test_fetch_metric_catalog_returns_none_on_failure():
+    async def fake(tool, args):
+        raise RuntimeError("mcp unreachable")
+
+    assert asyncio.run(nl.fetch_metric_catalog(fake)) is None
+
+
+def test_validate_promql_with_live_catalog_allows_new_metric():
+    catalog = frozenset({"custom_business_metric"})
+    ok, reason = nl.validate_promql("sum(custom_business_metric)", allowed_metrics=catalog)
+    assert ok, reason
+
+
+def test_validate_promql_with_live_catalog_rejects_stale_static_metric():
+    # A metric from the static allow-list that the live catalog doesn't have
+    # (e.g. removed/renamed) must now be rejected — catalog grounding makes
+    # validation stricter, not looser.
+    catalog = frozenset({"custom_business_metric"})
+    ok, reason = nl.validate_promql("rate(http_errors_total[5m])", allowed_metrics=catalog)
+    assert not ok and "non-allow-listed" in reason
+
+
+def test_validate_promql_syntax_live_ok():
+    async def fake(tool, args):
+        assert tool == "validate_promql_syntax"
+        return {"valid": True}
+
+    ok, reason = asyncio.run(nl.validate_promql_syntax_live("sum(up)", fake))
+    assert ok, reason
+
+
+def test_validate_promql_syntax_live_rejects_parser_error():
+    async def fake(tool, args):
+        return {"valid": False, "error": "unexpected token"}
+
+    ok, reason = asyncio.run(nl.validate_promql_syntax_live("sum(up", fake))
+    assert not ok and "unexpected token" in reason
+
+
+def test_validate_promql_syntax_live_fails_open_on_tool_error():
+    async def fake(tool, args):
+        raise RuntimeError("tool unavailable")
+
+    ok, reason = asyncio.run(nl.validate_promql_syntax_live("sum(up)", fake))
+    assert ok  # fails open: an unreachable checker must not block otherwise-valid queries
+
+
+def test_generate_promql_llm_returns_single_line_query():
+    llm = _FakeLLM("```promql\nsum(rate(http_errors_total[5m]))\n```")
+    q = asyncio.run(nl.generate_promql_llm("weird one-off question", llm))
+    assert q == "sum(rate(http_errors_total[5m]))"
+
+
+def test_generate_promql_llm_returns_none_on_failure():
+    class _BrokenLLM:
+        async def ainvoke(self, messages):
+            raise RuntimeError("provider down")
+
+    assert asyncio.run(nl.generate_promql_llm("anything", _BrokenLLM())) is None
+
+
+def test_plan_and_generate_verified_matches_deterministic_plan_by_default():
+    # With every optional arg at default, must match plan_and_generate exactly.
+    verified = asyncio.run(nl.plan_and_generate_verified("checkout error rate last hour"))
+    deterministic = nl.plan_and_generate("checkout error rate last hour")
+    assert verified.promql == deterministic.promql
+    assert verified.valid == deterministic.valid
+    assert verified.generated_by == "template"
+
+
+def test_plan_and_generate_verified_falls_back_to_llm_for_unmapped_question():
+    llm = _FakeLLM("sum(rate(http_errors_total[5m]))")
+    plan = asyncio.run(nl.plan_and_generate_verified("tell me a joke", llm=llm))
+    assert plan.valid and plan.generated_by == "llm"
+    assert plan.promql == "sum(rate(http_errors_total[5m]))"
+
+
+def test_plan_and_generate_verified_llm_output_still_gets_validated():
+    llm = _FakeLLM("rate(secret_admin_metric[5m])")
+    plan = asyncio.run(nl.plan_and_generate_verified("tell me a joke", llm=llm))
+    assert not plan.valid and "non-allow-listed" in plan.reason
+
+
+def test_plan_and_generate_verified_without_llm_stays_invalid_for_unmapped_question():
+    plan = asyncio.run(nl.plan_and_generate_verified("tell me a joke"))
+    assert not plan.valid
+
+
+# ── run_nl_query: default-path regression + new opt-in behavior ─────────────
+def test_run_nl_query_default_path_unchanged_calls_only_get_metric():
+    """Regression guard: passing none of the new kwargs must reproduce the
+    exact prior behavior — one get_metric call, nothing else."""
+    calls = []
+
+    async def fake(tool, args):
+        calls.append(tool)
+        return [{"value": [0, "0.03"]}]
+
+    res = asyncio.run(nl.run_nl_query("checkout error rate last hour", tool_caller=fake))
+    assert res.executed is True
+    assert calls == ["get_metric"]
+
+
+def test_run_nl_query_invalid_question_still_makes_zero_calls_by_default():
+    async def fake(tool, args):
+        raise AssertionError("should not be called")
+
+    res = asyncio.run(nl.run_nl_query("tell me a joke", tool_caller=fake))
+    assert res.executed is False and res.error
+
+
+def test_run_nl_query_with_live_catalog_fetches_then_executes():
+    calls = []
+
+    async def fake(tool, args):
+        calls.append(tool)
+        if tool == "list_metric_names":
+            return {"metric_names": sorted(nl._ALLOWED_METRICS)}
+        return [{"value": [0, "0.03"]}]
+
+    res = asyncio.run(
+        nl.run_nl_query("checkout error rate last hour", tool_caller=fake, use_live_catalog=True)
+    )
+    assert res.executed is True
+    assert calls == ["list_metric_names", "get_metric"]
+
+
+def test_run_nl_query_with_llm_fallback_executes_generated_query():
+    calls = []
+    llm = _FakeLLM("sum(rate(http_errors_total[5m]))")
+
+    async def fake(tool, args):
+        calls.append(tool)
+        return [{"value": [0, "0.01"]}]
+
+    res = asyncio.run(nl.run_nl_query("tell me a joke", tool_caller=fake, llm=llm))
+    assert res.executed is True
+    assert res.plan.generated_by == "llm"
+    assert calls == ["get_metric"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
