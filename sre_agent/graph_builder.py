@@ -1015,8 +1015,9 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
     # 1. Mandatory Runbook Search (RAG)
     # ---------------------------------------------------------
     runbook_content = ""
+    runbook_reference = ""
     source_runbook_url = None
-    
+
     # Tools are passed in directly at graph-build time (closed over by the
     # node registration below) rather than stored in checkpointed state —
     # live tool objects (with bound clients/closures) are never serializable,
@@ -1045,6 +1046,41 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
                 logger.info("planner: No runbook found.")
         except Exception as e:
             logger.warning(f"⚠️ Runbook search failed: {e}")
+
+    # 1b. Semantic runbook search (genuine RAG, complementary to the keyword
+    # search above). search_runbooks (MCP) only matches shared vocabulary; a
+    # query like "checkout pods crashlooping" won't surface a runbook titled
+    # "OOMKilled remediation for payment-service" through keyword scoring
+    # alone. This queries sre_agent's own runbook index directly (not via
+    # MCP — see sre_agent/runbook_index.py's docstring for why) and only
+    # covers auto-generated runbooks indexed since that feature shipped.
+    try:
+        from .runbook_index import format_runbooks_for_prompt, get_runbook_index
+
+        rb_index = get_runbook_index()
+        if rb_index.is_available() and alert_context:
+            state_metadata = state.get("metadata", {}) or {}
+            semantic_query = f"{alert_context.alert_name} {reflector_analysis.hypothesis}"
+            semantic_hits = [
+                rb
+                for rb in rb_index.search(
+                    semantic_query,
+                    limit=3,
+                    organization_id=state_metadata.get("organization_id"),
+                    cluster_id=state_metadata.get("cluster_id"),
+                )
+                # Skip duplicates of what the keyword search already surfaced.
+                if rb["title"] not in runbook_content
+            ]
+            if semantic_hits:
+                runbook_content += wrap_untrusted(
+                    "runbook_index:semantic_search", format_runbooks_for_prompt(semantic_hits)
+                ) + "\n\n"
+                if not runbook_reference:
+                    runbook_reference = "Start from Runbook"
+                logger.info(f"✅ PlannerNode: Found {len(semantic_hits)} runbook(s) via semantic search")
+    except Exception as e:
+        logger.warning(f"⚠️ Semantic runbook search failed: {e}")
 
     # Search memory store for similar past incidents (via MCP if available)
     past_solutions = ""

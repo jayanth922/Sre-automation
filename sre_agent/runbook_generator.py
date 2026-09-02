@@ -207,13 +207,53 @@ Use this runbook when **{inp.alert_name}** fires on **{inp.service}**
 """
 
 
-async def generate_runbook_llm(inp: RunbookInput, llm: Any) -> str:
+def _retrieve_similar_incidents_context(inp: RunbookInput, execution_context: Any) -> str:
+    """Best-effort RAG context: past incidents similar to this one, tenant-scoped.
+
+    Reuses the existing skill-memory Qdrant store (sre_agent.memory_store) —
+    no new infra. Returns "" (not raised) on any failure or when the store
+    isn't available, since retrieval augments the prompt but must never break
+    generation.
+    """
+    organization_id = getattr(execution_context, "organization_id", None)
+    cluster_id = getattr(execution_context, "cluster_id", None)
+    if not (organization_id and cluster_id):
+        return ""
+    try:
+        from .memory_store import get_memory_store
+
+        store = get_memory_store()
+        if not store.is_available():
+            return ""
+        query = f"{inp.alert_name} {inp.service} {inp.failure_class} {inp.hypothesis}"
+        similar = [
+            incident
+            for incident in store.search_similar_incidents(
+                query, limit=3, organization_id=organization_id, cluster_id=cluster_id
+            )
+            if incident.get("incident_id") != inp.incident_id
+        ]
+        if not similar:
+            return ""
+        return store.format_similar_incidents_for_prompt(similar)
+    except Exception as e:
+        logger.warning(f"RunbookGenerator: similar-incident retrieval failed ({e}); continuing without it.")
+        return ""
+
+
+async def generate_runbook_llm(inp: RunbookInput, llm: Any, execution_context: Any = None) -> str:
     """LLM-authored runbook body (genuinely generative) with deterministic fallback.
 
     The frontmatter stays deterministic (so the corpus stays machine-indexable),
     but the prose is written by the model from the incident facts — richer and
     more useful than a fixed template. Falls back to the template if the LLM
     call fails, so generation never breaks the pipeline.
+
+    When execution_context carries tenant scoping, this is retrieval-augmented:
+    similar past incidents (by symptoms/root_cause/resolution vector similarity,
+    tenant-isolated) are pulled from the existing skill-memory store and given
+    to the model as grounding, so the generated guidance can reflect what
+    actually worked before for this class of failure.
     """
     import yaml
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -225,12 +265,18 @@ async def generate_runbook_llm(inp: RunbookInput, llm: Any) -> str:
         f"alert={inp.alert_name} service={inp.service} failure_class={inp.failure_class} "
         f"severity={inp.severity}\nhypothesis={inp.hypothesis}\napplied_actions:\n{commands}"
     )
+    similar_incidents_context = _retrieve_similar_incidents_context(inp, execution_context)
+    if similar_incidents_context:
+        facts += f"\n\n{similar_incidents_context}"
     try:
         resp = await llm.ainvoke([
             SystemMessage(content=(
                 "You write concise SRE runbooks. Given incident facts, produce a markdown "
                 "body with these sections: Summary, Symptoms, Root cause, Remediation "
                 "(include the applied actions as concrete steps), Verification, Prevention. "
+                "If similar past incidents are provided, use them to ground the Root cause "
+                "and Remediation sections in what actually worked before, and note any "
+                "recurrence pattern in Prevention. "
                 "Do NOT include YAML frontmatter or a top-level title; start at '## Summary'."
             )),
             HumanMessage(content=facts),
@@ -258,6 +304,37 @@ def _notion_creds(execution_context: Any) -> tuple[Optional[str], Optional[str]]
     return creds.get("notion_api_key"), creds.get("notion_database_id")
 
 
+def _index_runbook_for_semantic_search(
+    inp: RunbookInput, markdown: str, published: Optional[str], execution_context: Any
+) -> None:
+    """Best-effort: add this runbook to the sre_agent-side semantic index
+    (sre_agent.runbook_index) so the Planner can retrieve it by meaning, not
+    just keyword. Never raises — indexing failure must not affect publish."""
+    organization_id = getattr(execution_context, "organization_id", None)
+    cluster_id = getattr(execution_context, "cluster_id", None)
+    try:
+        from .runbook_index import get_runbook_index
+
+        index = get_runbook_index()
+        if not index.is_available():
+            return
+        fm = _frontmatter(inp)
+        content = markdown.split("---", 2)[2].strip() if markdown.startswith("---") else markdown
+        index.index_runbook(
+            runbook_id(inp),
+            title=str(fm["title"]),
+            content=content,
+            service=inp.service,
+            incident_type=inp.failure_class,
+            severity=inp.severity,
+            url=published,
+            organization_id=organization_id,
+            cluster_id=cluster_id,
+        )
+    except Exception as e:
+        logger.warning(f"RunbookGenerator: semantic indexing failed ({e}); runbook was still published.")
+
+
 async def _publish_to_notion(inp: RunbookInput, markdown: str, execution_context: Any) -> Optional[str]:
     """Upsert the generated runbook into this cluster's Notion database.
 
@@ -282,7 +359,9 @@ async def _publish_to_notion(inp: RunbookInput, markdown: str, execution_context
         incident_type=inp.failure_class,
         severity=inp.severity,
     )
-    return page.get("path") or page.get("id")
+    published = page.get("path") or page.get("id")
+    _index_runbook_for_semantic_search(inp, markdown, published, execution_context)
+    return published
 
 
 async def write_runbook(inp: RunbookInput, execution_context: Any = None) -> Optional[str]:
@@ -295,7 +374,9 @@ async def write_runbook(inp: RunbookInput, execution_context: Any = None) -> Opt
 
 async def write_runbook_generative(inp: RunbookInput, llm: Any, execution_context: Any = None) -> Optional[str]:
     """LLM-author the runbook (deterministic fallback inside) and upsert it into Notion."""
-    published = await _publish_to_notion(inp, await generate_runbook_llm(inp, llm), execution_context)
+    published = await _publish_to_notion(
+        inp, await generate_runbook_llm(inp, llm, execution_context), execution_context
+    )
     if published:
         logger.info(f"📝 RunbookGenerator: wrote {runbook_id(inp)} -> {published} (generative)")
     return published

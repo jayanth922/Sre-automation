@@ -21,10 +21,11 @@ fallback can be layered on for out-of-pattern questions. Chat transport
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class QueryPlan:
     promql: str
     valid: bool
     reason: str = ""
+    generated_by: str = "template"  # "template" | "llm"
 
 
 @dataclass
@@ -157,8 +159,17 @@ def _identifiers_to_check(query: str) -> List[str]:
     return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", q)
 
 
-def validate_promql(query: str) -> Tuple[bool, str]:
-    """The 'verify' step: only run queries we can vouch for."""
+def validate_promql(
+    query: str, allowed_metrics: Optional[FrozenSet[str]] = None
+) -> Tuple[bool, str]:
+    """The 'verify' step: only run queries we can vouch for.
+
+    allowed_metrics: when given, replaces the static _ALLOWED_METRICS allow-list
+    with a live metric catalog (see fetch_metric_catalog) — grounding validation
+    in what this cluster's Prometheus actually has, rather than a fixed set
+    that only covers the demo app. Defaults to the static set so existing
+    offline callers/tests are unaffected.
+    """
     if not query or not query.strip():
         return False, "empty query"
     if query.count("{") != query.count("}") or query.count("(") != query.count(")"):
@@ -173,7 +184,8 @@ def validate_promql(query: str) -> Tuple[bool, str]:
             return False, f"time window exceeds {_MAX_WINDOW_HOURS}h cap"
 
     # Every referenced identifier must be an allowed metric or function.
-    unknown = set(_identifiers_to_check(query)) - _ALLOWED_METRICS - _ALLOWED_FUNCS
+    metrics = allowed_metrics if allowed_metrics is not None else _ALLOWED_METRICS
+    unknown = set(_identifiers_to_check(query)) - metrics - _ALLOWED_FUNCS
     if unknown:
         return False, f"references non-allow-listed identifiers: {sorted(unknown)}"
 
@@ -181,7 +193,13 @@ def validate_promql(query: str) -> Tuple[bool, str]:
 
 
 def plan_and_generate(question: str) -> QueryPlan:
-    """Produce the full plan: parse → generate → validate (no execution)."""
+    """Produce the full plan: parse → generate → validate (no execution).
+
+    Deterministic-only (template intents, static allow-list, regex-based
+    validation) — no I/O, always available, what run_nl_query uses unless a
+    caller explicitly opts into the live/LLM-augmented pipeline below via
+    tool_caller/llm/use_live_* on run_nl_query.
+    """
     steps = ["parse intent", "generate PromQL", "validate query", "execute"]
     intent = parse_intent(question)
     if intent is None:
@@ -191,14 +209,182 @@ def plan_and_generate(question: str) -> QueryPlan:
     return QueryPlan(question, steps, intent, promql, valid, reason)
 
 
+# ── Production-grade augmentation: live catalog, real parser, LLM fallback ──
+#
+# The deterministic path above is intentionally closed (fixed intents, fixed
+# metric allow-list, regex structural checks) — reliable and fully testable
+# with no I/O. The functions below extend it without replacing it: they
+# ground validation in the cluster's *actual* live metric catalog and a real
+# PromQL parser (Prometheus's own /api/v1/format_query), and add an LLM
+# generation path for questions that don't map to a known template — while
+# keeping the PromptQL guarantee intact, since an LLM-generated query still
+# has to pass the same verify step (now stricter, not weaker) before it can
+# execute.
+
+async def fetch_metric_catalog(
+    tool_caller: Callable[[str, Dict[str, Any]], Any],
+) -> Optional[FrozenSet[str]]:
+    """Fetch the live metric catalog from Prometheus (list_metric_names MCP
+    tool). Returns None (not raises) if the tool is unavailable or the call
+    fails — callers should fall back to the static allow-list, since a
+    missing catalog must never block validation, only make it less precise.
+    """
+    try:
+        raw = await tool_caller("list_metric_names", {})
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        names = data.get("metric_names") if isinstance(data, dict) else None
+        if not names:
+            return None
+        return frozenset(names)
+    except Exception as e:
+        logger.warning(f"NLQuery: live metric catalog fetch failed, using static allow-list ({e})")
+        return None
+
+
+async def validate_promql_syntax_live(
+    query: str, tool_caller: Callable[[str, Dict[str, Any]], Any]
+) -> Tuple[bool, str]:
+    """Real-parser syntax check via Prometheus's /api/v1/format_query
+    (validate_promql_syntax MCP tool), layered on top of (not instead of) the
+    structural checks in validate_promql. Defense in depth: the regex checks
+    catch injection/unbounded-window issues cheaply with no I/O; this catches
+    genuine PromQL grammar errors the regex approach can't detect.
+
+    Fails open — (True, "...") — when the tool is unavailable/unreachable,
+    since this is an additional guarantee, not the only one.
+    """
+    try:
+        raw = await tool_caller("validate_promql_syntax", {"query": query})
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(data, dict):
+            return True, "live syntax check returned unexpected shape; skipped"
+        if data.get("valid"):
+            return True, "ok"
+        return False, str(data.get("error", "rejected by Prometheus parser"))
+    except Exception as e:
+        logger.warning(f"NLQuery: live PromQL syntax check unavailable, skipping ({e})")
+        return True, "live syntax check unavailable"
+
+
+_FEW_SHOT_EXAMPLES = (
+    'Q: "checkout error rate over the last hour"\n'
+    'PromQL: sum(rate(http_errors_total{service="checkout-service"}[1h])) '
+    '/ sum(rate(http_requests_total{service="checkout-service"}[1h]))\n\n'
+    'Q: "p99 latency for inventory over the last 15 minutes"\n'
+    'PromQL: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket'
+    '{service="inventory-service"}[15m]))\n'
+)
+
+
+async def generate_promql_llm(
+    question: str, llm: Any, allowed_metrics: Optional[FrozenSet[str]] = None
+) -> Optional[str]:
+    """LLM-generated PromQL for questions the deterministic templates can't
+    map, grounded in the live (or static-fallback) metric catalog. The
+    output still has to pass validate_promql / validate_promql_syntax_live
+    before it can ever execute — this only widens what can be *proposed*,
+    it does not weaken what can be *run*.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    metrics = sorted(allowed_metrics) if allowed_metrics else sorted(_ALLOWED_METRICS)
+    system = (
+        "You translate an SRE's natural-language question into exactly one PromQL query.\n"
+        f"Only use these metric names: {', '.join(metrics)}\n"
+        f"Only use these functions: {', '.join(sorted(_ALLOWED_FUNCS))}\n"
+        f"Range windows must not exceed {_MAX_WINDOW_HOURS}h.\n"
+        "Output ONLY the PromQL query on a single line — no markdown fences, no explanation.\n\n"
+        f"{_FEW_SHOT_EXAMPLES}"
+    )
+    try:
+        resp = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=question)])
+        text = str(getattr(resp, "content", resp)).strip()
+        # Strip an accidental code fence — models do this even when told not to.
+        text = re.sub(r"^```[a-zA-Z]*\n?|```$", "", text).strip()
+        first_line = text.splitlines()[0].strip() if text else ""
+        return first_line or None
+    except Exception as e:
+        logger.warning(f"NLQuery: LLM PromQL generation failed ({e})")
+        return None
+
+
+async def plan_and_generate_verified(
+    question: str,
+    *,
+    tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+    llm: Optional[Any] = None,
+    use_live_catalog: bool = False,
+    use_live_syntax_check: bool = False,
+) -> QueryPlan:
+    """Production pipeline: parse → (template | LLM fallback) → verify
+    (structural + live catalog + real parser) — no execution.
+
+    Strictly additive over plan_and_generate: with every optional arg at its
+    default this produces the identical deterministic-only plan.
+    """
+    steps = ["parse intent", "generate PromQL", "validate query", "execute"]
+
+    allowed_metrics: Optional[FrozenSet[str]] = None
+    if use_live_catalog and tool_caller is not None:
+        allowed_metrics = await fetch_metric_catalog(tool_caller)
+
+    intent = parse_intent(question)
+    if intent is not None:
+        promql, generated_by = build_promql(intent), "template"
+    elif llm is not None:
+        promql = await generate_promql_llm(question, llm, allowed_metrics)
+        generated_by = "llm"
+        if not promql:
+            return QueryPlan(
+                question, steps, None, "", False,
+                "could not map question to a known metric intent, and LLM generation failed",
+                generated_by="llm",
+            )
+    else:
+        return QueryPlan(
+            question, steps, None, "", False,
+            "could not map question to a known metric intent", generated_by="template",
+        )
+
+    valid, reason = validate_promql(promql, allowed_metrics=allowed_metrics)
+    if valid and use_live_syntax_check and tool_caller is not None:
+        live_valid, live_reason = await validate_promql_syntax_live(promql, tool_caller)
+        if not live_valid:
+            valid, reason = False, f"rejected by Prometheus parser: {live_reason}"
+
+    return QueryPlan(question, steps, intent, promql, valid, reason, generated_by=generated_by)
+
+
 async def run_nl_query(
     question: str,
     tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
     execute: bool = True,
     metric_tool: str = "get_metric",
+    *,
+    llm: Optional[Any] = None,
+    use_live_catalog: bool = False,
+    use_live_syntax_check: bool = False,
 ) -> NLQueryResult:
-    """Plan → generate → verify → (execute). Only executes a validated query."""
-    plan = plan_and_generate(question)
+    """Plan → generate → verify → (execute). Only executes a validated query.
+
+    llm/use_live_catalog/use_live_syntax_check are strictly opt-in: with all
+    three at their defaults this calls the same deterministic-only
+    plan_and_generate as before, and — for a tool_caller — the same one
+    metric_tool call on success or zero calls on an invalid plan, unchanged
+    from prior behavior. Passing any of them routes through
+    plan_and_generate_verified instead, which only ever *adds* calls
+    (catalog fetch, live syntax check) beyond the final metric_tool call.
+    """
+    if llm is None and not use_live_catalog and not use_live_syntax_check:
+        plan = plan_and_generate(question)
+    else:
+        plan = await plan_and_generate_verified(
+            question,
+            tool_caller=tool_caller,
+            llm=llm,
+            use_live_catalog=use_live_catalog,
+            use_live_syntax_check=use_live_syntax_check,
+        )
     logger.info(f"NLQuery: '{question}' → {plan.promql!r} valid={plan.valid}")
 
     if not plan.valid:
@@ -239,11 +425,33 @@ def build_incident_message_payload(incident_id: str, text: str) -> Tuple[str, Di
 
 # ── Runtime integration ──────────────────────────────────────────────────────
 async def answer_metric_question(question: str, metrics_uri: Optional[str] = None) -> NLQueryResult:
-    """End-to-end: run an NL query against the live Prometheus MCP server."""
+    """End-to-end: run an NL query against the live Prometheus MCP server.
+
+    Opts into the full production pipeline (live metric catalog, real-parser
+    validation, LLM fallback for unmapped questions). The LLM is constructed
+    best-effort via create_llm_with_fallback; if that fails (no provider
+    creds configured, etc.) this still runs the deterministic-only path —
+    same as calling run_nl_query with no extra kwargs.
+    """
     from .executor import build_metrics_tool_caller  # lazy (MCP adapter)
 
     caller = await build_metrics_tool_caller(uri=metrics_uri)
-    return await run_nl_query(question, tool_caller=caller)
+
+    llm = None
+    try:
+        from .llm_utils import create_llm_with_fallback
+
+        llm = create_llm_with_fallback()
+    except Exception as e:
+        logger.warning(f"NLQuery: no LLM available for fallback generation, template-only ({e})")
+
+    return await run_nl_query(
+        question,
+        tool_caller=caller,
+        llm=llm,
+        use_live_catalog=True,
+        use_live_syntax_check=True,
+    )
 
 
 async def handle_chat_message(text: str, incident_id: Optional[str] = None) -> Dict[str, Any]:

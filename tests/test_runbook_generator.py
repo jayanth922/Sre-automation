@@ -139,6 +139,84 @@ def test_generate_runbook_llm_falls_back_on_failure():
 
 
 @dataclass
+class FakeCtxWithTenant:
+    organization_id: str = "org-1"
+    cluster_id: str = "cluster-1"
+    credentials: Dict[str, str] = field(default_factory=dict)
+
+
+class _RecordingLLM:
+    """Captures the HumanMessage content so tests can inspect what the model saw."""
+
+    def __init__(self, content):
+        self._content = content
+        self.seen_prompt: Optional[str] = None
+
+    async def ainvoke(self, messages):
+        self.seen_prompt = messages[-1].content
+
+        class R:
+            content = self._content
+
+        return R()
+
+
+def test_generate_runbook_llm_includes_similar_incidents_when_tenant_scoped(monkeypatch):
+    class FakeStore:
+        def is_available(self):
+            return True
+
+        def search_similar_incidents(self, query, limit=5, organization_id=None, cluster_id=None):
+            assert organization_id == "org-1" and cluster_id == "cluster-1"
+            return [{"incident_id": "inc-old", "incident_text": "past incident", "metadata": {}}]
+
+        def format_similar_incidents_for_prompt(self, similar):
+            return "## Similar Past Incidents and Solutions:\n\npast incident\n"
+
+    monkeypatch.setattr("sre_agent.memory_store.get_memory_store", lambda: FakeStore())
+
+    llm = _RecordingLLM("## Summary\nok\n## Root cause\nx\n## Remediation\ny")
+    asyncio.run(generate_runbook_llm(_inp(), llm, execution_context=FakeCtxWithTenant()))
+    assert "Similar Past Incidents" in llm.seen_prompt
+
+
+def test_generate_runbook_llm_excludes_current_incident_from_similar(monkeypatch):
+    class FakeStore:
+        def is_available(self):
+            return True
+
+        def search_similar_incidents(self, query, limit=5, organization_id=None, cluster_id=None):
+            # inc-1 is the current incident (see _inp()) — must be filtered out.
+            return [{"incident_id": "inc-1", "incident_text": "self-match", "metadata": {}}]
+
+        def format_similar_incidents_for_prompt(self, similar):
+            raise AssertionError("should not be called when no similar incidents remain")
+
+    monkeypatch.setattr("sre_agent.memory_store.get_memory_store", lambda: FakeStore())
+
+    llm = _RecordingLLM("## Summary\nok\n## Root cause\nx\n## Remediation\ny")
+    asyncio.run(generate_runbook_llm(_inp(), llm, execution_context=FakeCtxWithTenant()))
+    assert "Similar Past Incidents" not in llm.seen_prompt
+
+
+def test_generate_runbook_llm_without_tenant_scope_skips_retrieval():
+    llm = _RecordingLLM("## Summary\nok\n## Root cause\nx\n## Remediation\ny")
+    asyncio.run(generate_runbook_llm(_inp(), llm, execution_context=None))
+    assert "Similar Past Incidents" not in llm.seen_prompt
+
+
+def test_generate_runbook_llm_retrieval_failure_does_not_break_generation(monkeypatch):
+    def boom():
+        raise RuntimeError("qdrant down")
+
+    monkeypatch.setattr("sre_agent.memory_store.get_memory_store", boom)
+
+    llm = _RecordingLLM("## Summary\nok\n## Root cause\nx\n## Remediation\ny")
+    md = asyncio.run(generate_runbook_llm(_inp(), llm, execution_context=FakeCtxWithTenant()))
+    assert "## Summary" in md
+
+
+@dataclass
 class FakeExecutionContext:
     credentials: Dict[str, str] = field(default_factory=dict)
 
