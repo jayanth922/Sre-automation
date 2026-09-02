@@ -387,6 +387,26 @@ async def find_active_incident_by_title(
     return result.scalars().first()
 
 
+async def list_active_incidents_for_cluster(
+    db: AsyncSession,
+    cluster_id: uuid.UUID,
+    exclude_incident_id: Optional[uuid.UUID] = None,
+) -> List[models.Incident]:
+    """Every non-resolved incident in a cluster — the candidate pool for
+    `sre_agent/incident_correlation.py::correlate` when a new incident fires.
+    """
+    filters = [
+        models.Incident.cluster_id == cluster_id,
+        models.Incident.status.in_(_ACTIVE_INCIDENT_STATUSES),
+    ]
+    if exclude_incident_id is not None:
+        filters.append(models.Incident.id != exclude_incident_id)
+    result = await db.execute(
+        select(models.Incident).filter(*filters).order_by(models.Incident.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
 async def create_incident(
     db: AsyncSession, incident: schemas.IncidentCreate, cluster_id: uuid.UUID
 ):

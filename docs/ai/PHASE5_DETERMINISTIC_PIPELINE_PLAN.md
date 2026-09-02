@@ -1,0 +1,147 @@
+# Phase 5 — Deterministic Remediation Pipeline
+
+Status: **draft, awaiting user sign-off**. No implementation started.
+Source: user request, 2026-09-02 (verbatim requirements below).
+
+## User's requirements (verbatim intent, paraphrased into a checklist)
+
+1. Deterministic, not AI-improvised: detect → gather evidence → check GitHub
+   for code context → if found, take the AI-generated fix → apply it via a
+   Temporal workflow → re-check the system → if green (or the anomaly's log
+   signature is gone) → raise a PR for on-call to review.
+2. Two separate manual-approval gates per issue: (a) approval to start the
+   fix in Temporal, (b) approval to raise the PR. Every issue, both gates,
+   always human-gated.
+3. Real-time chat with no connection drop-outs, two-directional, on both
+   Slack and the dashboard.
+4. Each issue handled and PR'd separately — no merging unrelated issues.
+5. When multiple issues arise concurrently, don't assume one root cause.
+   Determine whether they're correlated (bundle) or independent (handle
+   separately, in parallel via isolated sub-agents/workflows) — "check how
+   industry does this."
+
+## What already exists (verified in code, 2026-09-02)
+
+| Piece | File | Verdict |
+|---|---|---|
+| Sandbox fix verification (baseline vs. patched log diff) | `sre_agent/sandbox_workflow.py::CodeFixVerificationWorkflow` | **Reuse as-is.** Already exactly the "apply in Temporal, check again, RESOLVED/REGRESSED/INCONCLUSIVE" oracle requirement 1 asks for. Currently triggered fire-and-forget *after* live execution (`graph_builder.py:287-352`) as a confirmation, not *before* it as a gate — needs to move earlier in the flow. |
+| Dashboard real-time transport | `dashboard/lib/useLiveStream.ts` | **Reuse as-is.** Exponential-backoff reconnect, fresh ticket per attempt, cursor-based replay on reconnect, client dedup by event id. Already satisfies requirement 3's dashboard half. |
+| Slack transport | `sre_agent/integrations/slack_bot.py` (Socket Mode, `AsyncSocketModeHandler`) | **Reuse, audit only.** Library-level reconnect exists; not yet stress-tested against a 30+ minute approval wait (current known blocker: approval requests expire ~30 min — see `PROJECT_STATE.md`). |
+| Per-issue chat isolation | `sre_agent/mission_control.py`, `war_room.py` | **Reuse.** Incident-scoped threading already exists; keying everything (thread, workflow, PR) off one `workflow_id` per bundle gets requirement 4 for free. |
+| Exact-title incident dedup | `sre_agent/api/v1/alerts.py:241`, `crud.find_duplicate_incident` | Exists but is **not** correlation — exact title match only, same cluster. No root-cause grouping across different alert titles. |
+| GitHub PR creation | `edge_mcp_servers/mcp_servers/github_exec/server.py::create_revert_pr` | **Partial.** A PR-opening tool exists (`gh pr revert`, dry-run-by-default, typed CREATED/MANUAL_REQUIRED/ERROR statuses, guardrailed) but only for reverting an existing merged commit/PR — there is no tool to open a PR carrying an arbitrary AI-generated patch/diff. Phase C is "add a `create_fix_pr` tool next to `create_revert_pr`," not a from-scratch build. |
+| Concurrent-issue correlation/bundling | `sre_agent/incident_correlation.py` | **Done (Phase A, shadow mode) — see below.** |
+| Two-gate approval (start-fix / raise-PR) | *(none)* | **Missing.** Today there is one approval that directly triggers live execution (`mission_control.py::approve_incident_action`). |
+
+**Net-new work is: correlation engine, PR creation, the two-gate signal
+workflow, and reordering the existing sandbox verify to run before any live
+action.** The chat/transport layer is not being rebuilt, only wired to the
+two new gates and audited.
+
+## Industry research (requirement 5)
+
+- **Alert correlation** (PagerDuty Intelligent Alert Grouping, Datadog
+  Watchdog): combine (a) time-window proximity, (b) service-topology/
+  dependency adjacency, (c) learned or textual similarity between alert
+  signatures — not a single signal. [PagerDuty docs](https://support.pagerduty.com/main/docs/intelligent-alert-grouping),
+  [Datadog Event Management](https://www.datadoghq.com/blog/datadog-event-management/).
+- **Multi-agent orchestration**: the production-standard shape is a
+  **supervisor** that classifies/routes work, handing each independent unit
+  to its own **isolated child agent/workflow**, control returning to the
+  supervisor when that child finishes. [LangGraph supervisor vs swarm](https://focused.io/lab/multi-agent-orchestration-in-langgraph-supervisor-vs-swarm-tradeoffs-and-architecture),
+  [AI Agents for Incident Management](https://www.augmentcode.com/guides/ai-agents-incident-management).
+- **Mapping onto our stack**: Temporal already gives us isolated child
+  workflows for free. The natural design is a light `CorrelationSupervisor`
+  step that decides bundle-vs-separate *before* spawning, then one
+  `IncidentRemediationWorkflow` per bundle — not per raw alert.
+
+## Target architecture
+
+```
+alert fires ──▶ CorrelationSupervisor (new, lightweight, not an LLM-per-alert
+                 decision — see below)
+                   │
+                   ├─ within N minutes + same cluster/dependent service +
+                   │  hypothesis-similarity above threshold?
+                   │      yes ──▶ attach to existing open bundle's workflow
+                   │      no  ──▶ spawn new IncidentRemediationWorkflow
+                   ▼
+      IncidentRemediationWorkflow (new, Temporal, one per bundle)
+        1. gather_evidence        (reuse investigator/reflector as activity)
+        2. github_code_context    (new activity: does repo own the failing
+                                    path? if yes, LLM proposes ONE patch)
+        3. ── Approval Gate 1 ──  workflow.wait_condition on a signal:
+                                   "start fix in Temporal" (Slack + dashboard,
+                                   identical payload, same workflow_id)
+        4. CodeFixVerificationWorkflow (EXISTING, unchanged, as a child)
+                                   baseline vs candidate sandbox log diff
+        5. RESOLVED?  ── no ──▶ escalate to on-call (existing `escalate`
+                     │          action), no PR, workflow ends
+                     yes
+                     ▼
+        6. ── Approval Gate 2 ──  signal: "raise PR"
+        7. create_pull_request    (new activity, net-new capability)
+        8. done — PR linked back to the incident/thread
+```
+
+Correlation is deliberately **not** another live LLM call per alert (that
+would reintroduce the same improvisation problem requirement 1 objects to).
+It's a bounded, deterministic scoring function: time window + adjacency +
+similarity ≥ threshold. LLM involvement stays confined to step 2 (propose
+one patch) and only within a workflow already scoped to one bundle.
+
+## Phasing (avoid one giant PR; each phase is independently testable)
+
+- **Phase A — Correlation engine. DONE (2026-09-02), shadow mode.**
+  `sre_agent/incident_correlation.py::correlate` — pure, deterministic,
+  zero LLM calls in the hot path (per requirement 1: correlation itself must
+  not be another improvised AI decision). Scores concurrent open incidents in
+  the same cluster on three signals, same shape PagerDuty/Datadog use: time-
+  window proximity, service-topology adjacency (via an optional injected
+  adjacency map; falls back to same-service-name match extracted from the
+  existing `[{service}] {alertname}` title convention), and Jaccard text
+  similarity between title+description. 15 unit tests, no DB dependency
+  (`tests/test_incident_correlation.py`, same pattern as
+  `alert_resolution.py`/`test_alert_resolution.py`). Wired into
+  `sre_agent/api/v1/alerts.py`'s webhook handler as `_record_correlation_shadow`,
+  called non-fatally right after `crud.create_incident` — for every new
+  incident, scores it against `crud.list_active_incidents_for_cluster` (new
+  helper) and, if it would bundle, writes an observational
+  `correlation_shadow` timeline event (what it would bundle with, score,
+  reasons) via the existing `create_incident_timeline_event`. **Genuinely
+  shadow-mode**: dedup, investigation dispatch, and execution are completely
+  unchanged — nothing acts on the correlation result yet. Full suite: 834
+  passed / 2 skipped (was 820/2 before this phase). No service-dependency
+  topology data source exists yet, so the adjacency map is an optional
+  parameter with no live caller-side source wired in — needs a decision
+  (see Open decisions) before Phase B can rely on adjacency, same-service
+  matching already works standalone.
+- **Phase B — `IncidentRemediationWorkflow` skeleton + both approval
+  signals.** Reorders the existing `CodeFixVerificationWorkflow` call to run
+  *before* live/PR action instead of after. This is the core of requirements
+  1 and 2.
+- **Phase C — GitHub PR creation.** New, self-contained activity (branch +
+  commit + PR via GitHub API/App token). Needed by Phase B step 7 but
+  buildable and testable independently first.
+- **Phase D — Wire Slack + dashboard to the two new gates**, and audit
+  Slack's Socket Mode behavior specifically across long approval waits
+  (known ~30min expiry blocker). No rebuild of either transport.
+- **Phase E — Cutover.** Retire the old single-gate live-in-LangGraph
+  auto-execute path once Phase A–D have run clean against 1–2 real incidents
+  on the Codespace, matching this repo's existing live-fire validation
+  convention (Task #16).
+
+## Open decisions for the user (not yet answered — flag before Phase B/C)
+
+- GitHub PR creation scope: one target repo (`meridian-shop`) or
+  generalized to whatever repo a cluster is bound to?
+- PR creation credentials: GitHub App install vs. a scoped PAT already
+  available in this environment?
+- Correlation thresholds (time window, adjacency source — is there an
+  existing service-dependency graph, or does one need to be built/inferred
+  from k8s labels?) — likely needs a short calibration pass against real
+  incident data, not guessed up front.
+
+## Next bounded task
+
+Awaiting user confirmation of this plan and which phase to start with.

@@ -6,12 +6,27 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable
 "educational subset" of the tools it mirrors (`docs/COMPETITIVE_AUDIT.md`).
 
 ## Current milestone
-Production-grade upgrade pass across the tracked concepts
+Production-grade upgrade pass across the previously-tracked concepts
 (`decision-production-grade-upgrade` memory) is **complete and fully merged**
 as of 2026-09-02. PR #53 (RAG/NL-query) and PR #54 (ad hoc Slack chat) are
-both merged to `master` (`6ced925`). Next milestone choice — AIOpsLab domain
-benchmark vs. UI/UX improvements — is still open; confirm with user before
-starting either.
+both merged to `master` (`6ced925`).
+
+**Phase 5 (in progress):** user requested a deterministic remediation
+pipeline (Temporal-orchestrated, two manual approval gates per issue —
+start-fix and raise-PR — per-issue isolated chat/PR, and concurrent-incident
+correlation/bundling instead of one-root-cause assumption). Full plan,
+code-verified gap analysis, and industry research in
+`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` — **read that file before
+continuing this work**. **Phase A (correlation engine) is done**, shadow
+mode only, merged to working tree 2026-09-02 (not yet committed/pushed —
+see below). Remaining: B (deterministic workflow + two approval gates,
+reordering the existing sandbox verify to run before live action), C (extend
+`create_revert_pr`'s pattern to a `create_fix_pr` tool for arbitrary
+patches), D (wire Slack/dashboard to the two new gates + audit Slack's
+long-wait reliability), E (cutover). Also corrected during Phase A: GitHub
+PR creation is not fully missing — `create_revert_pr` already opens PRs for
+reverts; only arbitrary-patch PR creation is net new (Phase C is smaller
+than first scoped).
 
 **Done and merged to origin/master:**
 - **Task #16 (live-fire validation)** — a genuine end-to-end happy path
@@ -132,6 +147,11 @@ UI/UX are next, previously deferred until backend was fully complete.
   `sre_agent/integrations/slack_bot.py` — ad hoc Slack chat memory
   (PR #54, merged).
 - `sre_agent/litellm_backend.py` — cross-provider router extension point.
+- `sre_agent/incident_correlation.py`, `sre_agent/api/v1/alerts.py::_record_correlation_shadow`,
+  `backend/crud.py::list_active_incidents_for_cluster` — Phase 5 correlation
+  gate (Phase A, done, shadow mode).
+- `edge_mcp_servers/mcp_servers/github_exec/server.py` — existing PR-opening
+  tool (`create_revert_pr`); Phase 5C extends this pattern.
 - `docs/ai/DECISIONS.md` — durable technical decisions log, check before
   re-deriving root causes already documented there.
 
@@ -146,10 +166,13 @@ UI/UX are next, previously deferred until backend was fully complete.
   re-testing live execution.
 
 ## Next bounded task
-Expanded 4-item scope is complete; PR #53 and PR #54 are both merged to
-`master`. Next milestone (confirm with user before starting, per standing
-instruction): **AIOpsLab domain benchmark** or **UI/UX improvements** — both
-previously deferred until backend was fully done.
+Phase 5, Phase B: build `IncidentRemediationWorkflow` skeleton (Temporal) with
+the two approval signals (start-fix, raise-PR), reordering the existing
+`CodeFixVerificationWorkflow` call in `graph_builder.py` (~line 287-352) to
+run before any live/PR action instead of after. See
+`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` for full design. Uncommitted
+changes from Phase A are sitting in the working tree — commit before starting
+Phase B so the two phases stay separable in history.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import crud, database, models, schemas
 from sre_agent.alert_resolution import reconcile_resolved_alert
+from sre_agent.incident_correlation import CorrelationCandidate, correlate
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,74 @@ def _status_str(status: Any) -> Optional[str]:
     if status is None:
         return None
     return str(getattr(status, "value", status))
+
+
+async def _record_correlation_shadow(
+    db: AsyncSession,
+    cluster: models.Cluster,
+    incident: models.Incident,
+) -> None:
+    """Phase 5 correlation gate, shadow mode (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md,
+    Phase A): score the just-created incident against every other open incident
+    in its cluster and record what it *would* bundle with, purely as an
+    observational timeline event. Never changes dedup, investigation, or
+    execution behavior — this is validation data before the correlation gate
+    is allowed to act on anything.
+    """
+    open_incidents = await crud.list_active_incidents_for_cluster(
+        db, cluster.id, exclude_incident_id=incident.id
+    )
+    if not open_incidents:
+        return
+
+    candidate = CorrelationCandidate(
+        incident_id=str(incident.id),
+        cluster_id=str(cluster.id),
+        title=incident.title,
+        description=incident.description or "",
+        created_at=incident.created_at,
+    )
+    pool = [
+        CorrelationCandidate(
+            incident_id=str(other.id),
+            cluster_id=str(cluster.id),
+            title=other.title,
+            description=other.description or "",
+            created_at=other.created_at,
+        )
+        for other in open_incidents
+    ]
+    result = correlate(candidate, pool)
+    if result.decision != "bundle":
+        return
+
+    await crud.create_incident_timeline_event(
+        db,
+        incident.id,
+        event_type="correlation_shadow",
+        speaker_role="system",
+        title="Correlation gate (shadow mode)",
+        content=(
+            f"Would bundle with incident {result.bundle_with} "
+            f"(score={result.best_score:.2f}): {'; '.join(result.matches[0].reasons)}"
+        ),
+        payload={
+            "source": "incident_correlation",
+            "mode": "shadow",
+            "bundle_with": result.bundle_with,
+            "score": result.best_score,
+            "matches": [
+                {"incident_id": m.incident_id, "score": m.score, "reasons": m.reasons}
+                for m in result.matches
+            ],
+        },
+    )
+    logger.info(
+        "Correlation shadow: incident %s would bundle with %s (score=%.2f)",
+        incident.id,
+        result.bundle_with,
+        result.best_score,
+    )
 
 
 async def _reconcile_resolved_alert(
@@ -252,6 +321,11 @@ async def receive_alertmanager_webhook(
         incident = await crud.create_incident(db, incident_data, cluster.id)
         incidents_created += 1
         logger.info(f"Created incident {incident.id} for alert '{alert['alertname']}' on cluster {cluster.id}")
+
+        try:
+            await _record_correlation_shadow(db, cluster, incident)
+        except Exception as correlation_err:
+            logger.warning(f"Correlation shadow check failed (non-fatal): {correlation_err}")
 
         # Create a durable investigation job (lease-backed; survives process loss).
         from sre_agent.job_worker import enqueue_and_kick
