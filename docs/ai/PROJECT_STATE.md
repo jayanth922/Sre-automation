@@ -79,7 +79,7 @@ see "Sync note" below.
   additive/optional so old 2-arg test handlers keep working. 789/789 passed
   on this branch, 2 skipped (unchanged, `temporalio` optional extra) — 9 new
   tests across `test_nl_query.py`/`test_slack_bot.py`. Committed on
-  `feature/slack-adhoc-chat-memory`, **PR #2** raised against `master`
+  `feature/slack-adhoc-chat-memory`, **PR #54** raised against `master`
   (independent of PR #53 — split via a 3-way `git merge-file` against
   `d7f9511`/`6a065ff` so the two PRs share no overlapping hunks and neither
   should conflict when merged in either order).
@@ -126,7 +126,7 @@ UI/UX are next, previously deferred until backend was fully complete.
   RAG/NL-query work, PR #53 (`feature/nlquery-rag-production-grade`).
 - `sre_agent/nl_query.py::_handle_ad_hoc_chat`/`generate_chat_reply_llm`,
   `sre_agent/integrations/slack_bot.py` — ad hoc Slack chat memory,
-  PR #2 (`feature/slack-adhoc-chat-memory`).
+  PR #54 (`feature/slack-adhoc-chat-memory`).
 - `sre_agent/litellm_backend.py` — cross-provider router extension point.
 - `docs/ai/DECISIONS.md` — durable technical decisions log, check before
   re-deriving root causes already documented there.
@@ -143,7 +143,7 @@ UI/UX are next, previously deferred until backend was fully complete.
 
 ## Next bounded task
 Expanded 4-item scope is complete and both remaining feature branches are
-now committed and raised as PRs (#53 RAG/NL-query, PR #2 ad hoc Slack chat —
+now committed and raised as PRs (#53 RAG/NL-query, PR #54 ad hoc Slack chat —
 see "Relevant files" for branch names). Next milestone (confirm with user
 before starting, per standing instruction): **AIOpsLab domain benchmark** or
 **UI/UX improvements** — both previously deferred until backend was fully
