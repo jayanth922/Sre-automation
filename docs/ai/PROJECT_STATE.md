@@ -7,10 +7,11 @@ Make Sentinel truthful, tenant-isolated, reproducible, and production-operable
 
 ## Current milestone
 Production-grade upgrade pass across the tracked concepts
-(`decision-production-grade-upgrade` memory). Status as of 2026-09-02,
-reconciled after discovering origin/master was 12 commits ahead of this
-checkout (PRs #50/#51/#52, merged) plus 3 more local checkpoint commits —
-see "Sync note" below.
+(`decision-production-grade-upgrade` memory) is **complete and fully merged**
+as of 2026-09-02. PR #53 (RAG/NL-query) and PR #54 (ad hoc Slack chat) are
+both merged to `master` (`6ced925`). Next milestone choice — AIOpsLab domain
+benchmark vs. UI/UX improvements — is still open; confirm with user before
+starting either.
 
 **Done and merged to origin/master:**
 - **Task #16 (live-fire validation)** — a genuine end-to-end happy path
@@ -55,8 +56,15 @@ see "Sync note" below.
   new MCP tools, `list_metric_names`/`validate_promql_syntax`, in
   `edge_mcp_servers/mcp_servers/prometheus_real/server.py`) with an LLM
   generation fallback for unmapped questions — all opt-in, default behavior
-  unchanged. Committed `d7f9511`, pushed as **PR #53**
-  (`feature/nlquery-rag-production-grade`, not yet merged).
+  unchanged. **PR #53** (`feature/nlquery-rag-production-grade`) merged to
+  `master`. Merging it required reconciling a mechanical test-file conflict
+  against PR #54 (both added disjoint test blocks at the same location) and
+  regenerating the stale release-evidence digest/`change_class` in
+  `benchmarks/release/candidate/bundle.json` (was `mixed`, needed to be
+  `tool` — this PR's only protected-category touch is
+  `edge_mcp_servers/mcp_servers/prometheus_real/**`) via
+  `release_gate.py digest`; `release_gate.py impact` now reports `PROMOTE`.
+  820/820 passed, 2 skipped, after the merge.
 - **Ad hoc Slack chat, genuine conversation** — the in-thread/incident-scoped
   conversation (`war_room.py` →
   `mission_control.handle_incident_message`) was already sophisticated and
@@ -79,16 +87,12 @@ see "Sync note" below.
   additive/optional so old 2-arg test handlers keep working. 789/789 passed
   on this branch, 2 skipped (unchanged, `temporalio` optional extra) — 9 new
   tests across `test_nl_query.py`/`test_slack_bot.py`. Committed on
-  `feature/slack-adhoc-chat-memory`, **PR #54** raised against `master`
-  (independent of PR #53 — split via a 3-way `git merge-file` against
-  `d7f9511`/`6a065ff` so the two PRs share no overlapping hunks and neither
-  should conflict when merged in either order).
-
-**Sync note (2026-09-02):** this checkout had drifted 12 commits behind
-`origin/master` (this session's RAG/NL-query work was done on the stale
-base). Resolved via `git fetch` + `git stash -u` + `git merge --ff-only`
-+ `git stash pop`; only this file conflicted (code merged clean). All of
-the above is now reconciled into one accurate picture.
+  `feature/slack-adhoc-chat-memory`, **PR #54** merged to `master` first
+  (split via a 3-way `git merge-file` against `d7f9511`/`6a065ff` so the two
+  PRs shared no overlapping hunks at the code level — `tests/test_nl_query.py`
+  still needed a manual mechanical conflict resolution when PR #53 merged
+  master back in, since both PRs added disjoint test blocks at the same
+  insertion point).
 
 ## Current architecture and invariants
 Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
@@ -123,10 +127,10 @@ UI/UX are next, previously deferred until backend was fully complete.
 - `sre_agent/sandbox_workflow.py`, `temporal_client.py`, `sandbox_worker.py`
   — Temporal code-fix verification (done).
 - `sre_agent/nl_query.py`, `runbook_index.py`, `runbook_generator.py` —
-  RAG/NL-query work, PR #53 (`feature/nlquery-rag-production-grade`).
+  RAG/NL-query work (PR #53, merged).
 - `sre_agent/nl_query.py::_handle_ad_hoc_chat`/`generate_chat_reply_llm`,
-  `sre_agent/integrations/slack_bot.py` — ad hoc Slack chat memory,
-  PR #54 (`feature/slack-adhoc-chat-memory`).
+  `sre_agent/integrations/slack_bot.py` — ad hoc Slack chat memory
+  (PR #54, merged).
 - `sre_agent/litellm_backend.py` — cross-provider router extension point.
 - `docs/ai/DECISIONS.md` — durable technical decisions log, check before
   re-deriving root causes already documented there.
@@ -142,12 +146,10 @@ UI/UX are next, previously deferred until backend was fully complete.
   re-testing live execution.
 
 ## Next bounded task
-Expanded 4-item scope is complete and both remaining feature branches are
-now committed and raised as PRs (#53 RAG/NL-query, PR #54 ad hoc Slack chat —
-see "Relevant files" for branch names). Next milestone (confirm with user
-before starting, per standing instruction): **AIOpsLab domain benchmark** or
-**UI/UX improvements** — both previously deferred until backend was fully
-done.
+Expanded 4-item scope is complete; PR #53 and PR #54 are both merged to
+`master`. Next milestone (confirm with user before starting, per standing
+instruction): **AIOpsLab domain benchmark** or **UI/UX improvements** — both
+previously deferred until backend was fully done.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)
