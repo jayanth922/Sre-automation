@@ -166,6 +166,46 @@ def _repo_clone_url(repo: str, token: str = "") -> str:
     return f"https://{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
 
 
+def _command_from_marker_text(text: str) -> List[str]:
+    """Turn one captured BASELINE_COMMAND/CANDIDATE_COMMAND value into an argv
+    list suitable for a K8s Job's `command` field (no shell involved there).
+
+    The task prompt has the actor `echo '<TYPE>_COMMAND: <cmd>'` as its final
+    shell command. That means the marker text we regex-capture out of the
+    transcript's "$ echo '...'" invocation line always carries one trailing
+    stray `'` — the shell's own closing quote for the echo argument, not part
+    of the actor's intended command — which must be stripped before use.
+
+    The captured command itself is free-form shell text the actor wrote (may
+    contain &&, &, $(...), ;, pipes, env-var assignments, etc. — verification
+    commands routinely need these, e.g. to start a server in the background
+    then curl it). shlex.split() cannot execute shell control operators even
+    when it manages to tokenize them, and a K8s Job's command array runs with
+    no shell at all — so anything containing shell metacharacters is wrapped
+    as ["sh", "-c", text] instead of being split into argv tokens. Only a
+    plain, argument-only command (the common case for a single test/lint
+    invocation) is shlex-split, matching what a human would expect to see in
+    baseline_command for e.g. "go test ./... -run TestHandler".
+    """
+    import re
+    import shlex
+
+    text = text.strip()
+    if text.endswith("'"):
+        text = text[:-1].rstrip()
+    if not text:
+        return []
+    if re.search(r"[&|;`$(){}<>]", text):
+        return ["sh", "-c", text]
+    try:
+        return shlex.split(text)
+    except ValueError:
+        # Not valid shell-quoted tokens either (e.g. an unbalanced quote the
+        # actor typed) — still safer to hand the whole line to a real shell
+        # than to silently drop it.
+        return ["sh", "-c", text]
+
+
 def _parse_verification_commands(
     actor_output: str, fallback_baseline: List[str], fallback_candidate: List[str]
 ) -> "tuple[List[str], List[str]]":
@@ -176,16 +216,24 @@ def _parse_verification_commands(
     mocking git/the actor runtime.
     """
     import re
-    import shlex
 
     baseline_command = list(fallback_baseline)
     candidate_command = list(fallback_candidate)
-    m_b = re.search(r"BASELINE_COMMAND:\s*(.+)", actor_output)
-    m_c = re.search(r"CANDIDATE_COMMAND:\s*(.+)", actor_output)
-    if m_b:
-        baseline_command = shlex.split(m_b.group(1).strip())
-    if m_c:
-        candidate_command = shlex.split(m_c.group(1).strip())
+    # The marker text can appear more than once in the transcript: once in the
+    # "$ echo '...'" command-invocation line (the actor's literal intended
+    # text, verbatim, modulo the trailing closing quote handled above), and
+    # again in its "[exit 0] ..." stdout line — except some shells' `echo`
+    # interpret backslash escapes (e.g. \n) the actor put in the command text
+    # for its OWN purposes (like curl's -w "...\n"), which splits that stdout
+    # line across a real newline our (non-DOTALL) regex can't see past,
+    # silently truncating it. The invocation line has no such hazard, so take
+    # the FIRST occurrence, not the last.
+    all_b = re.findall(r"BASELINE_COMMAND:\s*(.+)", actor_output)
+    all_c = re.findall(r"CANDIDATE_COMMAND:\s*(.+)", actor_output)
+    if all_b:
+        baseline_command = _command_from_marker_text(all_b[0])
+    if all_c:
+        candidate_command = _command_from_marker_text(all_c[0])
     return baseline_command, candidate_command
 
 
@@ -241,10 +289,12 @@ async def generate_patch_activity(params: IncidentRemediationInput) -> PatchGene
             "Root cause / desired fix (from the on-call remediation plan): "
             f"{params.fix_description or '(no description provided)'}\n\n"
             "Make the minimal source change that fixes this. Do not commit or "
-            "push. When finished, end your final response with exactly these "
-            "two lines (fill in real shell commands):\n"
-            "BASELINE_COMMAND: <command that reproduces the failure on the original code>\n"
-            "CANDIDATE_COMMAND: <command that verifies the fix, usually the same command>"
+            "push. Before you finish, run a shell command as your final action "
+            "that echoes exactly these two lines (fill in real shell commands, "
+            "keep each on its own line):\n"
+            "echo 'BASELINE_COMMAND: <command that reproduces the failure on the original code>'\n"
+            "echo 'CANDIDATE_COMMAND: <command that verifies the fix, usually the same command>'\n"
+            "Only after that command has run should you report done."
         )
         activity.heartbeat("running actor")
         runtime = get_agent_runtime(workdir=clone_dir)

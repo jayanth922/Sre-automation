@@ -173,14 +173,51 @@ def make_llm_decider(llm: Any) -> Decider:
             SystemMessage(content="You are a terminal agent. Solve the task with shell commands, one step at a time."),
             HumanMessage(content=prompt),
         ])
-        text = str(getattr(resp, "content", resp)).strip()
+        content = getattr(resp, "content", resp)
+        if isinstance(content, list):
+            # Anthropic extended-thinking responses return a list of content
+            # blocks (thinking + text); str()-ing the whole list would stringify
+            # the opaque thinking signature instead of the actual decision text.
+            text = "\n".join(
+                block.get("text", "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ).strip()
+        else:
+            text = str(content).strip()
         match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return {"action": "done", "success": False, "reason": "no decision"}
         try:
-            return json.loads(match.group(0)) if match else {"action": "done", "success": False, "reason": "no decision"}
+            return json.loads(match.group(0))
         except Exception:
+            repaired = _repair_decision_json(match.group(0))
+            if repaired and repaired.get("action"):
+                return repaired
             return {"action": "done", "success": False, "reason": f"unparseable decision: {text[:120]}"}
 
     return _decide
+
+
+def _repair_decision_json(text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort recovery for the common LLM mistake of embedding literal,
+    unescaped double quotes inside a JSON string value (e.g. a shell command
+    like ``grep -rn "ERROR_RATE" ...`` typed straight into the "command"
+    field), which breaks ``json.loads`` even though the decision is otherwise
+    well-formed. Not a general JSON repair — targeted at the known
+    ``{"action","command","task","success","reason"}`` decision schema: for
+    each string field, greedily consume up to the LAST quote that is
+    immediately followed by the next field's key (or the closing brace),
+    rather than the first quote encountered.
+    """
+    result: Dict[str, Any] = {}
+    for key in ("action", "command", "task", "reason"):
+        match = re.search(rf'"{key}"\s*:\s*"(.*?)"\s*(?=,\s*"[a-zA-Z_]+"\s*:|\s*}})', text, re.DOTALL)
+        if match:
+            result[key] = match.group(1)
+    success_match = re.search(r'"success"\s*:\s*(true|false)', text)
+    if success_match:
+        result["success"] = success_match.group(1) == "true"
+    return result or None
 
 
 def _main() -> int:

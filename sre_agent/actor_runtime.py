@@ -70,7 +70,15 @@ class LocalTerminalRuntime(AgentRuntime):
         from .terminal_agent import TerminalAgent
 
         result = TerminalAgent(self._resolve_decider(), workdir=self.workdir, max_steps=self.max_steps).run(task)
-        return ActorResult(self.name, result.status, result.transcript(), result.summary)
+        # TerminalAgent's final "done" reasoning lands in result.summary, not
+        # the command transcript — callers (e.g. generate_patch_activity's
+        # BASELINE_COMMAND/CANDIDATE_COMMAND markers) ask the actor to end its
+        # *response* with specific text, so that reasoning must be part of
+        # ActorResult.output for downstream text parsing to ever see it.
+        output = result.transcript()
+        if result.summary:
+            output = f"{output}\n\n{result.summary}".strip()
+        return ActorResult(self.name, result.status, output, result.summary)
 
 
 class HermesRuntime(AgentRuntime):
