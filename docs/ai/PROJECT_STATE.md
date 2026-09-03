@@ -30,8 +30,8 @@ closed a verified gap — Phases B/C were structurally unreachable because
 nothing produced the `patch`/`sandbox_*` params `IncidentRemediationWorkflow`
 needs. Planner can now propose `action_type="code_fix"`;
 `generate_patch_activity` (new first step, runs only when `patch` is empty)
-clones `GITHUB_REPO`, runs the pluggable actor
-(`sre_agent/actor_runtime.py`, `AGENT_RUNTIME=local|hermes`), takes `git
+clones `GITHUB_REPO`, runs the deterministic actor
+(`sre_agent/actor_runtime.py::LocalTerminalRuntime`), takes `git
 diff` as the patch, and parses agent-reported `BASELINE_COMMAND`/
 `CANDIDATE_COMMAND` lines for the sandbox oracle. Live-fire validated
 against the real `jayanth922/meridian-shop` repo; 5 real bugs found and
@@ -196,8 +196,9 @@ until Phase 5 completes.
   live-fire validated 2026-09-03 (test-11).
 - `sre_agent/api/v1/mission_control.py::mark_incident_resolved` — Phase 5E's
   manual on-call "mark resolved" endpoint (`POST /{id}/mark-resolved`).
-- `sre_agent/actor_runtime.py` — Phase F's pluggable actor
-  (`AGENT_RUNTIME=local|hermes`), now takes `workdir`.
+- `sre_agent/actor_runtime.py` — Phase F's deterministic actor
+  (`LocalTerminalRuntime`, Temporal-orchestrated, no third-party backend),
+  takes `workdir`.
 - `edge_mcp_servers/mcp_servers/sandbox_real/` — Phase 5B's sandbox-verify
   MCP server (K8s Job lifecycle for `CodeFixVerificationWorkflow`); live-fire
   validated 2026-09-03, 3 bugs fixed (commit `aeb9476`).
@@ -259,24 +260,20 @@ committed** — see `sre_agent/service_topology.py` in Relevant files above
 for the validation detail and the one bug it surfaced/fixed; full test suite
 green (853 passed, 3 skipped) and lint/mypy clean on all touched files.
 
-**Hermes safety review done (2026-09-03, see `docs/ai/DECISIONS.md`) —
-verdict: still blocked, do not enable.** Static review (hermes-agent has
-never been installed anywhere in this project): found and fixed two real
-gaps in `sre_agent/actor_runtime.py`/`incident_remediation_workflow.py`
-regardless of the package's actual internals — (1) `HermesRuntime` now fails
-closed instead of silently running unconfined when the (documented-as-not-
-existing) `workdir` sandbox param is rejected, (2) `generate_patch_activity`
-now passes a per-org-per-incident `task_id` instead of one hardcoded value
-shared by every tenant (hermes-agent's docs say `task_id` is its memory-
-isolation key, and `skip_memory=False` was already on). Still open and the
-actual blocker: no safe `enabled_toolsets` allowlist can be set without
-either installing+introspecting the real package or running it inside the
-existing sandbox-Job infra instead of trusting in-process confinement —
-neither done. Tests added (`tests/test_actor_runtime.py`), full suite green
-(855 passed, 3 skipped), lint/mypy clean (pre-existing unrelated findings on
-both touched files confirmed via `git stash` diff, not introduced here).
-`AGENT_RUNTIME=hermes` must stay unset in every real environment until the
-toolset gap closes.
+**Hermes actor backend fully removed (2026-09-03, see `docs/ai/DECISIONS.md`
+"Hermes removal").** After the 2026-09-03 safety review left
+`AGENT_RUNTIME=hermes` blocked (undocumented toolset surface, no filesystem
+sandbox — see the earlier "Hermes safety review" entry), user determined the
+existing `LocalTerminalRuntime` (first-party, Temporal-orchestrated,
+already live-fire validated) is sufficient and the third-party integration
+adds risk without functional gain. Removed: `HermesRuntime` class,
+`AGENT_RUNTIME` backend-selection branching, the `hermes` extra in
+`pyproject.toml`/`uv.lock`, and the Hermes-specific tests in
+`tests/test_actor_runtime.py`. `get_agent_runtime()` now always returns
+`LocalTerminalRuntime` — no env-var selection, one backend. Full suite green
+(848 passed, 3 skipped — the delta is exactly the 7 removed Hermes tests),
+lint/mypy clean (pre-existing unrelated findings confirmed via `git stash`
+diff, not introduced here).
 
 **Noted follow-on (not started, scope after Phase 5E lands):** replace the
 incident page's chat-transcript-style feed with a live execution-trace view

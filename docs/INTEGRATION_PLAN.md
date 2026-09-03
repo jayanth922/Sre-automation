@@ -60,7 +60,7 @@ That existing surface is exactly what makes the seven projects plug in cleanly.
 | 6 | **Model router** | Route each task to the best/cheapest suitable model | `sre_agent/llm_utils.py` + new `model_router.py`; called by supervisor/reflector/planner/narrator | New module + policy | **Low** |
 | 7 | **Benchmark for a use case** | A rigorous eval for one narrow domain (video's example: TS repos) | `benchmarks/` — extend `bench_mttr.py` into an SRE-agent benchmark driven by the chaos panel | New benchmark suite | **Low–Med** |
 | 1 | **Terminal agent** (top Terminal-Bench) | A CLI agent that operates a terminal to finish end-to-end tasks | The stubbed **ACT** phase: a new "Executor" MCP server / specialist that runs `kubectl`/shell remediation | New MCP server + graph node | **Med–High** |
-| 2 | **Hermes / OpenClaw agent** | Adopt a dominant open-source agent framework (self-improving, skill-saving) | Alternative runtime for the Executor; its "save every workflow as a reusable skill" maps to Qdrant incident-memory | Runtime adapter | **Med** |
+| 2 | **Hermes / OpenClaw agent** *(removed 2026-09-03, see DECISIONS.md)* | Adopt a dominant open-source agent framework (self-improving, skill-saving) | Alternative runtime for the Executor; its "save every workflow as a reusable skill" maps to Qdrant incident-memory — skill memory (`skill_store.py`) was kept as first-party code, the Hermes runtime adapter was not | Runtime adapter | **Med** |
 | 3 | **Slack + AI** (Buzz, PromptQL) | A chat-native agent + reliable natural-language → data querying | Feed the existing human-checkpoint queue from Slack/Buzz; add a PromptQL-style NL→PromQL/LogQL tool | Connector + new tool | **Med** |
 | 5 | **Generative courses** | AI that generates a course/curriculum on any topic | Auto-generate runbooks / postmortems / on-call training from resolved incidents | New generator + runbook writeback | **Med** |
 | 4 | **Superset / T3 Code** | A GUI that orchestrates an army of CLI coding agents across isolated worktrees | The dashboard as a multi-incident **cockpit**: parallel investigations + a plan-review UI | Dashboard feature | **Med–High** |
@@ -155,15 +155,18 @@ turns successful remediations into named, replayable skills.
 1. **Skill memory** (`skill_store.py`) — applied remediations become reusable,
    success-compounding skills; the Planner proposes matches for recurring
    incidents (closing the self-improving loop).
-2. **Hermes as a real actor backend** (`actor_runtime.py`) — a pluggable
-   `AgentRuntime` for the terminal/executor actor: `LocalTerminalRuntime` (our
-   `TerminalAgent`) by default, `HermesRuntime` (Nous Research Hermes Agent, via
-   its documented `AIAgent` API) when `AGENT_RUNTIME=hermes`. This is the key
-   design call: **LangGraph stays the orchestrator** of the safe/auditable flow;
-   Hermes is used where an autonomous agent framework belongs — the "hands," not
-   the brain. Install with the `hermes` extra. Replacing LangGraph wholesale
-   would trade away the auditability and human-in-the-loop control the SRE
-   pipeline requires, so we integrate Hermes rather than swap the engine.
+2. **Hermes as a real actor backend** (`actor_runtime.py`) — built as a
+   pluggable `AgentRuntime` (`LocalTerminalRuntime` by default, `HermesRuntime`
+   via `AGENT_RUNTIME=hermes`), reviewed for safety, then **fully removed
+   2026-09-03**: `AGENT_RUNTIME` defaulted to `local` and Hermes was never
+   actually selected in any real deployment, so the unresolved safety gap
+   (undocumented toolset surface) was pure latent risk with no functional
+   gain over the first-party actor. `get_agent_runtime()` now always returns
+   `LocalTerminalRuntime`. See `docs/ai/DECISIONS.md` "Hermes removal" for
+   the full rationale. The design call that survives the removal — LangGraph
+   stays the orchestrator, the actor is the bounded "hands" — is now realized
+   entirely by `LocalTerminalRuntime`/`TerminalAgent`, no third-party
+   framework needed.
 
 ### #3 — Slack + AI → chat-native steering + reliable NL→data
 

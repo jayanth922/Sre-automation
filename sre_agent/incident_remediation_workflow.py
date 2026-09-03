@@ -318,10 +318,7 @@ async def generate_patch_activity(params: IncidentRemediationInput) -> PatchGene
             "Only after that command has run should you report done."
         )
         activity.heartbeat("running actor")
-        runtime = get_agent_runtime(
-            workdir=clone_dir,
-            task_id=f"sre-actor-{params.organization_id}-{params.incident_id}",
-        )
+        runtime = get_agent_runtime(workdir=clone_dir)
         result = await asyncio.to_thread(runtime.run, task)
 
         if result.status not in ("SOLVED", "DONE"):

@@ -390,6 +390,20 @@ Four-layer multi-agent incident-response system:
   - **243+ tests pass** (added tracing/litellm/e2b/itbench/toolsets tests).
   - COMPETITIVE_AUDIT.md updated: upgrades marked BUILT.
 
+- **2026-09-03 — Hermes actor backend fully removed.** Safety review
+  (2026-09-03, same day) left `AGENT_RUNTIME=hermes` blocked (no filesystem
+  sandbox, undocumented toolset surface). `AGENT_RUNTIME` had always
+  defaulted to `local` and Hermes was never selected in any real deployment
+  — asked directly whether it's genuinely needed vs. the existing
+  deterministic actor, the answer was no. Removed: `HermesRuntime` class,
+  `AGENT_RUNTIME` backend-selection branching, the `hermes` extra in
+  `pyproject.toml`/`uv.lock`, Hermes-specific tests. `get_agent_runtime()`
+  now always returns `LocalTerminalRuntime` — one backend, no env-var
+  selection. `sre_agent/skill_store.py` (skill memory) unaffected — it was
+  always first-party, backend-agnostic; only its docstring's Hermes-credit
+  framing was reworded. Full rationale: `docs/ai/DECISIONS.md` "Hermes
+  removal". 848 tests pass (delta from 855 is exactly the 7 removed tests).
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

@@ -261,9 +261,10 @@ one patch) and only within a workflow already scoped to one bundle.
   existing service-dependency graph, or does one need to be built/inferred
   from k8s labels?) — likely needs a short calibration pass against real
   incident data, not guessed up front.
-- Phase F: is `LocalTerminalRuntime` (default, audited deny-list) acceptable
-  for real patch generation, or should Hermes's own tool-safety be reviewed
-  first so `AGENT_RUNTIME=hermes` can be trusted per cluster?
+- Phase F: **resolved 2026-09-03** — `LocalTerminalRuntime` (audited
+  deny-list) is the actor, full stop; `HermesRuntime`/`AGENT_RUNTIME=hermes`
+  was removed rather than reviewed further (see `docs/ai/DECISIONS.md`
+  "Hermes removal"). `get_agent_runtime()` no longer takes a backend name.
 
 ## Next bounded task
 

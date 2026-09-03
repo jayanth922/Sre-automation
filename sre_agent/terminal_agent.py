@@ -229,13 +229,9 @@ def _main() -> int:
     parser.add_argument("--max-steps", type=int, default=15)
     args = parser.parse_args()
 
-    # Backend selection: AGENT_RUNTIME=local (our TerminalAgent) | hermes (Nous
-    # Research Hermes Agent). Both implement the same AgentRuntime interface.
     from .actor_runtime import get_agent_runtime
 
-    runtime = get_agent_runtime(workdir=args.workdir, max_steps=args.max_steps) \
-        if os.getenv("AGENT_RUNTIME", "local").lower() == "local" \
-        else get_agent_runtime()
+    runtime = get_agent_runtime(workdir=args.workdir, max_steps=args.max_steps)
     result = runtime.run(args.task)
     print(result.output)
     print(f"\n== [{result.backend}] {result.status}: {result.detail}")

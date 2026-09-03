@@ -428,3 +428,54 @@
   tool-using" third-party agent framework of unknown tool surface, which is
   exactly the class of action this review flags as needing authorization
   first.
+
+## Hermes removal — drop the pluggable actor backend, keep only `LocalTerminalRuntime`
+
+- **Decision (2026-09-03):** Fully remove `HermesRuntime` and
+  `AGENT_RUNTIME=local|hermes` backend selection from
+  `sre_agent/actor_runtime.py`. `get_agent_runtime()` now unconditionally
+  returns `LocalTerminalRuntime` — the actor is no longer pluggable, since
+  there is only one implementation. `hermes-agent` is dropped from
+  `pyproject.toml`'s optional extras and `uv.lock`; the Hermes-specific
+  tests in `tests/test_actor_runtime.py` are deleted; the `task_id=` kwarg
+  (Hermes's memory-isolation key) is removed from
+  `incident_remediation_workflow.py`'s `generate_patch_activity` call site.
+  `sre_agent/skill_store.py` (the self-improving skill-memory module,
+  originally credited to Hermes's "save every workflow as a skill" feature
+  in its docstring) is unaffected in behavior — it was always first-party,
+  backend-agnostic code with no dependency on `HermesRuntime`; only its
+  docstring's framing was updated.
+- **Reason:** `AGENT_RUNTIME` defaults to `local` and Hermes was never
+  actually selected in any real deployment this project has touched — it
+  existed as an optional, never-installed alternative. The preceding safety
+  review (see "Hermes safety review" above) already found it added risk
+  (no filesystem sandbox, undocumented toolset surface) with the toolset gap
+  still unresolved and blocking. When asked directly whether Hermes is
+  architecturally necessary versus the existing deterministic actor, the
+  answer is no: `LocalTerminalRuntime` already does the job the actor is
+  responsible for (bounded, tool-using execution of a task handed to it by
+  the Temporal-orchestrated `IncidentRemediationWorkflow`), is first-party,
+  has zero extra dependencies, and has been live-fire validated end-to-end
+  against the real cluster/repo. A third-party autonomous-agent framework
+  at that boundary adds attack surface and an unresolved safety gap without
+  adding any capability the deployment actually uses. User's own framing:
+  "we can manually create a deterministic agent for temporal rather than
+  hermes" — `LocalTerminalRuntime`/`TerminalAgent` already is that agent.
+- **Consequences:** Simpler, single-implementation actor runtime — no env-var
+  backend selection to reason about or keep safe. The Hermes safety review
+  above is retained as historical record (not deleted, per this project's
+  append-only decision-log convention) even though its subject no longer
+  exists in the codebase. `docs/PROJECT_CONTEXT.md`, `docs/INTEGRATION_PLAN.md`,
+  `docs/COMPETITIVE_AUDIT.md`, and `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`
+  contain historical narrative describing the Hermes integration as it was
+  built and reviewed; where those docs asserted Hermes was actively in use
+  or an open decision, they were annotated as superseded by this entry
+  rather than rewritten wholesale.
+- **Rejected alternative:** Keep `HermesRuntime` in place, unused but
+  available behind the env var, in case a future need for an autonomous
+  third-party actor arises. Rejected because unused, unreviewed-to-safety
+  optional code paths are exactly the kind of latent risk this session's
+  own process already flagged (proceeding on a stale "blocker" framing
+  instead of first checking whether the code path was needed at all) —
+  dead optionality that nobody will re-review before flipping on is worse
+  than no optionality.

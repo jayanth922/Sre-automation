@@ -1,32 +1,26 @@
 #!/usr/bin/env python3
 """
-Pluggable actor runtime (project #2, proper — actually using Hermes/OpenClaw).
+Actor runtime: the bounded, tool-using "hands" that carries out a task.
 
-Design decision (see docs): LangGraph stays the **orchestrator** of the safe,
-auditable incident-response flow (supervisor → specialists → reflector → planner
-→ policy gate → executor, with checkpoints and human approval). An open-source
-*autonomous agent framework* like Nous Research's **Hermes Agent** belongs at the
-**"hands"** — the bounded actor that autonomously carries out a task with tools.
+LangGraph stays the **orchestrator** of the safe, auditable incident-response
+flow (supervisor → specialists → reflector → planner → policy gate → executor,
+with checkpoints and human approval). ``LocalTerminalRuntime`` — our own
+Temporal-orchestrated ``TerminalAgent`` — is the deterministic actor behind
+that boundary: first-party, no extra deps, live-fire validated.
 
-So the actor is pluggable behind ``AgentRuntime``:
-- ``LocalTerminalRuntime`` — our own ``TerminalAgent`` (default; no extra deps).
-- ``HermesRuntime`` — Nous Research Hermes Agent (its self-improving, tool-using
-  autonomous loop). Written against Hermes's documented Python API
-  (``from run_agent import AIAgent``; ``run_conversation``/``chat``); it is a real
-  dependency you install only when you select this backend.
-
-Select via ``AGENT_RUNTIME=local|hermes``. This is how the project "uses Hermes"
-without replacing the orchestration engine.
-
-Ref: https://hermes-agent.nousresearch.com/docs/guides/python-library
+(An earlier revision evaluated Nous Research's third-party Hermes Agent
+framework as a pluggable alternative actor backend. Removed 2026-09-03 after
+a safety review found it added risk — no filesystem sandbox, undocumented
+toolset surface — without functional gain over the deterministic actor
+already in place; see "Hermes safety review" and its follow-up in
+docs/ai/DECISIONS.md.)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -81,97 +75,6 @@ class LocalTerminalRuntime(AgentRuntime):
         return ActorResult(self.name, result.status, output, result.summary)
 
 
-class HermesRuntime(AgentRuntime):
-    """Nous Research Hermes Agent as the autonomous actor.
-
-    Requires ``hermes-agent`` installed and an ``OPENROUTER_API_KEY`` (or
-    ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``). Its constructor + method surface
-    matches the documented Python-library API.
-
-    NOT YET SAFE TO ENABLE IN PRODUCTION — see the "Hermes safety review"
-    entry in docs/ai/DECISIONS.md. Summary: hermes-agent has no documented
-    filesystem sandbox (this class fails closed instead, see
-    ``_build_agent``), and its full toolset taxonomy (valid
-    ``enabled_toolsets``/``disabled_toolsets`` names) isn't documented, so no
-    safe tool allowlist can be set here without installing and introspecting
-    the real package first.
-    """
-
-    name = "hermes"
-
-    def __init__(
-        self,
-        model: str = "",
-        max_iterations: int = 20,
-        disabled_toolsets: Optional[List[str]] = None,
-        ephemeral_system_prompt: Optional[str] = None,
-        task_id: str = "sre-actor",
-        workdir: Optional[str] = None,
-    ):
-        self.model = model
-        self.max_iterations = max_iterations
-        self.disabled_toolsets = disabled_toolsets
-        self.ephemeral_system_prompt = ephemeral_system_prompt
-        self.task_id = task_id
-        self.workdir = workdir
-
-    def _build_agent(self):
-        try:
-            from run_agent import AIAgent  # provided by the hermes-agent package
-        except Exception as e:
-            raise RuntimeError(
-                "hermes-agent not installed. Install with: "
-                "pip install git+https://github.com/NousResearch/hermes-agent.git"
-            ) from e
-
-        kwargs = dict(
-            model=self.model,
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=False,  # keep Hermes's self-improving skill/memory loop on
-            max_iterations=self.max_iterations,
-            disabled_toolsets=self.disabled_toolsets,
-            ephemeral_system_prompt=self.ephemeral_system_prompt,
-        )
-        if self.workdir:
-            # Safety review 2026-09 (docs/ai/DECISIONS.md "Hermes safety review"):
-            # hermes-agent's documented public API has no workdir/sandbox
-            # parameter at all, so this call is expected to raise TypeError.
-            # Fail closed rather than silently falling back to an unconfined
-            # run — an autonomous tool-using agent with no filesystem boundary
-            # must never execute against a real repo checkout unsupervised.
-            try:
-                return AIAgent(workdir=self.workdir, **kwargs)
-            except TypeError as e:
-                raise RuntimeError(
-                    "HermesRuntime was given a workdir but the installed "
-                    "hermes-agent AIAgent does not accept one (its documented "
-                    "API has no filesystem-sandbox parameter) — refusing to "
-                    "run unconfined rather than degrade silently."
-                ) from e
-        return AIAgent(**kwargs)
-
-    def run(self, task: str) -> ActorResult:
-        agent = self._build_agent()
-        try:
-            result = agent.run_conversation(user_message=task, task_id=self.task_id)
-            output = result.get("final_response", "") if isinstance(result, dict) else str(result)
-            return ActorResult(self.name, "DONE", output, f"messages={len(result.get('messages', [])) if isinstance(result, dict) else 0}")
-        except Exception as e:
-            logger.error(f"HermesRuntime failed: {e}")
-            return ActorResult(self.name, "ERROR", "", str(e))
-
-
-def get_agent_runtime(name: Optional[str] = None, *, task_id: Optional[str] = None, **kwargs) -> AgentRuntime:
-    """Factory. ``AGENT_RUNTIME=local|hermes`` (default local).
-
-    ``task_id`` is Hermes-specific (it's hermes-agent's memory-isolation key —
-    see the "Hermes safety review" entry in docs/ai/DECISIONS.md) and is
-    dropped for the local backend, which has no such concept.
-    """
-    name = (name or os.getenv("AGENT_RUNTIME", "local")).lower()
-    if name in ("hermes", "openclaw"):  # OpenClaw shares Hermes's migration-compatible surface
-        if task_id is not None:
-            kwargs["task_id"] = task_id
-        return HermesRuntime(**kwargs)
+def get_agent_runtime(**kwargs) -> AgentRuntime:
+    """Return the deterministic, Temporal-orchestrated actor backend."""
     return LocalTerminalRuntime(**kwargs)

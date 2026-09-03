@@ -43,7 +43,8 @@ shelf, and decide what to properly wire.
 | IncidentChatPanel | **Not mounted** | Component exists; not in any page | Mount into the incident workspace |
 | Cockpit | **Running-ish** | Page + nav link exist | ✔ reachable (per-incident live status needs checkpointer) |
 | Frontend redesign | **Mockup** | Concept only | Build the real app (the current thread) |
-| Hermes / LiteLLM / E2B / Redis-PG checkpointer / ITBench | **Optional adapter** | Guarded; need pkg/keys | Fine as optional |
+| LiteLLM / E2B / Redis-PG checkpointer / ITBench | **Optional adapter** | Guarded; need pkg/keys | Fine as optional |
+| Hermes | **Removed (2026-09-03)** | Was an optional `AgentRuntime` backend; fully removed after safety review — see `docs/ai/DECISIONS.md` "Hermes removal" | — |
 | Terminal agent / sre_bench / toolsets | **Standalone tool** | Run on their own | Fine |
 
 ## Headline findings (the honest summary)

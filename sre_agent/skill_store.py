@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Skill memory — the self-improving loop (project #2: Hermes/OpenClaw).
+Skill memory — the self-improving loop.
 
-Hermes's headline feature is that it *saves every workflow it learns as a
-reusable skill*, so its capability compounds over time. This module brings that
-to the SRE agent: when a remediation is applied for an incident, it is recorded
-as a **skill** keyed by the incident's signature (alert / service / failure
-class). When a similar incident recurs, the agent can retrieve the matching
-skill and propose "apply the fix that worked last time" instead of re-reasoning
-from scratch — and each recurrence increments the skill's success count, so the
-most battle-tested fix rises to the top.
+When a remediation is applied for an incident, it is recorded as a **skill**
+keyed by the incident's signature (alert / service / failure class). When a
+similar incident recurs, the agent can retrieve the matching skill and
+propose "apply the fix that worked last time" instead of re-reasoning from
+scratch — and each recurrence increments the skill's success count, so the
+most battle-tested fix rises to the top. First-party and independent of the
+actor backend (see sre_agent/actor_runtime.py).
 
 This complements the existing Qdrant incident memory (semantic recall of past
 incidents); skills are the *actionable* distillation — the concrete remediation

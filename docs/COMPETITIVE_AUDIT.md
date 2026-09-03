@@ -50,7 +50,7 @@ dashboard would remove the approval/audit surface every serious tool has.
 | **Context compaction** | LangMem, standard context-engineering | **Educational subset** — standard keep-tail + summarize technique. |
 | **Concurrency / sandbox** | **E2B**, **Firecracker**, **Modal**, **Daytona** | **Educational subset** — a slot limiter + temp dir. Real per-tenant isolation is microVM/container (Firecracker/E2B). |
 | **Terminal agent** | **Claude Code**, **Codex**, **OpenHands**, **pi**; terminal-bench leaderboard | **Educational subset** — a real run/observe loop with sub-agent orchestration, but nowhere near the leaders' capability. |
-| **Autonomous actor framework** | **Hermes Agent** (Nous), **OpenClaw** | **Genuinely uses it** — `HermesRuntime` runs the real Hermes `AIAgent` behind our `AgentRuntime` interface. |
+| **Autonomous actor framework** | **Hermes Agent** (Nous), **OpenClaw** | **Removed (2026-09-03)** — evaluated as a pluggable `AgentRuntime` backend, then removed after a safety review found it added risk (no filesystem sandbox, undocumented toolset surface) without functional gain over the first-party `LocalTerminalRuntime` actor already in place; see `docs/ai/DECISIONS.md` "Hermes removal". |
 | **Secure multi-tenant access** | HolmesGPT/Robusta relay; egress-only agents (Plural, Atlan) | **Design-only** — specified (egress relay, GitHub App, Slack OAuth); the demo is still co-located. |
 
 ## Honest overall positioning
