@@ -1,0 +1,27 @@
+{
+  "name": "sre-automation-dev",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "hostRequirements": {
+    "cpus": 16,
+    "memory": "64gb"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+    "ghcr.io/devcontainers-extra/features/kind:1": {},
+    "ghcr.io/astral-sh/uv/uv:1": {}
+  },
+  "postCreateCommand": "uv pip install --system -e . && (cd dashboard && npm install)",
+  "forwardPorts": [3000, 8000],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "dbaeumer.vscode-eslint",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  }
+}
