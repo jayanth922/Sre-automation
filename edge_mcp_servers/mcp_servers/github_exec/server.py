@@ -290,6 +290,11 @@ async def create_fix_pr(
     tmpdir = tempfile.mkdtemp(prefix="sentinel-fix-")
     patch_file = os.path.join(tmpdir, ".sentinel-fix.patch")
     try:
+        # `gh repo clone` authenticates the clone itself but leaves plain `git
+        # push` afterward with no credentials. Registering gh's credential
+        # helper here (idempotent, cheap) lets the later `git push` succeed.
+        _gh(["auth", "setup-git"], timeout=30)
+
         clone_args = ["repo", "clone", REPO, tmpdir, "--", "--depth", "1"]
         if base_branch:
             clone_args = ["repo", "clone", REPO, tmpdir, "--", "--depth", "1", "--branch", base_branch]

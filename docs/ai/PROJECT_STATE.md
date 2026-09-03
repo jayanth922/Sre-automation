@@ -105,7 +105,24 @@ confirmed directly in Postgres: `Incident.status = remediation_failed`.
 `POST /{id}/mark-resolved` was not live HTTP-tested (judged sufficient by
 code review — mirrors an existing, identically-authenticated endpoint). All
 5 touched files (4 Python + `page.tsx`) previously passed `py_compile`/
-`tsc --noEmit`; nothing further changed since. Local commit not yet made.
+`tsc --noEmit`. Committed (`b0c352e`) and pushed to `origin/master`.
+
+**Real GitHub PR-write path confirmed end-to-end, 2026-09-03 (test-18,
+workflow id `e2e-remediation-test-18`):** user gave explicit sign-off
+("yes, go ahead") to exercise `raise_pr_activity`'s live write against
+`jayanth922/meridian-shop`. First real attempt (test-17, real valid patch
+against current `README.md`) got past `git apply` and the local commit but
+failed at `git push` — root cause: `gh repo clone` authenticates the clone
+itself but leaves no credential helper for a subsequent plain `git push`.
+Fixed in `edge_mcp_servers/mcp_servers/github_exec/server.py`'s
+`create_fix_pr` by calling `gh auth setup-git` once before cloning
+(idempotent, registers gh's credential helper for git). Re-ran as test-18
+with the same patch: `RemediationVerdict(status='PR_CREATED',
+pr_url='https://github.com/jayanth922/meridian-shop/pull/1',
+verification_status='RESOLVED')` — a real PR was created. PR #1 carries a
+"safe to close" marker comment (trivial `README.md` addition); not yet
+closed, awaiting user decision. Local commit for the `server.py` fix not
+yet made as of this note.
 
 **Done and merged to origin/master** (pre-Phase-5 milestone; see
 `docs/ai/DECISIONS.md` and git log for full detail, not restated here): Task
@@ -153,7 +170,9 @@ until Phase 5 completes.
   `backend/models.py::RemediationGateApproval`, migration `e4f5a6b7c8d9` —
   Phase 5B gate persistence + API (done).
 - `edge_mcp_servers/mcp_servers/github_exec/server.py` — `create_revert_pr`
-  (reverts) and `create_fix_pr` (arbitrary patches, Phase 5C, done).
+  (reverts) and `create_fix_pr` (arbitrary patches, Phase 5C, done); real
+  PR-write path live-fire validated 2026-09-03 (test-18, PR #1 on
+  `meridian-shop`), `gh auth setup-git` credential-helper fix applied.
 - `sre_agent/graph_builder.py::_act_gate_node` — deterministic-pipeline
   detection/deferral + `IncidentRemediationWorkflow` trigger (Phase 5B/C
   wiring, done).
@@ -180,21 +199,16 @@ until Phase 5 completes.
   — Socket Mode auto-reconnects on its own well within any wait length).
 
 ## Next bounded task
-Phase 5E is implemented and live-fire validated (test-11, see above). Commit
-the 5 touched files (`incident_remediation_workflow.py`, `approval_flow.py`,
-`war_room.py`, `mission_control.py`, `page.tsx`) plus this state-file update,
-then push to `origin/master` along with everything still only local from
-before it — Phase D (`d7b7cb2`), Phase F (`22cbb61`, `f18062a`). (Sandbox
-fixes `aeb9476` and the two-gate validation doc update `6de42c4` are already
-pushed.)
+Commit `edge_mcp_servers/mcp_servers/github_exec/server.py`'s `gh auth
+setup-git` fix (test-18 live-fire validated, PR #1 created) plus this
+state-file update, then push to `origin/master`. Also decide/confirm with
+the user whether to close throwaway PR #1 on `meridian-shop` (it carries a
+"safe to close" marker comment and has no functional effect either way).
 
-Separately, still outstanding before Phase E (cutover): confirm
-`GITHUB_TOKEN` write access for `raise_pr_activity` against `meridian-shop`
-(only read access confirmed so far — needs a real PR-creation push, so **get
-explicit sign-off before testing it**; every test driver so far has denied
-gate 2 to structurally avoid triggering this). Open decisions (GitHub PR
-repo scope/credentials, correlation adjacency source, Hermes safety review)
-should be raised before Phase E relies on them.
+Separately, still outstanding before Phase E (cutover): the real PR-write
+path is now fully confirmed end-to-end (test-18) — this blocker is
+resolved. Remaining open decisions (correlation adjacency source, Hermes
+safety review) should be raised before Phase E relies on them.
 
 **Noted follow-on (not started, scope after Phase 5E lands):** replace the
 incident page's chat-transcript-style feed with a live execution-trace view
