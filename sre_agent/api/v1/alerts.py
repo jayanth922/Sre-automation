@@ -128,7 +128,15 @@ async def _record_correlation_shadow(
         )
         for other in open_incidents
     ]
-    result = correlate(candidate, pool)
+    adjacency = None
+    try:
+        from sre_agent.service_topology import get_adjacency_map
+
+        adjacency = await get_adjacency_map(cluster)
+    except Exception as e:
+        logger.warning(f"Correlation shadow: adjacency fetch failed for cluster {cluster.id}: {e}")
+
+    result = correlate(candidate, pool, adjacency=adjacency)
     if result.decision != "bundle":
         return
 

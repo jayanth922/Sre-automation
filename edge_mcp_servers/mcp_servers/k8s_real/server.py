@@ -120,6 +120,20 @@ def get_apps_v1_api() -> Optional[client.AppsV1Api]:
     return None
 
 
+def get_networking_v1_api() -> Optional[client.NetworkingV1Api]:
+    """Get NetworkingV1Api, ensuring connection exists."""
+    relay_client = _relay_api_client()
+    if relay_client is not None:
+        return client.NetworkingV1Api(relay_client)
+
+    global k8s_client
+    get_k8s_api()  # Trigger initialization if needed
+
+    if k8s_client:
+        return client.NetworkingV1Api(k8s_client)
+    return None
+
+
 def _format_owner_references(owner_references):
     return [
         {
@@ -233,6 +247,41 @@ def _format_deployment_entry(deployment) -> Dict[str, Any]:
         "creation_timestamp": deployment.metadata.creation_timestamp.isoformat()
         if deployment.metadata.creation_timestamp
         else None,
+    }
+
+
+def _format_network_policy_peer(peer) -> Dict[str, Any]:
+    pod_selector = getattr(peer, "pod_selector", None)
+    namespace_selector = getattr(peer, "namespace_selector", None)
+    ip_block = getattr(peer, "ip_block", None)
+    return {
+        "pod_selector": dict(getattr(pod_selector, "match_labels", None) or {}) if pod_selector else None,
+        "namespace_selector": dict(getattr(namespace_selector, "match_labels", None) or {})
+        if namespace_selector
+        else None,
+        "ip_block_cidr": getattr(ip_block, "cidr", None) if ip_block else None,
+    }
+
+
+def _format_network_policy_entry(policy) -> Dict[str, Any]:
+    spec = policy.spec
+    pod_selector = getattr(spec, "pod_selector", None)
+    ingress = [
+        {"from": [_format_network_policy_peer(peer) for peer in (getattr(rule, "from_", None) or [])]}
+        for rule in (spec.ingress or [])
+    ]
+    egress = [
+        {"to": [_format_network_policy_peer(peer) for peer in (getattr(rule, "to", None) or [])]}
+        for rule in (spec.egress or [])
+    ]
+    return {
+        "name": policy.metadata.name,
+        "namespace": policy.metadata.namespace,
+        "pod_selector": dict(getattr(pod_selector, "match_labels", None) or {}),
+        "policy_types": list(spec.policy_types or []),
+        "ingress": ingress,
+        "egress": egress,
+        "labels": dict(policy.metadata.labels or {}),
     }
 
 
@@ -427,6 +476,16 @@ class ListDeploymentsParams(BaseModel):
         None, description="Namespace to filter by, or omit for all namespaces"
     )
     limit: int = Field(default=200, ge=1, le=2000, description="Maximum number of deployments to return")
+
+
+class ListNetworkPoliciesParams(BaseModel):
+    """Parameters for list_network_policies tool."""
+
+    namespace: Optional[str] = Field(
+        None, description="Namespace to filter by, or omit for all namespaces"
+    )
+    label_selector: Optional[str] = Field(None, description="Label selector to filter network policies")
+    limit: int = Field(default=200, ge=1, le=2000, description="Maximum number of network policies to return")
 
 
 class ListEventsParams(BaseModel):
@@ -725,6 +784,40 @@ async def handle_list_deployments(params: ListDeploymentsParams) -> str:
         return f"Error listing deployments: {e}"
 
 
+async def handle_list_network_policies(params: ListNetworkPoliciesParams) -> str:
+    """List NetworkPolicies in the cluster."""
+    logger.info(
+        f"Listing network policies (namespace: {params.namespace!r}, label_selector: {params.label_selector!r}, limit: {params.limit})"
+    )
+
+    networking_v1 = get_networking_v1_api()
+    if not networking_v1:
+        return "Error: Kubernetes client not initialized."
+
+    try:
+        if params.namespace:
+            policy_list = await asyncio.to_thread(
+                networking_v1.list_namespaced_network_policy,
+                params.namespace,
+                label_selector=params.label_selector,
+            )
+        else:
+            policy_list = await asyncio.to_thread(
+                networking_v1.list_network_policy_for_all_namespaces,
+                label_selector=params.label_selector,
+            )
+
+        policies = [_format_network_policy_entry(policy) for policy in policy_list.items[: params.limit]]
+        return json.dumps(
+            {"count": len(policies), "namespace": params.namespace, "network_policies": policies},
+            separators=(",", ":"),
+            default=str,
+        )
+    except Exception as e:
+        logger.error(f"Error listing network policies: {e}")
+        return f"Error listing network policies: {e}"
+
+
 async def handle_list_events(params: ListEventsParams) -> str:
     """List recent Kubernetes events."""
     logger.info(
@@ -871,6 +964,14 @@ async def list_services(namespace: str = None, label_selector: str = None, limit
 async def list_deployments(namespace: str = None, limit: int = 200) -> str:
     """List deployments in the cluster."""
     return await handle_list_deployments(ListDeploymentsParams(namespace=namespace, limit=limit))
+
+
+@mcp.tool()
+async def list_network_policies(namespace: str = None, label_selector: str = None, limit: int = 200) -> str:
+    """List Kubernetes NetworkPolicies in the cluster."""
+    return await handle_list_network_policies(
+        ListNetworkPoliciesParams(namespace=namespace, label_selector=label_selector, limit=limit)
+    )
 
 
 @mcp.tool()

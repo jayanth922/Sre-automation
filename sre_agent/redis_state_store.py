@@ -295,6 +295,34 @@ class RedisStateStore:
             logger.error(f"❌ Error checking lock for {cluster_id}: {e}")
             return False
 
+    def set_topology_cache(self, cluster_id: str, adjacency: Dict[str, Any], ttl: int) -> bool:
+        """Cache a cluster's inferred service-adjacency map for ``ttl`` seconds."""
+        if not cluster_id or ttl <= 0 or not self.is_available():
+            return False
+        try:
+            self.redis_client.setex(
+                f"sre_agent:topology:{cluster_id}",
+                ttl,
+                json.dumps(adjacency, default=str),
+            )
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error caching topology for cluster {cluster_id}: {e}")
+            return False
+
+    def get_topology_cache(self, cluster_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a cluster's cached service-adjacency map, if present."""
+        if not cluster_id or not self.is_available():
+            return None
+        try:
+            serialized = self.redis_client.get(f"sre_agent:topology:{cluster_id}")
+            if serialized is None:
+                return None
+            return json.loads(serialized)
+        except Exception as e:
+            logger.error(f"❌ Error reading cached topology for cluster {cluster_id}: {e}")
+            return None
+
     def set_idempotency(self, key: str, ttl: int) -> bool:
         """Atomically claim a mutation key for ``ttl`` seconds.
 

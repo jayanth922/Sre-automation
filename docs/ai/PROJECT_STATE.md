@@ -148,6 +148,22 @@ until Phase 5 completes.
 - `sre_agent/incident_correlation.py`, `sre_agent/api/v1/alerts.py::_record_correlation_shadow`,
   `backend/crud.py::list_active_incidents_for_cluster` — Phase 5 correlation
   gate (Phase A, done, shadow mode).
+- `sre_agent/service_topology.py` (`build_adjacency_map`, `get_adjacency_map`) —
+  k8s-label-inferred service adjacency for the correlation gate (implemented
+  2026-09-03, see `docs/ai/DECISIONS.md`): groups by
+  `app.kubernetes.io/part-of` label + resolves NetworkPolicy ingress/egress
+  peers via label-selector matching against Service selectors. Wired into
+  `_record_correlation_shadow` (non-fatal — any k8s/MCP/Redis failure falls
+  back to `adjacency=None`, same as before this feature). Cached per cluster
+  via `RedisStateStore.set_topology_cache`/`get_topology_cache`
+  (`sre_agent/redis_state_store.py`, key `sre_agent:topology:{cluster_id}`,
+  5 min TTL). Fetched over the `k8s` MCP server via the new
+  `list_network_policies` tool (`edge_mcp_servers/mcp_servers/k8s_real/server.py`
+  — new `get_networking_v1_api`, `_format_network_policy_entry`,
+  `handle_list_network_policies`) and `sre_agent/executor.py::build_k8s_tool_caller`
+  (new, mirrors the existing per-server tool-caller wrappers). Tests:
+  `tests/test_service_topology.py` (pure `build_adjacency_map` cases — not
+  live-fire validated against a real cluster yet).
 - `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
   Temporal workflow + `raise_pr_activity` (done); Phase F's
   `generate_patch_activity` (live-fire validated 2026-09-03); full workflow
@@ -214,10 +230,14 @@ confirmed green again on `master`.
 
 Still outstanding before Phase E (cutover): the real PR-write path is now
 fully confirmed end-to-end (test-18) — that blocker is resolved.
-Correlation adjacency source is now decided (infer from k8s labels, see
-`docs/ai/DECISIONS.md`) but **not yet implemented** — `correlate()` still
-runs on the same-service-name fallback only. Remaining open item before
-Phase E: Hermes safety review (`AGENT_RUNTIME=hermes` not yet trusted).
+Correlation adjacency source (infer from k8s labels, see
+`docs/ai/DECISIONS.md`) is now **implemented** (2026-09-03, not yet
+committed) — see `sre_agent/service_topology.py` in Relevant files above;
+full test suite green (853 passed, 3 skipped) and lint/mypy clean on all
+touched/new files. Not yet live-fire validated against a real cluster with
+NetworkPolicies + `part-of` labels set — only pure unit-tested so far.
+Remaining open item before Phase E: Hermes safety review
+(`AGENT_RUNTIME=hermes` not yet trusted).
 
 **Noted follow-on (not started, scope after Phase 5E lands):** replace the
 incident page's chat-transcript-style feed with a live execution-trace view

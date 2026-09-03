@@ -340,15 +340,19 @@
   external topology source) when the decision was raised — no new
   infrastructure required, and cluster manifests are assumed to already
   encode enough dependency information to be useful.
-- **Consequences:** Not yet implemented — Phase A's `correlate()` still runs
-  with no adjacency map wired in (falls back to same-service-name matching
-  extracted from the `[{service}] {alertname}` title convention, per
-  `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`). Implementing this
-  requires picking which k8s label/annotation convention to trust (or
-  building a lightweight NetworkPolicy/Ingress graph walker) before Phase B
-  can rely on adjacency instead of same-service matching alone; accuracy
-  will depend on how consistently this cluster's manifests already encode
-  real dependencies, which hasn't been audited yet.
+- **Consequences:** Implemented 2026-09-03 in `sre_agent/service_topology.py`
+  (`build_adjacency_map` + `get_adjacency_map`), wired into
+  `_record_correlation_shadow` in `sre_agent/api/v1/alerts.py`. Uses
+  `app.kubernetes.io/part-of` label grouping plus a NetworkPolicy
+  ingress/egress graph walker resolved via label-selector matching against
+  Service selectors (new `list_network_policies` tool on the `k8s` MCP
+  server). Cached per cluster for 5 minutes via
+  `RedisStateStore.set_topology_cache`/`get_topology_cache`; any fetch
+  failure degrades non-fatally to no adjacency signal (same as before this
+  feature). Pure-function unit tested (`tests/test_service_topology.py`) but
+  not yet live-fire validated against a real cluster — accuracy still
+  depends on how consistently this cluster's manifests actually encode
+  `part-of` labels and NetworkPolicies, which hasn't been audited.
 - **Rejected alternatives:** Manual adjacency config (accurate but needs
   ongoing upkeep as the architecture changes); deferring entirely (keeps
   zero new work but leaves a known-weaker signal in place); external

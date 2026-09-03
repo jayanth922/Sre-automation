@@ -459,3 +459,12 @@ async def build_sandbox_tool_caller(
 ):
     """Tool caller bound to this tenant's sandbox MCP server."""
     return await build_mcp_tool_caller(context, "sandbox", uri=uri)
+
+
+async def build_k8s_tool_caller(
+    context: Optional[ExecutionContext] = None,
+    *,
+    uri: Optional[str] = None,
+):
+    """Tool caller bound to this tenant's Kubernetes evidence MCP server."""
+    return await build_mcp_tool_caller(context, "k8s", uri=uri)
