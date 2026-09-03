@@ -100,6 +100,9 @@ app.include_router(jobs_router.router, prefix="/api/v1")
 from sre_agent.api.v1 import mission_control
 app.include_router(mission_control.router, prefix="/api/v1")
 
+from sre_agent.api.v1 import remediation_gates as remediation_gates_router
+app.include_router(remediation_gates_router.router, prefix="/api/v1")
+
 # SLO Management Router
 from sre_agent.api.v1 import slos as slos_router
 app.include_router(slos_router.router, prefix="/api/v1")

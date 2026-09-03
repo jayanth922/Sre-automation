@@ -210,13 +210,83 @@ async def _act_gate_node(
         if human_approved:
             report_payload["approval"] = approval
 
+        # Deterministic remediation pipeline detection
+        # (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md): find a code-fix
+        # action (revert_commit/revert_pr/comment_pr) up front, before the
+        # live-execution block below, so a fully sandbox-ready one can be
+        # deferred to IncidentRemediationWorkflow's own two approval gates
+        # instead of the old single-gate live path here.
+        deterministic_pipeline_index: Optional[int] = None
+        deterministic_pipeline_params: Dict[str, Any] = {}
+        code_action_report: Optional[Dict[str, Any]] = None
+        if incident_id and report.plan_present:
+            try:
+                from .executor import GITHUB_EXEC_TOOL_MAP
+                from .temporal_client import temporal_enabled
+
+                code_action_index, code_action_report = next(
+                    (
+                        (idx, a)
+                        for idx, a in enumerate(report_payload.get("action_reports", []))
+                        if a.get("action_type") in GITHUB_EXEC_TOOL_MAP
+                    ),
+                    (None, None),
+                )
+                if code_action_report is not None:
+                    cf_params = code_action_report.get("parameters") or {}
+                    cf_patch = cf_params.get("patch") or cf_params.get("diff")
+                    cf_runner_image = cf_params.get("sandbox_runner_image")
+                    cf_baseline_command = cf_params.get("sandbox_baseline_command")
+                    cf_candidate_command = cf_params.get("sandbox_candidate_command")
+                    cf_failure_signature = cf_params.get("sandbox_failure_signature")
+                    if temporal_enabled() and all(
+                        [cf_patch, cf_runner_image, cf_baseline_command, cf_candidate_command, cf_failure_signature]
+                    ):
+                        deterministic_pipeline_index = code_action_index
+                        deterministic_pipeline_params = {
+                            "action_type": code_action_report.get("action_type"),
+                            "target": code_action_report.get("target") or "",
+                            "patch": str(cf_patch),
+                            "runner_image": str(cf_runner_image),
+                            "baseline_command": list(cf_baseline_command),
+                            "candidate_command": list(cf_candidate_command),
+                            "failure_signature": str(cf_failure_signature),
+                        }
+            except Exception as detect_err:
+                logger.warning(f"Deterministic pipeline detection failed (non-fatal): {detect_err}")
+                deterministic_pipeline_index = None
+
+        # If a code-fix action was deferred above, execute_autonomous_live
+        # below must run against a *copy* of the report whose one deferred
+        # action_report reads DEFERRED_TO_DETERMINISTIC_PIPELINE (a value
+        # outside act_phase's known AutonomyDecision set) so its own
+        # `decision not in allowed_decisions` skip-logic naturally leaves that
+        # action for the deterministic pipeline instead of applying it here.
+        # report_payload (the API-visible copy) is a separate deep copy from
+        # ActReport.to_dict()/dataclasses.asdict, so it needs its own edit.
+        execution_report = report
+        if deterministic_pipeline_index is not None:
+            import copy as _copy
+            from dataclasses import replace as _dc_replace
+
+            from .incident_remediation_workflow import DEFERRED_TO_DETERMINISTIC_PIPELINE
+
+            deferred_action_reports = _copy.deepcopy(report.action_reports)
+            deferred_action_reports[deterministic_pipeline_index]["decision"] = (
+                DEFERRED_TO_DETERMINISTIC_PIPELINE
+            )
+            execution_report = _dc_replace(report, action_reports=deferred_action_reports)
+            report_payload["action_reports"][deterministic_pipeline_index]["decision"] = (
+                DEFERRED_TO_DETERMINISTIC_PIPELINE
+            )
+
         # Live remediation is a separate opt-in. Autonomous plans proceed
         # directly; held actions proceed only when this exact report hash was
         # resumed through the durable approval gate.
         live_on = os.getenv("EXECUTOR_LIVE", "false").lower() in ("true", "1", "yes")
         if live_on and (
-            report.aggregate_decision == "autonomous" or human_approved
-        ) and report.plan_present:
+            execution_report.aggregate_decision == "autonomous" or human_approved
+        ) and execution_report.plan_present:
             caller = github_caller = metrics_caller = None
             try:
                 from .executor import build_executor_tool_caller
@@ -236,7 +306,7 @@ async def _act_gate_node(
                     github_caller = None
                 live_results = await execute_autonomous_live(
                     state,
-                    report,
+                    execution_report,
                     caller,
                     github_caller=github_caller,
                     approved=human_approved,
@@ -276,78 +346,85 @@ async def _act_gate_node(
                         getattr(tool_caller, "mcp_client", None)
                     )
 
-        # Code-fix verification sandbox: a reflector hypothesis that proposes a
-        # code-level change (revert_commit/revert_pr/comment_pr) gets a
-        # fire-and-forget Temporal workflow that replays the log evidence
-        # against the unpatched and patched code to answer "did this actually
-        # fix it?" — independent of EXECUTOR_LIVE, since it never touches a
-        # live cluster, only an isolated sandbox namespace. The verdict lands
-        # later via incident_timeline.emit_timeline_event, possibly after this
-        # report is already returned.
-        if incident_id and report.plan_present:
+        # Code-fix verification: either the full deterministic pipeline
+        # (IncidentRemediationWorkflow — gate 1 -> sandbox verify (reordered
+        # ahead of any live/PR action, Phase 5A) -> gate 2 -> PR,
+        # docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase B/C) when
+        # Temporal is enabled and sandbox params are complete, or the same
+        # INCONCLUSIVE messaging as before otherwise — independent of
+        # EXECUTOR_LIVE, since neither path touches a live cluster directly.
+        if code_action_report is not None:
             try:
-                from .executor import GITHUB_EXEC_TOOL_MAP
+                params = code_action_report.get("parameters") or {}
+                patch = params.get("patch") or params.get("diff")
+                runner_image = params.get("sandbox_runner_image")
+                baseline_command = params.get("sandbox_baseline_command")
+                candidate_command = params.get("sandbox_candidate_command")
+                failure_signature = params.get("sandbox_failure_signature")
+
                 from .temporal_client import start_workflow, temporal_enabled
 
-                code_action = next(
-                    (
-                        a
-                        for a in report_payload.get("action_reports", [])
-                        if a.get("action_type") in GITHUB_EXEC_TOOL_MAP
-                    ),
-                    None,
-                )
-                if code_action is not None:
-                    params = code_action.get("parameters") or {}
-                    patch = params.get("patch") or params.get("diff")
-                    runner_image = params.get("sandbox_runner_image")
-                    baseline_command = params.get("sandbox_baseline_command")
-                    candidate_command = params.get("sandbox_candidate_command")
-                    failure_signature = params.get("sandbox_failure_signature")
-                    if not temporal_enabled():
-                        report_payload["code_fix"] = {
+                if not temporal_enabled():
+                    report_payload["code_fix"] = {
+                        "status": "INCONCLUSIVE",
+                        "detail": "Sandbox verification is disabled (TEMPORAL_ENABLED=false).",
+                        "diff": patch,
+                    }
+                elif not all([patch, runner_image, baseline_command, candidate_command, failure_signature]):
+                    report_payload["code_fix"] = {
+                        "status": "INCONCLUSIVE",
+                        "detail": "Proposed fix is missing sandbox verification parameters "
+                        "(patch/runner image/commands/failure signature); skipping sandbox run.",
+                        "diff": patch,
+                    }
+                else:
+                    from .execution_context import require_execution_context
+                    from .incident_remediation_workflow import (
+                        IncidentRemediationInput,
+                        IncidentRemediationWorkflow,
+                    )
+
+                    ctx = require_execution_context(execution_context)
+                    workflow_input = IncidentRemediationInput(
+                        incident_id=str(incident_id),
+                        organization_id=str(ctx.organization_id),
+                        cluster_id=str(ctx.cluster_id),
+                        action_type=str(
+                            deterministic_pipeline_params.get("action_type")
+                            or code_action_report.get("action_type") or ""
+                        ),
+                        target=str(
+                            deterministic_pipeline_params.get("target")
+                            or code_action_report.get("target") or ""
+                        ),
+                        runner_image=str(runner_image),
+                        baseline_command=list(baseline_command),
+                        candidate_command=list(candidate_command),
+                        patch=str(patch),
+                        failure_signature=str(failure_signature),
+                        repo=os.getenv("GITHUB_REPO", ""),
+                    )
+                    workflow_id = f"incident-remediation-{incident_id}-{current_action_hash[:12]}"
+                    started_id = await start_workflow(
+                        IncidentRemediationWorkflow.run,
+                        [workflow_input],
+                        workflow_id=workflow_id,
+                    )
+                    report_payload["code_fix"] = (
+                        {
+                            "status": "AWAITING_START_FIX",
+                            "workflow_id": started_id,
+                            "diff": patch,
+                            "detail": "Deferred to the deterministic remediation pipeline; "
+                            "awaiting gate-1 (start fix) approval.",
+                        }
+                        if started_id
+                        else {
                             "status": "INCONCLUSIVE",
-                            "detail": "Sandbox verification is disabled (TEMPORAL_ENABLED=false).",
+                            "detail": "Deterministic remediation pipeline could not be started.",
                             "diff": patch,
                         }
-                    elif not all([patch, runner_image, baseline_command, candidate_command, failure_signature]):
-                        report_payload["code_fix"] = {
-                            "status": "INCONCLUSIVE",
-                            "detail": "Proposed fix is missing sandbox verification parameters "
-                            "(patch/runner image/commands/failure signature); skipping sandbox run.",
-                            "diff": patch,
-                        }
-                    else:
-                        from .execution_context import require_execution_context
-                        from .sandbox_workflow import CodeFixVerificationInput, CodeFixVerificationWorkflow
-
-                        ctx = require_execution_context(execution_context)
-
-                        workflow_input = CodeFixVerificationInput(
-                            incident_id=str(incident_id),
-                            organization_id=str(ctx.organization_id),
-                            cluster_id=str(ctx.cluster_id),
-                            runner_image=str(runner_image),
-                            baseline_command=list(baseline_command),
-                            candidate_command=list(candidate_command),
-                            patch=str(patch),
-                            failure_signature=str(failure_signature),
-                        )
-                        workflow_id = f"code-fix-verify-{incident_id}-{current_action_hash[:12]}"
-                        started_id = await start_workflow(
-                            CodeFixVerificationWorkflow.run,
-                            [workflow_input],
-                            workflow_id=workflow_id,
-                        )
-                        report_payload["code_fix"] = (
-                            {"status": "VERIFYING", "workflow_id": started_id, "diff": patch}
-                            if started_id
-                            else {
-                                "status": "INCONCLUSIVE",
-                                "detail": "Sandbox verification could not be started.",
-                                "diff": patch,
-                            }
-                        )
+                    )
             except Exception as sandbox_err:
                 logger.warning(f"Code-fix sandbox verification failed to start (non-fatal): {sandbox_err}")
 

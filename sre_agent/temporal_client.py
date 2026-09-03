@@ -130,3 +130,31 @@ async def start_workflow(
         logger.error("Failed to start Temporal workflow %s: %s", workflow_id, exc)
         return None
     return workflow_id
+
+
+async def signal_workflow(
+    workflow_id: str,
+    signal_name: str,
+    args: Sequence[Any] = (),
+) -> bool:
+    """Send a signal to a running workflow (Phase 5's two approval gates).
+
+    Returns True if the signal was delivered, False if Temporal is
+    disabled/unavailable or the workflow couldn't be signaled (e.g. it
+    already completed or its approval window expired) — never raises. An
+    approval endpoint must always return a clear result to the human
+    clicking approve/deny regardless of the target workflow's state.
+    """
+    client = await get_temporal_client()
+    if client is None:
+        return False
+
+    try:
+        handle = client.get_workflow_handle(workflow_id)
+        await handle.signal(signal_name, *args)
+    except Exception as exc:
+        logger.error(
+            "Failed to signal workflow %s (%s): %s", workflow_id, signal_name, exc
+        )
+        return False
+    return True

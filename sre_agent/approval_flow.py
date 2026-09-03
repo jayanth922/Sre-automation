@@ -219,3 +219,206 @@ async def create_or_reuse_pending_approval(
             action_hash=request.action_hash,
             expires_at=request.expires_at,
         )
+
+
+# ── Phase 5's two Temporal remediation gates (start_fix, raise_pr) ──────────
+#
+# Distinct from PendingApproval/ApprovalRequest above: keyed off a Temporal
+# `workflow_id` + `gate` rather than a LangGraph `thread_id` + `action_hash`,
+# since there is no "exact report" to hash — deciding a gate just signals a
+# running IncidentRemediationWorkflow (sre_agent/incident_remediation_workflow.py).
+
+
+@dataclass(frozen=True)
+class PendingGateApproval:
+    id: str
+    incident_id: str
+    organization_id: str
+    cluster_id: str
+    workflow_id: str
+    gate: str
+    expires_at: datetime
+
+
+async def create_or_reuse_pending_gate_approval(
+    *,
+    incident_id: str,
+    organization_id: str,
+    cluster_id: str,
+    workflow_id: str,
+    gate: str,
+    ttl_seconds: int,
+) -> PendingGateApproval:
+    """Persist one gate's PENDING state as a durable row so the dashboard/API
+    has something to list and act on. Idempotent lookup-or-create mirrors
+    create_or_reuse_pending_approval's retry safety, keyed off
+    (workflow_id, gate) instead of (incident_id, thread_id, action_hash)
+    since a Temporal workflow_id is already a unique run identifier.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from backend import database, models
+
+    incident_uuid = uuid.UUID(str(incident_id))
+    organization_uuid = uuid.UUID(str(organization_id))
+    cluster_uuid = uuid.UUID(str(cluster_id))
+    now = utc_now()
+    ttl = timedelta(seconds=max(1, int(ttl_seconds)))
+
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.RemediationGateApproval)
+            .where(
+                models.RemediationGateApproval.workflow_id == workflow_id,
+                models.RemediationGateApproval.gate == gate,
+                models.RemediationGateApproval.status == models.ApprovalStatus.PENDING,
+            )
+            .order_by(models.RemediationGateApproval.created_at.desc())
+            .limit(1)
+        )
+        request = result.scalar_one_or_none()
+
+        if request is not None and is_expired(request.expires_at, now):
+            request.status = models.ApprovalStatus.EXPIRED
+            await db.flush()
+            request = None
+
+        created = request is None
+        if created:
+            request = models.RemediationGateApproval(
+                incident_id=incident_uuid,
+                organization_id=organization_uuid,
+                cluster_id=cluster_uuid,
+                workflow_id=workflow_id,
+                gate=gate,
+                status=models.ApprovalStatus.PENDING,
+                expires_at=now + ttl,
+            )
+            db.add(request)
+
+        try:
+            await db.commit()
+        except IntegrityError:
+            if not created:
+                raise
+            await db.rollback()
+            result = await db.execute(
+                select(models.RemediationGateApproval).where(
+                    models.RemediationGateApproval.workflow_id == workflow_id,
+                    models.RemediationGateApproval.gate == gate,
+                    models.RemediationGateApproval.status == models.ApprovalStatus.PENDING,
+                )
+            )
+            request = result.scalar_one_or_none()
+            if request is None:
+                raise
+        await db.refresh(request)
+        return PendingGateApproval(
+            id=str(request.id),
+            incident_id=str(request.incident_id),
+            organization_id=str(request.organization_id),
+            cluster_id=str(request.cluster_id),
+            workflow_id=request.workflow_id,
+            gate=request.gate,
+            expires_at=request.expires_at,
+        )
+
+
+async def expire_gate_approval(*, workflow_id: str, gate: str) -> None:
+    """Reflect a workflow-driven wait_condition timeout back into the DB row
+    so the dashboard stops showing a stale PENDING gate. Best-effort no-op if
+    the row was already decided by a racing API call.
+    """
+    from sqlalchemy import update
+
+    from backend import database, models
+
+    async with database.AsyncSessionLocal() as db:
+        await db.execute(
+            update(models.RemediationGateApproval)
+            .where(
+                models.RemediationGateApproval.workflow_id == workflow_id,
+                models.RemediationGateApproval.gate == gate,
+                models.RemediationGateApproval.status == models.ApprovalStatus.PENDING,
+            )
+            .values(status=models.ApprovalStatus.EXPIRED, decided_at=utc_now())
+        )
+        await db.commit()
+
+
+async def decide_gate_approval(
+    *,
+    gate_approval_id: str,
+    incident_id: str,
+    organization_id: str,
+    cluster_id: str,
+    approved: bool,
+    approver_user_id: str,
+) -> Optional[PendingGateApproval]:
+    """Ownership-scoped CAS decision on one gate row, mirroring
+    mission_control.approve_incident_action's ApprovalRequest CAS block.
+
+    Raises ApprovalValidationError("not_pending" | "expired") for the caller
+    to translate to HTTP status codes. Returns None if no row matches the
+    ownership scope at all (caller treats that as 404).
+    """
+    from sqlalchemy import select, update
+
+    from backend import database, models
+
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.RemediationGateApproval).where(
+                models.RemediationGateApproval.id == uuid.UUID(str(gate_approval_id)),
+                models.RemediationGateApproval.incident_id == uuid.UUID(str(incident_id)),
+                models.RemediationGateApproval.organization_id == uuid.UUID(str(organization_id)),
+                models.RemediationGateApproval.cluster_id == uuid.UUID(str(cluster_id)),
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+
+        now = utc_now()
+        if row.status != models.ApprovalStatus.PENDING:
+            raise ApprovalValidationError("not_pending")
+        if is_expired(row.expires_at, now):
+            await db.execute(
+                update(models.RemediationGateApproval)
+                .where(
+                    models.RemediationGateApproval.id == row.id,
+                    models.RemediationGateApproval.status == models.ApprovalStatus.PENDING,
+                )
+                .values(status=models.ApprovalStatus.EXPIRED, decided_at=now)
+            )
+            await db.commit()
+            raise ApprovalValidationError("expired")
+
+        new_status = models.ApprovalStatus.APPROVED if approved else models.ApprovalStatus.REJECTED
+        cas = await db.execute(
+            update(models.RemediationGateApproval)
+            .where(
+                models.RemediationGateApproval.id == row.id,
+                models.RemediationGateApproval.status == models.ApprovalStatus.PENDING,
+            )
+            .values(
+                status=new_status,
+                approver_user_id=uuid.UUID(str(approver_user_id)),
+                decided_at=now,
+            )
+        )
+        if cas.rowcount != 1:
+            await db.rollback()
+            raise ApprovalValidationError("not_pending")
+        await db.commit()
+        await db.refresh(row)
+        return PendingGateApproval(
+            id=str(row.id),
+            incident_id=str(row.incident_id),
+            organization_id=str(row.organization_id),
+            cluster_id=str(row.cluster_id),
+            workflow_id=row.workflow_id,
+            gate=row.gate,
+            expires_at=row.expires_at,
+        )

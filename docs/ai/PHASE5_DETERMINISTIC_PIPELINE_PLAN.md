@@ -117,12 +117,30 @@ one patch) and only within a workflow already scoped to one bundle.
   (see Open decisions) before Phase B can rely on adjacency, same-service
   matching already works standalone.
 - **Phase B — `IncidentRemediationWorkflow` skeleton + both approval
-  signals.** Reorders the existing `CodeFixVerificationWorkflow` call to run
-  *before* live/PR action instead of after. This is the core of requirements
-  1 and 2.
-- **Phase C — GitHub PR creation.** New, self-contained activity (branch +
-  commit + PR via GitHub API/App token). Needed by Phase B step 7 but
-  buildable and testable independently first.
+  signals. DONE (2026-09-02).** `sre_agent/incident_remediation_workflow.py`
+  — a Temporal workflow with hard `decide_start_fix`/`decide_raise_pr` signal
+  gates (first-write-wins, timeout-bounded, no default-approve path), running
+  the existing `CodeFixVerificationWorkflow` as an unmodified child workflow
+  *between* the two gates (Phase 5A's reordering: sandbox-verify before any
+  live/PR action, not after). `graph_builder.py::_act_gate_node` detects a
+  code-fix action with complete sandbox params up front; when Temporal is
+  enabled and the detection is ready, that one action's report is deferred
+  (mutated to sentinel `DEFERRED_TO_DETERMINISTIC_PIPELINE`, outside the
+  known `AutonomyDecision` set, so `act_phase.execute_autonomous_live`'s
+  existing skip-logic naturally leaves it alone) and `IncidentRemediationWorkflow`
+  is started instead of the old single-gate `CodeFixVerificationWorkflow`
+  fire-and-forget; unready/temporal-disabled cases fall through to the prior
+  INCONCLUSIVE messaging unchanged. Two API endpoints
+  (`sre_agent/api/v1/remediation_gates.py`, admin-gated) list and CAS-decide
+  each gate's `RemediationGateApproval` DB row (new model + migration
+  `e4f5a6b7c8d9`), then call `temporal_client.signal_workflow()`.
+- **Phase C — GitHub PR creation. DONE (2026-09-02), folded into Phase B.**
+  `edge_mcp_servers/mcp_servers/github_exec/server.py::create_fix_pr` —
+  clone → branch → apply patch → commit → push → PR (via `gh`/`git` CLI),
+  typed CREATED/MANUAL_REQUIRED/ERROR outcomes mirroring `create_revert_pr`,
+  guardrailed (allow-list + repo allow-list + param completeness). Invoked
+  by `IncidentRemediationWorkflow`'s `raise_pr_activity` only after both
+  gates and a `RESOLVED` sandbox verdict.
 - **Phase D — Wire Slack + dashboard to the two new gates**, and audit
   Slack's Socket Mode behavior specifically across long approval waits
   (known ~30min expiry blocker). No rebuild of either transport.
@@ -144,4 +162,9 @@ one patch) and only within a workflow already scoped to one bundle.
 
 ## Next bounded task
 
-Awaiting user confirmation of this plan and which phase to start with.
+Phase D: wire Slack + dashboard to the two new gates
+(`GET/POST /api/v1/incidents/{id}/remediation-gates[...]`), and audit
+Slack's Socket Mode behavior specifically across long approval waits (known
+~30min expiry blocker). Open decisions above (GitHub PR repo scope, PR
+credentials, correlation thresholds/adjacency source) are still unanswered
+and should be raised before Phase D/E rely on them.

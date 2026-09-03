@@ -584,4 +584,56 @@ class ApprovalRequest(Base):
     )
 
 
+class RemediationGateApproval(Base):
+    """One of Phase 5's two hard manual-approval gates on a deterministic
+    remediation ``IncidentRemediationWorkflow`` run (start-fix, raise-PR).
 
+    Unlike ``ApprovalRequest`` (coupled to a LangGraph checkpointer thread and
+    an exact-report ``action_hash``), this is keyed off a Temporal
+    ``workflow_id`` — approving/denying a row here signals that workflow
+    directly (``temporal_client.signal_workflow``) rather than resuming a
+    graph interrupt.
+    """
+
+    __tablename__ = "remediation_gate_approvals"
+    __table_args__ = (
+        Index("ix_remediation_gate_approvals_incident_status", "incident_id", "status"),
+        Index("ix_remediation_gate_approvals_workflow_id", "workflow_id"),
+        Index(
+            "uq_remediation_gate_approvals_pending_gate",
+            "workflow_id",
+            "gate",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    cluster_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False
+    )
+    workflow_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    gate: Mapped[str] = mapped_column(String(20), nullable=False)  # "start_fix" | "raise_pr"
+    status: Mapped[ApprovalStatus] = mapped_column(
+        String(20), default=ApprovalStatus.PENDING, nullable=False
+    )
+    approver_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

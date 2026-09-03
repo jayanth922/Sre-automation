@@ -17,16 +17,18 @@ start-fix and raise-PR — per-issue isolated chat/PR, and concurrent-incident
 correlation/bundling instead of one-root-cause assumption). Full plan,
 code-verified gap analysis, and industry research in
 `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` — **read that file before
-continuing this work**. **Phase A (correlation engine) is done**, shadow
-mode only, merged to working tree 2026-09-02 (not yet committed/pushed —
-see below). Remaining: B (deterministic workflow + two approval gates,
-reordering the existing sandbox verify to run before live action), C (extend
-`create_revert_pr`'s pattern to a `create_fix_pr` tool for arbitrary
-patches), D (wire Slack/dashboard to the two new gates + audit Slack's
-long-wait reliability), E (cutover). Also corrected during Phase A: GitHub
-PR creation is not fully missing — `create_revert_pr` already opens PRs for
-reverts; only arbitrary-patch PR creation is net new (Phase C is smaller
-than first scoped).
+continuing this work**. **Phase A (correlation), B (workflow + gates), and
+C (PR creation) are done** (2026-09-02), all uncommitted in the working
+tree. `IncidentRemediationWorkflow` (`sre_agent/incident_remediation_workflow.py`)
+runs the existing `CodeFixVerificationWorkflow` as a child *between* its two
+hard gates; `graph_builder.py::_act_gate_node` detects a sandbox-ready
+code-fix action and defers it (sentinel decision value, see that file's
+detection block) to the new workflow instead of the old single-gate path;
+two admin-gated API endpoints (`sre_agent/api/v1/remediation_gates.py`)
+decide each gate and signal the running workflow. Full suite: 835 passed / 3
+skipped. Remaining: D (wire Slack/dashboard to the two new gates + audit
+Slack's long-wait reliability), E (cutover, retiring the old single-gate
+live path).
 
 **Done and merged to origin/master:**
 - **Task #16 (live-fire validation)** — a genuine end-to-end happy path
@@ -150,8 +152,17 @@ UI/UX are next, previously deferred until backend was fully complete.
 - `sre_agent/incident_correlation.py`, `sre_agent/api/v1/alerts.py::_record_correlation_shadow`,
   `backend/crud.py::list_active_incidents_for_cluster` — Phase 5 correlation
   gate (Phase A, done, shadow mode).
-- `edge_mcp_servers/mcp_servers/github_exec/server.py` — existing PR-opening
-  tool (`create_revert_pr`); Phase 5C extends this pattern.
+- `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
+  Temporal workflow + `raise_pr_activity` (done).
+- `sre_agent/approval_flow.py` (`create_or_reuse_pending_gate_approval`,
+  `decide_gate_approval`, `expire_gate_approval`), `sre_agent/api/v1/remediation_gates.py`,
+  `backend/models.py::RemediationGateApproval`, migration `e4f5a6b7c8d9` —
+  Phase 5B gate persistence + API (done).
+- `edge_mcp_servers/mcp_servers/github_exec/server.py` — `create_revert_pr`
+  (reverts) and `create_fix_pr` (arbitrary patches, Phase 5C, done).
+- `sre_agent/graph_builder.py::_act_gate_node` — deterministic-pipeline
+  detection/deferral + `IncidentRemediationWorkflow` trigger (Phase 5B/C
+  wiring, done).
 - `docs/ai/DECISIONS.md` — durable technical decisions log, check before
   re-deriving root causes already documented there.
 
@@ -166,13 +177,14 @@ UI/UX are next, previously deferred until backend was fully complete.
   re-testing live execution.
 
 ## Next bounded task
-Phase 5, Phase B: build `IncidentRemediationWorkflow` skeleton (Temporal) with
-the two approval signals (start-fix, raise-PR), reordering the existing
-`CodeFixVerificationWorkflow` call in `graph_builder.py` (~line 287-352) to
-run before any live/PR action instead of after. See
-`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` for full design. Uncommitted
-changes from Phase A are sitting in the working tree — commit before starting
-Phase B so the two phases stay separable in history.
+Phase 5, Phase D: wire Slack + dashboard to the two new gates
+(`GET/POST /api/v1/incidents/{id}/remediation-gates[...]`), and audit
+Slack's Socket Mode behavior across long approval waits (known ~30min expiry
+blocker). Open decisions still unanswered (GitHub PR repo scope/credentials,
+correlation adjacency source) should be raised before Phase D/E rely on
+them — see `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`. Uncommitted
+Phase A/B/C changes are sitting in the working tree — commit (in separable
+chunks per phase, if history granularity matters) before starting Phase D.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

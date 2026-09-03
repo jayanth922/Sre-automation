@@ -265,6 +265,25 @@ class ApprovalDecisionRequest(BaseModel):
     approval_request_id: uuid.UUID
     action_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
+
+class GateApprovalDecisionRequest(BaseModel):
+    approved: bool
+
+
+class GateApprovalResponse(BaseModel):
+    id: uuid.UUID
+    incident_id: uuid.UUID
+    workflow_id: str
+    gate: str
+    status: str
+    approver_user_id: Optional[uuid.UUID] = None
+    decided_at: Optional[datetime] = None
+    expires_at: datetime
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 # ----------------------------------------------------------------------
 # SLO Schemas
 # ----------------------------------------------------------------------
