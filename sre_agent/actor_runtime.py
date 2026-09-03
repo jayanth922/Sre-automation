@@ -90,12 +90,14 @@ class HermesRuntime(AgentRuntime):
         disabled_toolsets: Optional[List[str]] = None,
         ephemeral_system_prompt: Optional[str] = None,
         task_id: str = "sre-actor",
+        workdir: Optional[str] = None,
     ):
         self.model = model
         self.max_iterations = max_iterations
         self.disabled_toolsets = disabled_toolsets
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.task_id = task_id
+        self.workdir = workdir
 
     def _build_agent(self):
         try:
@@ -106,7 +108,7 @@ class HermesRuntime(AgentRuntime):
                 "pip install git+https://github.com/NousResearch/hermes-agent.git"
             ) from e
 
-        return AIAgent(
+        kwargs = dict(
             model=self.model,
             quiet_mode=True,
             skip_context_files=True,
@@ -115,6 +117,17 @@ class HermesRuntime(AgentRuntime):
             disabled_toolsets=self.disabled_toolsets,
             ephemeral_system_prompt=self.ephemeral_system_prompt,
         )
+        if self.workdir:
+            # Best-effort: `workdir` is the param name our own LocalTerminalRuntime
+            # uses; not independently verified against hermes-agent's actual
+            # constructor signature (never installed in this environment — see
+            # docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase F). Dropped
+            # rather than failing construction if the package rejects it.
+            try:
+                return AIAgent(workdir=self.workdir, **kwargs)
+            except TypeError:
+                logger.warning("HermesRuntime: AIAgent does not accept workdir=; running without it")
+        return AIAgent(**kwargs)
 
     def run(self, task: str) -> ActorResult:
         agent = self._build_agent()

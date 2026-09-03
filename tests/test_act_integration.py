@@ -29,9 +29,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     from sre_agent.agent_state import AlertContext, RemediationAction, RemediationPlan
-    from sre_agent.graph_builder import _act_gate_node
+    from sre_agent.graph_builder import _act_gate_node, _sandbox_params_ready
 except Exception as exc:  # pragma: no cover - env-dependent
     pytest.skip(f"full runtime stack unavailable: {exc}", allow_module_level=True)
+
+
+# ── Phase F: shared sandbox-readiness gate (pure, no I/O) ────────────────────
+def test_sandbox_params_ready_requires_runner_image_and_failure_signature():
+    assert not _sandbox_params_ready("", [], [], "", "sig")
+    assert not _sandbox_params_ready("img", [], [], "", "")
+
+
+def test_sandbox_params_ready_true_with_no_patch_yet():
+    # No patch: generate_patch_activity will produce one, so baseline/candidate
+    # commands aren't required up front.
+    assert _sandbox_params_ready("img", [], [], "", "sig")
+
+
+def test_sandbox_params_ready_requires_commands_when_patch_present():
+    assert not _sandbox_params_ready("img", [], [], "diff", "sig")
+    assert not _sandbox_params_ready("img", ["cmd"], [], "diff", "sig")
+    assert _sandbox_params_ready("img", ["cmd"], ["cmd"], "diff", "sig")
+
+
+def test_remediation_action_accepts_code_fix_type():
+    # Phase F: the planner can now propose action_type="code_fix" for
+    # source-level bugs (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase F).
+    action = RemediationAction(
+        action_type="code_fix", target="checkout-service",
+        parameters={"description": "nil pointer in handler.go"}, safety_check="sandbox-verified",
+    )
+    assert action.action_type == "code_fix"
 
 
 @pytest.fixture(autouse=True)

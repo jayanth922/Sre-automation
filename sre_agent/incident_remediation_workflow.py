@@ -11,6 +11,11 @@ a human: starting the fix, and raising the PR. Both are hard gates — this
 workflow blocks on a signal for each and takes no default-approve path.
 
 Pipeline:
+    0. (Phase F, only when the planner didn't supply a patch) generate_patch_activity
+       — the pluggable actor runtime (sre_agent/actor_runtime.py) proposes a
+       patch + baseline/candidate verification commands against a throwaway
+       clone of the incident's repo. Failure escalates immediately; gate 1
+       never opens without a real diff to show.
     1. emit_gate_event_activity("start_fix", PENDING)
     2. wait_condition on decide_start_fix signal (bounded by approval_timeout_seconds)
        - denied/expired -> terminal, no verification, no PR
@@ -32,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from datetime import timedelta
 from typing import Dict, List, Optional
 
@@ -68,11 +73,16 @@ class IncidentRemediationInput:
     action_type: str
     target: str
     runner_image: str
-    baseline_command: List[str]
-    candidate_command: List[str]
-    patch: str
     failure_signature: str
     repo: str = ""
+    # Phase F: when patch is empty, generate_patch_activity produces patch +
+    # baseline/candidate commands before gate 1 opens (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md
+    # Phase F) — the planner only has to identify a code_fix is needed, not
+    # author the diff itself.
+    patch: str = ""
+    baseline_command: List[str] = field(default_factory=list)
+    candidate_command: List[str] = field(default_factory=list)
+    fix_description: str = ""
     env: Dict[str, str] = field(default_factory=dict)
     approval_timeout_seconds: int = DEFAULT_APPROVAL_TIMEOUT_SECONDS
 
@@ -85,11 +95,20 @@ class PrResult:
 
 
 @dataclass
+class PatchGenerationResult:
+    status: str  # "GENERATED" | "FAILED"
+    patch: str = ""
+    baseline_command: List[str] = field(default_factory=list)
+    candidate_command: List[str] = field(default_factory=list)
+    detail: str = ""
+
+
+@dataclass
 class RemediationVerdict:
     status: str
-    # "DENIED_START_FIX" | "EXPIRED_START_FIX" | "VERIFICATION_REGRESSED" |
-    # "VERIFICATION_INCONCLUSIVE" | "DENIED_RAISE_PR" | "EXPIRED_RAISE_PR" |
-    # "PR_CREATED" | "PR_CREATION_FAILED"
+    # "PATCH_GENERATION_FAILED" | "DENIED_START_FIX" | "EXPIRED_START_FIX" |
+    # "VERIFICATION_REGRESSED" | "VERIFICATION_INCONCLUSIVE" |
+    # "DENIED_RAISE_PR" | "EXPIRED_RAISE_PR" | "PR_CREATED" | "PR_CREATION_FAILED"
     detail: str
     pr_url: Optional[str] = None
     verification_status: Optional[str] = None
@@ -137,6 +156,138 @@ async def emit_gate_event_activity(
             "workflow_id": workflow_id,
         },
     )
+
+
+def _repo_clone_url(repo: str, token: str = "") -> str:
+    """`repo` is always `owner/repo` form (the existing GITHUB_REPO convention
+    — see edge_mcp_servers/mcp_servers/github_real/README.md). Pure so the
+    credential-embedding logic is unit-testable without a real clone.
+    """
+    return f"https://{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
+
+
+def _parse_verification_commands(
+    actor_output: str, fallback_baseline: List[str], fallback_candidate: List[str]
+) -> "tuple[List[str], List[str]]":
+    """Extract the BASELINE_COMMAND/CANDIDATE_COMMAND lines the generate_patch_activity
+    task prompt asks the actor to end its response with, falling back to
+    caller-supplied commands (if any) when the actor didn't report them. Pure
+    text parsing, factored out of the activity so it's unit-testable without
+    mocking git/the actor runtime.
+    """
+    import re
+    import shlex
+
+    baseline_command = list(fallback_baseline)
+    candidate_command = list(fallback_candidate)
+    m_b = re.search(r"BASELINE_COMMAND:\s*(.+)", actor_output)
+    m_c = re.search(r"CANDIDATE_COMMAND:\s*(.+)", actor_output)
+    if m_b:
+        baseline_command = shlex.split(m_b.group(1).strip())
+    if m_c:
+        candidate_command = shlex.split(m_c.group(1).strip())
+    return baseline_command, candidate_command
+
+
+async def _run_git(args: List[str], cwd: str, redact: str = "") -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args, cwd=cwd,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode(errors="replace")[:2000]
+        if redact:
+            err = err.replace(redact, "***")
+        raise RuntimeError(f"git {' '.join(args)} failed: {err}")
+    return stdout.decode(errors="replace")
+
+
+@activity.defn
+async def generate_patch_activity(params: IncidentRemediationInput) -> PatchGenerationResult:
+    """Phase F (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md): generate the
+    missing patch upstream of gate 1, using the pluggable actor runtime
+    (sre_agent/actor_runtime.py) against a throwaway clone of the incident's
+    repo. Deliberately narrow: runner_image/failure_signature stay whatever
+    the planner/env already supplied (deterministic, never agent-invented);
+    only the patch and its baseline/candidate verification commands come from
+    the agent, since nothing else in the pipeline can produce them (see the
+    Phase F "verified gap" writeup in docs/ai/PROJECT_STATE.md).
+    """
+    import os
+    import shutil
+    import tempfile
+    import uuid as _uuid
+
+    from .actor_runtime import get_agent_runtime
+
+    if not params.repo:
+        return PatchGenerationResult(
+            "FAILED", detail="No repo configured (GITHUB_REPO env var); cannot generate a patch."
+        )
+
+    token = os.getenv("GITHUB_TOKEN", "")
+    repo_url = _repo_clone_url(params.repo, token)
+
+    clone_dir = tempfile.mkdtemp(prefix=f"sentinel-patchgen-{_uuid.uuid4().hex[:8]}-")
+    try:
+        activity.heartbeat("cloning")
+        await _run_git(["clone", "--depth", "1", repo_url, clone_dir], cwd=tempfile.gettempdir(), redact=token)
+
+        task = (
+            "You are fixing a production incident in this repository.\n"
+            f"Failure signature: {params.failure_signature}\n"
+            f"Target: {params.target}\n"
+            "Root cause / desired fix (from the on-call remediation plan): "
+            f"{params.fix_description or '(no description provided)'}\n\n"
+            "Make the minimal source change that fixes this. Do not commit or "
+            "push. When finished, end your final response with exactly these "
+            "two lines (fill in real shell commands):\n"
+            "BASELINE_COMMAND: <command that reproduces the failure on the original code>\n"
+            "CANDIDATE_COMMAND: <command that verifies the fix, usually the same command>"
+        )
+        activity.heartbeat("running actor")
+        runtime = get_agent_runtime(workdir=clone_dir)
+        result = await asyncio.to_thread(runtime.run, task)
+
+        if result.status not in ("SOLVED", "DONE"):
+            return PatchGenerationResult(
+                "FAILED",
+                detail=f"Actor runtime ({runtime.name}) did not produce a fix: "
+                f"{result.status} — {result.detail or result.output[:500]}",
+            )
+
+        activity.heartbeat("diffing")
+        patch = await _run_git(["diff"], cwd=clone_dir)
+        if not patch.strip():
+            return PatchGenerationResult(
+                "FAILED",
+                detail=f"Actor runtime ({runtime.name}) reported {result.status} but the working tree has no diff.",
+            )
+
+        baseline_command, candidate_command = _parse_verification_commands(
+            result.output, params.baseline_command, params.candidate_command
+        )
+        if not baseline_command or not candidate_command:
+            return PatchGenerationResult(
+                "FAILED",
+                detail=f"Actor runtime ({runtime.name}) produced a patch but no "
+                "baseline/candidate verification command; refusing to open gate 1 "
+                "without a real sandbox oracle.",
+            )
+
+        return PatchGenerationResult(
+            "GENERATED",
+            patch=patch,
+            baseline_command=baseline_command,
+            candidate_command=candidate_command,
+            detail=f"Patch generated by {runtime.name}.",
+        )
+    except Exception as exc:
+        logger.error(f"generate_patch_activity failed: {exc}")
+        return PatchGenerationResult("FAILED", detail=str(exc))
+    finally:
+        shutil.rmtree(clone_dir, ignore_errors=True)
 
 
 @activity.defn
@@ -228,6 +379,7 @@ async def expire_gate_approval_activity(workflow_id: str, gate: str) -> None:
 
 ACTIVITIES = [
     emit_gate_event_activity,
+    generate_patch_activity,
     raise_pr_activity,
     open_gate_activity,
     expire_gate_approval_activity,
@@ -299,6 +451,43 @@ class IncidentRemediationWorkflow:
     async def run(self, params: IncidentRemediationInput) -> RemediationVerdict:
         workflow_id = workflow.info().workflow_id
         timeout = timedelta(seconds=params.approval_timeout_seconds)
+
+        # ── Phase F: generate the patch upstream of gate 1 when the planner
+        # only identified a code_fix was needed but didn't (couldn't) author
+        # a diff itself (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase F).
+        # No gate is open yet — a failed/refused generation never reaches a human.
+        if not params.patch:
+            self._phase = "GENERATING_PATCH"
+            await self._emit(
+                params.incident_id, workflow_id, "generate_patch", "PENDING",
+                "No patch supplied yet; generating one via the actor runtime "
+                "before gate 1 opens.",
+            )
+            generation: PatchGenerationResult = await workflow.execute_activity(
+                generate_patch_activity,
+                params,
+                start_to_close_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(seconds=60),
+                retry_policy=DEFAULT_RETRY_POLICY,
+            )
+            if generation.status != "GENERATED":
+                self._phase = "PATCH_GENERATION_FAILED"
+                await self._emit(
+                    params.incident_id, workflow_id, "generate_patch", "ESCALATED",
+                    f"Patch generation failed: {generation.detail}. Escalating to "
+                    "on-call; gate 1 was never opened.",
+                )
+                return RemediationVerdict("PATCH_GENERATION_FAILED", generation.detail)
+            params = _dc_replace(
+                params,
+                patch=generation.patch,
+                baseline_command=generation.baseline_command,
+                candidate_command=generation.candidate_command,
+            )
+            await self._emit(
+                params.incident_id, workflow_id, "generate_patch", "APPROVED",
+                generation.detail,
+            )
 
         # ── Gate 1: approve starting the fix in Temporal ───────────────────
         self._phase = "AWAITING_START_FIX"

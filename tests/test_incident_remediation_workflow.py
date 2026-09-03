@@ -20,8 +20,11 @@ from sre_agent.incident_remediation_workflow import (  # noqa: E402
     DEFERRED_TO_DETERMINISTIC_PIPELINE,
     IncidentRemediationInput,
     IncidentRemediationWorkflow,
+    PatchGenerationResult,
     PrResult,
     RemediationVerdict,
+    _parse_verification_commands,
+    _repo_clone_url,
 )
 
 
@@ -48,6 +51,60 @@ def test_incident_remediation_input_defaults():
     assert params.repo == ""
     assert params.env == {}
     assert params.approval_timeout_seconds == DEFAULT_APPROVAL_TIMEOUT_SECONDS
+
+
+def test_incident_remediation_input_patch_defaults_to_empty_for_phase_f():
+    # Phase F: patch/baseline/candidate are now optional — generate_patch_activity
+    # fills them in when the planner only identified a code_fix was needed.
+    params = IncidentRemediationInput(
+        incident_id="inc-1",
+        organization_id="org-1",
+        cluster_id="cluster-1",
+        action_type="code_fix",
+        target="checkout-service",
+        runner_image="sentinel/runner:latest",
+        failure_signature="panic: nil pointer dereference",
+    )
+    assert params.patch == ""
+    assert params.baseline_command == []
+    assert params.candidate_command == []
+    assert params.fix_description == ""
+
+
+# ── Phase F: patch-generation helpers (pure, no I/O) ─────────────────────────
+def test_repo_clone_url_without_token():
+    assert _repo_clone_url("org/repo") == "https://github.com/org/repo.git"
+
+
+def test_repo_clone_url_embeds_token():
+    url = _repo_clone_url("org/repo", "ghp_secret")
+    assert url == "https://ghp_secret@github.com/org/repo.git"
+
+
+def test_parse_verification_commands_from_actor_output():
+    output = (
+        "I fixed the nil pointer check in handler.go.\n"
+        "BASELINE_COMMAND: go test ./... -run TestHandler\n"
+        "CANDIDATE_COMMAND: go test ./... -run TestHandler"
+    )
+    baseline, candidate = _parse_verification_commands(output, [], [])
+    assert baseline == ["go", "test", "./...", "-run", "TestHandler"]
+    assert candidate == ["go", "test", "./...", "-run", "TestHandler"]
+
+
+def test_parse_verification_commands_falls_back_when_absent():
+    baseline, candidate = _parse_verification_commands(
+        "no markers here", ["fallback-baseline"], ["fallback-candidate"]
+    )
+    assert baseline == ["fallback-baseline"]
+    assert candidate == ["fallback-candidate"]
+
+
+def test_patch_generation_result_defaults():
+    result = PatchGenerationResult("FAILED", detail="no repo")
+    assert result.patch == ""
+    assert result.baseline_command == []
+    assert result.candidate_command == []
 
 
 def test_start_fix_signal_is_first_write_wins():

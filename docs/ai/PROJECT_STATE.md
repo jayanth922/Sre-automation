@@ -17,39 +17,38 @@ start-fix and raise-PR — per-issue isolated chat/PR, and concurrent-incident
 correlation/bundling instead of one-root-cause assumption). Full plan,
 code-verified gap analysis, and industry research in
 `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` — **read that file before
-continuing this work**. **Phase A (correlation), B (workflow + gates), C (PR
-creation), and D (Slack + dashboard gate wiring) are done** (2026-09-02).
-A/B/C are committed and pushed to `origin/master`
-(`4680faf`/`3375aca`/`b6d619c`); D is implemented and test-covered, not yet
-committed. `IncidentRemediationWorkflow`
-(`sre_agent/incident_remediation_workflow.py`) runs the existing
-`CodeFixVerificationWorkflow` as a child *between* its two hard gates;
-`graph_builder.py::_act_gate_node` detects a sandbox-ready code-fix action
-and defers it (sentinel decision value, see that file's detection block) to
-the new workflow instead of the old single-gate path; two admin-gated API
-endpoints (`sre_agent/api/v1/remediation_gates.py`) decide each gate and
-signal the running workflow — the dashboard's incident page now polls and
-acts on those endpoints, and Slack replies of the form "approve start-fix"/
-"deny raise-pr" inside a tracked war-room thread do the same, authorizing
-off the replying Slack user's email resolved to an org-admin `User` row
-(`war_room.py::route_gate_command`, `slack_bot.py::_slack_user_email`).
-Socket Mode audited: `slack_sdk`'s socket client auto-reconnects (5s ping,
-`auto_reconnect_enabled=True` by default) independent of wait length — the
-known "~30min expiry" is our own `APPROVAL_TTL_MINUTES` gate TTL, not a
-transport issue. Full suite: 841 passed / 3 skipped. Remaining: E (cutover,
-retiring the old single-gate live path).
+continuing this work**. **Phases A-F are implemented** (2026-09-02); see
+"Relevant files" below for what each owns. A/B/C pushed to `origin/master`
+(`4680faf`/`3375aca`/`b6d619c`); D (`d7b7cb2`) and F are committed-pending or
+uncommitted, not yet pushed. Socket Mode audited: `slack_sdk`'s socket client
+auto-reconnects independent of wait length — the "~30min expiry" is our own
+`APPROVAL_TTL_MINUTES` gate TTL, not a transport issue.
+
+**Phase F (2026-09-02):** closed a verified gap — Phases B/C were
+structurally unreachable because nothing ever produced the `patch`/`sandbox_*`
+params needed to start `IncidentRemediationWorkflow`, and the planner had no
+code-fix action type. Now: planner can propose `action_type="code_fix"`
+(target=repo/service, `parameters.description`=root cause, no diff invented);
+both `_act_gate_node` detection blocks share a `_sandbox_params_ready()` gate
+that tolerates a missing patch; `IncidentRemediationWorkflow.run()`'s new
+first step, `generate_patch_activity`, runs only when `patch` is empty —
+clones `GITHUB_REPO`, runs the pluggable actor
+(`sre_agent/actor_runtime.py`, `AGENT_RUNTIME=local|hermes`, default local)
+against it, takes `git diff` as the patch, parses agent-reported
+`BASELINE_COMMAND`/`CANDIDATE_COMMAND` lines for the sandbox oracle, and
+escalates (`PATCH_GENERATION_FAILED`) without opening gate 1 on any failure.
+`HermesRuntime` now accepts `workdir` (previously missing). New pure-function
+unit tests added and passing; full suite 847 passed / 3 skipped (unchanged
+skip set — `temporalio` optional extra not installed locally, so the new
+workflow-module tests were verified manually against a stub instead). **Not
+yet done: live-fire run against a real incident.**
 
 **Done and merged to origin/master** (pre-Phase-5 milestone; see
-`docs/ai/DECISIONS.md` and git log for full detail, not restated here):
-- Task #16 — live-fire validation, real telemetry, `docs/ai/DECISIONS.md`
-  has the root-cause writeup.
-- Model tiering + prompt caching (`model_router.py`) and cross-provider
-  routing (`litellm_backend.py`) — both done, verified against code.
-- Temporal code-fix verification (`sandbox_workflow.py::CodeFixVerificationWorkflow`)
-  — this is Phase 5's sandbox-verify step, now reused as a child workflow.
-- Runbook RAG/NL-query production grade — **PR #53**, merged.
-- Ad hoc Slack chat memory (`nl_query.py::_handle_ad_hoc_chat`) — **PR #54**,
-  merged.
+`docs/ai/DECISIONS.md` and git log for full detail, not restated here): Task
+#16 live-fire validation; model tiering/prompt caching + cross-provider
+routing; Temporal code-fix verification (`CodeFixVerificationWorkflow`, now
+reused as Phase 5's sandbox-verify child); runbook RAG/NL-query (PR #53); ad
+hoc Slack chat memory (PR #54).
 
 ## Current architecture and invariants
 Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
@@ -69,7 +68,10 @@ until Phase 5 completes.
   `backend/crud.py::list_active_incidents_for_cluster` — Phase 5 correlation
   gate (Phase A, done, shadow mode).
 - `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
-  Temporal workflow + `raise_pr_activity` (done).
+  Temporal workflow + `raise_pr_activity` (done); Phase F's
+  `generate_patch_activity` (implemented, not live-fire tested).
+- `sre_agent/actor_runtime.py` — Phase F's pluggable actor
+  (`AGENT_RUNTIME=local|hermes`), now takes `workdir`.
 - `sre_agent/approval_flow.py` (`create_or_reuse_pending_gate_approval`,
   `decide_gate_approval`, `expire_gate_approval`), `sre_agent/api/v1/remediation_gates.py`,
   `backend/models.py::RemediationGateApproval`, migration `e4f5a6b7c8d9` —
@@ -102,14 +104,14 @@ until Phase 5 completes.
   — Socket Mode auto-reconnects on its own well within any wait length).
 
 ## Next bounded task
-Phase 5, Phase E: cutover — retire the old single-gate live-in-LangGraph
-auto-execute path once Phase A–D have run clean against 1–2 real incidents
-on the Codespace (Task #16's live-fire validation convention). Open
-decisions still unanswered (GitHub PR repo scope/credentials, correlation
-adjacency source) should be raised before Phase E relies on them — see
-`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`. Phase D changes are
-implemented and test-covered but not yet committed — commit (separately
-from A/B/C, which are already on `origin/master`) before starting Phase E.
+Commit Phase F, then live-fire it on the Codespace (Task #16's convention):
+1-2 real incidents with `GITHUB_TOKEN`/`GITHUB_REPO` set to a real,
+disposable target repo, confirming `generate_patch_activity` produces a sane
+diff + working commands and that failures escalate without opening gate 1.
+Phase E (cutover) follows once that's clean. Open decisions (GitHub PR repo
+scope/credentials, correlation adjacency source, Hermes safety review) should
+be raised before either phase relies on them. Phase D (`d7b7cb2`) is
+committed, not yet pushed to `origin/master`.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

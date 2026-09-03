@@ -59,5 +59,20 @@ def test_hermes_runtime_construction_does_not_import_package():
     assert rt.max_iterations == 10
 
 
+def test_hermes_runtime_accepts_workdir(tmp_path):
+    # Phase F (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md): generate_patch_activity
+    # always passes workdir= regardless of backend — HermesRuntime must accept
+    # it (previously missing entirely).
+    rt = HermesRuntime(workdir=str(tmp_path))
+    assert rt.workdir == str(tmp_path)
+
+
+def test_get_agent_runtime_passes_workdir_through_to_local(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME", "local")
+    rt = get_agent_runtime(workdir=str(tmp_path))
+    assert isinstance(rt, LocalTerminalRuntime)
+    assert rt.workdir == str(tmp_path)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

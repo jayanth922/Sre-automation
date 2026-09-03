@@ -181,6 +181,75 @@ one patch) and only within a workflow already scoped to one bundle.
   auto-execute path once Phase A–D have run clean against 1–2 real incidents
   on the Codespace, matching this repo's existing live-fire validation
   convention (Task #16).
+- **Phase F — AI patch generation (actor-runtime). Implemented and
+  unit-tested (2026-09-02); not yet committed or live-fire validated** — see
+  `docs/ai/PROJECT_STATE.md`'s "Phase F" paragraph for current status. Root
+  cause: user asked who executes the
+  AI-generated patch in the sandbox today, and code inspection found the
+  honest answer is **no one, because the pipeline never gets that far**.
+  `graph_builder.py:359-379` reads `patch`/`diff` and four
+  `sandbox_*` parameters off the triggering action before it will even start
+  `IncidentRemediationWorkflow`, but grepping the whole tree turned up **zero
+  production write sites** for any of those five keys — they're read-only.
+  Compounding that, `RemediationAction.action_type`
+  (`agent_state.py:123-125`, a Pydantic `Literal` structured-output schema)
+  has no code-fix intent at all — only `restart/scale/rollback/config_change/
+  patch/escalate/revert_commit`, where `"patch"` there means a live K8s
+  resource patch (`policy_gate.py:68`), not a git diff. So today the
+  deterministic pipeline's fix/verify machine (Phases B/C, fully built and
+  tested) is structurally unreachable outside unit tests that hand-construct
+  the params directly. Separately, `sre_agent/actor_runtime.py`'s
+  `HermesRuntime`/`LocalTerminalRuntime` (the "Hermes agent" integration
+  audited this session) is real, correctly-wired code but has exactly one
+  caller in the whole tree (`terminal_agent.py`'s standalone CLI, itself only
+  invoked by `benchmarks/terminal_bench_adapter.py`) — confirmed dead from
+  the product's perspective, and `scripts/check_module_reachability.py`
+  self-admits this by explicitly whitelisting `actor_runtime`/`terminal_agent`
+  as `EXPERIMENTAL`. Phase F closes both gaps at once: use the actor runtime
+  to generate the missing patch, upstream of gate 1, so gate 1 finally has a
+  real diff to show instead of never firing.
+
+  Planned changes:
+  1. `agent_state.py` — add `"code_fix"` to `RemediationAction.action_type`'s
+     `Literal`; nudge the planner prompt (`supervisor.py`) to propose it
+     (target = repo/service, parameters = root-cause description) when the
+     fix is source-level, not infra-level. No diff at this stage — intent
+     only, same as it proposes `revert_commit` today.
+  2. `incident_remediation_workflow.py` — loosen `IncidentRemediationInput.patch`
+     /`baseline_command`/`candidate_command` to optional. Add
+     `generate_patch_activity` as a new first step, run only when `patch` is
+     empty, before the existing `emit_gate_event_activity("start_fix",
+     PENDING)`: shallow-clones `repo` into a scratch dir keyed by
+     `workflow_id` (mirrors `sandbox_workflow.py::_job_name`'s pattern,
+     cleaned up in the same `finally`), then calls
+     `actor_runtime.get_agent_runtime(workdir=clone_dir)` with a task built
+     from `remediation_plan.hypothesis` plus the incident's existing
+     evidence/failure signature (no new evidence plumbing — already gathered
+     upstream). Success: `git diff` in the clone becomes `patch`; the agent
+     also proposes `candidate_command`/`baseline_command`. `GAVE_UP`/`ERROR`:
+     workflow ends terminal (`PATCH_GENERATION_FAILED`), a timeline event is
+     emitted, gate 1 never opens — nothing to approve, matching today's
+     INCONCLUSIVE-and-stop pattern.
+  3. `failure_signature` and `runner_image` stay **deterministic, not
+     agent-generated** — `failure_signature` from the incident's already-
+     detected alert/error signature, `runner_image` from a new small
+     per-repo/per-cluster config lookup (a shell agent can't build a
+     container image). Only the diff and repro commands come from the actor.
+  4. `graph_builder.py:373`'s all-five-params gate loosens to require only
+     `runner_image` + `failure_signature` + `repo` up front; `patch`/commands
+     become optional-if-missing, filled in by step 2 inside the workflow.
+  5. `actor_runtime.py::HermesRuntime._build_agent()` — fix: it never passes
+     `workdir`/cwd to `AIAgent(...)` today, so it would run wherever the
+     process happens to be instead of the incident's repo clone. Required
+     fix regardless of which backend is selected.
+  6. Backend default stays `AGENT_RUNTIME=local` (`LocalTerminalRuntime`) for
+     this step even after Hermes is wired up — it already has an audited,
+     tested deny-list (`terminal_agent.py::_DENY_PATTERNS`) and a workdir
+     scope; Hermes's own tool-safety hasn't been reviewed from inside this
+     codebase, so it stays opt-in per cluster until it has been.
+  7. No change to gate semantics, dashboard, or Slack contracts — gate 1
+     keeps the same two-gate shape, now with a real diff attached instead of
+     an unreachable branch.
 
 ## Open decisions for the user (not yet answered — flag before Phase B/C)
 
@@ -192,12 +261,18 @@ one patch) and only within a workflow already scoped to one bundle.
   existing service-dependency graph, or does one need to be built/inferred
   from k8s labels?) — likely needs a short calibration pass against real
   incident data, not guessed up front.
+- Phase F: is `LocalTerminalRuntime` (default, audited deny-list) acceptable
+  for real patch generation, or should Hermes's own tool-safety be reviewed
+  first so `AGENT_RUNTIME=hermes` can be trusted per cluster?
 
 ## Next bounded task
 
-Phase E: cutover. Retire the old single-gate live-in-LangGraph auto-execute
-path once Phase A–D have run clean against 1–2 real incidents on the
-Codespace (Task #16's live-fire validation convention). Open decisions above
-(GitHub PR repo scope, PR credentials, correlation thresholds/adjacency
-source) are still unanswered and should be raised before Phase E relies on
-them.
+Commit Phase F, then live-fire it on the Codespace: 1-2 real incidents with
+`GITHUB_TOKEN`/`GITHUB_REPO` set to a real, disposable target repo,
+confirming `generate_patch_activity` produces a sane diff + working
+baseline/candidate commands and that failures escalate
+(`PATCH_GENERATION_FAILED`) without opening gate 1 (Task #16's live-fire
+validation convention). Phase E (cutover) follows once that's clean. Open
+decisions above (GitHub PR repo scope, PR credentials, correlation thresholds/adjacency
+source, Hermes safety review) are still unanswered and should be raised
+before either phase relies on them.
