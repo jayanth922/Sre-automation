@@ -86,9 +86,9 @@ def test_every_edge_server_runs_authenticated_transport():
 
 def test_compose_ports_are_loopback_only_and_require_token():
     source = (_ROOT / "edge_mcp_servers" / "docker-compose.yaml").read_text()
-    for port in range(4000, 4007):
+    for port in range(4000, 4008):
         assert f'"127.0.0.1:{port}:3000"' in source
-    assert source.count("MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}") == 7
+    assert source.count("MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}") == 8
 
 
 def test_mcp_client_threads_bearer_header_through_server_config():
