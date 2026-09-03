@@ -195,7 +195,7 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
         gate_context,
         execution_context,
         tool_caller,
-        "provision",
+        "sandbox_provision",
         {
             "image": request.image,
             "command": request.command,
@@ -218,7 +218,7 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
             gate_context,
             execution_context,
             tool_caller,
-            "status",
+            "sandbox_status",
             {"job_name": job_name},
             idempotency_key=f"sandbox-status:{job_name}:{_uuid.uuid4().hex}",
         )
@@ -234,7 +234,7 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
             gate_context,
             execution_context,
             tool_caller,
-            "logs",
+            "sandbox_logs",
             {"job_name": job_name},
             idempotency_key=f"sandbox-logs:{job_name}:{_uuid.uuid4().hex}",
         )
@@ -245,7 +245,7 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
             gate_context,
             execution_context,
             tool_caller,
-            "teardown",
+            "sandbox_teardown",
             {"job_name": job_name},
             idempotency_key=f"sandbox-teardown:{job_name}:{_uuid.uuid4().hex}",
         )
@@ -350,7 +350,7 @@ async def cleanup_activity(incident_id: str, organization_id: str, cluster_id: s
                 gate_context,
                 execution_context,
                 tool_caller,
-                "teardown",
+                "sandbox_teardown",
                 {"job_name": job_name},
                 idempotency_key=f"sandbox-cleanup:{job_name}:{_uuid.uuid4().hex}",
             )

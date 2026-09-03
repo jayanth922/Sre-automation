@@ -46,10 +46,36 @@ k8s_client = None
 def _initialize_client() -> None:
     """Initialize the Kubernetes client (mirrors executor_real's connection logic)."""
     global k8s_client
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config(config_file=os.getenv("KUBECONFIG") or os.path.expanduser("~/.kube/config"))
+
+    api_server_host = os.getenv("KUBERNETES_API_SERVER_HOST")
+    kubeconfig_path = os.getenv("KUBECONFIG") or os.path.expanduser("~/.kube/config")
+
+    if api_server_host and os.path.exists(kubeconfig_path):
+        import yaml
+
+        logger.info(f"🔧 Patching kubeconfig to use host: {api_server_host}")
+        with open(kubeconfig_path, "r") as f:
+            config_data = yaml.safe_load(f)
+        for cluster in config_data.get("clusters", []):
+            server_url = cluster.get("cluster", {}).get("server", "")
+            if "127.0.0.1" in server_url or "localhost" in server_url:
+                cluster["cluster"]["server"] = server_url.replace(
+                    "127.0.0.1", api_server_host
+                ).replace("localhost", api_server_host)
+        patched = "/tmp/kubeconfig_patched"
+        with open(patched, "w") as f:
+            yaml.dump(config_data, f)
+        config.load_kube_config(config_file=patched)
+        cfg = client.Configuration.get_default_copy()
+        cfg.verify_ssl = False
+        cfg.assert_hostname = False
+        client.Configuration.set_default(cfg)
+    else:
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config(config_file=kubeconfig_path)
+
     k8s_client = client.ApiClient()
     logger.info("✅ Sandbox Kubernetes client initialized")
 

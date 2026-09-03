@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from .execution_context import ExecutionContext, require_execution_context
+from .executor import _structured_payload
 from .redis_state_store import get_state_store
 
 SANDBOX_NAMESPACE_ENV = "SANDBOX_NAMESPACE"
@@ -158,9 +159,8 @@ async def authorize_and_provision_sandbox(
             pass
         raise
 
-    try:
-        payload = json.loads(response) if isinstance(response, (str, bytes)) else response
-    except (TypeError, ValueError):
+    payload = _structured_payload(response)
+    if payload is None:
         payload = {"raw": str(response)}
     status = str((payload or {}).get("status", "UNKNOWN")).upper()
 
