@@ -19,29 +19,45 @@ code-verified gap analysis, and industry research in
 `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` — **read that file before
 continuing this work**. **Phases A-F are implemented** (2026-09-02); see
 "Relevant files" below for what each owns. A/B/C pushed to `origin/master`
-(`4680faf`/`3375aca`/`b6d619c`); D (`d7b7cb2`) and F are committed-pending or
-uncommitted, not yet pushed. Socket Mode audited: `slack_sdk`'s socket client
-auto-reconnects independent of wait length — the "~30min expiry" is our own
-`APPROVAL_TTL_MINUTES` gate TTL, not a transport issue.
+(`4680faf`/`3375aca`/`b6d619c`); D (`d7b7cb2`) and F (`22cbb61`, bug fixes
+`f18062a`) are committed locally, not yet pushed. Socket Mode audited:
+`slack_sdk`'s socket client auto-reconnects independent of wait length — the
+"~30min expiry" is our own `APPROVAL_TTL_MINUTES` gate TTL, not a transport
+issue.
 
-**Phase F (2026-09-02):** closed a verified gap — Phases B/C were
-structurally unreachable because nothing ever produced the `patch`/`sandbox_*`
-params needed to start `IncidentRemediationWorkflow`, and the planner had no
-code-fix action type. Now: planner can propose `action_type="code_fix"`
-(target=repo/service, `parameters.description`=root cause, no diff invented);
-both `_act_gate_node` detection blocks share a `_sandbox_params_ready()` gate
-that tolerates a missing patch; `IncidentRemediationWorkflow.run()`'s new
-first step, `generate_patch_activity`, runs only when `patch` is empty —
-clones `GITHUB_REPO`, runs the pluggable actor
-(`sre_agent/actor_runtime.py`, `AGENT_RUNTIME=local|hermes`, default local)
-against it, takes `git diff` as the patch, parses agent-reported
+**Phase F (2026-09-02, live-fire validated 2026-09-03):** closed a verified
+gap — Phases B/C were structurally unreachable because nothing ever produced
+the `patch`/`sandbox_*` params needed to start `IncidentRemediationWorkflow`,
+and the planner had no code-fix action type. Now: planner can propose
+`action_type="code_fix"` (target=repo/service, `parameters.description`=root
+cause, no diff invented); both `_act_gate_node` detection blocks share a
+`_sandbox_params_ready()` gate that tolerates a missing patch;
+`IncidentRemediationWorkflow.run()`'s new first step, `generate_patch_activity`,
+runs only when `patch` is empty — clones `GITHUB_REPO`, runs the pluggable
+actor (`sre_agent/actor_runtime.py`, `AGENT_RUNTIME=local|hermes`, default
+local) against it, takes `git diff` as the patch, parses agent-reported
 `BASELINE_COMMAND`/`CANDIDATE_COMMAND` lines for the sandbox oracle, and
 escalates (`PATCH_GENERATION_FAILED`) without opening gate 1 on any failure.
-`HermesRuntime` now accepts `workdir` (previously missing). New pure-function
-unit tests added and passing; full suite 847 passed / 3 skipped (unchanged
-skip set — `temporalio` optional extra not installed locally, so the new
-workflow-module tests were verified manually against a stub instead). **Not
-yet done: live-fire run against a real incident.**
+`HermesRuntime` now accepts `workdir`.
+
+Live-fire validated on the Codespace against the real `jayanth922/meridian-shop`
+repo (real Anthropic API calls, real git clone/diff, ambient Codespaces
+`GITHUB_TOKEN`, read-only-confirmed): direct invocation of
+`generate_patch_activity` produced a genuine `STATUS: GENERATED` with a sane,
+minimal, comment-only diff and working `sh -c`-wrapped baseline/candidate
+commands. Found and fixed 5 real bugs in the process (commit `f18062a`):
+Anthropic extended-thinking responses (list-of-content-blocks, not a plain
+string) breaking the LLM decider; `ActorResult.output` dropping
+`TerminalAgent`'s final `summary`; the task prompt asking for a free-text
+"final response" the decider's strict JSON schema can't produce (switched to
+an echo-based marker instruction); `_parse_verification_commands` crashing on
+`shlex.split()` of actor-generated shell text; and LLM decisions occasionally
+embedding unescaped quotes inside a JSON string value (added a schema-aware
+repair fallback). Not yet exercised: the full Temporal-orchestrated pipeline
+end-to-end (no Temporal server on this Codespace — validated
+`generate_patch_activity` via direct async invocation instead), and real PR
+write access (`raise_pr_activity`) — only read access to `meridian-shop` was
+confirmed.
 
 **Done and merged to origin/master** (pre-Phase-5 milestone; see
 `docs/ai/DECISIONS.md` and git log for full detail, not restated here): Task
@@ -69,7 +85,7 @@ until Phase 5 completes.
   gate (Phase A, done, shadow mode).
 - `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
   Temporal workflow + `raise_pr_activity` (done); Phase F's
-  `generate_patch_activity` (implemented, not live-fire tested).
+  `generate_patch_activity` (live-fire validated 2026-09-03).
 - `sre_agent/actor_runtime.py` — Phase F's pluggable actor
   (`AGENT_RUNTIME=local|hermes`), now takes `workdir`.
 - `sre_agent/approval_flow.py` (`create_or_reuse_pending_gate_approval`,
@@ -104,14 +120,17 @@ until Phase 5 completes.
   — Socket Mode auto-reconnects on its own well within any wait length).
 
 ## Next bounded task
-Commit Phase F, then live-fire it on the Codespace (Task #16's convention):
-1-2 real incidents with `GITHUB_TOKEN`/`GITHUB_REPO` set to a real,
-disposable target repo, confirming `generate_patch_activity` produces a sane
-diff + working commands and that failures escalate without opening gate 1.
-Phase E (cutover) follows once that's clean. Open decisions (GitHub PR repo
-scope/credentials, correlation adjacency source, Hermes safety review) should
-be raised before either phase relies on them. Phase D (`d7b7cb2`) is
-committed, not yet pushed to `origin/master`.
+Phase F is now live-fire validated (see above) — `generate_patch_activity`
+alone, not the full Temporal-orchestrated pipeline. Before Phase E (cutover):
+(1) stand up a Temporal server on the Codespace (or another environment) and
+run `IncidentRemediationWorkflow` end-to-end through both real gates; (2)
+confirm `GITHUB_TOKEN` write access for `raise_pr_activity` against
+`meridian-shop` (only read access has been confirmed so far — this needs a
+real push, so get explicit sign-off before testing it). Open decisions
+(GitHub PR repo scope/credentials, correlation adjacency source, Hermes
+safety review) should be raised before Phase E relies on them. Phase D
+(`d7b7cb2`) and Phase F (`22cbb61`, `f18062a`) are committed locally, not yet
+pushed to `origin/master`.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

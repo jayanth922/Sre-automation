@@ -181,8 +181,8 @@ one patch) and only within a workflow already scoped to one bundle.
   auto-execute path once Phase A–D have run clean against 1–2 real incidents
   on the Codespace, matching this repo's existing live-fire validation
   convention (Task #16).
-- **Phase F — AI patch generation (actor-runtime). Implemented and
-  unit-tested (2026-09-02); not yet committed or live-fire validated** — see
+- **Phase F — AI patch generation (actor-runtime). Implemented, committed
+  (`22cbb61`), and live-fire validated (2026-09-03, `f18062a`)** — see
   `docs/ai/PROJECT_STATE.md`'s "Phase F" paragraph for current status. Root
   cause: user asked who executes the
   AI-generated patch in the sandbox today, and code inspection found the
@@ -267,12 +267,15 @@ one patch) and only within a workflow already scoped to one bundle.
 
 ## Next bounded task
 
-Commit Phase F, then live-fire it on the Codespace: 1-2 real incidents with
-`GITHUB_TOKEN`/`GITHUB_REPO` set to a real, disposable target repo,
-confirming `generate_patch_activity` produces a sane diff + working
-baseline/candidate commands and that failures escalate
-(`PATCH_GENERATION_FAILED`) without opening gate 1 (Task #16's live-fire
-validation convention). Phase E (cutover) follows once that's clean. Open
-decisions above (GitHub PR repo scope, PR credentials, correlation thresholds/adjacency
-source, Hermes safety review) are still unanswered and should be raised
-before either phase relies on them.
+Phase F's `generate_patch_activity` is live-fire validated in isolation
+(direct invocation, real repo, real LLM) — confirmed `STATUS: GENERATED`
+with a sane diff and working baseline/candidate commands, and 5 real bugs
+found/fixed along the way (see `docs/ai/PROJECT_STATE.md`). Not yet
+exercised: the full Temporal-orchestrated `IncidentRemediationWorkflow`
+end-to-end through both real gates (no Temporal server exists on the
+Codespace yet — needs standing one up), and `raise_pr_activity`'s write
+access to `meridian-shop` (only read access is confirmed). Phase E (cutover)
+follows once those are clean. Open decisions above (GitHub PR repo scope, PR
+credentials, correlation thresholds/adjacency source, Hermes safety review)
+are still unanswered and should be raised before either phase relies on
+them.
