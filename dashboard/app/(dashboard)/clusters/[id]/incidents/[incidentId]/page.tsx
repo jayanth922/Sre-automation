@@ -89,6 +89,8 @@ export default function IncidentConsolePage() {
       const { data } = await api.get<Transcript>(`/incidents/${incidentId}/transcript`)
       setTx(data)
       setUpdatedAt(Date.now())
+    } catch {
+      /* handled below via the !tx fallback, which covers both not-found and unreachable */
     } finally {
       setLoading(false)
     }

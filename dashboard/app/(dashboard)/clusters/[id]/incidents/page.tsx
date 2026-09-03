@@ -6,7 +6,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { Spinner, Empty, useFreshness } from "@/components/console/ui"
+import { Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import { type Incident, type Severity, sev, statusBadge, timeAgo, elapsed } from "@/lib/console"
 
 type Tab = "open" | "all" | "resolved"
@@ -19,6 +19,7 @@ export default function IncidentsPage() {
   const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const [tab, setTab] = useState<Tab>("open")
   const [q, setQ] = useState("")
@@ -29,7 +30,10 @@ export default function IncidentsPage() {
     try {
       const { data } = await api.get<Incident[]>(`/clusters/${id}/incidents`)
       setIncidents(data)
+      setErr(false)
       setUpdatedAt(Date.now())
+    } catch {
+      setErr(true)
     } finally {
       setLoading(false)
     }
@@ -66,6 +70,8 @@ export default function IncidentsPage() {
     <ConsolePage title="Incidents" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load incidents — the API may be unreachable. Retrying automatically.</ErrorNote>
       ) : (
         <>
           <div className="sx-tabs">

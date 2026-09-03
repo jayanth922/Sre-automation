@@ -11,19 +11,19 @@ Production-grade upgrade pass across the previously-tracked concepts
 as of 2026-09-02. PR #53 (RAG/NL-query) and PR #54 (ad hoc Slack chat) are
 both merged to `master` (`6ced925`).
 
-**Phase 5 (in progress):** user requested a deterministic remediation
+**Phase 5 — done (2026-09-03).** User requested a deterministic remediation
 pipeline (Temporal-orchestrated, two manual approval gates per issue —
 start-fix and raise-PR — per-issue isolated chat/PR, and concurrent-incident
 correlation/bundling instead of one-root-cause assumption). Full plan,
 code-verified gap analysis, and industry research in
-`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md` — **read that file before
-continuing this work**. **Phases A-F are implemented** (2026-09-02); see
-"Relevant files" below for what each owns. A/B/C pushed to `origin/master`
-(`4680faf`/`3375aca`/`b6d619c`); D (`d7b7cb2`) and F (`22cbb61`, bug fixes
-`f18062a`) are committed locally, not yet pushed. Socket Mode audited:
-`slack_sdk`'s socket client auto-reconnects independent of wait length — the
-"~30min expiry" is our own `APPROVAL_TTL_MINUTES` gate TTL, not a transport
-issue.
+`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`. Phases A-F, the Phase E
+cutover, and the execution-trace dashboard view are all implemented,
+live-fire validated, and pushed to `origin/master` (A/B/C: `4680faf`/
+`3375aca`/`b6d619c`; D: `d7b7cb2`; F: `22cbb61`/`f18062a`; Phase E cutover:
+`5040852`) — see "Relevant files" below for what each owns. Socket Mode
+audited: `slack_sdk`'s socket client auto-reconnects independent of wait
+length — the "~30min expiry" is our own `APPROVAL_TTL_MINUTES` gate TTL, not
+a transport issue.
 
 **Phase F (2026-09-02, live-fire validated 2026-09-03, commit `f18062a`):**
 closed a verified gap — Phases B/C were structurally unreachable because
@@ -119,10 +119,9 @@ Fixed in `edge_mcp_servers/mcp_servers/github_exec/server.py`'s
 (idempotent, registers gh's credential helper for git). Re-ran as test-18
 with the same patch: `RemediationVerdict(status='PR_CREATED',
 pr_url='https://github.com/jayanth922/meridian-shop/pull/1',
-verification_status='RESOLVED')` — a real PR was created. PR #1 carries a
-"safe to close" marker comment (trivial `README.md` addition); not yet
-closed, awaiting user decision. Local commit for the `server.py` fix not
-yet made as of this note.
+verification_status='RESOLVED')` — a real PR was created. PR #1 (trivial
+`README.md` addition, "safe to close" marker comment) is closed. The
+`gh auth setup-git` fix landed in `f106378` (see Next bounded task below).
 
 **Done and merged to origin/master** (pre-Phase-5 milestone; see
 `docs/ai/DECISIONS.md` and git log for full detail, not restated here): Task
@@ -139,10 +138,12 @@ Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
 rationale log (Task #16 root causes, cloud-dev-env-via-rsync convention).
 
 ## Active problem
-None outside Phase 5 (tracked above). Per standing instruction
-(`decision-production-grade-upgrade` memory): pre-Phase-5 production-grade
-backend work is done; AIOpsLab domain benchmark and UI/UX remain deferred
-until Phase 5 completes.
+Phase 5 is done (tracked above). Per standing instruction
+(`decision-production-grade-upgrade` memory), backend work is done and the
+two items deferred until Phase 5 completed — AIOpsLab domain benchmark and a
+UI/UX pass — are now unblocked. User chose the **UI/UX pass** first
+(2026-09-03); it is done (see Next bounded task below). AIOpsLab domain
+benchmark remains the other deferred item, not yet started.
 
 ## Relevant files
 - `sre_agent/incident_correlation.py`, `sre_agent/api/v1/alerts.py::_record_correlation_shadow`,
@@ -347,6 +348,43 @@ exercises exactly that worst case (Temporal disabled, `temporalio` not
 installed). Full suite green (851 passed, 3 skipped); ruff/mypy findings
 confirmed pre-existing via `git stash` diff (identical counts before/after:
 35 ruff, 190 mypy).
+
+**UI/UX pass — done (2026-09-03).** Scoped via a read-only audit fork over
+the dashboard (5 ranked findings), then user picked exactly 4 of 5 via
+`AskUserQuestion`: error states, loading states, dead CSS cleanup,
+accessibility labels — responsive/mobile layout (zero `@media` queries,
+fixed-width grids) was explicitly deferred to a separate pass, not touched
+here. Error states: found 2 pages (`slos/page.tsx`, `analytics/page.tsx`)
+whose data-fetch `try` had no `catch`, so a failed request rendered a
+misleading "no data" empty state instead of an error — both now surface an
+`ErrorNote`. `runbooks/[rid]/page.tsx` conflated "not found" with "API
+unreachable" (both showed the same "not found in Notion" message); now
+distinguished via the response's `404` status. `incidents/page.tsx`,
+`insights/page.tsx`, `runbooks/page.tsx`, `audit/page.tsx`,
+`services/[svc]/page.tsx` had a `catch` but no `ErrorNote` wired to it —
+fixed. `incidents/[incidentId]/page.tsx` was missing a `catch` entirely
+(existing `!tx` fallback already reads as an error, so just added the
+`catch` to stop an unhandled rejection, no render change needed). Root
+`page.tsx` and `team/page.tsx` were already correct. Accessibility: added
+`aria-label`/`htmlFor`+`id` pairs to unlabeled inputs and one unlabeled
+`<select>` — the audit's claim of icon-only buttons in `settings/page.tsx`
+and `team/page.tsx` didn't hold up on inspection (both are fully
+text-labeled); the real gap in both files was `<label>` elements not
+programmatically associated with their `<input>`/`<select>` (no
+`htmlFor`/`id`), which is what got fixed instead, across
+`settings/page.tsx` (13 fields), `team/page.tsx` (role `<select>`), and
+`(auth)/login/page.tsx`+`(auth)/register/page.tsx` (6 fields). Dead CSS:
+removed the ~5-line `.sx-chatbox`/`.sx-chatbox input`/`.sx-chatbox .snd`
+block from `dashboard/app/console.css`, left over from the removed
+Phase 5E chat-compose box (confirmed zero JSX references). `tsc --noEmit`
+clean; `eslint` findings confirmed identical to baseline via `git stash`
+diff (22 errors, 4 warnings before/after — one new `react/no-unescaped-entities`
+finding from a straight `'` in a new `ErrorNote` string was caught by this
+same diff and fixed by matching the curly `’` used elsewhere before the
+final count matched). Once committed and pushed with CI green, the two
+remaining deferred items are: the responsive/mobile layout pass (separate,
+by user's explicit choice) and the AIOpsLab domain benchmark (see Active
+problem above).
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

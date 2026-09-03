@@ -5,7 +5,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import { type SLO, type SLOStatus, round } from "@/lib/console"
 
 interface Row {
@@ -20,6 +20,7 @@ export default function SlosPage() {
   const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLen = useRef(0)
 
@@ -39,7 +40,10 @@ export default function SlosPage() {
         }),
       )
       setRows(built)
+      setErr(false)
       setUpdatedAt(Date.now())
+    } catch {
+      setErr(true)
     } finally {
       setLoading(false)
     }
@@ -66,6 +70,8 @@ export default function SlosPage() {
     <ConsolePage title="Service level objectives" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load SLOs — the API may be unreachable.</ErrorNote>
       ) : rows.length === 0 ? (
         <Empty>No SLOs defined for this cluster yet.</Empty>
       ) : (

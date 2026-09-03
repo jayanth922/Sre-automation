@@ -5,7 +5,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Empty } from "@/components/console/ui"
+import { SectionTitle, Empty, ErrorNote } from "@/components/console/ui"
 import { errCls, round, timeAgo, type NLQueryResult } from "@/lib/console"
 
 interface HealthService {
@@ -30,6 +30,7 @@ export default function InsightsPage() {
   const [q, setQ] = useState("")
   const [asking, setAsking] = useState(false)
   const [answer, setAnswer] = useState<NLQueryResult | null>(null)
+  const [askErr, setAskErr] = useState(false)
 
   // Latest health snapshot for this cluster, plus a recent feed.
   const snapshots = useMemo(() => {
@@ -47,6 +48,9 @@ export default function InsightsPage() {
     try {
       const { data } = await api.post<NLQueryResult>(`/clusters/${id}/query`, { question })
       setAnswer(data)
+      setAskErr(false)
+    } catch {
+      setAskErr(true)
     } finally {
       setAsking(false)
     }
@@ -58,6 +62,7 @@ export default function InsightsPage() {
       <div style={{ display: "flex", gap: 8, marginTop: 12, maxWidth: 640 }}>
         <input
           className="sx-input"
+          aria-label="Ask a metric question"
           placeholder="e.g. show error rate for payment-service over 1h"
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -67,6 +72,7 @@ export default function InsightsPage() {
           {asking ? "Asking…" : "Ask"}
         </button>
       </div>
+      {askErr && <ErrorNote>Couldn’t reach the query service — try again in a moment.</ErrorNote>}
       {answer && (
         <div className="sx-card" style={{ marginTop: 12, maxWidth: 640 }}>
           <div className="sx-mono" style={{ fontSize: 12, color: answer.valid ? "var(--ink)" : "var(--crit)" }}>

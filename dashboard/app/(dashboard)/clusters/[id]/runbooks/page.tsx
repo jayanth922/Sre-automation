@@ -4,19 +4,23 @@ import { useCallback, useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, ErrorNote } from "@/components/console/ui"
 import { type Runbook } from "@/lib/console"
 
 export default function RunbooksPage() {
   const { id } = useParams<{ id: string }>()
   const [runbooks, setRunbooks] = useState<Runbook[]>([])
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
   const [q, setQ] = useState("")
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<Runbook[]>(`/clusters/${id}/runbooks`)
       setRunbooks(data)
+      setErr(false)
+    } catch {
+      setErr(true)
     } finally {
       setLoading(false)
     }
@@ -32,6 +36,8 @@ export default function RunbooksPage() {
     <ConsolePage crumb="prod cluster" title="Runbooks">
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load runbooks — the API may be unreachable.</ErrorNote>
       ) : runbooks.length === 0 ? (
         <Empty>No runbooks found. Configure a Notion runbook database for this cluster in Settings, or add pages to it.</Empty>
       ) : (

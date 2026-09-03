@@ -162,6 +162,7 @@ export default function TeamPage() {
                             disabled={rowBusy || isMe}
                             onChange={(e) => setRole(m, e.target.value as "admin" | "member")}
                             title={isMe ? "You can't change your own role" : "Change role"}
+                            aria-label={`Change role for ${m.full_name?.trim() || m.email}`}
                           >
                             <option value="admin">Admin</option>
                             <option value="member">Member</option>

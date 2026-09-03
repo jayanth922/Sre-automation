@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { Spinner, Empty } from "@/components/console/ui"
+import { Spinner, Empty, ErrorNote } from "@/components/console/ui"
 import type { RunbookDetail } from "@/lib/console"
 
 export default function RunbookDetailPage() {
@@ -13,13 +13,18 @@ export default function RunbookDetailPage() {
   const [rb, setRb] = useState<RunbookDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [err, setErr] = useState(false)
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<RunbookDetail>(`/clusters/${id}/runbooks/${encodeURIComponent(rid)}`)
       setRb(data)
-    } catch {
-      setNotFound(true)
+      setNotFound(false)
+      setErr(false)
+    } catch (e) {
+      const ax = e as { response?: { status?: number } }
+      if (ax.response?.status === 404) setNotFound(true)
+      else setErr(true)
     } finally {
       setLoading(false)
     }
@@ -44,6 +49,8 @@ export default function RunbookDetailPage() {
 
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load this runbook — the API may be unreachable.</ErrorNote>
       ) : notFound || !rb ? (
         <Empty>Runbook "{rid}" not found in Notion.</Empty>
       ) : (

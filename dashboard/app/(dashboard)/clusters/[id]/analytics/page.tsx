@@ -5,7 +5,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import type { Analytics, Recommendations } from "@/lib/console"
 
 export default function AnalyticsPage() {
@@ -13,6 +13,7 @@ export default function AnalyticsPage() {
   const { events, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [a, setA] = useState<Analytics | null>(null)
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
   const [recs, setRecs] = useState<Recommendations | null>(null)
   const [recsLoading, setRecsLoading] = useState(true)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
@@ -23,7 +24,10 @@ export default function AnalyticsPage() {
     try {
       const { data } = await api.get<Analytics>(`/clusters/${id}/analytics`)
       setA(data)
+      setErr(false)
       setUpdatedAt(Date.now())
+    } catch {
+      setErr(true)
     } finally {
       setLoading(false)
     }
@@ -73,6 +77,8 @@ export default function AnalyticsPage() {
     <ConsolePage title="Analytics" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load analytics — the API may be unreachable.</ErrorNote>
       ) : !a || a.stats.total_incidents === 0 ? (
         <Empty>No incident history yet — analytics appear once incidents accrue.</Empty>
       ) : (

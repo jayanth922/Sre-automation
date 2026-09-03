@@ -186,20 +186,20 @@ export default function SettingsPage() {
         <SectionTitle title="Endpoints" meta="how the platform reaches your infrastructure" />
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
           <div>
-            <label className="sx-label">Cluster name</label>
-            <input className="sx-input" value={endpoints.name} onChange={(e) => setEndpoints({ ...endpoints, name: e.target.value })} />
+            <label className="sx-label" htmlFor="set-name">Cluster name</label>
+            <input id="set-name" className="sx-input" value={endpoints.name} onChange={(e) => setEndpoints({ ...endpoints, name: e.target.value })} />
           </div>
           <div>
-            <label className="sx-label">Prometheus URL</label>
-            <input className="sx-input" placeholder="https://prometheus.your-infra:9090" value={endpoints.prometheus_url} onChange={(e) => setEndpoints({ ...endpoints, prometheus_url: e.target.value })} />
+            <label className="sx-label" htmlFor="set-prom">Prometheus URL</label>
+            <input id="set-prom" className="sx-input" placeholder="https://prometheus.your-infra:9090" value={endpoints.prometheus_url} onChange={(e) => setEndpoints({ ...endpoints, prometheus_url: e.target.value })} />
           </div>
           <div>
-            <label className="sx-label">Loki URL</label>
-            <input className="sx-input" placeholder="https://loki.your-infra:3100" value={endpoints.loki_url} onChange={(e) => setEndpoints({ ...endpoints, loki_url: e.target.value })} />
+            <label className="sx-label" htmlFor="set-loki">Loki URL</label>
+            <input id="set-loki" className="sx-input" placeholder="https://loki.your-infra:3100" value={endpoints.loki_url} onChange={(e) => setEndpoints({ ...endpoints, loki_url: e.target.value })} />
           </div>
           <div>
-            <label className="sx-label">GitHub repo</label>
-            <input className="sx-input" placeholder="org/repo" value={endpoints.github_repo} onChange={(e) => setEndpoints({ ...endpoints, github_repo: e.target.value })} />
+            <label className="sx-label" htmlFor="set-repo">GitHub repo</label>
+            <input id="set-repo" className="sx-input" placeholder="org/repo" value={endpoints.github_repo} onChange={(e) => setEndpoints({ ...endpoints, github_repo: e.target.value })} />
           </div>
           <div>
             <label className="sx-label">GitHub App</label>
@@ -239,8 +239,8 @@ export default function SettingsPage() {
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 320 }}>
           <div>
-            <label className="sx-label">Namespace</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="e.g. production" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
+            <label className="sx-label" htmlFor="set-ns">Namespace</label>
+            <input id="set-ns" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="e.g. production" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
           </div>
         </div>
 
@@ -250,24 +250,24 @@ export default function SettingsPage() {
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 420 }}>
           <div>
-            <label className="sx-label">Provider</label>
-            <select className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
+            <label className="sx-label" htmlFor="set-llm-provider">Provider</label>
+            <select id="set-llm-provider" className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
               <option value="">Platform default</option>
               <option value="anthropic">anthropic (Claude)</option>
               <option value="gemini">gemini</option>
             </select>
           </div>
           <div>
-            <label className="sx-label">Model</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(provider default)" value={endpoints.llm_model} onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })} />
+            <label className="sx-label" htmlFor="set-llm-model">Model</label>
+            <input id="set-llm-model" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(provider default)" value={endpoints.llm_model} onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })} />
           </div>
           <div>
-            <label className="sx-label">Base URL (self-hosted)</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="http://host:11434/v1" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
+            <label className="sx-label" htmlFor="set-llm-url">Base URL (self-hosted)</label>
+            <input id="set-llm-url" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="http://host:11434/v1" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
           </div>
           <div>
-            <label className="sx-label">API key</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "optional"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
+            <label className="sx-label" htmlFor="set-llm-key">API key</label>
+            <input id="set-llm-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "optional"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
           </div>
         </div>
 
@@ -277,12 +277,12 @@ export default function SettingsPage() {
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
           <div>
-            <label className="sx-label">Notion database ID</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="32-char database id" value={endpoints.notion_database_id} onChange={(e) => setEndpoints({ ...endpoints, notion_database_id: e.target.value })} />
+            <label className="sx-label" htmlFor="set-notion-db">Notion database ID</label>
+            <input id="set-notion-db" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="32-char database id" value={endpoints.notion_database_id} onChange={(e) => setEndpoints({ ...endpoints, notion_database_id: e.target.value })} />
           </div>
           <div>
-            <label className="sx-label">Notion integration token</label>
-            <input className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.notion_database_id ? "•••••• (set — leave blank to keep)" : "secret_..."} value={endpoints.notion_api_key} onChange={(e) => setEndpoints({ ...endpoints, notion_api_key: e.target.value })} />
+            <label className="sx-label" htmlFor="set-notion-key">Notion integration token</label>
+            <input id="set-notion-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.notion_database_id ? "•••••• (set — leave blank to keep)" : "secret_..."} value={endpoints.notion_api_key} onChange={(e) => setEndpoints({ ...endpoints, notion_api_key: e.target.value })} />
           </div>
         </div>
 
@@ -324,8 +324,9 @@ export default function SettingsPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
           {METRIC_FIELDS.map((f) => (
             <div key={f.key}>
-              <label className="sx-label">{f.label}</label>
+              <label className="sx-label" htmlFor={`set-metric-${f.key}`}>{f.label}</label>
               <input
+                id={`set-metric-${f.key}`}
                 className="sx-input sx-mono"
                 style={{ fontSize: 12 }}
                 placeholder={f.def}

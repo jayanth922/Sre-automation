@@ -58,12 +58,12 @@ export default function LoginPage() {
 
         <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <label className="sx-label">Email</label>
-            <input className="sx-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <label className="sx-label" htmlFor="login-email">Email</label>
+            <input id="login-email" className="sx-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
           </div>
           <div>
-            <label className="sx-label">Password</label>
-            <input className="sx-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <label className="sx-label" htmlFor="login-password">Password</label>
+            <input id="login-password" className="sx-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </div>
           {error && (
             <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", padding: 12, textAlign: "left" }}>

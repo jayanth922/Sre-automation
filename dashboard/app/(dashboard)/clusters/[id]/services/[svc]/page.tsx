@@ -6,7 +6,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import { type ServiceHealth, type Incident, sev, statusBadge, timeAgo, elapsed, round } from "@/lib/console"
 
 export default function ServiceDetailPage() {
@@ -15,6 +15,7 @@ export default function ServiceDetailPage() {
   const [service, setService] = useState<ServiceHealth | null>(null)
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLen = useRef(0)
 
@@ -23,7 +24,12 @@ export default function ServiceDetailPage() {
       api.get<ServiceHealth[]>(`/clusters/${id}/services`),
       api.get<Incident[]>(`/clusters/${id}/incidents`),
     ])
-    if (s.status === "fulfilled") setService(s.value.data.find((x) => x.name === svc) ?? null)
+    if (s.status === "fulfilled") {
+      setService(s.value.data.find((x) => x.name === svc) ?? null)
+      setErr(false)
+    } else {
+      setErr(true)
+    }
     if (inc.status === "fulfilled") setIncidents(inc.value.data)
     setUpdatedAt(Date.now())
     setLoading(false)
@@ -74,6 +80,8 @@ export default function ServiceDetailPage() {
 
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load metrics for “{svc}” — the API may be unreachable.</ErrorNote>
       ) : !service ? (
         <Empty>No Prometheus metrics for “{svc}”. It may not be scraped, or has no recent traffic.</Empty>
       ) : (

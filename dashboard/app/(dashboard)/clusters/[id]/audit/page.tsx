@@ -5,7 +5,7 @@ import { useParams } from "next/navigation"
 import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { ConsolePage } from "@/components/console/ConsolePage"
-import { SectionTitle, Spinner, Empty, useFreshness } from "@/components/console/ui"
+import { SectionTitle, Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import { type AuditEvent, fmtTimeUTC } from "@/lib/console"
 
 export default function AuditPage() {
@@ -15,6 +15,7 @@ export default function AuditPage() {
   const { events: liveEvents, connected } = useLiveStream(undefined, { channel: "incidents" })
   const [events, setEvents] = useState<AuditEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLen = useRef(0)
 
@@ -22,7 +23,10 @@ export default function AuditPage() {
     try {
       const { data } = await api.get<AuditEvent[]>(`/clusters/${id}/audit`, { params: { limit: 100 } })
       setEvents(data)
+      setErr(false)
       setUpdatedAt(Date.now())
+    } catch {
+      setErr(true)
     } finally {
       setLoading(false)
     }
@@ -47,6 +51,8 @@ export default function AuditPage() {
     <ConsolePage title="Audit trail" live={connected} updated={freshness}>
       {loading ? (
         <Spinner />
+      ) : err ? (
+        <ErrorNote>Couldn’t load the audit trail — the API may be unreachable.</ErrorNote>
       ) : events.length === 0 ? (
         <Empty>No audit events recorded for this cluster yet.</Empty>
       ) : (

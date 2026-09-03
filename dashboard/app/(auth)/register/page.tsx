@@ -63,20 +63,20 @@ export default function RegisterPage() {
 
         <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <label className="sx-label">Organization name</label>
-            <input className="sx-input" placeholder="sjsu" value={form.organizationName} onChange={(e) => set("organizationName", e.target.value)} required />
+            <label className="sx-label" htmlFor="reg-org">Organization name</label>
+            <input id="reg-org" className="sx-input" placeholder="sjsu" value={form.organizationName} onChange={(e) => set("organizationName", e.target.value)} required />
           </div>
           <div>
-            <label className="sx-label">Full name</label>
-            <input className="sx-input" placeholder="optional" value={form.fullName} onChange={(e) => set("fullName", e.target.value)} />
+            <label className="sx-label" htmlFor="reg-name">Full name</label>
+            <input id="reg-name" className="sx-input" placeholder="optional" value={form.fullName} onChange={(e) => set("fullName", e.target.value)} />
           </div>
           <div>
-            <label className="sx-label">Email</label>
-            <input className="sx-input" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} required />
+            <label className="sx-label" htmlFor="reg-email">Email</label>
+            <input id="reg-email" className="sx-input" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} required />
           </div>
           <div>
-            <label className="sx-label">Password</label>
-            <input className="sx-input" type="password" minLength={8} value={form.password} onChange={(e) => set("password", e.target.value)} required />
+            <label className="sx-label" htmlFor="reg-password">Password</label>
+            <input id="reg-password" className="sx-input" type="password" minLength={8} value={form.password} onChange={(e) => set("password", e.target.value)} required />
           </div>
           {error && (
             <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", padding: 12, textAlign: "left" }}>
