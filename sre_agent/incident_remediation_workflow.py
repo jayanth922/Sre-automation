@@ -61,6 +61,13 @@ ACTIVITY_TIMEOUT = timedelta(minutes=2)
 RETRY_POLICY_ATTEMPTS = 3
 DEFAULT_RETRY_POLICY = RetryPolicy(maximum_attempts=RETRY_POLICY_ATTEMPTS)
 
+# Max end-to-end remediation attempts (generate -> verify) before the
+# workflow gives up and escalates to on-call for a manual close-out. Each
+# retry beyond attempt 1 requires its own human approval (the "retry_fix"
+# gate) -- this is an activity-retry-policy-independent business rule, not
+# a Temporal transport retry.
+RETRY_MAX_ATTEMPTS = 3
+
 
 # ── Data contracts (JSON-serializable — cross the Temporal wire) ──────────────
 
@@ -85,6 +92,10 @@ class IncidentRemediationInput:
     fix_description: str = ""
     env: Dict[str, str] = field(default_factory=dict)
     approval_timeout_seconds: int = DEFAULT_APPROVAL_TIMEOUT_SECONDS
+    # Populated on attempt 2+ of the retry loop with a summary of why prior
+    # attempts failed, so generate_patch_activity's actor can try something
+    # different instead of repeating the same failing diff.
+    retry_context: str = ""
 
 
 @dataclass
@@ -106,9 +117,13 @@ class PatchGenerationResult:
 @dataclass
 class RemediationVerdict:
     status: str
-    # "PATCH_GENERATION_FAILED" | "DENIED_START_FIX" | "EXPIRED_START_FIX" |
+    # "DENIED_START_FIX" | "EXPIRED_START_FIX" |
     # "VERIFICATION_REGRESSED" | "VERIFICATION_INCONCLUSIVE" |
-    # "DENIED_RAISE_PR" | "EXPIRED_RAISE_PR" | "PR_CREATED" | "PR_CREATION_FAILED"
+    # "DENIED_RAISE_PR" | "EXPIRED_RAISE_PR" | "PR_CREATED" | "PR_CREATION_FAILED" |
+    # "CLOSED_NEEDS_MANUAL_REVIEW" | "EXPIRED_CLOSE_INCIDENT" | "ESCALATION_UNACKNOWLEDGED"
+    #
+    # NOTE: "PATCH_GENERATION_FAILED" alone is no longer terminal on its own —
+    # it now also flows into the retry loop like a verification failure would.
     detail: str
     pr_url: Optional[str] = None
     verification_status: Optional[str] = None
@@ -282,12 +297,18 @@ async def generate_patch_activity(params: IncidentRemediationInput) -> PatchGene
         activity.heartbeat("cloning")
         await _run_git(["clone", "--depth", "1", repo_url, clone_dir], cwd=tempfile.gettempdir(), redact=token)
 
+        retry_note = (
+            f"\nPrior attempt(s) at this incident failed:\n{params.retry_context}\n"
+            "Try a genuinely different approach than what's summarized above — "
+            "don't just resubmit the same fix.\n"
+        ) if params.retry_context else ""
         task = (
             "You are fixing a production incident in this repository.\n"
             f"Failure signature: {params.failure_signature}\n"
             f"Target: {params.target}\n"
             "Root cause / desired fix (from the on-call remediation plan): "
-            f"{params.fix_description or '(no description provided)'}\n\n"
+            f"{params.fix_description or '(no description provided)'}\n"
+            f"{retry_note}\n"
             "Make the minimal source change that fixes this. Do not commit or "
             "push. Before you finish, run a shell command as your final action "
             "that echoes exactly these two lines (fill in real shell commands, "
@@ -427,12 +448,33 @@ async def expire_gate_approval_activity(workflow_id: str, gate: str) -> None:
     await expire_gate_approval(workflow_id=workflow_id, gate=gate)
 
 
+@activity.defn
+async def mark_incident_needs_manual_review_activity(incident_id: str) -> None:
+    """Automated remediation exhausted (retries used up or a retry was
+    declined) and on-call acknowledged the close-incident gate: flag the
+    incident so it stops looking like something the pipeline is still
+    working. `REMEDIATION_FAILED` already exists in IncidentStatus for
+    exactly this state — on-call later clears it via the manual
+    mark-resolved endpoint once they've verified the fix themselves.
+    """
+    import uuid as _uuid
+
+    from backend import database, models
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, _uuid.UUID(incident_id))
+        if incident is not None:
+            incident.status = models.IncidentStatus.REMEDIATION_FAILED
+            await db.commit()
+
+
 ACTIVITIES = [
     emit_gate_event_activity,
     generate_patch_activity,
     raise_pr_activity,
     open_gate_activity,
     expire_gate_approval_activity,
+    mark_incident_needs_manual_review_activity,
 ]
 
 
@@ -446,6 +488,11 @@ class IncidentRemediationWorkflow:
         self._start_fix_actor: Optional[str] = None
         self._raise_pr_decision: Optional[bool] = None
         self._raise_pr_actor: Optional[str] = None
+        self._retry_decision: Optional[bool] = None
+        self._retry_actor: Optional[str] = None
+        self._close_decision: Optional[bool] = None
+        self._close_actor: Optional[str] = None
+        self._attempt_history: List[str] = []
         self._phase = "AWAITING_START_FIX"
 
     @workflow.signal
@@ -459,6 +506,18 @@ class IncidentRemediationWorkflow:
         if self._raise_pr_decision is None:
             self._raise_pr_decision = bool(approved)
             self._raise_pr_actor = actor or "unknown"
+
+    @workflow.signal
+    def decide_retry_fix(self, approved: bool, actor: str = "") -> None:
+        if self._retry_decision is None:
+            self._retry_decision = bool(approved)
+            self._retry_actor = actor or "unknown"
+
+    @workflow.signal
+    def decide_close_incident(self, approved: bool, actor: str = "") -> None:
+        if self._close_decision is None:
+            self._close_decision = bool(approved)
+            self._close_actor = actor or "unknown"
 
     @workflow.query
     def phase(self) -> str:
@@ -497,113 +556,248 @@ class IncidentRemediationWorkflow:
             retry_policy=DEFAULT_RETRY_POLICY,
         )
 
+    async def _maybe_retry(
+        self, params: IncidentRemediationInput, workflow_id: str, attempt: int, timeout: timedelta
+    ) -> bool:
+        """After a failed attempt, ask a fresh 'retry_fix' gate whether to try
+        again. Returns False (caller should escalate to close-out) when
+        attempts are exhausted, or the gate is denied/expires; True when a
+        human approved another attempt. Every retry gets its own gate —
+        approving attempt 2 does not pre-approve attempt 3.
+        """
+        if attempt >= RETRY_MAX_ATTEMPTS:
+            return False
+
+        self._retry_decision = None
+        self._retry_actor = None
+        self._phase = f"AWAITING_RETRY_{attempt}"
+        await self._open_gate(params, workflow_id, "retry_fix")
+        await self._emit(
+            params.incident_id, workflow_id, "retry_fix", "PENDING",
+            f"Attempt {attempt}/{RETRY_MAX_ATTEMPTS} did not resolve the incident. "
+            f"Awaiting approval to try attempt {attempt + 1}/{RETRY_MAX_ATTEMPTS}.",
+        )
+        try:
+            await workflow.wait_condition(lambda: self._retry_decision is not None, timeout=timeout)
+        except asyncio.TimeoutError:
+            await self._expire_gate(workflow_id, "retry_fix")
+            await self._emit(
+                params.incident_id, workflow_id, "retry_fix", "EXPIRED",
+                "Approval to retry expired without a decision.",
+            )
+            return False
+
+        if not self._retry_decision:
+            await self._emit(
+                params.incident_id, workflow_id, "retry_fix", "DENIED",
+                f"Denied by {self._retry_actor}.",
+            )
+            return False
+
+        await self._emit(
+            params.incident_id, workflow_id, "retry_fix", "APPROVED",
+            f"Approved by {self._retry_actor}.",
+        )
+        return True
+
+    async def _close_out(
+        self, params: IncidentRemediationInput, workflow_id: str, timeout: timedelta
+    ) -> RemediationVerdict:
+        """Automated remediation is exhausted (retries used up, or a retry was
+        declined/expired): give on-call full context on what was tried and
+        why it failed, and require an explicit acknowledgement (its own gate,
+        Slack-notified like every other gate) before marking the incident as
+        needing manual review. Never mutates Incident.status on its own —
+        only a human's APPROVED decision does that, via
+        mark_incident_needs_manual_review_activity.
+        """
+        self._phase = "AWAITING_CLOSE_INCIDENT"
+        context = "\n".join(self._attempt_history) or "No attempt details were recorded."
+        summary = (
+            f"Automated remediation could not resolve this incident after "
+            f"{len(self._attempt_history)} attempt(s). Here's what was tried and why "
+            f"each attempt failed:\n\n{context}\n\n"
+            "Awaiting acknowledgement to hand this off for manual review."
+        )
+        await self._open_gate(params, workflow_id, "close_incident")
+        await self._emit(params.incident_id, workflow_id, "close_incident", "PENDING", summary)
+
+        try:
+            await workflow.wait_condition(lambda: self._close_decision is not None, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._phase = "EXPIRED_CLOSE_INCIDENT"
+            await self._expire_gate(workflow_id, "close_incident")
+            await self._emit(
+                params.incident_id, workflow_id, "close_incident", "EXPIRED",
+                "Acknowledgement to hand off for manual review expired without a decision.",
+            )
+            return RemediationVerdict("EXPIRED_CLOSE_INCIDENT", context)
+
+        if not self._close_decision:
+            await self._emit(
+                params.incident_id, workflow_id, "close_incident", "DENIED",
+                f"Denied by {self._close_actor}.",
+            )
+            return RemediationVerdict("ESCALATION_UNACKNOWLEDGED", context)
+
+        self._phase = "CLOSED_NEEDS_MANUAL_REVIEW"
+        await workflow.execute_activity(
+            mark_incident_needs_manual_review_activity,
+            params.incident_id,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=DEFAULT_RETRY_POLICY,
+        )
+        await self._emit(
+            params.incident_id, workflow_id, "close_incident", "APPROVED",
+            f"Acknowledged by {self._close_actor}; incident marked as needing manual review.",
+        )
+        return RemediationVerdict("CLOSED_NEEDS_MANUAL_REVIEW", context)
+
     @workflow.run
     async def run(self, params: IncidentRemediationInput) -> RemediationVerdict:
         workflow_id = workflow.info().workflow_id
         timeout = timedelta(seconds=params.approval_timeout_seconds)
 
-        # ── Phase F: generate the patch upstream of gate 1 when the planner
-        # only identified a code_fix was needed but didn't (couldn't) author
-        # a diff itself (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase F).
-        # No gate is open yet — a failed/refused generation never reaches a human.
-        if not params.patch:
-            self._phase = "GENERATING_PATCH"
-            await self._emit(
-                params.incident_id, workflow_id, "generate_patch", "PENDING",
-                "No patch supplied yet; generating one via the actor runtime "
-                "before gate 1 opens.",
-            )
-            generation: PatchGenerationResult = await workflow.execute_activity(
-                generate_patch_activity,
-                params,
-                start_to_close_timeout=timedelta(minutes=10),
-                heartbeat_timeout=timedelta(seconds=60),
-                retry_policy=DEFAULT_RETRY_POLICY,
-            )
-            if generation.status != "GENERATED":
-                self._phase = "PATCH_GENERATION_FAILED"
+        attempt = 1
+        while True:
+            current_params = params
+
+            # ── Phase F: generate the patch upstream of gate 1. Attempt 1 may
+            # reuse a caller-supplied patch (used for deterministic testing,
+            # e.g. e2e drivers that hand-set baseline/candidate commands);
+            # every retry (attempt 2+) always regenerates from scratch, fed
+            # the accumulated history of why prior attempts failed, so the
+            # actor has a real chance to try something different rather than
+            # resubmitting the same failing diff. No gate is open yet — a
+            # failed/refused generation never reaches a human directly, it
+            # flows into the same retry decision as a verification failure.
+            if attempt > 1 or not params.patch:
+                self._phase = "GENERATING_PATCH"
                 await self._emit(
-                    params.incident_id, workflow_id, "generate_patch", "ESCALATED",
-                    f"Patch generation failed: {generation.detail}. Escalating to "
-                    "on-call; gate 1 was never opened.",
+                    params.incident_id, workflow_id, "generate_patch", "PENDING",
+                    f"Attempt {attempt}/{RETRY_MAX_ATTEMPTS}: generating a patch via "
+                    "the actor runtime before gate 1 opens.",
                 )
-                return RemediationVerdict("PATCH_GENERATION_FAILED", generation.detail)
-            params = _dc_replace(
-                params,
-                patch=generation.patch,
-                baseline_command=generation.baseline_command,
-                candidate_command=generation.candidate_command,
+                gen_params = (
+                    _dc_replace(params, retry_context="\n\n".join(self._attempt_history))
+                    if self._attempt_history else params
+                )
+                generation: PatchGenerationResult = await workflow.execute_activity(
+                    generate_patch_activity,
+                    gen_params,
+                    start_to_close_timeout=timedelta(minutes=10),
+                    heartbeat_timeout=timedelta(seconds=60),
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                )
+                if generation.status != "GENERATED":
+                    self._attempt_history.append(
+                        f"Attempt {attempt}: patch generation failed — {generation.detail}"
+                    )
+                    await self._emit(
+                        params.incident_id, workflow_id, "generate_patch", "ESCALATED",
+                        f"Attempt {attempt}/{RETRY_MAX_ATTEMPTS} patch generation failed: "
+                        f"{generation.detail}.",
+                    )
+                    if await self._maybe_retry(params, workflow_id, attempt, timeout):
+                        attempt += 1
+                        continue
+                    return await self._close_out(params, workflow_id, timeout)
+                current_params = _dc_replace(
+                    params,
+                    patch=generation.patch,
+                    baseline_command=generation.baseline_command,
+                    candidate_command=generation.candidate_command,
+                )
+                await self._emit(
+                    params.incident_id, workflow_id, "generate_patch", "APPROVED",
+                    generation.detail,
+                )
+
+            # ── Gate 1: approve starting the fix in Temporal (attempt 1 only —
+            # retries are re-authorized via the "retry_fix" gate instead, so
+            # they proceed straight to verification once approved) ─────────
+            if attempt == 1:
+                self._phase = "AWAITING_START_FIX"
+                await self._open_gate(current_params, workflow_id, "start_fix")
+                await self._emit(
+                    current_params.incident_id, workflow_id, "start_fix", "PENDING",
+                    "Awaiting approval to start the fix in Temporal.",
+                )
+                try:
+                    await workflow.wait_condition(
+                        lambda: self._start_fix_decision is not None, timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    self._phase = "EXPIRED_START_FIX"
+                    await self._expire_gate(workflow_id, "start_fix")
+                    await self._emit(
+                        current_params.incident_id, workflow_id, "start_fix", "EXPIRED",
+                        "Approval to start the fix expired without a decision.",
+                    )
+                    return RemediationVerdict(
+                        "EXPIRED_START_FIX", "Gate 1 (start fix) expired without a decision."
+                    )
+
+                if not self._start_fix_decision:
+                    self._phase = "DENIED_START_FIX"
+                    await self._emit(
+                        current_params.incident_id, workflow_id, "start_fix", "DENIED",
+                        f"Denied by {self._start_fix_actor}.",
+                    )
+                    return RemediationVerdict(
+                        "DENIED_START_FIX", f"Gate 1 (start fix) was denied by {self._start_fix_actor}."
+                    )
+
+                self._phase = "VERIFYING"
+                await self._emit(
+                    current_params.incident_id, workflow_id, "start_fix", "APPROVED",
+                    f"Approved by {self._start_fix_actor}; running sandbox verification.",
+                )
+            else:
+                self._phase = "VERIFYING"
+                await self._emit(
+                    current_params.incident_id, workflow_id, "retry_fix", "APPROVED",
+                    f"Attempt {attempt}/{RETRY_MAX_ATTEMPTS}: running sandbox verification "
+                    "on the new patch.",
+                )
+
+            # ── Sandbox verification: EXISTING CodeFixVerificationWorkflow, unmodified,
+            # now run as a child BEFORE any live/PR action (Phase 5A reordering) ──
+            verification_input = CodeFixVerificationInput(
+                incident_id=current_params.incident_id,
+                organization_id=current_params.organization_id,
+                cluster_id=current_params.cluster_id,
+                runner_image=current_params.runner_image,
+                baseline_command=list(current_params.baseline_command),
+                candidate_command=list(current_params.candidate_command),
+                patch=current_params.patch,
+                failure_signature=current_params.failure_signature,
+                env=dict(current_params.env),
+            )
+            verdict: VerdictResult = await workflow.execute_child_workflow(
+                CodeFixVerificationWorkflow.run,
+                verification_input,
+                id=f"{workflow_id}-verify-{attempt}",
+            )
+
+            if verdict.status == "RESOLVED":
+                params = current_params  # carry the winning patch forward to gate 2 / the PR
+                break
+
+            self._attempt_history.append(
+                f"Attempt {attempt}: sandbox verification {verdict.status} — {verdict.detail}"
             )
             await self._emit(
-                params.incident_id, workflow_id, "generate_patch", "APPROVED",
-                generation.detail,
+                current_params.incident_id, workflow_id, "raise_pr", "ESCALATED",
+                f"Attempt {attempt}/{RETRY_MAX_ATTEMPTS}: sandbox verification "
+                f"{verdict.status}: {verdict.detail}.",
             )
+            if await self._maybe_retry(current_params, workflow_id, attempt, timeout):
+                attempt += 1
+                continue
+            return await self._close_out(current_params, workflow_id, timeout)
 
-        # ── Gate 1: approve starting the fix in Temporal ───────────────────
-        self._phase = "AWAITING_START_FIX"
-        await self._open_gate(params, workflow_id, "start_fix")
-        await self._emit(
-            params.incident_id, workflow_id, "start_fix", "PENDING",
-            "Awaiting approval to start the fix in Temporal.",
-        )
-        try:
-            await workflow.wait_condition(lambda: self._start_fix_decision is not None, timeout=timeout)
-        except asyncio.TimeoutError:
-            self._phase = "EXPIRED_START_FIX"
-            await self._expire_gate(workflow_id, "start_fix")
-            await self._emit(
-                params.incident_id, workflow_id, "start_fix", "EXPIRED",
-                "Approval to start the fix expired without a decision.",
-            )
-            return RemediationVerdict("EXPIRED_START_FIX", "Gate 1 (start fix) expired without a decision.")
-
-        if not self._start_fix_decision:
-            self._phase = "DENIED_START_FIX"
-            await self._emit(
-                params.incident_id, workflow_id, "start_fix", "DENIED",
-                f"Denied by {self._start_fix_actor}.",
-            )
-            return RemediationVerdict(
-                "DENIED_START_FIX", f"Gate 1 (start fix) was denied by {self._start_fix_actor}."
-            )
-
-        self._phase = "VERIFYING"
-        await self._emit(
-            params.incident_id, workflow_id, "start_fix", "APPROVED",
-            f"Approved by {self._start_fix_actor}; running sandbox verification.",
-        )
-
-        # ── Sandbox verification: EXISTING CodeFixVerificationWorkflow, unmodified,
-        # now run as a child BEFORE any live/PR action (Phase 5A reordering) ──
-        verification_input = CodeFixVerificationInput(
-            incident_id=params.incident_id,
-            organization_id=params.organization_id,
-            cluster_id=params.cluster_id,
-            runner_image=params.runner_image,
-            baseline_command=list(params.baseline_command),
-            candidate_command=list(params.candidate_command),
-            patch=params.patch,
-            failure_signature=params.failure_signature,
-            env=dict(params.env),
-        )
-        verdict: VerdictResult = await workflow.execute_child_workflow(
-            CodeFixVerificationWorkflow.run,
-            verification_input,
-            id=f"{workflow_id}-verify",
-        )
-
-        if verdict.status != "RESOLVED":
-            self._phase = f"VERIFICATION_{verdict.status}"
-            await self._emit(
-                params.incident_id, workflow_id, "raise_pr", "ESCALATED",
-                f"Sandbox verification {verdict.status}: {verdict.detail}. "
-                "Escalating to on-call; no PR will be raised.",
-            )
-            return RemediationVerdict(
-                f"VERIFICATION_{verdict.status}", verdict.detail, verification_status=verdict.status
-            )
-
-        # ── Gate 2: approve raising the PR ──────────────────────────────────
+        # ── Gate 2: approve raising the PR (verdict is RESOLVED here) ──────
         self._phase = "AWAITING_RAISE_PR"
         await self._open_gate(params, workflow_id, "raise_pr")
         await self._emit(

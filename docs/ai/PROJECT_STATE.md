@@ -25,60 +25,87 @@ continuing this work**. **Phases A-F are implemented** (2026-09-02); see
 "~30min expiry" is our own `APPROVAL_TTL_MINUTES` gate TTL, not a transport
 issue.
 
-**Phase F (2026-09-02, live-fire validated 2026-09-03):** closed a verified
-gap — Phases B/C were structurally unreachable because nothing ever produced
-the `patch`/`sandbox_*` params needed to start `IncidentRemediationWorkflow`,
-and the planner had no code-fix action type. Now: planner can propose
-`action_type="code_fix"` (target=repo/service, `parameters.description`=root
-cause, no diff invented); both `_act_gate_node` detection blocks share a
-`_sandbox_params_ready()` gate that tolerates a missing patch;
-`IncidentRemediationWorkflow.run()`'s new first step, `generate_patch_activity`,
-runs only when `patch` is empty — clones `GITHUB_REPO`, runs the pluggable
-actor (`sre_agent/actor_runtime.py`, `AGENT_RUNTIME=local|hermes`, default
-local) against it, takes `git diff` as the patch, parses agent-reported
-`BASELINE_COMMAND`/`CANDIDATE_COMMAND` lines for the sandbox oracle, and
-escalates (`PATCH_GENERATION_FAILED`) without opening gate 1 on any failure.
-`HermesRuntime` now accepts `workdir`.
-
-Live-fire validated on the Codespace against the real `jayanth922/meridian-shop`
-repo (real Anthropic API calls, real git clone/diff, ambient Codespaces
-`GITHUB_TOKEN`, read-only-confirmed): direct invocation of
-`generate_patch_activity` produced a genuine `STATUS: GENERATED` with a sane,
-minimal, comment-only diff and working `sh -c`-wrapped baseline/candidate
-commands. Found and fixed 5 real bugs in the process (commit `f18062a`):
-Anthropic extended-thinking responses (list-of-content-blocks, not a plain
-string) breaking the LLM decider; `ActorResult.output` dropping
-`TerminalAgent`'s final `summary`; the task prompt asking for a free-text
-"final response" the decider's strict JSON schema can't produce (switched to
-an echo-based marker instruction); `_parse_verification_commands` crashing on
-`shlex.split()` of actor-generated shell text; and LLM decisions occasionally
-embedding unescaped quotes inside a JSON string value (added a schema-aware
-repair fallback).
+**Phase F (2026-09-02, live-fire validated 2026-09-03, commit `f18062a`):**
+closed a verified gap — Phases B/C were structurally unreachable because
+nothing produced the `patch`/`sandbox_*` params `IncidentRemediationWorkflow`
+needs. Planner can now propose `action_type="code_fix"`;
+`generate_patch_activity` (new first step, runs only when `patch` is empty)
+clones `GITHUB_REPO`, runs the pluggable actor
+(`sre_agent/actor_runtime.py`, `AGENT_RUNTIME=local|hermes`), takes `git
+diff` as the patch, and parses agent-reported `BASELINE_COMMAND`/
+`CANDIDATE_COMMAND` lines for the sandbox oracle. Live-fire validated
+against the real `jayanth922/meridian-shop` repo; 5 real bugs found and
+fixed in the process (detail in commit `f18062a`, not restated here).
 
 **Full Temporal pipeline, both gates, live-fire validated 2026-09-03**
-(commit `aeb9476`): stood up a Temporal dev server + `mcp-sandbox` MCP server
-(new `edge_mcp_servers/mcp_servers/sandbox_real`, K8s namespace
-`sentinel-sandbox`) on the Codespace, wired `IncidentRemediationWorkflow`
-into the sandbox worker, and drove it end-to-end through both real approval
-gates (`decide_start_fix` → `decide_raise_pr`) via Temporal signals against a
-synthetic incident. Found and fixed 3 more real bugs (commit `aeb9476`):
-`sandbox_workflow.py` called MCP tools by bare name (`"status"`) but
-`sandbox_real` registers them `sandbox_`-prefixed; `sandbox_real/server.py`'s
-K8s client never actually patched the kubeconfig to reach the Kind API
-server by Docker-network hostname despite claiming parity with
-`executor_real` (fixed + added missing `PyYAML` dependency);
-`sandbox_gateway.py` assumed a bare string/dict MCP response but
-`langchain_mcp_adapters` returns a list of content blocks (switched to the
-existing `_structured_payload()` helper). With a synthetic incident whose
-`generate_patch_activity` output didn't reproduce the fault, the log-diff
-oracle correctly returned `INCONCLUSIVE` (fail-closed, not a bug); with
-hand-set baseline/candidate commands designed to reproduce-then-fix the
-signature, a real K8s sandbox Job pair ran to completion and the oracle
-returned `RESOLVED`, opening gate 2 for the first time. Gate 2 was denied by
-design (`decide_raise_pr(approved=False)`) — `raise_pr_activity`'s real
-GitHub write access is confirmed only for reads against `meridian-shop` and
-must not be exercised without separate, explicit user sign-off; every test
-driver in this validation always denies gate 2 structurally.
+(commit `aeb9476`): stood up a Temporal dev server + `mcp-sandbox` MCP
+server (new `edge_mcp_servers/mcp_servers/sandbox_real`) on the Codespace
+and drove `IncidentRemediationWorkflow` end-to-end through both real
+approval gates via Temporal signals against a synthetic incident — a real
+K8s sandbox Job pair ran to completion, the log-diff oracle returned
+`RESOLVED`, gate 2 opened for the first time. 3 more real bugs found/fixed
+(detail in commit `aeb9476`). Gate 2 was denied by design — `raise_pr_activity`'s
+real GitHub write access is confirmed only for reads against `meridian-shop`
+and must not be exercised without separate, explicit user sign-off.
+
+**Phase 5E (2026-09-03, implemented and live-fire validated, not yet pushed):** extended
+`IncidentRemediationWorkflow` per user request into a bounded retry loop with
+on-call handoff, replacing the old single-shot generate→gate1→verify→gate2
+flow:
+- `run()` now loops up to `RETRY_MAX_ATTEMPTS=3` end-to-end attempts
+  (generate patch → verify). Attempt 1 keeps exact prior behavior (including
+  the test-only `params.patch` bypass); every retry (2, 3) always regenerates
+  via the actor runtime, fed `retry_context` — a running text log of why
+  prior attempts failed (`self._attempt_history`) — so the actor tries
+  something different instead of resubmitting the same diff.
+- Each retry requires its own fresh human approval: new `retry_fix` gate/
+  signal (`decide_retry_fix`), independent of gate 1 (`start_fix`).
+- When attempts are exhausted (or a retry is denied/expires),
+  `_close_out()` opens a new `close_incident` gate carrying the full
+  multi-attempt failure history as its PENDING detail (surfaces to Slack
+  automatically — no new Slack code needed, see below) and waits for
+  `decide_close_incident`. Approval → `mark_incident_needs_manual_review_activity`
+  sets `Incident.status = REMEDIATION_FAILED` and the workflow returns
+  `CLOSED_NEEDS_MANUAL_REVIEW` (a normal terminal return; Temporal marks the
+  workflow COMPLETED, nothing further to clean up).
+- New `POST /{incident_id}/mark-resolved` (`mission_control.py`) lets
+  on-call manually confirm a `REMEDIATION_FAILED` (or any) incident as
+  `RESOLVED` once they've verified it themselves outside the pipeline.
+- `approval_flow.py`'s `_GATE_SIGNAL_NAME` and `war_room.py`'s
+  `GATE_COMMAND_RE` extended with `retry_fix`/`close_incident` — both were
+  already fully generic over the gate string, so no other logic changed.
+  Slack gate-open notifications for these two new gates work today for free
+  via the existing `war_room_service.py::maybe_open_war_room` /
+  `forward_events` mechanism (it forwards every `event_type="act"` event,
+  which `emit_gate_event_activity` always uses) — this was verified to
+  already work for the *existing* two gates too; no new Slack-specific code
+  was needed anywhere in this pass.
+- Dashboard (`page.tsx`): removed the chat compose box and the gate
+  approve/deny buttons (`sendMessage`/`decideGate` and their state) per
+  user's explicit "conversation and complex querying should happen from
+  Slack" instruction — kept the read-only conversation feed and gate
+  status/label display (the "AI traceability" the user asked to retain).
+  The old pre-Phase-5 single-gate `approve()`/`awaitingApproval` UI is a
+  different, unrelated mechanism and was deliberately left untouched.
+
+**Phase 5E live-fire validated 2026-09-03 (test-11, workflow id
+`e2e-remediation-test-11`):** drove the new retry loop end-to-end on the
+Codespace against the real Temporal server. Attempt 1 forced a `REGRESSED`
+verdict (hand-set baseline/candidate commands, distinct oracle branch from
+test-9's `INCONCLUSIVE` and test-10's `RESOLVED`); `AWAITING_RETRY_1` opened,
+`decide_retry_fix(True)` approved it. Attempt 2 ran for real (real
+`generate_patch_activity` against `meridian-shop`) and came back
+`GAVE_UP` (actor step-budget exhausted); `AWAITING_RETRY_2` opened,
+`decide_retry_fix(False)` denied it — exercising the "denied retry" branch
+of `_maybe_retry` (attempt-exhaustion branch not separately exercised).
+`AWAITING_CLOSE_INCIDENT` opened next with the full two-attempt failure
+history in its `detail` string; `decide_close_incident(True)` closed it.
+Final result: `RemediationVerdict(status='CLOSED_NEEDS_MANUAL_REVIEW', ...)`,
+confirmed directly in Postgres: `Incident.status = remediation_failed`.
+`POST /{id}/mark-resolved` was not live HTTP-tested (judged sufficient by
+code review — mirrors an existing, identically-authenticated endpoint). All
+5 touched files (4 Python + `page.tsx`) previously passed `py_compile`/
+`tsc --noEmit`; nothing further changed since. Local commit not yet made.
 
 **Done and merged to origin/master** (pre-Phase-5 milestone; see
 `docs/ai/DECISIONS.md` and git log for full detail, not restated here): Task
@@ -107,7 +134,12 @@ until Phase 5 completes.
 - `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
   Temporal workflow + `raise_pr_activity` (done); Phase F's
   `generate_patch_activity` (live-fire validated 2026-09-03); full workflow
-  now live-fire validated through both gates 2026-09-03.
+  live-fire validated through both gates 2026-09-03; Phase 5E's bounded
+  retry loop (`retry_fix`/`close_incident` gates, `_maybe_retry`/
+  `_close_out`, `mark_incident_needs_manual_review_activity`) implemented and
+  live-fire validated 2026-09-03 (test-11).
+- `sre_agent/api/v1/mission_control.py::mark_incident_resolved` — Phase 5E's
+  manual on-call "mark resolved" endpoint (`POST /{id}/mark-resolved`).
 - `sre_agent/actor_runtime.py` — Phase F's pluggable actor
   (`AGENT_RUNTIME=local|hermes`), now takes `workdir`.
 - `edge_mcp_servers/mcp_servers/sandbox_real/` — Phase 5B's sandbox-verify
@@ -148,16 +180,32 @@ until Phase 5 completes.
   — Socket Mode auto-reconnects on its own well within any wait length).
 
 ## Next bounded task
-Both gates are now live-fire validated end-to-end (see above). The one
-remaining piece before Phase E (cutover) is: confirm `GITHUB_TOKEN` write
-access for `raise_pr_activity` against `meridian-shop` (only read access has
-been confirmed so far — this needs a real PR-creation push, so **get
-explicit sign-off before testing it**; every prior test driver has denied
+Phase 5E is implemented and live-fire validated (test-11, see above). Commit
+the 5 touched files (`incident_remediation_workflow.py`, `approval_flow.py`,
+`war_room.py`, `mission_control.py`, `page.tsx`) plus this state-file update,
+then push to `origin/master` along with everything still only local from
+before it — Phase D (`d7b7cb2`), Phase F (`22cbb61`, `f18062a`). (Sandbox
+fixes `aeb9476` and the two-gate validation doc update `6de42c4` are already
+pushed.)
+
+Separately, still outstanding before Phase E (cutover): confirm
+`GITHUB_TOKEN` write access for `raise_pr_activity` against `meridian-shop`
+(only read access confirmed so far — needs a real PR-creation push, so **get
+explicit sign-off before testing it**; every test driver so far has denied
 gate 2 to structurally avoid triggering this). Open decisions (GitHub PR
 repo scope/credentials, correlation adjacency source, Hermes safety review)
-should be raised before Phase E relies on them. Phase D (`d7b7cb2`), Phase F
-(`22cbb61`, `f18062a`), and the sandbox-pipeline fixes (`aeb9476`) are
-committed locally, not yet pushed to `origin/master`.
+should be raised before Phase E relies on them.
+
+**Noted follow-on (not started, scope after Phase 5E lands):** replace the
+incident page's chat-transcript-style feed with a live execution-trace view
+(CI-log style) — repo clone, the actor's actual diff, sandbox Job
+provisioning/status, and real K8s pod logs (baseline vs candidate), not just
+gate-level PENDING/APPROVED events. The event bus (`_emit`/timeline,
+already streamed live over WebSocket to the dashboard) is the right
+mechanism; needs new step-level event types plus a trace/log renderer to
+replace the current bubble-style feed. User's stated motivation: system
+transparency — showing on-call the actual live solution/execution per
+incident, not a summary.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

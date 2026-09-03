@@ -32,7 +32,7 @@ interface GateApproval {
   id: string
   incident_id: string
   workflow_id: string
-  gate: "start_fix" | "raise_pr"
+  gate: "start_fix" | "raise_pr" | "retry_fix" | "close_incident"
   status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED"
   approver_user_id?: string | null
   decided_at?: string | null
@@ -43,6 +43,8 @@ interface GateApproval {
 const GATE_LABEL: Record<GateApproval["gate"], string> = {
   start_fix: "Start fix in Temporal",
   raise_pr: "Raise pull request",
+  retry_fix: "Retry the fix",
+  close_incident: "Hand off to manual review",
 }
 
 interface AgentMetrics {
@@ -77,11 +79,8 @@ export default function IncidentConsolePage() {
   const [status, setStatus] = useState<GraphStatus | null>(null)
   const [agent, setAgent] = useState<AgentMetrics | null>(null)
   const [loading, setLoading] = useState(true)
-  const [draft, setDraft] = useState("")
-  const [sending, setSending] = useState(false)
   const [approving, setApproving] = useState(false)
   const [gates, setGates] = useState<GateApproval[]>([])
-  const [decidingGate, setDecidingGate] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLive = useRef(0)
 
@@ -147,19 +146,6 @@ export default function IncidentConsolePage() {
 
   const freshness = useFreshness(updatedAt)
 
-  const sendMessage = async () => {
-    const msg = draft.trim()
-    if (!msg || sending) return
-    setSending(true)
-    try {
-      await api.post(`/incidents/${incidentId}/message`, { message: msg })
-      setDraft("")
-      await loadTranscript()
-    } finally {
-      setSending(false)
-    }
-  }
-
   const approve = async () => {
     if (!status?.approval) return
     setApproving(true)
@@ -171,16 +157,6 @@ export default function IncidentConsolePage() {
       await loadStatus()
     } finally {
       setApproving(false)
-    }
-  }
-
-  const decideGate = async (gate: GateApproval, approved: boolean) => {
-    setDecidingGate(gate.id)
-    try {
-      await api.post(`/incidents/${incidentId}/remediation-gates/${gate.id}/decide`, { approved })
-      await loadGates()
-    } finally {
-      setDecidingGate(null)
     }
   }
 
@@ -350,16 +326,8 @@ export default function IncidentConsolePage() {
                 </div>
               ))}
             </div>
-            <div className="sx-chatbox">
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                placeholder="Direct the investigation…"
-              />
-              <button className="snd" onClick={sendMessage} disabled={sending || !draft.trim()}>
-                ↑
-              </button>
+            <div className="sx-dry" style={{ textAlign: "left", marginTop: 8, color: "var(--ink3)" }}>
+              This conversation is read-only here. Reply in the incident's Slack thread to direct the investigation.
             </div>
           </div>
 
@@ -381,28 +349,10 @@ export default function IncidentConsolePage() {
                   {g.status === "PENDING" && (
                     <div className="ad">Expires {timeAgo(g.expires_at)}.</div>
                   )}
-                  {g.status === "PENDING" && (
-                    <div className="sx-btnrow">
-                      <button
-                        className="sx-btn primary"
-                        onClick={() => decideGate(g, true)}
-                        disabled={!isAdmin || decidingGate === g.id}
-                      >
-                        {decidingGate === g.id ? "Deciding…" : "Approve"}
-                      </button>
-                      <button
-                        className="sx-btn"
-                        onClick={() => decideGate(g, false)}
-                        disabled={!isAdmin || decidingGate === g.id}
-                      >
-                        Deny
-                      </button>
-                    </div>
-                  )}
                 </div>
               ))}
-              {pendingGates.length > 0 && !isAdmin && (
-                <div className="sx-dry">Only admins can decide remediation gates.</div>
+              {pendingGates.length > 0 && (
+                <div className="sx-dry">Approve or deny from the incident's Slack thread ("approve {pendingGates[0].gate.replace(/_/g, "-")}" / "deny {pendingGates[0].gate.replace(/_/g, "-")}").</div>
               )}
             </div>
           )}

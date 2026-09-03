@@ -137,7 +137,10 @@ async def forward_events(
     return processed
 
 
-GATE_COMMAND_RE = re.compile(r"^\s*(approve|deny)\s+(start[-_]fix|raise[-_]pr)\s*$", re.IGNORECASE)
+GATE_COMMAND_RE = re.compile(
+    r"^\s*(approve|deny)\s+(start[-_]fix|raise[-_]pr|retry[-_]fix|close[-_]incident)\s*$",
+    re.IGNORECASE,
+)
 
 
 def parse_gate_command(text: str) -> Optional[tuple]:

@@ -866,3 +866,24 @@ async def approve_incident_action(
         "thread_id": pending.thread_id,
         "completed": bool(output),
     }
+
+
+@router.post("/{incident_id}/mark-resolved")
+async def mark_incident_resolved(
+    incident_id: str,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_incident: models.Incident = Depends(get_owned_incident),
+):
+    """On-call's manual confirmation that an incident is actually fixed, once
+    they've taken over from automated remediation and verified it themselves
+    (e.g. after IncidentRemediationWorkflow exhausted its retries and closed
+    with REMEDIATION_FAILED / "needs manual review"). Deliberately no
+    automated precondition on the current status: a human who has manually
+    checked the system is the authority here, not the pipeline's own state.
+    """
+    await require_admin(user)
+    owned_incident.status = models.IncidentStatus.RESOLVED
+    owned_incident.resolved_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"status": "RESOLVED", "incident_id": str(owned_incident.id)}

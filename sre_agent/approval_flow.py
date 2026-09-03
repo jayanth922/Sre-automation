@@ -347,7 +347,12 @@ async def expire_gate_approval(*, workflow_id: str, gate: str) -> None:
         await db.commit()
 
 
-_GATE_SIGNAL_NAME = {"start_fix": "decide_start_fix", "raise_pr": "decide_raise_pr"}
+_GATE_SIGNAL_NAME = {
+    "start_fix": "decide_start_fix",
+    "raise_pr": "decide_raise_pr",
+    "retry_fix": "decide_retry_fix",
+    "close_incident": "decide_close_incident",
+}
 
 
 async def find_latest_pending_gate(*, incident_id: str, gate: str) -> Optional[str]:
