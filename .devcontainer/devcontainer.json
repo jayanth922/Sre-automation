@@ -1,10 +1,6 @@
 {
   "name": "sre-automation-dev",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
-  "hostRequirements": {
-    "cpus": 16,
-    "memory": "64gb"
-  },
   "features": {
     "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
     "ghcr.io/devcontainers/features/node:1": { "version": "22" },
