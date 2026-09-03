@@ -153,6 +153,32 @@ services:
       - edge-network
     restart: unless-stopped
 
+  # Sandbox — runs ephemeral K8s Jobs to verify AI-generated code fixes
+  # (CodeFixVerificationWorkflow). Namespace/image/resource guardrails are
+  # env-var-driven and refuse-by-default (see sandbox_real/guardrails.py).
+  mcp-sandbox:
+    build:
+      context: .
+      dockerfile: mcp_servers/sandbox_real/Dockerfile
+    container_name: mcp-sandbox
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal
+      - SANDBOX_NAMESPACE=${SANDBOX_NAMESPACE:-sentinel-sandbox}
+      # Empty = refuse all Jobs. Set in edge_mcp_servers/.env to allow the
+      # runner image(s) code-fix verification actually needs.
+      - SANDBOX_ALLOWED_IMAGES=${SANDBOX_ALLOWED_IMAGES:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4007:3000"
+    networks:
+      - edge-network
+    restart: unless-stopped
+
 networks:
   edge-network:
     driver: bridge

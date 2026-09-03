@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """
-Entry point for the Temporal worker that runs CodeFixVerificationWorkflow.
+Entry point for the Temporal worker that runs CodeFixVerificationWorkflow and
+IncidentRemediationWorkflow.
 
 Run with: python -m sre_agent.sandbox_worker
 
 A dedicated, long-lived process — separate from the API's request/response
 lifecycle — that polls the sandbox task queue and executes the code-fix
-verification pipeline (sre_agent.sandbox_workflow). Reuses the sentinel/api
-image in deployment (see deploy/helm/sentinel/templates/temporal-worker.yaml)
-but is a distinct running process with a distinct job.
+verification pipeline (sre_agent.sandbox_workflow) plus Phase 5's two-gate
+remediation pipeline (sre_agent.incident_remediation_workflow). Both default
+to the same task queue (temporal_client.DEFAULT_TASK_QUEUE), and
+IncidentRemediationWorkflow runs CodeFixVerificationWorkflow as a child
+workflow that inherits its parent's queue — so one worker process must serve
+both, or the child (and IncidentRemediationWorkflow itself) never gets
+picked up. Reuses the sentinel/api image in deployment (see
+deploy/helm/sentinel/templates/temporal-worker.yaml) but is a distinct
+running process with a distinct job.
 """
 
 from __future__ import annotations
@@ -22,7 +29,11 @@ logger = logging.getLogger(__name__)
 async def _main() -> None:
     from temporalio.worker import Worker
 
-    from .sandbox_workflow import ACTIVITIES, CodeFixVerificationWorkflow
+    from .incident_remediation_workflow import (
+        ACTIVITIES as REMEDIATION_ACTIVITIES,
+        IncidentRemediationWorkflow,
+    )
+    from .sandbox_workflow import ACTIVITIES as SANDBOX_ACTIVITIES, CodeFixVerificationWorkflow
     from .temporal_client import get_temporal_client, task_queue, temporal_enabled
 
     if not temporal_enabled():
@@ -38,8 +49,8 @@ async def _main() -> None:
     worker = Worker(
         client,
         task_queue=queue,
-        workflows=[CodeFixVerificationWorkflow],
-        activities=ACTIVITIES,
+        workflows=[CodeFixVerificationWorkflow, IncidentRemediationWorkflow],
+        activities=[*SANDBOX_ACTIVITIES, *REMEDIATION_ACTIVITIES],
     )
     await worker.run()
 
