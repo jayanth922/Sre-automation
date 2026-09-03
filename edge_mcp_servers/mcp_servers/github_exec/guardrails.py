@@ -15,8 +15,11 @@ import os
 from typing import Any, Dict, Tuple
 
 # The only code-change actions the agent may perform. A revert PR is safe by
-# construction: it proposes an undo that a human/CI still merges.
-ALLOWED_ACTIONS = {"create_revert_pr", "comment_on_pr"}
+# construction: it proposes an undo that a human/CI still merges. create_fix_pr
+# is likewise safe by construction — it only ever opens a PR for a human/CI to
+# merge, and only runs after Phase 5's two Temporal approval gates (start-fix,
+# raise-PR) and a sandbox-verified RESOLVED verdict have already passed.
+ALLOWED_ACTIONS = {"create_revert_pr", "comment_on_pr", "create_fix_pr"}
 
 
 def allowed_repos() -> set[str]:
@@ -46,5 +49,12 @@ def guardrail_check(action: str, repo: str, params: Dict[str, Any] | None = None
         params = params or {}
         if not (params.get("identifier") or params.get("commit_sha") or params.get("pr_number")):
             return False, "create_revert_pr requires a commit_sha or pr_number to revert"
+
+    if action == "create_fix_pr":
+        params = params or {}
+        if not params.get("branch_name"):
+            return False, "create_fix_pr requires a branch_name"
+        if not params.get("patch"):
+            return False, "create_fix_pr requires a non-empty patch"
 
     return True, "ok"

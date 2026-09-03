@@ -28,7 +28,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -54,8 +56,12 @@ def _refused(action: str, reason: str) -> str:
     )
 
 
-def _gh(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+def _gh(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
+
+
+def _git(repo_dir: str, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", repo_dir, *args], capture_output=True, text=True, timeout=timeout)
 
 
 def _extract_pr_url(text: str) -> Optional[str]:
@@ -233,6 +239,215 @@ async def create_revert_pr(identifier: str, dry_run: bool = True) -> str:
             },
             separators=(",", ":"),
         )
+
+
+@mcp.tool()
+async def create_fix_pr(
+    branch_name: str,
+    patch: str,
+    title: str,
+    body: str,
+    base_branch: str = "",
+    dry_run: bool = True,
+) -> str:
+    """Open a PR carrying an arbitrary AI-generated, sandbox-verified patch.
+
+    Phase 5's Approval Gate 2 (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md):
+    only called after ``CodeFixVerificationWorkflow`` returned RESOLVED and a
+    human approved raising the PR. Clones the repo, applies ``patch`` on a new
+    branch, pushes, and opens a PR for a human/CI to merge — never merges
+    anything itself.
+
+    Live success means a PR was actually opened (``status=CREATED``, ``pr_url``
+    set). If the patch doesn't apply, or the branch can't be pushed, or ``gh``
+    can't open the PR, this returns ``MANUAL_REQUIRED`` or ``ERROR`` — never a
+    false ``CREATED``.
+    """
+    allowed, reason = guardrail_check(
+        "create_fix_pr", REPO, {"branch_name": branch_name, "patch": patch}
+    )
+    if not allowed:
+        return _refused("create_fix_pr", reason)
+
+    plan = (
+        f"clone {REPO}, branch '{branch_name}' off {base_branch or '<default>'}, "
+        f"apply the provided patch, push, and open a PR titled '{title}'"
+    )
+    if dry_run:
+        return json.dumps(
+            {
+                "tool": "create_fix_pr",
+                "repo": REPO,
+                "branch_name": branch_name,
+                "dry_run": True,
+                "applied": False,
+                "plan": plan,
+                "status": "DRY_RUN",
+            },
+            separators=(",", ":"),
+        )
+
+    tmpdir = tempfile.mkdtemp(prefix="sentinel-fix-")
+    patch_file = os.path.join(tmpdir, ".sentinel-fix.patch")
+    try:
+        clone_args = ["repo", "clone", REPO, tmpdir, "--", "--depth", "1"]
+        if base_branch:
+            clone_args = ["repo", "clone", REPO, tmpdir, "--", "--depth", "1", "--branch", base_branch]
+        clone_proc = _gh(clone_args, timeout=120)
+        if clone_proc.returncode != 0:
+            return json.dumps(
+                {
+                    "tool": "create_fix_pr",
+                    "repo": REPO,
+                    "branch_name": branch_name,
+                    "dry_run": False,
+                    "applied": False,
+                    "status": "ERROR",
+                    "error": (clone_proc.stdout + clone_proc.stderr).strip(),
+                },
+                separators=(",", ":"),
+            )
+
+        checkout_proc = _git(tmpdir, ["checkout", "-b", branch_name])
+        if checkout_proc.returncode != 0:
+            return json.dumps(
+                {
+                    "tool": "create_fix_pr",
+                    "repo": REPO,
+                    "branch_name": branch_name,
+                    "dry_run": False,
+                    "applied": False,
+                    "status": "ERROR",
+                    "error": (checkout_proc.stdout + checkout_proc.stderr).strip(),
+                },
+                separators=(",", ":"),
+            )
+
+        with open(patch_file, "w") as f:
+            f.write(patch)
+
+        apply_proc = _git(tmpdir, ["apply", "--index", patch_file])
+        if apply_proc.returncode != 0:
+            return json.dumps(
+                {
+                    "tool": "create_fix_pr",
+                    "repo": REPO,
+                    "branch_name": branch_name,
+                    "dry_run": False,
+                    "applied": False,
+                    "status": "MANUAL_REQUIRED",
+                    "plan": plan,
+                    "detail": (apply_proc.stdout + apply_proc.stderr).strip(),
+                    "note": "patch did not apply cleanly against the current default branch",
+                },
+                separators=(",", ":"),
+            )
+
+        commit_proc = _git(
+            tmpdir,
+            [
+                "-c", "user.email=sentinel-bot@sentinel.local",
+                "-c", "user.name=Sentinel Bot",
+                "commit", "-m", title,
+            ],
+        )
+        if commit_proc.returncode != 0:
+            return json.dumps(
+                {
+                    "tool": "create_fix_pr",
+                    "repo": REPO,
+                    "branch_name": branch_name,
+                    "dry_run": False,
+                    "applied": False,
+                    "status": "ERROR",
+                    "error": (commit_proc.stdout + commit_proc.stderr).strip(),
+                },
+                separators=(",", ":"),
+            )
+
+        push_proc = _git(tmpdir, ["push", "-u", "origin", branch_name], timeout=120)
+        if push_proc.returncode != 0:
+            return json.dumps(
+                {
+                    "tool": "create_fix_pr",
+                    "repo": REPO,
+                    "branch_name": branch_name,
+                    "dry_run": False,
+                    "applied": False,
+                    "status": "MANUAL_REQUIRED",
+                    "plan": plan,
+                    "detail": (push_proc.stdout + push_proc.stderr).strip(),
+                    "note": "patch applied and committed locally, but the branch could not be pushed",
+                },
+                separators=(",", ":"),
+            )
+
+        pr_args = ["pr", "create", "-R", REPO, "--head", branch_name, "--title", title, "--body", body]
+        if base_branch:
+            pr_args += ["--base", base_branch]
+        pr_proc = _gh(pr_args)
+        pr_detail = (pr_proc.stdout + pr_proc.stderr).strip()
+        pr_url = _extract_pr_url(pr_detail)
+        if pr_proc.returncode == 0 and pr_url:
+            return json.dumps(
+                {
+                    "tool": "create_fix_pr",
+                    "repo": REPO,
+                    "branch_name": branch_name,
+                    "dry_run": False,
+                    "applied": True,
+                    "status": "CREATED",
+                    "pr_url": pr_url,
+                    "detail": pr_detail,
+                },
+                separators=(",", ":"),
+            )
+
+        return json.dumps(
+            {
+                "tool": "create_fix_pr",
+                "repo": REPO,
+                "branch_name": branch_name,
+                "dry_run": False,
+                "applied": False,
+                "status": "MANUAL_REQUIRED",
+                "plan": plan,
+                "detail": pr_detail,
+                "note": (
+                    f"branch '{branch_name}' was pushed but `gh pr create` did not return a PR URL; "
+                    "open the PR manually from that branch"
+                ),
+            },
+            separators=(",", ":"),
+        )
+    except subprocess.TimeoutExpired as e:
+        return json.dumps(
+            {
+                "tool": "create_fix_pr",
+                "repo": REPO,
+                "branch_name": branch_name,
+                "dry_run": False,
+                "applied": False,
+                "status": "ERROR",
+                "error": f"timed out: {e}",
+            },
+            separators=(",", ":"),
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "tool": "create_fix_pr",
+                "repo": REPO,
+                "branch_name": branch_name,
+                "dry_run": False,
+                "applied": False,
+                "status": "ERROR",
+                "error": str(e),
+            },
+            separators=(",", ":"),
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @mcp.tool()
