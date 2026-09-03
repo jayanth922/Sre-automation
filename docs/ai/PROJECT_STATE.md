@@ -53,11 +53,32 @@ string) breaking the LLM decider; `ActorResult.output` dropping
 an echo-based marker instruction); `_parse_verification_commands` crashing on
 `shlex.split()` of actor-generated shell text; and LLM decisions occasionally
 embedding unescaped quotes inside a JSON string value (added a schema-aware
-repair fallback). Not yet exercised: the full Temporal-orchestrated pipeline
-end-to-end (no Temporal server on this Codespace — validated
-`generate_patch_activity` via direct async invocation instead), and real PR
-write access (`raise_pr_activity`) — only read access to `meridian-shop` was
-confirmed.
+repair fallback).
+
+**Full Temporal pipeline, both gates, live-fire validated 2026-09-03**
+(commit `aeb9476`): stood up a Temporal dev server + `mcp-sandbox` MCP server
+(new `edge_mcp_servers/mcp_servers/sandbox_real`, K8s namespace
+`sentinel-sandbox`) on the Codespace, wired `IncidentRemediationWorkflow`
+into the sandbox worker, and drove it end-to-end through both real approval
+gates (`decide_start_fix` → `decide_raise_pr`) via Temporal signals against a
+synthetic incident. Found and fixed 3 more real bugs (commit `aeb9476`):
+`sandbox_workflow.py` called MCP tools by bare name (`"status"`) but
+`sandbox_real` registers them `sandbox_`-prefixed; `sandbox_real/server.py`'s
+K8s client never actually patched the kubeconfig to reach the Kind API
+server by Docker-network hostname despite claiming parity with
+`executor_real` (fixed + added missing `PyYAML` dependency);
+`sandbox_gateway.py` assumed a bare string/dict MCP response but
+`langchain_mcp_adapters` returns a list of content blocks (switched to the
+existing `_structured_payload()` helper). With a synthetic incident whose
+`generate_patch_activity` output didn't reproduce the fault, the log-diff
+oracle correctly returned `INCONCLUSIVE` (fail-closed, not a bug); with
+hand-set baseline/candidate commands designed to reproduce-then-fix the
+signature, a real K8s sandbox Job pair ran to completion and the oracle
+returned `RESOLVED`, opening gate 2 for the first time. Gate 2 was denied by
+design (`decide_raise_pr(approved=False)`) — `raise_pr_activity`'s real
+GitHub write access is confirmed only for reads against `meridian-shop` and
+must not be exercised without separate, explicit user sign-off; every test
+driver in this validation always denies gate 2 structurally.
 
 **Done and merged to origin/master** (pre-Phase-5 milestone; see
 `docs/ai/DECISIONS.md` and git log for full detail, not restated here): Task
@@ -85,9 +106,16 @@ until Phase 5 completes.
   gate (Phase A, done, shadow mode).
 - `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
   Temporal workflow + `raise_pr_activity` (done); Phase F's
-  `generate_patch_activity` (live-fire validated 2026-09-03).
+  `generate_patch_activity` (live-fire validated 2026-09-03); full workflow
+  now live-fire validated through both gates 2026-09-03.
 - `sre_agent/actor_runtime.py` — Phase F's pluggable actor
   (`AGENT_RUNTIME=local|hermes`), now takes `workdir`.
+- `edge_mcp_servers/mcp_servers/sandbox_real/` — Phase 5B's sandbox-verify
+  MCP server (K8s Job lifecycle for `CodeFixVerificationWorkflow`); live-fire
+  validated 2026-09-03, 3 bugs fixed (commit `aeb9476`).
+- `sre_agent/sandbox_gateway.py`, `sre_agent/sandbox_workflow.py` — sandbox
+  authorization boundary + verify workflow; response-parsing and tool-name
+  bugs fixed (commit `aeb9476`).
 - `sre_agent/approval_flow.py` (`create_or_reuse_pending_gate_approval`,
   `decide_gate_approval`, `expire_gate_approval`), `sre_agent/api/v1/remediation_gates.py`,
   `backend/models.py::RemediationGateApproval`, migration `e4f5a6b7c8d9` —
@@ -120,17 +148,16 @@ until Phase 5 completes.
   — Socket Mode auto-reconnects on its own well within any wait length).
 
 ## Next bounded task
-Phase F is now live-fire validated (see above) — `generate_patch_activity`
-alone, not the full Temporal-orchestrated pipeline. Before Phase E (cutover):
-(1) stand up a Temporal server on the Codespace (or another environment) and
-run `IncidentRemediationWorkflow` end-to-end through both real gates; (2)
-confirm `GITHUB_TOKEN` write access for `raise_pr_activity` against
-`meridian-shop` (only read access has been confirmed so far — this needs a
-real push, so get explicit sign-off before testing it). Open decisions
-(GitHub PR repo scope/credentials, correlation adjacency source, Hermes
-safety review) should be raised before Phase E relies on them. Phase D
-(`d7b7cb2`) and Phase F (`22cbb61`, `f18062a`) are committed locally, not yet
-pushed to `origin/master`.
+Both gates are now live-fire validated end-to-end (see above). The one
+remaining piece before Phase E (cutover) is: confirm `GITHUB_TOKEN` write
+access for `raise_pr_activity` against `meridian-shop` (only read access has
+been confirmed so far — this needs a real PR-creation push, so **get
+explicit sign-off before testing it**; every prior test driver has denied
+gate 2 to structurally avoid triggering this). Open decisions (GitHub PR
+repo scope/credentials, correlation adjacency source, Hermes safety review)
+should be raised before Phase E relies on them. Phase D (`d7b7cb2`), Phase F
+(`22cbb61`, `f18062a`), and the sandbox-pipeline fixes (`aeb9476`) are
+committed locally, not yet pushed to `origin/master`.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)
