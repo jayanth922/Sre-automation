@@ -252,13 +252,13 @@ updating `tests/test_mcp_auth.py`'s hardcoded port/token counts — a stale
 assertion, not a real security gap); fixed and pushed (`5ed525d`), CI
 confirmed green again on `master`.
 
-Still outstanding before Phase E (cutover): the real PR-write path is now
-fully confirmed end-to-end (test-18) — that blocker is resolved.
-Correlation adjacency source (infer from k8s labels, see
-`docs/ai/DECISIONS.md`) is **implemented, live-fire validated, and
-committed** — see `sre_agent/service_topology.py` in Relevant files above
-for the validation detail and the one bug it surfaced/fixed; full test suite
-green (853 passed, 3 skipped) and lint/mypy clean on all touched files.
+Phase E cutover is done (see below) — both of its preconditions (real
+PR-write path confirmed end-to-end via test-18; correlation adjacency
+implemented, live-fire validated, and committed — see
+`sre_agent/service_topology.py` in Relevant files above) are satisfied.
+Next candidate loose end: the latent JSON-parsing bug pattern flagged in
+`sre_agent/nl_query.py` (~lines 234, 258) — same bug class as the one that
+broke `service_topology.py` this week, not yet fixed.
 
 **Hermes actor backend fully removed (2026-09-03, see `docs/ai/DECISIONS.md`
 "Hermes removal").** After the 2026-09-03 safety review left
@@ -301,6 +301,35 @@ so the existing live-fire validation of `generate_patch_activity`/
 `_run_sandbox_stage` themselves still applies; a full live-fire pass through
 the dashboard is the natural next check whenever an incident runs there
 next.
+
+**Phase E cutover — done (2026-09-03).** Retired the old single-gate
+live-in-LangGraph auto-execute path for code-fix actions, per the plan's
+condition ("once Phases A-D have run clean against real incidents" — met by
+test-11/test-18 above). Fixed a real gap in `_act_gate_node`
+(`sre_agent/graph_builder.py`): the "deterministic pipeline detection" block
+only deferred a detected code-fix action's `decision` to
+`DEFERRED_TO_DETERMINISTIC_PIPELINE` when `temporal_enabled() and
+_sandbox_params_ready(...)` were both true — if Temporal was disabled or
+sandbox params weren't ready yet, the action's `decision` was left
+unchanged and remained eligible for `execute_autonomous_live()` below,
+bypassing the two-gate deterministic pipeline entirely. Deferral is now
+unconditional on detecting *any* code-fix action; readiness still gates only
+whether `IncidentRemediationWorkflow` actually starts (the separate,
+untouched "Code-fix verification" block reports `INCONCLUSIVE` instead when
+unready) — it never again gates whether the old live path runs.
+Non-code-fix actions (restart/scale/rollback/etc.) are unaffected and
+correctly remain on the old live path, matching Phase 5's code-fix-only
+scope. Hardened the fix's own import of `DEFERRED_TO_DETERMINISTIC_PIPELINE`
+(from `incident_remediation_workflow.py`, which imports the optional
+`temporalio` SDK at module level — "only the worker container needs it, not
+the API image" per `pyproject.toml`) with an `ImportError` fallback to the
+same literal string, so `_act_gate_node` can't crash on an API image that
+never installed the `temporal` extra. New regression test
+`tests/test_act_integration.py::test_code_fix_action_deferred_even_when_temporal_disabled`
+exercises exactly that worst case (Temporal disabled, `temporalio` not
+installed). Full suite green (851 passed, 3 skipped); ruff/mypy findings
+confirmed pre-existing via `git stash` diff (identical counts before/after:
+35 ruff, 190 mypy).
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

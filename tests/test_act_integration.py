@@ -52,6 +52,30 @@ def test_sandbox_params_ready_requires_commands_when_patch_present():
     assert _sandbox_params_ready("img", ["cmd"], ["cmd"], "diff", "sig")
 
 
+def test_code_fix_action_deferred_even_when_temporal_disabled(monkeypatch):
+    # Phase E cutover (docs/ai/DECISIONS.md): a detected code-fix action must
+    # always be deferred from the old single-gate execute_autonomous_live
+    # path, never just when the deterministic pipeline happens to be ready to
+    # start. Temporal is disabled in the test env (no TEMPORAL_ENABLED set)
+    # AND temporalio isn't installed here (it's an optional extra graph_builder.py
+    # falls back around — see its ImportError handler) — this is exactly the
+    # "worst case" the cutover fix must still hold under: previously it left
+    # the action's decision untouched and eligible for old-path live
+    # execution. Asserted against the literal sentinel value, not the
+    # temporalio-gated import, so this test runs without that optional extra.
+    deferred_sentinel = "deferred_to_deterministic_pipeline"
+
+    alert = AlertContext(
+        alert_name="CheckoutNilPointer", severity="warning",
+        labels={"service": "checkout-service", "namespace": "demo-app"}, annotations={},
+    )
+    plan = _plan("code_fix", "checkout-service")
+    state = _state(plan, alert)
+    state["incident_id"] = "inc-test-code-fix"
+    report = asyncio.run(_act_gate_node(state))["metadata"]["act_report"]
+    assert report["action_reports"][0]["decision"] == deferred_sentinel
+
+
 def test_remediation_action_accepts_code_fix_type():
     # Phase F: the planner can now propose action_type="code_fix" for
     # source-level bugs (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase F).

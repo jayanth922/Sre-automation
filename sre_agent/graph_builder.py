@@ -231,16 +231,28 @@ async def _act_gate_node(
         # Deterministic remediation pipeline detection
         # (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md): find a code-fix
         # action (revert_commit/revert_pr/comment_pr) up front, before the
-        # live-execution block below, so a fully sandbox-ready one can be
-        # deferred to IncidentRemediationWorkflow's own two approval gates
-        # instead of the old single-gate live path here.
+        # live-execution block below, so it's deferred to
+        # IncidentRemediationWorkflow's own two approval gates instead of the
+        # old single-gate live path here.
+        #
+        # Phase E cutover (2026-09-03): deferral is unconditional on *any*
+        # detected code-fix action, not gated on sandbox-params/Temporal
+        # readiness. Before this, an unready code-fix action (Temporal
+        # disabled, or missing runner_image/failure_signature) fell through
+        # to execute_autonomous_live below and could be applied live via the
+        # pre-Phase-5 single-gate path — exactly what the user's Phase 5
+        # requirement ("deterministic, not AI-improvised... via a Temporal
+        # workflow... two gates, always") ruled out. Readiness still gates
+        # whether IncidentRemediationWorkflow actually starts (see the
+        # "Code-fix verification" block below, which reports INCONCLUSIVE
+        # instead when unready) — it now only ever gates *starting the
+        # deterministic pipeline*, never whether the old live path runs.
         deterministic_pipeline_index: Optional[int] = None
         deterministic_pipeline_params: Dict[str, Any] = {}
         code_action_report: Optional[Dict[str, Any]] = None
         if incident_id and report.plan_present:
             try:
                 from .executor import GITHUB_EXEC_TOOL_MAP
-                from .temporal_client import temporal_enabled
 
                 code_fix_action_types = set(GITHUB_EXEC_TOOL_MAP) | {"code_fix"}
                 code_action_index, code_action_report = next(
@@ -252,6 +264,7 @@ async def _act_gate_node(
                     (None, None),
                 )
                 if code_action_report is not None:
+                    deterministic_pipeline_index = code_action_index
                     cf_params = code_action_report.get("parameters") or {}
                     cf_patch = cf_params.get("patch") or cf_params.get("diff")
                     cf_runner_image = cf_params.get("sandbox_runner_image") or os.getenv(
@@ -263,19 +276,15 @@ async def _act_gate_node(
                     cf_failure_signature = cf_params.get("sandbox_failure_signature") or (
                         cf_alert_context.alert_name if cf_alert_context else ""
                     )
-                    if temporal_enabled() and _sandbox_params_ready(
-                        cf_runner_image, cf_baseline_command, cf_candidate_command, cf_patch, cf_failure_signature
-                    ):
-                        deterministic_pipeline_index = code_action_index
-                        deterministic_pipeline_params = {
-                            "action_type": code_action_report.get("action_type"),
-                            "target": code_action_report.get("target") or "",
-                            "patch": str(cf_patch or ""),
-                            "runner_image": str(cf_runner_image),
-                            "baseline_command": list(cf_baseline_command),
-                            "candidate_command": list(cf_candidate_command),
-                            "failure_signature": str(cf_failure_signature or ""),
-                        }
+                    deterministic_pipeline_params = {
+                        "action_type": code_action_report.get("action_type"),
+                        "target": code_action_report.get("target") or "",
+                        "patch": str(cf_patch or ""),
+                        "runner_image": str(cf_runner_image),
+                        "baseline_command": list(cf_baseline_command),
+                        "candidate_command": list(cf_candidate_command),
+                        "failure_signature": str(cf_failure_signature or ""),
+                    }
             except Exception as detect_err:
                 logger.warning(f"Deterministic pipeline detection failed (non-fatal): {detect_err}")
                 deterministic_pipeline_index = None
@@ -293,7 +302,19 @@ async def _act_gate_node(
             import copy as _copy
             from dataclasses import replace as _dc_replace
 
-            from .incident_remediation_workflow import DEFERRED_TO_DETERMINISTIC_PIPELINE
+            try:
+                from .incident_remediation_workflow import (
+                    DEFERRED_TO_DETERMINISTIC_PIPELINE,
+                )
+            except ImportError:
+                # incident_remediation_workflow imports the `temporalio` SDK at
+                # module level, an optional extra (pyproject.toml's `temporal`
+                # group — "only the worker container needs it, not the API
+                # image"). Deferral must not depend on that package being
+                # importable here: fall back to the same literal value so a
+                # code-fix action is still kept out of the old live path below
+                # even on an API image that never installed temporalio.
+                DEFERRED_TO_DETERMINISTIC_PIPELINE = "deferred_to_deterministic_pipeline"
 
             deferred_action_reports = _copy.deepcopy(report.action_reports)
             deferred_action_reports[deterministic_pipeline_index]["decision"] = (

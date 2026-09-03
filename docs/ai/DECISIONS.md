@@ -479,3 +479,44 @@
   instead of first checking whether the code path was needed at all) —
   dead optionality that nobody will re-review before flipping on is worse
   than no optionality.
+
+## Phase E cutover: code-fix actions always defer to the deterministic pipeline
+
+- **Decision:** In `_act_gate_node` (`sre_agent/graph_builder.py`), detecting
+  a code-fix action (`action_type` in `GITHUB_EXEC_TOOL_MAP | {"code_fix"}`)
+  unconditionally marks its `decision` as `DEFERRED_TO_DETERMINISTIC_PIPELINE`,
+  keeping it out of the old single-gate `execute_autonomous_live()` path.
+  Whether `IncidentRemediationWorkflow` (the deterministic, two-gate pipeline)
+  actually *starts* for that action is a separate, independent check — the
+  existing "Code-fix verification" block, gated by `temporal_enabled()` and
+  `_sandbox_params_ready(...)`, reports `INCONCLUSIVE` instead when unready.
+- **Reason:** The prior code only deferred when Temporal was enabled *and*
+  sandbox params were ready — i.e. the same readiness check gated both
+  "should this start the deterministic pipeline" and "should this be allowed
+  to run on the old live path", conflating two different questions. Any
+  code-fix action detected while Temporal was disabled, or before
+  `generate_patch_activity` had produced sandbox params, fell through
+  unguarded to `execute_autonomous_live()` — bypassing Phase 5's two
+  mandatory human approval gates entirely. This directly contradicted the
+  user's original Phase 5 requirement (`docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`):
+  code changes must always go through the deterministic, Temporal-orchestrated
+  pipeline with human gates at start-fix and raise-PR, never auto-execute.
+- **Consequences:** A code-fix action detected while the deterministic
+  pipeline isn't ready to start is now dropped from *both* paths for that
+  cycle (deferred, but not picked up) rather than silently falling back to
+  live auto-execution — the safer failure mode, matching "no default-approve
+  path" from the Phase 5 plan. Non-code-fix actions (restart/scale/rollback/
+  config_change/escalate/revert_commit) are unaffected and correctly remain
+  on the old live path, since Phase 5's scope is code-fix/GitHub actions
+  only. The import of `DEFERRED_TO_DETERMINISTIC_PIPELINE` from
+  `incident_remediation_workflow.py` (which imports the optional `temporalio`
+  SDK at module level) is wrapped in `try/except ImportError` with a
+  hardcoded string-literal fallback, so this deferral can't itself crash
+  `_act_gate_node` on an API image that never installed the `temporal`
+  extra (`pyproject.toml`'s `temporal` optional-dependencies group).
+- **Rejected alternative:** Leave the readiness-gated deferral as-is and
+  instead harden `execute_autonomous_live()` itself to refuse code-fix
+  action types. Rejected as strictly worse: it duplicates the classification
+  logic in two places (drift risk) and still requires exactly this same fix
+  at the detection site to avoid the action silently vanishing from the
+  ACT report when neither path picks it up.
