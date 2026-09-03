@@ -258,8 +258,25 @@ Correlation adjacency source (infer from k8s labels, see
 committed** — see `sre_agent/service_topology.py` in Relevant files above
 for the validation detail and the one bug it surfaced/fixed; full test suite
 green (853 passed, 3 skipped) and lint/mypy clean on all touched files.
-Remaining open item before Phase E: Hermes safety review
-(`AGENT_RUNTIME=hermes` not yet trusted).
+
+**Hermes safety review done (2026-09-03, see `docs/ai/DECISIONS.md`) —
+verdict: still blocked, do not enable.** Static review (hermes-agent has
+never been installed anywhere in this project): found and fixed two real
+gaps in `sre_agent/actor_runtime.py`/`incident_remediation_workflow.py`
+regardless of the package's actual internals — (1) `HermesRuntime` now fails
+closed instead of silently running unconfined when the (documented-as-not-
+existing) `workdir` sandbox param is rejected, (2) `generate_patch_activity`
+now passes a per-org-per-incident `task_id` instead of one hardcoded value
+shared by every tenant (hermes-agent's docs say `task_id` is its memory-
+isolation key, and `skip_memory=False` was already on). Still open and the
+actual blocker: no safe `enabled_toolsets` allowlist can be set without
+either installing+introspecting the real package or running it inside the
+existing sandbox-Job infra instead of trusting in-process confinement —
+neither done. Tests added (`tests/test_actor_runtime.py`), full suite green
+(855 passed, 3 skipped), lint/mypy clean (pre-existing unrelated findings on
+both touched files confirmed via `git stash` diff, not introduced here).
+`AGENT_RUNTIME=hermes` must stay unset in every real environment until the
+toolset gap closes.
 
 **Noted follow-on (not started, scope after Phase 5E lands):** replace the
 incident page's chat-transcript-style feed with a live execution-trace view

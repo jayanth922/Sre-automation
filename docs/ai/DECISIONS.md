@@ -367,3 +367,64 @@
   zero new work but leaves a known-weaker signal in place); external
   topology source (no existing APM/mesh topology source is deployed in this
   environment to pull from).
+
+## Hermes safety review (`AGENT_RUNTIME=hermes`)
+
+- **Decision:** `AGENT_RUNTIME=hermes` (Nous Research's Hermes Agent as the
+  autonomous actor in `sre_agent/actor_runtime.py::HermesRuntime`) remains
+  **not safe to enable in production** as of this review (2026-09-03).
+  `hermes-agent` has never been installed in any environment this project has
+  touched, so this review is static: reading `HermesRuntime`'s code plus
+  Nous's own published docs (https://hermes-agent.nousresearch.com/docs/guides/python-library),
+  not an actual run.
+- **Reason / findings:**
+  1. **No filesystem sandbox exists.** The documented `AIAgent` constructor
+     has no `workdir` (or any) sandbox parameter — confirmed via the docs,
+     not just inferred. `HermesRuntime._build_agent()` previously masked this
+     by catching the resulting `TypeError` and silently falling back to an
+     *unconfined* run; fixed to fail closed (raise) instead, since
+     `generate_patch_activity` invokes this actor against a real cloned
+     copy of `GITHUB_REPO` (`jayanth922/meridian-shop` in this project),
+     fully autonomously, between gate 1 approval and gate 2.
+  2. **Cross-tenant memory-leak risk via `task_id`.** Docs describe `task_id`
+     as hermes-agent's memory-isolation key ("VM isolation"), but the only
+     real call site (`generate_patch_activity`) passed no `task_id`, so every
+     incident across every org/cluster shared the constructor's hardcoded
+     default (`"sre-actor"`) while `skip_memory=False` ("self-improving"
+     memory loop) stayed on — meaning one tenant's incident context could
+     leak into another's remediation run. Fixed: `generate_patch_activity`
+     now passes `task_id=f"sre-actor-{organization_id}-{incident_id}"`;
+     `get_agent_runtime()` takes `task_id` as an explicit factory kwarg
+     (dropped for the `local` backend, which has no such concept) so it
+     isn't accidentally blindly forwarded to `LocalTerminalRuntime`.
+  3. **No safe toolset allowlist can be set without installing the package.**
+     Nous's docs list `enabled_toolsets`/`disabled_toolsets` params but do
+     not enumerate valid toolset names beyond "web"/"terminal"/"browser"
+     mentioned in passing — insufficient to build a real allowlist. Today's
+     code passes `disabled_toolsets=None` (no restriction), so if enabled,
+     Hermes would run with whatever tools ship by default, unconstrained.
+     Not fixed — needs either installing+introspecting the real package or
+     upstream doc clarification.
+  4. `max_iterations` default here (20) is already well under the package's
+     documented default (500) — no action needed, noted as a mitigating
+     factor already in place.
+- **Consequences:** Items 1 and 2 fixed in `sre_agent/actor_runtime.py` /
+  `sre_agent/incident_remediation_workflow.py` (tests added in
+  `tests/test_actor_runtime.py`), independent of whether `hermes-agent` is
+  ever installed — both are correct regardless of the package's actual
+  internals. Item 3 remains open and is the actual blocker on enabling
+  `AGENT_RUNTIME=hermes`: before flipping that env var anywhere real,
+  either (a) install `hermes-agent` in a disposable environment and
+  introspect its real toolset names to build an explicit `enabled_toolsets`
+  allowlist, or (b) run `HermesRuntime` inside the project's existing
+  ephemeral-K8s-Job sandbox infra (`edge_mcp_servers/mcp_servers/sandbox_real/`)
+  instead of trusting any in-process confinement at all — the latter is the
+  architecturally stronger fix but is a bigger change, not done here.
+  Phase E cutover should treat this as still blocked, not cleared, by this
+  review.
+- **Rejected alternatives:** Installing/dry-running `hermes-agent` directly
+  to answer the toolset-enumeration question — deferred rather than done
+  unilaterally, since it means pulling and executing an "autonomous,
+  tool-using" third-party agent framework of unknown tool surface, which is
+  exactly the class of action this review flags as needing authorization
+  first.

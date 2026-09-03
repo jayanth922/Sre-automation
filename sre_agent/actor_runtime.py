@@ -87,6 +87,14 @@ class HermesRuntime(AgentRuntime):
     Requires ``hermes-agent`` installed and an ``OPENROUTER_API_KEY`` (or
     ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``). Its constructor + method surface
     matches the documented Python-library API.
+
+    NOT YET SAFE TO ENABLE IN PRODUCTION — see the "Hermes safety review"
+    entry in docs/ai/DECISIONS.md. Summary: hermes-agent has no documented
+    filesystem sandbox (this class fails closed instead, see
+    ``_build_agent``), and its full toolset taxonomy (valid
+    ``enabled_toolsets``/``disabled_toolsets`` names) isn't documented, so no
+    safe tool allowlist can be set here without installing and introspecting
+    the real package first.
     """
 
     name = "hermes"
@@ -126,15 +134,21 @@ class HermesRuntime(AgentRuntime):
             ephemeral_system_prompt=self.ephemeral_system_prompt,
         )
         if self.workdir:
-            # Best-effort: `workdir` is the param name our own LocalTerminalRuntime
-            # uses; not independently verified against hermes-agent's actual
-            # constructor signature (never installed in this environment — see
-            # docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md Phase F). Dropped
-            # rather than failing construction if the package rejects it.
+            # Safety review 2026-09 (docs/ai/DECISIONS.md "Hermes safety review"):
+            # hermes-agent's documented public API has no workdir/sandbox
+            # parameter at all, so this call is expected to raise TypeError.
+            # Fail closed rather than silently falling back to an unconfined
+            # run — an autonomous tool-using agent with no filesystem boundary
+            # must never execute against a real repo checkout unsupervised.
             try:
                 return AIAgent(workdir=self.workdir, **kwargs)
-            except TypeError:
-                logger.warning("HermesRuntime: AIAgent does not accept workdir=; running without it")
+            except TypeError as e:
+                raise RuntimeError(
+                    "HermesRuntime was given a workdir but the installed "
+                    "hermes-agent AIAgent does not accept one (its documented "
+                    "API has no filesystem-sandbox parameter) — refusing to "
+                    "run unconfined rather than degrade silently."
+                ) from e
         return AIAgent(**kwargs)
 
     def run(self, task: str) -> ActorResult:
@@ -148,9 +162,16 @@ class HermesRuntime(AgentRuntime):
             return ActorResult(self.name, "ERROR", "", str(e))
 
 
-def get_agent_runtime(name: Optional[str] = None, **kwargs) -> AgentRuntime:
-    """Factory. ``AGENT_RUNTIME=local|hermes`` (default local)."""
+def get_agent_runtime(name: Optional[str] = None, *, task_id: Optional[str] = None, **kwargs) -> AgentRuntime:
+    """Factory. ``AGENT_RUNTIME=local|hermes`` (default local).
+
+    ``task_id`` is Hermes-specific (it's hermes-agent's memory-isolation key —
+    see the "Hermes safety review" entry in docs/ai/DECISIONS.md) and is
+    dropped for the local backend, which has no such concept.
+    """
     name = (name or os.getenv("AGENT_RUNTIME", "local")).lower()
     if name in ("hermes", "openclaw"):  # OpenClaw shares Hermes's migration-compatible surface
+        if task_id is not None:
+            kwargs["task_id"] = task_id
         return HermesRuntime(**kwargs)
     return LocalTerminalRuntime(**kwargs)

@@ -74,5 +74,36 @@ def test_get_agent_runtime_passes_workdir_through_to_local(tmp_path, monkeypatch
     assert rt.workdir == str(tmp_path)
 
 
+def test_get_agent_runtime_passes_task_id_to_hermes_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME", "hermes")
+    rt = get_agent_runtime(workdir=str(tmp_path), task_id="sre-actor-org1-inc1")
+    assert isinstance(rt, HermesRuntime)
+    assert rt.task_id == "sre-actor-org1-inc1"
+
+    # LocalTerminalRuntime has no task_id concept — must not be passed through
+    # (would raise TypeError if it were).
+    monkeypatch.setenv("AGENT_RUNTIME", "local")
+    rt = get_agent_runtime(workdir=str(tmp_path), task_id="sre-actor-org1-inc1")
+    assert isinstance(rt, LocalTerminalRuntime)
+
+
+def test_hermes_runtime_fails_closed_when_package_rejects_workdir(monkeypatch, tmp_path):
+    # hermes-agent's documented API has no workdir/sandbox parameter, so
+    # AIAgent(workdir=...) is expected to raise TypeError. HermesRuntime must
+    # fail closed (raise) rather than silently retry unconfined.
+    class _FakeAIAgent:
+        def __init__(self, **kwargs):
+            if "workdir" in kwargs:
+                raise TypeError("unexpected keyword argument 'workdir'")
+
+    fake_module = type(sys)("run_agent")
+    fake_module.AIAgent = _FakeAIAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_module)
+
+    rt = HermesRuntime(workdir=str(tmp_path))
+    with pytest.raises(RuntimeError, match="refusing to run unconfined"):
+        rt._build_agent()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
