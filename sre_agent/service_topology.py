@@ -147,6 +147,15 @@ async def get_adjacency_map(cluster, execution_context=None) -> Optional[Dict[st
         caller = await build_k8s_tool_caller(context)
 
         def _parsed(raw: Any) -> Dict[str, Any]:
+            # MCP tool callers built via `build_mcp_tool_caller` return a list of
+            # content blocks (e.g. `[{"type": "text", "text": "<json>"}]`), not a
+            # bare string or dict — unwrap that shape before parsing.
+            if isinstance(raw, list) and raw:
+                first = raw[0]
+                if isinstance(first, dict) and "text" in first:
+                    raw = first["text"]
+                elif hasattr(first, "text"):
+                    raw = first.text
             data = json.loads(raw) if isinstance(raw, str) else raw
             return data if isinstance(data, dict) else {}
 

@@ -349,10 +349,19 @@
   server). Cached per cluster for 5 minutes via
   `RedisStateStore.set_topology_cache`/`get_topology_cache`; any fetch
   failure degrades non-fatally to no adjacency signal (same as before this
-  feature). Pure-function unit tested (`tests/test_service_topology.py`) but
-  not yet live-fire validated against a real cluster — accuracy still
-  depends on how consistently this cluster's manifests actually encode
-  `part-of` labels and NetworkPolicies, which hasn't been audited.
+  feature). Pure-function unit tested (`tests/test_service_topology.py`) and
+  live-fire validated 2026-09-03 against the Codespace's `kind-meridian`
+  cluster, including both the no-signal path and (via temporary test
+  `part-of` labels, removed afterward) the positive-signal path — see
+  `docs/ai/PROJECT_STATE.md`'s `service_topology.py` entry for detail.
+  Validation surfaced and fixed one real bug: the raw MCP tool-caller
+  response is a list of content blocks, not a bare string/dict, which the
+  original `_parsed()` helper didn't unwrap (would have silently produced
+  `adjacency=None` in production despite successful k8s calls). Accuracy for
+  a given cluster still depends on how consistently that cluster's manifests
+  actually encode `part-of` labels and NetworkPolicies — `kind-meridian`
+  itself has neither by default, so this signal is currently a no-op there
+  outside of test mutations.
 - **Rejected alternatives:** Manual adjacency config (accurate but needs
   ongoing upkeep as the architecture changes); deferring entirely (keeps
   zero new work but leaves a known-weaker signal in place); external

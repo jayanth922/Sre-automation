@@ -162,8 +162,31 @@ until Phase 5 completes.
   — new `get_networking_v1_api`, `_format_network_policy_entry`,
   `handle_list_network_policies`) and `sre_agent/executor.py::build_k8s_tool_caller`
   (new, mirrors the existing per-server tool-caller wrappers). Tests:
-  `tests/test_service_topology.py` (pure `build_adjacency_map` cases — not
-  live-fire validated against a real cluster yet).
+  `tests/test_service_topology.py` (pure `build_adjacency_map` cases).
+  **Live-fire validated 2026-09-03** against the Codespace's `kind-meridian`
+  cluster (containers patched via `docker cp`, not via `git pull` — the
+  codespace's git tree is 39+ commits behind `origin/master` with its own
+  uncommitted drift, so validation went straight into the running
+  `mcp-k8s`/`sre-agent-api` containers): confirmed `list_network_policies`
+  returns real data end-to-end, confirmed the no-signal path (`{}`, matches
+  the cluster's actual empty label/policy state), then confirmed the
+  positive-signal path by temporarily labelling `checkout-service`/
+  `payment-service` with a shared `part-of` value — got the correct
+  bidirectional adjacency map back, cache round-tripped through Redis (2nd
+  call issued zero MCP requests), labels removed afterward. Found and fixed
+  one real bug: `get_adjacency_map`'s `_parsed()` helper assumed the MCP tool
+  caller returns a bare string or dict, but `build_mcp_tool_caller` (via
+  `langchain_mcp_adapters`) actually returns a list of content blocks
+  (`[{"type": "text", "text": "<json>"}]`) — unfixed, this would have
+  silently degraded to `adjacency=None` in production even when the
+  underlying k8s calls succeeded. The same latent pattern (`json.loads(raw)
+  if isinstance(raw, str) else raw`) also exists in `sre_agent/nl_query.py`
+  (~lines 234, 258) — not fixed here (out of scope), flagged for a future
+  pass. The codespace's container images were also missing the
+  `langchain-mcp-adapters` and `redis` pip packages entirely (both declared
+  in `pyproject.toml` but absent from the running images) — installed live
+  for validation only; not persisted, so a container rebuild from the baked
+  image will need them reinstalled until the image itself is rebuilt.
 - `sre_agent/incident_remediation_workflow.py` — Phase 5B/C: the two-gate
   Temporal workflow + `raise_pr_activity` (done); Phase F's
   `generate_patch_activity` (live-fire validated 2026-09-03); full workflow
@@ -231,11 +254,10 @@ confirmed green again on `master`.
 Still outstanding before Phase E (cutover): the real PR-write path is now
 fully confirmed end-to-end (test-18) — that blocker is resolved.
 Correlation adjacency source (infer from k8s labels, see
-`docs/ai/DECISIONS.md`) is now **implemented** (2026-09-03, not yet
-committed) — see `sre_agent/service_topology.py` in Relevant files above;
-full test suite green (853 passed, 3 skipped) and lint/mypy clean on all
-touched/new files. Not yet live-fire validated against a real cluster with
-NetworkPolicies + `part-of` labels set — only pure unit-tested so far.
+`docs/ai/DECISIONS.md`) is **implemented, live-fire validated, and
+committed** — see `sre_agent/service_topology.py` in Relevant files above
+for the validation detail and the one bug it surfaced/fixed; full test suite
+green (853 passed, 3 skipped) and lint/mypy clean on all touched files.
 Remaining open item before Phase E: Hermes safety review
 (`AGENT_RUNTIME=hermes` not yet trusted).
 
