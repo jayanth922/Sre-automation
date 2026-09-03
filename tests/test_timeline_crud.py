@@ -5,7 +5,22 @@ import uuid
 import pytest
 
 from backend import crud, models
-from sre_agent.incident_timeline import build_specialist_finding_content, build_supervisor_summary_content
+from sre_agent.incident_timeline import (
+    build_specialist_finding_content,
+    build_supervisor_summary_content,
+    truncate_for_timeline,
+)
+
+
+def test_truncate_for_timeline_leaves_short_text_untouched():
+    assert truncate_for_timeline("short diff", limit=4000) == "short diff"
+
+
+def test_truncate_for_timeline_caps_long_text():
+    text = "x" * 5000
+    result = truncate_for_timeline(text, limit=4000)
+    assert result.startswith("x" * 4000)
+    assert "truncated, 1000 more characters" in result
 
 
 class FakeDb:

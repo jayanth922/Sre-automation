@@ -558,6 +558,43 @@ async def emit_timeline_event(
         return None
 
 
+def truncate_for_timeline(text: str, limit: int = 4000) -> str:
+    """Cap diff/log text before it goes into a timeline event payload — these
+    are stored in Postgres and pushed over WebSocket, so an unbounded sandbox
+    log or actor transcript must not balloon either.
+    """
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n… [truncated, {len(text) - limit} more characters]"
+
+
+async def emit_trace_step_event(
+    incident_id: Optional[str],
+    workflow_id: str,
+    source: str,
+    step: str,
+    status: str,
+    detail: str = "",
+    **extra: Any,
+) -> None:
+    """Step-level execution-trace event — CI-log style progress (cloning,
+    running the actor, provisioning a sandbox stage) that happens *between*
+    the gate PENDING/APPROVED bubbles emit_gate_event_activity posts, where
+    the on-call currently sees nothing while a remediation is actually
+    running. Rendered as a trace block, not a chat bubble, by the dashboard.
+    """
+    payload: Dict[str, Any] = {"source": source, "step": step, "status": status, "workflow_id": workflow_id}
+    payload.update(extra)
+    await emit_timeline_event(
+        incident_id,
+        event_type="trace_step",
+        speaker_role="executor",
+        title=step.replace("_", " ").title(),
+        content=detail,
+        payload=payload,
+    )
+
+
 async def load_pending_human_events(incident_id: Optional[str], limit: int = 1):
     if not incident_id:
         return []

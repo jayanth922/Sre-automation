@@ -253,6 +253,41 @@ export default function IncidentConsolePage() {
             <div className="sx-empty">The agent hasn’t emitted investigation steps yet. This view updates live as it works.</div>
           ) : (
             events.map((ev, idx) => {
+              if (ev.event_type === "trace_step") {
+                const step = String(ev.payload?.step ?? ev.title ?? "step")
+                const status = String(ev.payload?.status ?? "")
+                const badgeCls =
+                  status === "SUCCEEDED" ? "ok" : status === "FAILED" || status === "REFUSED" ? "crit"
+                  : status === "STARTED" ? "sel" : "warn"
+                const diff = typeof ev.payload?.diff === "string" ? ev.payload.diff : ""
+                const logs = typeof ev.payload?.logs === "string" ? ev.payload.logs : ""
+                const blob = diff || logs
+                return (
+                  <div className="sx-ev sx-trace" key={ev.id ?? ev.sequence ?? idx}>
+                    <div className="rl">
+                      <div className={`node trace ${status === "STARTED" ? "pulse" : ""}`} />
+                      {idx < events.length - 1 && <div className="ln" />}
+                    </div>
+                    <div className="c2">
+                      <div className="et">
+                        {pretty(step)}
+                        <span className={`sx-badge ${badgeCls}`} style={{ marginLeft: 8 }}>{status}</span>
+                      </div>
+                      {ev.content && <div className="ed">{ev.content}</div>}
+                      {blob && (
+                        <details>
+                          <summary className="sx-tracesum">{diff ? "diff" : "logs"} ({blob.length} chars)</summary>
+                          <pre className="sx-logbox">{blob}</pre>
+                        </details>
+                      )}
+                      <div className="src">
+                        <span className="sx-t2 tool">trace</span>
+                        {String(ev.payload?.source ?? "executor")} · {timeAgo(ev.created_at)}
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
               const tag = sourceTag(ev)
               const isUser = ev.speaker_role === "user"
               const rawConf = typeof ev.payload?.confidence === "number" ? (ev.payload.confidence as number) : null

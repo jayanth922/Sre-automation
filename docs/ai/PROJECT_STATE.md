@@ -275,16 +275,32 @@ adds risk without functional gain. Removed: `HermesRuntime` class,
 lint/mypy clean (pre-existing unrelated findings confirmed via `git stash`
 diff, not introduced here).
 
-**Noted follow-on (not started, scope after Phase 5E lands):** replace the
-incident page's chat-transcript-style feed with a live execution-trace view
-(CI-log style) — repo clone, the actor's actual diff, sandbox Job
-provisioning/status, and real K8s pod logs (baseline vs candidate), not just
-gate-level PENDING/APPROVED events. The event bus (`_emit`/timeline,
-already streamed live over WebSocket to the dashboard) is the right
-mechanism; needs new step-level event types plus a trace/log renderer to
-replace the current bubble-style feed. User's stated motivation: system
-transparency — showing on-call the actual live solution/execution per
-incident, not a summary.
+**Execution-trace dashboard view — done (2026-09-03).** Added step-level
+`event_type="trace_step"` timeline events (source/step/status + optional
+diff/logs) via `emit_trace_step_event()`/`truncate_for_timeline()`
+(`sre_agent/incident_timeline.py`), wired into `generate_patch_activity`
+(`clone_repo` STARTED, `run_actor` STARTED, terminal `generate_patch`
+SUCCEEDED/FAILED via a `_finish()` closure — `sre_agent/incident_remediation_workflow.py`)
+and `_run_sandbox_stage` (`sandbox_{stage}` STARTED before provisioning,
+terminal REFUSED/SUCCEEDED/FAILED with truncated logs after fetch —
+`sre_agent/sandbox_workflow.py`). These are supplementary to the existing
+gate PENDING/APPROVED bubbles and the final verdict bubble, not a
+replacement — they fill the previously-silent gap while a fix is actually
+being generated/verified. Frontend: incident page's event loop
+(`dashboard/app/(dashboard)/clusters/[id]/incidents/[incidentId]/page.tsx`)
+got a `trace_step` render branch (status-colored node, `.sx-badge` pill,
+collapsible `<details>` diff/log block via new `.sx-trace`/`.sx-tracesum`
+CSS in `dashboard/app/console.css`); `tsc --noEmit` and `eslint` clean (6
+pre-existing unrelated `no-unescaped-entities` errors confirmed via `git
+stash` diff). Backend: full suite green (848 passed, 3 skipped, unchanged),
+new pure-function tests for `truncate_for_timeline` in
+`tests/test_timeline_crud.py`; ruff/mypy findings confirmed pre-existing via
+`git stash` diff. Not live-fire tested against the Codespace cluster yet —
+the emission points are additive (new events only, no control-flow change),
+so the existing live-fire validation of `generate_patch_activity`/
+`_run_sandbox_stage` themselves still applies; a full live-fire pass through
+the dashboard is the natural next check whenever an incident runs there
+next.
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)

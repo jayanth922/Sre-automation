@@ -178,6 +178,7 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
     import asyncio
 
     from .executor import build_sandbox_tool_caller
+    from .incident_timeline import emit_trace_step_event, truncate_for_timeline
     from .sandbox_gateway import SandboxGateContext, authorize_and_provision_sandbox
 
     gate_context = SandboxGateContext(
@@ -190,6 +191,12 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
     tool_caller = await build_sandbox_tool_caller(execution_context)
 
     job_name = _job_name(request.workflow_id, request.stage)
+
+    await emit_trace_step_event(
+        request.incident_id, request.workflow_id,
+        source="sandbox_workflow", step=f"sandbox_{request.stage}", status="STARTED",
+        detail=f"Provisioning {job_name}", job_name=job_name,
+    )
 
     provision = await authorize_and_provision_sandbox(
         gate_context,
@@ -207,7 +214,13 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
         idempotency_key=f"sandbox-provision:{job_name}",
     )
     if str(provision.get("status")).upper() not in ("OK", "SKIPPED"):
-        return SandboxRunResult(job_name, "REFUSED", detail=str(provision.get("reason") or provision))
+        detail = str(provision.get("reason") or provision)
+        await emit_trace_step_event(
+            request.incident_id, request.workflow_id,
+            source="sandbox_workflow", step=f"sandbox_{request.stage}", status="REFUSED",
+            detail=detail, job_name=job_name,
+        )
+        return SandboxRunResult(job_name, "REFUSED", detail=detail)
 
     deadline = timedelta(seconds=request.active_deadline_seconds + 60).total_seconds()
     elapsed = 0.0
@@ -252,6 +265,12 @@ async def _run_sandbox_stage(request: SandboxRunRequest) -> SandboxRunResult:
     except Exception as exc:
         logger.warning("Sandbox teardown failed for %s (non-fatal, cleanup_activity retries): %s", job_name, exc)
 
+    await emit_trace_step_event(
+        request.incident_id, request.workflow_id,
+        source="sandbox_workflow", step=f"sandbox_{request.stage}", status=status,
+        detail=f"{job_name} finished: {status}", job_name=job_name,
+        logs=truncate_for_timeline(logs) if logs else "",
+    )
     return SandboxRunResult(job_name, status, logs=logs)
 
 

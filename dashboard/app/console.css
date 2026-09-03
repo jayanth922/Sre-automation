@@ -155,6 +155,12 @@
 .sx-t2.tool{background:#eae7dd;color:var(--ink2)}
 .sx-logbox{font-family:var(--font-mono),monospace;font-size:11px;background:#efece3;border:1px solid var(--rule);padding:9px 11px;margin-top:9px;line-height:1.6;white-space:pre-wrap;border-radius:2px;overflow-x:auto}
 .sx-logbox .er{color:var(--crit)}
+.sx-trace .c2{background:#f4f2ea;border:1px solid var(--rule2);border-radius:3px;padding:8px 10px}
+.sx-trace .ed{font-family:var(--font-mono),monospace}
+.sx-ev .node.trace{background:var(--ink3);border-radius:50%}
+.sx-ev .node.trace.pulse{background:var(--sel);animation:sxbl 1.2s steps(1) infinite}
+.sx-tracesum{font-size:10.5px;color:var(--ink3);cursor:pointer;user-select:none;margin-top:6px}
+.sx-tracesum:hover{color:var(--ink2)}
 .sx-rootc{border:1px solid var(--sel);background:var(--sel-t);padding:15px 17px;margin-top:20px;border-radius:2px}
 .sx-rootc .h{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--sel);display:flex;align-items:center;gap:8px}
 .sx-rootc h3{font-size:15px;margin:9px 0 6px;font-weight:600}
