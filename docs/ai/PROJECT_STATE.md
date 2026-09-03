@@ -184,6 +184,11 @@ until Phase 5 completes.
   — Slack gate-decision commands (Phase 5D, done).
 - `docs/ai/DECISIONS.md` — durable technical decisions log, check before
   re-deriving root causes already documented there.
+- `tests/test_mcp_auth.py::test_compose_ports_are_loopback_only_and_require_token`
+  — hardcodes the MCP service count in `docker-compose.yaml` (loopback ports
+  + `MCP_SERVICE_TOKEN` requirement); bump both counts whenever a new
+  `mcp-*` service is added (fixed 2026-09-03, `5ed525d`, after `mcp-sandbox`
+  broke it at 8 vs. hardcoded 7).
 
 ## Known blockers or risks
 - `sre-langfuse-web`/`worker` crash-looping (ClickHouse `ON CLUSTER default`
@@ -199,16 +204,18 @@ until Phase 5 completes.
   — Socket Mode auto-reconnects on its own well within any wait length).
 
 ## Next bounded task
-Commit `edge_mcp_servers/mcp_servers/github_exec/server.py`'s `gh auth
-setup-git` fix (test-18 live-fire validated, PR #1 created) plus this
-state-file update, then push to `origin/master`. Also decide/confirm with
-the user whether to close throwaway PR #1 on `meridian-shop` (it carries a
-"safe to close" marker comment and has no functional effect either way).
+`edge_mcp_servers/mcp_servers/github_exec/server.py`'s `gh auth setup-git`
+fix is committed and pushed (`f106378`); throwaway PR #1 on `meridian-shop`
+is closed. CI was also found broken on `master` (had been red for the prior
+3 pushes, since `mcp-sandbox` was added to `docker-compose.yaml` without
+updating `tests/test_mcp_auth.py`'s hardcoded port/token counts — a stale
+assertion, not a real security gap); fixed and pushed (`5ed525d`), CI
+confirmed green again on `master`.
 
-Separately, still outstanding before Phase E (cutover): the real PR-write
-path is now fully confirmed end-to-end (test-18) — this blocker is
-resolved. Remaining open decisions (correlation adjacency source, Hermes
-safety review) should be raised before Phase E relies on them.
+Still outstanding before Phase E (cutover): the real PR-write path is now
+fully confirmed end-to-end (test-18) — that blocker is resolved. Remaining
+open decisions (correlation adjacency source, Hermes safety review) should
+be raised before Phase E relies on them.
 
 **Noted follow-on (not started, scope after Phase 5E lands):** replace the
 incident page's chat-transcript-style feed with a live execution-trace view
