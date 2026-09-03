@@ -141,9 +141,42 @@ one patch) and only within a workflow already scoped to one bundle.
   guardrailed (allow-list + repo allow-list + param completeness). Invoked
   by `IncidentRemediationWorkflow`'s `raise_pr_activity` only after both
   gates and a `RESOLVED` sandbox verdict.
-- **Phase D — Wire Slack + dashboard to the two new gates**, and audit
-  Slack's Socket Mode behavior specifically across long approval waits
-  (known ~30min expiry blocker). No rebuild of either transport.
+- **Phase D — Wire Slack + dashboard to the two new gates. DONE (2026-09-02).**
+  Dashboard: `dashboard/.../incidents/[incidentId]/page.tsx` gained a
+  `GateApproval` fetch (`GET /incidents/{id}/remediation-gates`, polled
+  alongside the existing `loadStatus`) and a `decideGate()` action
+  (`POST .../remediation-gates/{gate_approval_id}/decide`), rendered as a new
+  "Deterministic pipeline" panel above the existing single-gate remedy panel
+  — same admin-gated button pattern as `approve()`, extended to two gates
+  and an explicit deny. Slack: `war_room.py` gained `parse_gate_command`
+  (pure, parses "approve start-fix" / "deny raise-pr" replies) and
+  `route_gate_command`, which resolves the replying Slack user's email
+  (`slack_bot.py::_slack_user_email`, via `users_info` — the only identity
+  bridge available, since there's no per-user Slack↔app mapping, only the
+  org-level OAuth bot token from Phase 4) to a `User` row, requires
+  `role == ADMIN` the same as the dashboard's `require_admin`, then decides
+  the gate and signals the workflow through a new shared
+  `approval_flow.decide_and_signal_gate` (factored out of
+  `remediation_gates.py`'s endpoint so the two transports can't drift on the
+  gate→signal-name mapping). `slack_bot.py`'s thread-message handler tries
+  `parse_gate_command` first and falls back to the existing free-text
+  `route_thread_reply` when the text isn't a gate command. No Block Kit —
+  text commands only, matching this codebase's existing plain-text Slack
+  design (`format_reply`, `format_event_for_slack`). The *outbound* half
+  (gate PENDING/APPROVED/DENIED/EXPIRED reaching Slack) needed no new code:
+  `emit_gate_event_activity` already writes an `event_type="act"` timeline
+  event, and `"act"` was already in `war_room._SURFACED`, so
+  `forward_events` was already carrying it into the war-room thread.
+  Socket Mode audit: `slack_sdk.socket_mode.aiohttp.SocketModeClient`
+  defaults to `auto_reconnect_enabled=True` with a 5s ping interval —
+  confirmed via the installed package's constructor signature. The
+  transport self-heals independent of wait length; the "~30min expiry"
+  risk is entirely our own `APPROVAL_TTL_MINUTES` business TTL (default 30,
+  `approval_flow.approval_ttl`), unrelated to the socket connection. No
+  transport fix needed; this distinction is now documented so it isn't
+  mistaken for a connection bug later. 6 new tests
+  (`tests/test_war_room.py`, `tests/test_slack_bot.py`); full suite 841
+  passed / 3 skipped (was 835/3).
 - **Phase E — Cutover.** Retire the old single-gate live-in-LangGraph
   auto-execute path once Phase A–D have run clean against 1–2 real incidents
   on the Codespace, matching this repo's existing live-fire validation
@@ -162,9 +195,9 @@ one patch) and only within a workflow already scoped to one bundle.
 
 ## Next bounded task
 
-Phase D: wire Slack + dashboard to the two new gates
-(`GET/POST /api/v1/incidents/{id}/remediation-gates[...]`), and audit
-Slack's Socket Mode behavior specifically across long approval waits (known
-~30min expiry blocker). Open decisions above (GitHub PR repo scope, PR
-credentials, correlation thresholds/adjacency source) are still unanswered
-and should be raised before Phase D/E rely on them.
+Phase E: cutover. Retire the old single-gate live-in-LangGraph auto-execute
+path once Phase A–D have run clean against 1–2 real incidents on the
+Codespace (Task #16's live-fire validation convention). Open decisions above
+(GitHub PR repo scope, PR credentials, correlation thresholds/adjacency
+source) are still unanswered and should be raised before Phase E relies on
+them.

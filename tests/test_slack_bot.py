@@ -189,5 +189,52 @@ def test_message_handler_routes_tracked_war_room_reply():
     assert posted == [("3%.", "T1")]
 
 
+def test_message_handler_routes_gate_command_via_resolved_email():
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+    import sre_agent.war_room as war_room_mod
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+    handler = app.handlers["message"]
+
+    async def fake_users_info(user):
+        assert user == "U42"
+        return {"user": {"profile": {"email": "oncall@example.com"}}}
+
+    app.client = types.SimpleNamespace(users_info=fake_users_info)
+
+    posted = []
+
+    async def fake_say(text, thread_ts):
+        posted.append((text, thread_ts))
+
+    seen = {}
+
+    async def fake_decide_gate_for_incident(incident_id, gate, approved, approver_email):
+        seen["incident_id"] = incident_id
+        seen["gate"] = gate
+        seen["approved"] = approved
+        seen["approver_email"] = approver_email
+        return {"mode": "gate_decision", "status": "ok", "message": "gate decided"}
+
+    original = war_room_mod._decide_gate_for_incident
+    war_room_mod._decide_gate_for_incident = fake_decide_gate_for_incident
+    try:
+        asyncio.run(
+            handler({"channel": "C1", "thread_ts": "T1", "user": "U42", "text": "approve start-fix"}, fake_say)
+        )
+    finally:
+        war_room_mod._decide_gate_for_incident = original
+
+    assert seen == {
+        "incident_id": "inc-1",
+        "gate": "start_fix",
+        "approved": True,
+        "approver_email": "oncall@example.com",
+    }
+    assert posted == [("gate decided", "T1")]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

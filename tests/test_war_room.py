@@ -27,6 +27,8 @@ from sre_agent.war_room import (  # noqa: E402
     WarRoomRegistry,
     forward_events,
     format_event_for_slack,
+    parse_gate_command,
+    route_gate_command,
     route_thread_reply,
 )
 from sre_agent.live_events import InMemoryEventBus, publish_incident_event  # noqa: E402
@@ -145,6 +147,78 @@ def test_route_ignores_non_war_room_thread():
 
     res, posts = asyncio.run(scenario())
     assert res["mode"] == "ignored" and posts == []
+
+
+# ── inbound: gate-decision commands (Phase 5D) ───────────────────────────────
+def test_parse_gate_command_accepts_approve_and_deny():
+    assert parse_gate_command("approve start-fix") == ("start_fix", True)
+    assert parse_gate_command("deny raise_pr") == ("raise_pr", False)
+    assert parse_gate_command("  APPROVE   RAISE-PR  ") == ("raise_pr", True)
+
+
+def test_parse_gate_command_rejects_non_commands():
+    assert parse_gate_command("what's the error rate?") is None
+    assert parse_gate_command("approve") is None
+    assert parse_gate_command("approve something-else") is None
+    assert parse_gate_command("") is None
+
+
+def test_route_gate_command_returns_none_for_non_gate_text():
+    async def scenario():
+        reg = WarRoomRegistry()
+        t = ThreadRef("C1", "T1")
+        reg.open("inc-1", t)
+
+        async def poster(thread, text):
+            raise AssertionError("should not post: not a gate command")
+
+        return await route_gate_command("what's the error rate?", t, reg, "oncall@example.com", poster)
+
+    assert asyncio.run(scenario()) is None
+
+
+def test_route_gate_command_ignores_non_war_room_thread():
+    async def scenario():
+        reg = WarRoomRegistry()  # empty
+        posts = []
+
+        async def poster(thread, text):
+            posts.append(text)
+
+        res = await route_gate_command("approve start-fix", ThreadRef("C9", "T9"), reg, "oncall@example.com", poster)
+        return res, posts
+
+    res, posts = asyncio.run(scenario())
+    assert res["mode"] == "ignored" and posts == []
+
+
+def test_route_gate_command_posts_decision_outcome(monkeypatch):
+    import sre_agent.war_room as war_room
+
+    async def fake_decide(incident_id, gate, approved, approver_email):
+        assert incident_id == "inc-1"
+        assert gate == "start_fix"
+        assert approved is True
+        assert approver_email == "oncall@example.com"
+        return {"mode": "gate_decision", "status": "ok", "message": "✅ Approved `start_fix` — thanks oncall@example.com."}
+
+    monkeypatch.setattr(war_room, "_decide_gate_for_incident", fake_decide)
+
+    async def scenario():
+        reg = WarRoomRegistry()
+        t = ThreadRef("C1", "T1")
+        reg.open("inc-1", t)
+        posts = []
+
+        async def poster(thread, text):
+            posts.append(text)
+
+        result = await route_gate_command("approve start-fix", t, reg, "oncall@example.com", poster)
+        return result, posts
+
+    result, posts = asyncio.run(scenario())
+    assert result["status"] == "ok"
+    assert posts == ["✅ Approved `start_fix` — thanks oncall@example.com."]
 
 
 if __name__ == "__main__":

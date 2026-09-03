@@ -18,6 +18,7 @@ Framework-agnostic and testable: Slack I/O is injected as a ``poster`` and a
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -134,6 +135,129 @@ async def forward_events(
     finally:
         sub.close()
     return processed
+
+
+GATE_COMMAND_RE = re.compile(r"^\s*(approve|deny)\s+(start[-_]fix|raise[-_]pr)\s*$", re.IGNORECASE)
+
+
+def parse_gate_command(text: str) -> Optional[tuple]:
+    """Parse an in-thread reply like "approve start-fix" / "deny raise_pr"
+    into (gate, approved), or None if the text isn't a gate decision. Pure —
+    no Slack, no DB — so it's unit-testable the same way format_reply and
+    format_event_for_slack are.
+    """
+    match = GATE_COMMAND_RE.match(text or "")
+    if not match:
+        return None
+    verb, gate_raw = match.group(1).lower(), match.group(2).lower().replace("-", "_")
+    return gate_raw, verb == "approve"
+
+
+async def route_gate_command(
+    text: str,
+    thread: ThreadRef,
+    registry: WarRoomRegistry,
+    approver_email: Optional[str],
+    poster: Callable[[Optional[ThreadRef], str], Awaitable[Any]],
+) -> Optional[Dict[str, Any]]:
+    """Decide one of Phase 5's two remediation gates from an in-thread Slack
+    reply ("approve start-fix" / "deny raise-pr"). Returns None (caller
+    should fall back to route_thread_reply) if `text` isn't a gate command;
+    otherwise decides it and posts the outcome, mirroring
+    sre_agent/api/v1/remediation_gates.py's dashboard path but authorizing
+    off the replying Slack user's email instead of a JWT.
+    """
+    parsed = parse_gate_command(text)
+    if parsed is None:
+        return None
+
+    gate, approved = parsed
+    incident_id = registry.incident_for(thread)
+    if not incident_id:
+        return {"mode": "ignored"}
+
+    result = await _decide_gate_for_incident(incident_id, gate, approved, approver_email)
+    await poster(thread, result["message"])
+    return result
+
+
+async def _decide_gate_for_incident(
+    incident_id: str, gate: str, approved: bool, approver_email: Optional[str]
+) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from backend import crud, database, models
+
+    from .approval_flow import (
+        ApprovalValidationError,
+        decide_and_signal_gate,
+        find_latest_pending_gate,
+    )
+
+    if not approver_email:
+        return {"mode": "gate_decision", "status": "denied", "message": "Couldn't verify your Slack identity — no email on file."}
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, _uuid.UUID(incident_id))
+        if incident is None:
+            return {"mode": "ignored"}
+        cluster = await crud.get_cluster_by_id(db, incident.cluster_id)
+        if cluster is None:
+            return {"mode": "ignored"}
+
+        user_result = await db.execute(
+            select(models.User).where(models.User.email == approver_email)
+        )
+        approver = user_result.scalar_one_or_none()
+
+    if approver is None or str(approver.org_id) != str(incident.org_id):
+        return {
+            "mode": "gate_decision",
+            "status": "denied",
+            "message": f"{approver_email} isn't a member of this organization — can't decide this gate here.",
+        }
+    if approver.role != models.UserRole.ADMIN:
+        return {
+            "mode": "gate_decision",
+            "status": "denied",
+            "message": "Only admins can decide remediation gates.",
+        }
+
+    gate_approval_id = await find_latest_pending_gate(incident_id=incident_id, gate=gate)
+    if gate_approval_id is None:
+        return {
+            "mode": "gate_decision",
+            "status": "not_found",
+            "message": f"No pending `{gate}` gate for this incident right now.",
+        }
+
+    try:
+        row, delivered = await decide_and_signal_gate(
+            gate_approval_id=gate_approval_id,
+            incident_id=incident_id,
+            organization_id=str(incident.org_id),
+            cluster_id=str(incident.cluster_id),
+            approved=approved,
+            approver_user_id=str(approver.id),
+            approver_label=approver.email,
+        )
+    except ApprovalValidationError as exc:
+        detail = "already decided" if exc.reason == "not_pending" else "expired"
+        return {"mode": "gate_decision", "status": exc.reason, "message": f"That gate is {detail}."}
+
+    if row is None:
+        return {"mode": "gate_decision", "status": "not_found", "message": "Gate approval not found."}
+    if not delivered:
+        return {
+            "mode": "gate_decision",
+            "status": "recorded_not_delivered",
+            "message": f"Recorded {'approval' if approved else 'denial'} of `{gate}`, but the workflow couldn't be signaled yet.",
+        }
+
+    verb = "Approved" if approved else "Denied"
+    return {"mode": "gate_decision", "status": "ok", "message": f"✅ {verb} `{gate}` — thanks {approver.email}."}
 
 
 async def route_thread_reply(

@@ -18,15 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import database, models, schemas
 from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
 from sre_agent.api.v1.ownership import get_owned_incident
-from sre_agent.approval_flow import ApprovalValidationError, decide_gate_approval
+from sre_agent.approval_flow import ApprovalValidationError, decide_and_signal_gate
 
 router = APIRouter(
     prefix="/incidents",
     tags=["remediation_gates"],
     dependencies=[Depends(get_current_user_and_org)],
 )
-
-_SIGNAL_NAME = {"start_fix": "decide_start_fix", "raise_pr": "decide_raise_pr"}
 
 
 @router.get(
@@ -71,13 +69,14 @@ async def decide_remediation_gate(
         raise HTTPException(status_code=422, detail="gate_approval_id is not a valid UUID")
 
     try:
-        row = await decide_gate_approval(
+        row, delivered = await decide_and_signal_gate(
             gate_approval_id=gate_approval_id,
             incident_id=str(owned_incident.id),
             organization_id=str(user.org_id),
             cluster_id=str(owned_incident.cluster_id),
             approved=decision.approved,
             approver_user_id=str(user.id),
+            approver_label=user.email or str(user.id),
         )
     except ApprovalValidationError as exc:
         if exc.reason == "not_pending":
@@ -89,15 +88,6 @@ async def decide_remediation_gate(
     if row is None:
         raise HTTPException(status_code=404, detail="Gate approval not found")
 
-    signal_name = _SIGNAL_NAME.get(row.gate)
-    if signal_name is None:
-        raise HTTPException(status_code=500, detail=f"Unknown gate {row.gate!r}")
-
-    from sre_agent.temporal_client import signal_workflow
-
-    delivered = await signal_workflow(
-        row.workflow_id, signal_name, args=[decision.approved, user.email or str(user.id)]
-    )
     if not delivered:
         # The DB decision is durable regardless — this only means the running
         # workflow (if any) didn't get the memo yet. Surface it rather than

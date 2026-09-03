@@ -90,6 +90,24 @@ async def process_mention(
     return reply
 
 
+async def _slack_user_email(app: Any, slack_user_id: Optional[str]) -> Optional[str]:
+    """Resolve a Slack user id to the email on their Slack profile, so
+    route_gate_command can authorize a gate decision against our own
+    User table (there is no other identity bridge between Slack and the
+    app). Requires the users:read.email OAuth scope; returns None (never
+    raises) if the lookup fails or the scope is missing, which
+    route_gate_command treats as "can't decide this gate here".
+    """
+    if not slack_user_id:
+        return None
+    try:
+        resp = await app.client.users_info(user=slack_user_id)
+        return (resp.get("user") or {}).get("profile", {}).get("email")
+    except Exception:
+        logger.warning("slack_user_email_lookup_failed", extra={"slack_user_id": slack_user_id})
+        return None
+
+
 def build_slack_app(registry=None, organization: Any = None):
     """Build the Slack Bolt app wired to the SRE agent (lazy import).
 
@@ -113,7 +131,7 @@ def build_slack_app(registry=None, organization: Any = None):
     except Exception as e:  # pragma: no cover - only without slack_bolt
         raise RuntimeError("slack_bolt not installed; run: pip install 'slack_bolt>=1.18'") from e
 
-    from ..war_room import ThreadRef, route_thread_reply
+    from ..war_room import ThreadRef, parse_gate_command, route_gate_command, route_thread_reply
     from ..multitenant.slack_oauth import resolve_slack_bot_token
 
     token = resolve_slack_bot_token(organization) if organization is not None else os.getenv("SLACK_BOT_TOKEN")
@@ -146,7 +164,13 @@ def build_slack_app(registry=None, organization: Any = None):
             async def poster(_thread, text):
                 await say(text=text, thread_ts=thread.thread_ts)
 
-            await route_thread_reply(event.get("text", ""), thread, registry, poster)
+            text = event.get("text", "")
+            if parse_gate_command(text) is not None:
+                approver_email = await _slack_user_email(app, event.get("user"))
+                await route_gate_command(text, thread, registry, approver_email, poster)
+                return
+
+            await route_thread_reply(text, thread, registry, poster)
 
     return app
 

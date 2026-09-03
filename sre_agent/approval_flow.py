@@ -347,6 +347,75 @@ async def expire_gate_approval(*, workflow_id: str, gate: str) -> None:
         await db.commit()
 
 
+_GATE_SIGNAL_NAME = {"start_fix": "decide_start_fix", "raise_pr": "decide_raise_pr"}
+
+
+async def find_latest_pending_gate(*, incident_id: str, gate: str) -> Optional[str]:
+    """Return the id of the newest PENDING RemediationGateApproval row for
+    this incident+gate, or None. The dashboard already knows a row's id from
+    its GET /remediation-gates listing; inbound transports that only know
+    (incident, gate) — e.g. a Slack "approve start-fix" reply — resolve the
+    id through here first.
+    """
+    from sqlalchemy import select
+
+    from backend import database, models
+
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.RemediationGateApproval.id)
+            .where(
+                models.RemediationGateApproval.incident_id == uuid.UUID(str(incident_id)),
+                models.RemediationGateApproval.gate == gate,
+                models.RemediationGateApproval.status == models.ApprovalStatus.PENDING,
+            )
+            .order_by(models.RemediationGateApproval.created_at.desc())
+            .limit(1)
+        )
+        row_id = result.scalar_one_or_none()
+        return str(row_id) if row_id is not None else None
+
+
+async def decide_and_signal_gate(
+    *,
+    gate_approval_id: str,
+    incident_id: str,
+    organization_id: str,
+    cluster_id: str,
+    approved: bool,
+    approver_user_id: str,
+    approver_label: str,
+):
+    """decide_gate_approval, then signal the waiting Temporal workflow.
+
+    Shared by every transport that can decide a gate (dashboard API in
+    sre_agent/api/v1/remediation_gates.py, Slack in war_room.py) so they
+    can't drift on the gate->signal-name mapping or the decide/signal order.
+    Raises ApprovalValidationError same as decide_gate_approval. Returns
+    (row_or_None, delivered) — delivered is False when the row was decided
+    but the running workflow (if any) could not be signaled.
+    """
+    row = await decide_gate_approval(
+        gate_approval_id=gate_approval_id,
+        incident_id=incident_id,
+        organization_id=organization_id,
+        cluster_id=cluster_id,
+        approved=approved,
+        approver_user_id=approver_user_id,
+    )
+    if row is None:
+        return None, False
+
+    signal_name = _GATE_SIGNAL_NAME.get(row.gate)
+    if signal_name is None:
+        return row, False
+
+    from .temporal_client import signal_workflow
+
+    delivered = await signal_workflow(row.workflow_id, signal_name, args=[approved, approver_label])
+    return row, delivered
+
+
 async def decide_gate_approval(
     *,
     gate_approval_id: str,

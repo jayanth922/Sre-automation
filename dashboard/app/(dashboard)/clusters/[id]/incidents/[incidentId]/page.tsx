@@ -28,6 +28,23 @@ interface GraphStatus {
   } | null
 }
 
+interface GateApproval {
+  id: string
+  incident_id: string
+  workflow_id: string
+  gate: "start_fix" | "raise_pr"
+  status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED"
+  approver_user_id?: string | null
+  decided_at?: string | null
+  expires_at: string
+  created_at: string
+}
+
+const GATE_LABEL: Record<GateApproval["gate"], string> = {
+  start_fix: "Start fix in Temporal",
+  raise_pr: "Raise pull request",
+}
+
 interface AgentMetrics {
   nodes: Record<string, { runs: number; errors: number; total_ms: number; avg_ms: number }>
   provider_switches: { node: string; detail: string }[]
@@ -63,6 +80,8 @@ export default function IncidentConsolePage() {
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [approving, setApproving] = useState(false)
+  const [gates, setGates] = useState<GateApproval[]>([])
+  const [decidingGate, setDecidingGate] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLive = useRef(0)
 
@@ -94,13 +113,26 @@ export default function IncidentConsolePage() {
     }
   }, [incidentId])
 
+  const loadGates = useCallback(async () => {
+    try {
+      const { data } = await api.get<GateApproval[]>(`/incidents/${incidentId}/remediation-gates`)
+      setGates(data)
+    } catch {
+      /* deterministic pipeline may not be in play for this incident */
+    }
+  }, [incidentId])
+
   useEffect(() => {
     loadTranscript()
     loadStatus()
     loadAgent()
-    const t = setInterval(loadStatus, 8000)
+    loadGates()
+    const t = setInterval(() => {
+      loadStatus()
+      loadGates()
+    }, 8000)
     return () => clearInterval(t)
-  }, [loadTranscript, loadStatus, loadAgent])
+  }, [loadTranscript, loadStatus, loadAgent, loadGates])
 
   // A new WebSocket frame for this incident → refetch canonical transcript.
   useEffect(() => {
@@ -109,8 +141,9 @@ export default function IncidentConsolePage() {
       loadTranscript()
       loadStatus()
       loadAgent()
+      loadGates()
     }
-  }, [liveEvents.length, loadTranscript, loadStatus, loadAgent])
+  }, [liveEvents.length, loadTranscript, loadStatus, loadAgent, loadGates])
 
   const freshness = useFreshness(updatedAt)
 
@@ -138,6 +171,16 @@ export default function IncidentConsolePage() {
       await loadStatus()
     } finally {
       setApproving(false)
+    }
+  }
+
+  const decideGate = async (gate: GateApproval, approved: boolean) => {
+    setDecidingGate(gate.id)
+    try {
+      await api.post(`/incidents/${incidentId}/remediation-gates/${gate.id}/decide`, { approved })
+      await loadGates()
+    } finally {
+      setDecidingGate(null)
     }
   }
 
@@ -174,6 +217,7 @@ export default function IncidentConsolePage() {
     return null
   })()
   const actions: ActItem[] = actReport?.executed ?? []
+  const pendingGates = gates.filter((g) => g.status === "PENDING")
 
   // Conversation for the side panel: user + assistant follow-ups.
   const chatEvents = events.filter((e) => e.speaker_role === "user" || e.event_type === "human_message" || /assistant|follow/.test(e.event_type))
@@ -318,6 +362,50 @@ export default function IncidentConsolePage() {
               </button>
             </div>
           </div>
+
+          {gates.length > 0 && (
+            <div className="sx-remedy">
+              <div className="h">⚙ Deterministic pipeline</div>
+              {gates.map((g) => (
+                <div className="sx-action" key={g.id} style={{ marginBottom: 10 }}>
+                  <div className="at">
+                    <span
+                      className={`sx-badge ${
+                        g.status === "APPROVED" ? "ok" : g.status === "PENDING" ? "warn" : "sel"
+                      }`}
+                    >
+                      {g.status.toLowerCase()}
+                    </span>
+                    {GATE_LABEL[g.gate]}
+                  </div>
+                  {g.status === "PENDING" && (
+                    <div className="ad">Expires {timeAgo(g.expires_at)}.</div>
+                  )}
+                  {g.status === "PENDING" && (
+                    <div className="sx-btnrow">
+                      <button
+                        className="sx-btn primary"
+                        onClick={() => decideGate(g, true)}
+                        disabled={!isAdmin || decidingGate === g.id}
+                      >
+                        {decidingGate === g.id ? "Deciding…" : "Approve"}
+                      </button>
+                      <button
+                        className="sx-btn"
+                        onClick={() => decideGate(g, false)}
+                        disabled={!isAdmin || decidingGate === g.id}
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {pendingGates.length > 0 && !isAdmin && (
+                <div className="sx-dry">Only admins can decide remediation gates.</div>
+              )}
+            </div>
+          )}
 
           {(actions.length > 0 || awaitingApproval) && (
             <div className="sx-remedy">
