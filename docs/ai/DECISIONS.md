@@ -324,3 +324,33 @@
   purpose; its Postgres/Redis/etc. volumes start empty, so any incident data
   created locally (e.g. the regression-test incidents from this session) does
   not exist there unless separately dumped/restored.
+
+## Correlation adjacency source: infer from k8s labels
+
+- **Decision:** `sre_agent/incident_correlation.py::correlate`'s optional
+  `adjacency` map (service -> neighbor services, used for the
+  service-topology signal) will be populated by inferring a
+  service-dependency graph from existing Kubernetes metadata already
+  present in-cluster (Service/Deployment labels, Ingress/NetworkPolicy
+  references, or an existing service mesh's topology if one is deployed) —
+  not a hand-maintained config file, not an external APM/observability
+  topology source.
+- **Reason:** User's explicit choice among four options (k8s-label
+  inference, manual adjacency config, defer/keep same-service fallback,
+  external topology source) when the decision was raised — no new
+  infrastructure required, and cluster manifests are assumed to already
+  encode enough dependency information to be useful.
+- **Consequences:** Not yet implemented — Phase A's `correlate()` still runs
+  with no adjacency map wired in (falls back to same-service-name matching
+  extracted from the `[{service}] {alertname}` title convention, per
+  `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`). Implementing this
+  requires picking which k8s label/annotation convention to trust (or
+  building a lightweight NetworkPolicy/Ingress graph walker) before Phase B
+  can rely on adjacency instead of same-service matching alone; accuracy
+  will depend on how consistently this cluster's manifests already encode
+  real dependencies, which hasn't been audited yet.
+- **Rejected alternatives:** Manual adjacency config (accurate but needs
+  ongoing upkeep as the architecture changes); deferring entirely (keeps
+  zero new work but leaves a known-weaker signal in place); external
+  topology source (no existing APM/mesh topology source is deployed in this
+  environment to pull from).

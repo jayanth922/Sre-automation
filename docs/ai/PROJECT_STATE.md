@@ -213,9 +213,11 @@ assertion, not a real security gap); fixed and pushed (`5ed525d`), CI
 confirmed green again on `master`.
 
 Still outstanding before Phase E (cutover): the real PR-write path is now
-fully confirmed end-to-end (test-18) — that blocker is resolved. Remaining
-open decisions (correlation adjacency source, Hermes safety review) should
-be raised before Phase E relies on them.
+fully confirmed end-to-end (test-18) — that blocker is resolved.
+Correlation adjacency source is now decided (infer from k8s labels, see
+`docs/ai/DECISIONS.md`) but **not yet implemented** — `correlate()` still
+runs on the same-service-name fallback only. Remaining open item before
+Phase E: Hermes safety review (`AGENT_RUNTIME=hermes` not yet trusted).
 
 **Noted follow-on (not started, scope after Phase 5E lands):** replace the
 incident page's chat-transcript-style feed with a live execution-trace view
