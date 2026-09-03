@@ -221,6 +221,25 @@ def plan_and_generate(question: str) -> QueryPlan:
 # has to pass the same verify step (now stricter, not weaker) before it can
 # execute.
 
+def _parsed_tool_result(raw: Any) -> Any:
+    """Unwrap and parse an MCP tool_caller's return value.
+
+    MCP tool callers built via `build_mcp_tool_caller`/`build_metrics_tool_caller`
+    (langchain_mcp_adapters) return a list of content blocks (e.g.
+    `[{"type": "text", "text": "<json>"}]`), not a bare string or dict — the
+    same shape that silently broke live-catalog grounding in
+    `service_topology.py` until that unwrap was added there. Test doubles
+    that return a plain dict/string directly still work unchanged.
+    """
+    if isinstance(raw, list) and raw:
+        first = raw[0]
+        if isinstance(first, dict) and "text" in first:
+            raw = first["text"]
+        elif hasattr(first, "text"):
+            raw = first.text
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
 async def fetch_metric_catalog(
     tool_caller: Callable[[str, Dict[str, Any]], Any],
 ) -> Optional[FrozenSet[str]]:
@@ -231,7 +250,7 @@ async def fetch_metric_catalog(
     """
     try:
         raw = await tool_caller("list_metric_names", {})
-        data = json.loads(raw) if isinstance(raw, str) else raw
+        data = _parsed_tool_result(raw)
         names = data.get("metric_names") if isinstance(data, dict) else None
         if not names:
             return None
@@ -255,7 +274,7 @@ async def validate_promql_syntax_live(
     """
     try:
         raw = await tool_caller("validate_promql_syntax", {"query": query})
-        data = json.loads(raw) if isinstance(raw, str) else raw
+        data = _parsed_tool_result(raw)
         if not isinstance(data, dict):
             return True, "live syntax check returned unexpected shape; skipped"
         if data.get("valid"):

@@ -256,9 +256,26 @@ Phase E cutover is done (see below) — both of its preconditions (real
 PR-write path confirmed end-to-end via test-18; correlation adjacency
 implemented, live-fire validated, and committed — see
 `sre_agent/service_topology.py` in Relevant files above) are satisfied.
-Next candidate loose end: the latent JSON-parsing bug pattern flagged in
-`sre_agent/nl_query.py` (~lines 234, 258) — same bug class as the one that
-broke `service_topology.py` this week, not yet fixed.
+
+**`nl_query.py` MCP content-block unwrap bug — fixed (2026-09-03).**
+`fetch_metric_catalog`/`validate_promql_syntax_live` did
+`json.loads(raw) if isinstance(raw, str) else raw`, missing the same unwrap
+`service_topology.py` needed: MCP tool_callers built via
+`build_mcp_tool_caller` return a list of content blocks
+(`[{"type": "text", "text": "<json>"}]`), not a bare string/dict, so `data`
+became that list and `data.get(...)` — silently caught by the surrounding
+`except Exception`, failing open/closed rather than crashing, but the live
+metric-catalog/live-syntax-check features were quietly no-ops for any real
+MCP caller. Added `_parsed_tool_result()` (same unwrap-then-`json.loads`
+helper as `service_topology.py`'s `_parsed`) and routed both functions
+through it. Not yet wired to a real caller in `sre_agent/` (only
+`tests/test_nl_query.py` exercises this pipeline today), so this was a
+latent bug, not an active outage. New regression tests
+(`test_fetch_metric_catalog_unwraps_mcp_content_block_list`,
+`test_validate_promql_syntax_live_unwraps_mcp_content_block_list`) exercise
+the real content-block shape. Full suite green (853 passed, 3 skipped);
+ruff/mypy findings confirmed pre-existing via `git stash` diff (1 ruff, 39
+mypy, unchanged counts before/after).
 
 **Hermes actor backend fully removed (2026-09-03, see `docs/ai/DECISIONS.md`
 "Hermes removal").** After the 2026-09-03 safety review left

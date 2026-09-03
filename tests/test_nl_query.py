@@ -244,6 +244,21 @@ def test_fetch_metric_catalog_returns_none_on_failure():
     assert asyncio.run(nl.fetch_metric_catalog(fake)) is None
 
 
+def test_fetch_metric_catalog_unwraps_mcp_content_block_list():
+    # Real MCP tool_callers (langchain_mcp_adapters) return
+    # `[{"type": "text", "text": "<json>"}]`, not a bare dict/string — the
+    # same shape that silently broke service_topology.py's live catalog
+    # fetch until it unwrapped this. Regression guard for nl_query.py.
+    import json as _json
+
+    async def fake(tool, args):
+        assert tool == "list_metric_names"
+        return [{"type": "text", "text": _json.dumps({"metric_names": ["custom_business_metric"]})}]
+
+    catalog = asyncio.run(nl.fetch_metric_catalog(fake))
+    assert catalog == frozenset({"custom_business_metric"})
+
+
 def test_validate_promql_with_live_catalog_allows_new_metric():
     catalog = frozenset({"custom_business_metric"})
     ok, reason = nl.validate_promql("sum(custom_business_metric)", allowed_metrics=catalog)
@@ -282,6 +297,17 @@ def test_validate_promql_syntax_live_fails_open_on_tool_error():
 
     ok, reason = asyncio.run(nl.validate_promql_syntax_live("sum(up)", fake))
     assert ok  # fails open: an unreachable checker must not block otherwise-valid queries
+
+
+def test_validate_promql_syntax_live_unwraps_mcp_content_block_list():
+    import json as _json
+
+    async def fake(tool, args):
+        assert tool == "validate_promql_syntax"
+        return [{"type": "text", "text": _json.dumps({"valid": False, "error": "unexpected token"})}]
+
+    ok, reason = asyncio.run(nl.validate_promql_syntax_live("sum(up", fake))
+    assert not ok and "unexpected token" in reason
 
 
 def test_generate_promql_llm_returns_single_line_query():
