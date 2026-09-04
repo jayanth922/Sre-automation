@@ -20,18 +20,23 @@ if [ ! -f "$repo_root/.env" ]; then
     fi
     cp "$repo_root/.env.example" "$repo_root/.env"
 
-    # CREDENTIAL_ENCRYPTION_KEY and MCP_SERVICE_TOKEN are internal shared
-    # secrets, not real credentials — safe to generate on first run so a
-    # fresh checkout only needs a real LLM API key, not two hand-generated
-    # keys hand-synced across two .env files.
+    # SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY, and MCP_SERVICE_TOKEN are internal
+    # secrets, not real credentials — safe to generate on first run so a fresh
+    # checkout starts with no hand-editing at all. The LLM key is the one
+    # real credential and is deliberately NOT required here: the platform
+    # boots without it (see sre_agent/provider_config.py) and it's set
+    # per-cluster later from the dashboard's Settings page, or in this .env
+    # if you'd rather set it once up front.
+    GENERATED_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     GENERATED_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
     GENERATED_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+    sed -i.bak "s|^SECRET_KEY=.*|SECRET_KEY=\"${GENERATED_SECRET_KEY}\"|" "$repo_root/.env"
     sed -i.bak "s|^CREDENTIAL_ENCRYPTION_KEY=\"\"\$|CREDENTIAL_ENCRYPTION_KEY=\"${GENERATED_ENC_KEY}\"|" "$repo_root/.env"
     sed -i.bak "s|^MCP_SERVICE_TOKEN=\"\"\$|MCP_SERVICE_TOKEN=\"${GENERATED_MCP_TOKEN}\"|" "$repo_root/.env"
     rm -f "$repo_root/.env.bak"
 
-    echo -e "${GREEN}✅ .env created (CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN auto-generated).${NC}"
-    echo -e "${YELLOW}   Set a real ANTHROPIC_API_KEY (or GOOGLE_API_KEY) before continuing.${NC}"
+    echo -e "${GREEN}✅ .env created (SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN auto-generated).${NC}"
+    echo -e "${YELLOW}   No LLM key yet? That's fine — add ANTHROPIC_API_KEY (or GOOGLE_API_KEY) later, in .env or per-cluster in the dashboard.${NC}"
 fi
 
 # edge_mcp_servers is a second, independently-deployable Docker Compose
@@ -72,7 +77,9 @@ if [ -z "${SENTINEL_CODE_SHA:-}" ] && git -C "$repo_root" rev-parse HEAD >/dev/n
     fi
 fi
 
-# Fail closed on invalid LLM / required settings before compose build or migrations.
+# Fail closed on SECRET_KEY / an unsupported LLM_PROVIDER value before compose
+# build or migrations; a merely missing/placeholder LLM key only warns
+# (provider_config.py) and doesn't block startup — set it later.
 echo -e "${GREEN}🔎 Validating startup configuration...${NC}"
 if ! (
     cd "$repo_root"

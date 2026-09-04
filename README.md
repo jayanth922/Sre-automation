@@ -110,29 +110,29 @@ provision separately). `main_start.sh` brings up both with one command.
 git clone <this-repo-url> && cd Sre-automation
 
 cp .env.example .env
-#   set ANTHROPIC_API_KEY (or GOOGLE_API_KEY + LLM_PROVIDER=gemini) — the
-#   only value you must fill in yourself; everything else below is handled
-#   for you
-
 ./main_start.sh
 ```
 
-`main_start.sh` creates `edge_mcp_servers/.env` for you and auto-generates
-the internal `CREDENTIAL_ENCRYPTION_KEY` / `MCP_SERVICE_TOKEN` secrets
-(syncing the shared token across both `.env` files — nothing to hand-copy).
-Edge relay defaults point at `host.docker.internal`, so a Prometheus/Loki
-already running on your machine works with no edits; set `GITHUB_TOKEN` /
-`GITHUB_REPO` in `edge_mcp_servers/.env` when you want GitHub-backed tools
-(code context, revert PRs) — optional, not required to start.
+That's it — no env vars to fill in first. `main_start.sh` creates
+`edge_mcp_servers/.env` for you and auto-generates every internal secret
+(`SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, `MCP_SERVICE_TOKEN` — the last
+synced across both `.env` files, nothing to hand-copy). Edge relay defaults
+point at `host.docker.internal`, so a Prometheus/Loki already running on
+your machine works with no edits.
 
 Then open **http://localhost:3002** and register — the first sign-up creates
-your organization and makes you its admin. Add a cluster in Settings
-(endpoints, metric conventions, GitHub repo, and optionally a Notion runbook
-database, a Jira project for ticketing, or a GitHub App install — all
-per-cluster, none required to start). From there, either point your
-Alertmanager at `POST http://localhost:8080/api/v1/alerts/webhook` with the
-cluster's token, or just wait — the built-in health monitor opens an incident
-on its own once it sees a breach.
+your organization and makes you its admin. Configuration happens from here,
+not before it: add a cluster in Settings (LLM provider + key, endpoints,
+metric conventions, GitHub repo, and optionally a Notion runbook database, a
+Jira project for ticketing, or a GitHub App install — all per-cluster, none
+required to start). Until an LLM key is set (`ANTHROPIC_API_KEY` /
+`GOOGLE_API_KEY` in `.env`, or per-cluster from Settings), the platform runs
+fine — investigations just wait for one. Set `GITHUB_TOKEN` / `GITHUB_REPO`
+in `edge_mcp_servers/.env` when you want GitHub-backed tools (code context,
+revert PRs) — also optional. From there, either point your Alertmanager at
+`POST http://localhost:8080/api/v1/alerts/webhook` with the cluster's token,
+or just wait — the built-in health monitor opens an incident on its own once
+it sees a breach.
 
 - API docs: http://localhost:8080/docs
 - Every LLM/tool call traced automatically: http://localhost:3030 (Langfuse)

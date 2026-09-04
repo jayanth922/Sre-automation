@@ -135,10 +135,26 @@ def validate_startup_config(
     if _env(source, "SKIP_LLM_VALIDATION").lower() in {"1", "true", "yes"}:
         return _env(source, "LLM_PROVIDER", DEFAULT_PROVIDER).lower()
 
+    # A bad/legacy provider *name* is a real misconfiguration (typo, or a
+    # provider that was removed) — that still fails closed so it's never
+    # silently swapped for a default. A missing/placeholder *credential* is
+    # not a misconfiguration, just "not set up yet": clients configure their
+    # real LLM key per cluster from the dashboard (Settings) and it's
+    # enforced strictly there (see agent_runtime._build_runtime), so boot
+    # only warns here instead of refusing to start the whole platform over
+    # a key that may simply not be filled in yet.
     provider = require_supported_provider(
         _env(source, "LLM_PROVIDER") or DEFAULT_PROVIDER
     )
-    validate_provider_credentials(provider, source)
+    try:
+        validate_provider_credentials(provider, source)
+    except ProviderConfigError as exc:
+        print(
+            f"startup config warning: {exc} LLM-dependent features (incident "
+            "investigation) won't work until a real key is set — add it to "
+            "the platform env or per-cluster in the dashboard's Settings.",
+            file=sys.stderr,
+        )
     return provider
 
 
