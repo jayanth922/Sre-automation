@@ -67,6 +67,35 @@ services:
           - qdrant
     restart: unless-stopped
 
+  # ============================================
+  # Temporal (local dev server for the code-fix verification sandbox — see
+  # sre_agent/temporal_client.py). Off by default: TEMPORAL_ENABLED=false and
+  # this service isn't in any active profile, so it never starts on its own.
+  # Single-container all-in-one dev server with embedded SQLite — no separate
+  # Cassandra/MySQL/Elasticsearch cluster needed, unlike a production Temporal
+  # deployment. Opt in with COMPOSE_PROFILES=local-temporal (+ set
+  # TEMPORAL_ENABLED=true). For Temporal Cloud instead (no local container at
+  # all), leave this profile off and set TEMPORAL_HOST/TEMPORAL_API_KEY — see
+  # .env.example.
+  # ============================================
+
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: sre-temporal
+    hostname: temporal
+    profiles: ["local-temporal"]
+    command: server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    volumes:
+      - temporal_data:/data
+    networks:
+      sre-network:
+        aliases:
+          - temporal
+    restart: unless-stopped
+
   # ollama:                        # Commented out — using Groq instead
   #   image: ollama/ollama:latest
   #   container_name: sre-ollama
@@ -80,171 +109,6 @@ services:
   #       aliases:
   #         - ollama
   #   restart: unless-stopped
-
-  # ============================================
-  # Langfuse (self-hosted LLM/tool tracing — wired by default, see
-  # sre_agent/tracing.py). Reuses the platform's postgres (own logical
-  # database) and redis (own DB index); clickhouse + minio are new,
-  # Langfuse-only backing services.
-  # ============================================
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.12
-    container_name: sre-clickhouse
-    hostname: clickhouse
-    profiles: ["self-hosted-observability"]
-    environment:
-      - CLICKHOUSE_DB=langfuse
-      - CLICKHOUSE_USER=langfuse
-      - CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse}
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-    networks:
-      sre-network:
-        aliases:
-          - clickhouse
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8123/ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  minio:
-    image: minio/minio:latest
-    container_name: sre-minio
-    hostname: minio
-    profiles: ["self-hosted-observability"]
-    command: server /data --console-address ":9091"
-    environment:
-      - MINIO_ROOT_USER=${LANGFUSE_MINIO_ROOT_USER:-langfuse}
-      - MINIO_ROOT_PASSWORD=${LANGFUSE_MINIO_ROOT_PASSWORD:-langfuse-minio}
-    volumes:
-      - minio_data:/data
-    networks:
-      sre-network:
-        aliases:
-          - minio
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # One-shot: creates the `langfuse` logical database on the shared postgres
-  # server (idempotent — a pre-existing database is not an error) so Langfuse
-  # gets its own schema without a second Postgres container.
-  langfuse-db-init:
-    image: postgres:15-alpine
-    container_name: sre-langfuse-db-init
-    profiles: ["self-hosted-observability"]
-    env_file:
-      - ../.env
-    entrypoint: [ "sh", "-c" ]
-    command:
-      - >
-        PGPASSWORD=$$POSTGRES_PASSWORD psql -h postgres -U $$POSTGRES_USER -d $$POSTGRES_DB
-        -tc "SELECT 1 FROM pg_database WHERE datname = 'langfuse'" |
-        grep -q 1 ||
-        PGPASSWORD=$$POSTGRES_PASSWORD createdb -h postgres -U $$POSTGRES_USER langfuse
-    networks:
-      sre-network:
-        aliases:
-          - langfuse-db-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  langfuse-worker:
-    image: docker.langfuse.com/langfuse/langfuse-worker:4
-    container_name: sre-langfuse-worker
-    hostname: langfuse-worker
-    profiles: ["self-hosted-observability"]
-    env_file:
-      - ../.env
-    environment:
-      - SALT=${LANGFUSE_SALT}
-      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY}
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/langfuse
-      - CLICKHOUSE_URL=http://clickhouse:8123
-      - CLICKHOUSE_USER=langfuse
-      - CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse}
-      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
-      # Single-node ClickHouse has no Zookeeper/Keeper, so the "ON CLUSTER
-      # default" migrations Langfuse issues by default fail with "no
-      # Zookeeper configuration". This opts into non-replicated migrations.
-      - CLICKHOUSE_CLUSTER_ENABLED=false
-      - REDIS_CONNECTION_STRING=redis://redis:6379/2
-      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
-      - LANGFUSE_S3_EVENT_UPLOAD_REGION=auto
-      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://minio:9000
-      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=${LANGFUSE_MINIO_ROOT_USER:-langfuse}
-      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=${LANGFUSE_MINIO_ROOT_PASSWORD:-langfuse-minio}
-      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
-    networks:
-      sre-network:
-        aliases:
-          - langfuse-worker
-    depends_on:
-      langfuse-db-init:
-        condition: service_completed_successfully
-      clickhouse:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  langfuse-web:
-    image: docker.langfuse.com/langfuse/langfuse:4
-    container_name: sre-langfuse-web
-    hostname: langfuse-web
-    profiles: ["self-hosted-observability"]
-    env_file:
-      - ../.env
-    environment:
-      - SALT=${LANGFUSE_SALT}
-      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY}
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/langfuse
-      - CLICKHOUSE_URL=http://clickhouse:8123
-      - CLICKHOUSE_USER=langfuse
-      - CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse}
-      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
-      - CLICKHOUSE_CLUSTER_ENABLED=false
-      - REDIS_CONNECTION_STRING=redis://redis:6379/2
-      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
-      - LANGFUSE_S3_EVENT_UPLOAD_REGION=auto
-      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://minio:9000
-      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=${LANGFUSE_MINIO_ROOT_USER:-langfuse}
-      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=${LANGFUSE_MINIO_ROOT_PASSWORD:-langfuse-minio}
-      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
-      - NEXTAUTH_URL=http://localhost:3030
-      - NEXTAUTH_SECRET=${LANGFUSE_SECRET_KEY}
-      # Headless bootstrap: mints the org/project/API-keypair below on first
-      # boot so LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY (fed to sre-agent-api)
-      # work with zero manual UI setup.
-      - LANGFUSE_INIT_ORG_ID=${LANGFUSE_INIT_ORG_ID:-sentinel}
-      - LANGFUSE_INIT_ORG_NAME=${LANGFUSE_INIT_ORG_NAME:-Sentinel}
-      - LANGFUSE_INIT_PROJECT_ID=${LANGFUSE_INIT_PROJECT_ID:-sentinel-agent}
-      - LANGFUSE_INIT_PROJECT_NAME=${LANGFUSE_INIT_PROJECT_NAME:-Sentinel Agent}
-      - LANGFUSE_INIT_PROJECT_PUBLIC_KEY=${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
-      - LANGFUSE_INIT_PROJECT_SECRET_KEY=${LANGFUSE_INIT_PROJECT_SECRET_KEY}
-      - LANGFUSE_INIT_USER_EMAIL=${LANGFUSE_INIT_USER_EMAIL:-admin@sentinel.local}
-      - LANGFUSE_INIT_USER_NAME=${LANGFUSE_INIT_USER_NAME:-Sentinel Admin}
-      - LANGFUSE_INIT_USER_PASSWORD=${LANGFUSE_INIT_USER_PASSWORD}
-    ports:
-      - "3030:3000"
-    networks:
-      sre-network:
-        aliases:
-          - langfuse-web
-    depends_on:
-      langfuse-worker:
-        condition: service_started
-    restart: unless-stopped
 
   # ============================================
   # SRE Agent API (Control Plane + AI Brain)
@@ -274,15 +138,12 @@ services:
       - PYTHONPATH=/app
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
-      # Langfuse tracing (sre_agent/tracing.py) — defaults to the self-hosted
-      # stack (only started when COMPOSE_PROFILES includes
-      # self-hosted-observability; see clickhouse/minio/langfuse-* above), but
-      # every value is overridable from .env so pointing LANGFUSE_HOST at
-      # https://cloud.langfuse.com (+ that project's real pk-lf-/sk-lf- keys)
-      # traces to Langfuse Cloud instead — no local containers required.
-      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse-web:3000}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-sentinel-dev-0000000000000000}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-sentinel-dev-0000000000000000}
+      # Langfuse tracing (sre_agent/tracing.py) — Cloud-only. Sign up at
+      # https://cloud.langfuse.com, create a project, and set these three from
+      # .env. LANGFUSE_TRACING=false (or leaving keys blank) disables tracing.
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       # Verified-learning skill store (sre_agent/skill_store.py): without this,
       # get_skill_store() falls back to an in-process dict that's lost on every
       # restart, silently discarding every skill the agent has ever learned.
@@ -338,11 +199,9 @@ volumes:
     driver: local
   skill_store_data:
     driver: local
+  temporal_data:
+    driver: local
   # ollama_data:                   # Commented out — using Groq instead
   #   driver: local
   postgres_data:
-    driver: local
-  clickhouse_data:
-    driver: local
-  minio_data:
     driver: local

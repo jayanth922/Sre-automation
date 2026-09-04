@@ -53,7 +53,7 @@ data:
 
   # Slack war-room (bot token in the Secret enables it)
   SLACK_WAR_ROOM_CHANNEL: {{ .Values.slack.warRoomChannel | quote }}
-  # Agent tracing — self-hosted Langfuse, wired by default (keys in the Secret)
+  # Agent tracing — Langfuse Cloud, wired by default (keys in the Secret)
   LANGFUSE_TRACING: {{ .Values.tracing.enabled | quote }}
   LANGFUSE_HOST: {{ include "sentinel.langfuseHost" . | quote }}
 

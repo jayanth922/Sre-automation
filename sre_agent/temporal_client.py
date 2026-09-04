@@ -8,6 +8,18 @@ proposed code patch inside an isolated K8s Job, re-runs, and diffs the logs to
 answer "did this actually restore the previous healthy state?" It is not a
 general task queue and nothing else should be scheduled on it.
 
+Two ways to run the Temporal server this talks to, picked purely by env vars
+(no code change either way):
+  - Local dev server (`platform/docker-compose.yaml`'s optional "temporal"
+    service, `temporalio/temporal:latest server start-dev` — a single
+    container with embedded SQLite, no Cassandra/MySQL/Elasticsearch cluster
+    needed): leave TEMPORAL_API_KEY unset, TEMPORAL_HOST defaults to
+    "temporal:7233" to match that service's compose hostname.
+  - Temporal Cloud (managed, no local container): set TEMPORAL_HOST to your
+    namespace's `<namespace>.<account>.tmprl.cloud:7233` endpoint and
+    TEMPORAL_API_KEY to a Cloud API key — TLS is auto-enabled whenever an API
+    key is present (Cloud requires it on the wire regardless of auth style).
+
 Mirrors checkpointer.py's bootstrap shape: env-gated (`TEMPORAL_ENABLED`),
 fails closed in production if configured but unreachable, degrades to a no-op
 (logs a warning, returns None) only in non-production so local development
@@ -45,6 +57,26 @@ def temporal_namespace() -> str:
 
 def task_queue() -> str:
     return os.getenv("TEMPORAL_TASK_QUEUE", DEFAULT_TASK_QUEUE).strip() or DEFAULT_TASK_QUEUE
+
+
+def temporal_api_key() -> Optional[str]:
+    """Temporal Cloud API key. Unset for the local dev server (no auth)."""
+    return os.getenv("TEMPORAL_API_KEY", "").strip() or None
+
+
+def temporal_tls() -> bool:
+    """Whether to connect over TLS.
+
+    Auto-enabled whenever an API key is set, since Temporal Cloud requires TLS
+    on the wire regardless of auth style — so TEMPORAL_HOST + TEMPORAL_API_KEY
+    alone is enough to reach Cloud with zero other config. TEMPORAL_TLS, when
+    set explicitly, always wins (e.g. a self-hosted server with TLS enabled
+    but no API-key auth).
+    """
+    explicit = os.getenv("TEMPORAL_TLS")
+    if explicit is not None:
+        return explicit.strip().lower() in ("true", "1", "yes")
+    return temporal_api_key() is not None
 
 
 def _production_runtime() -> bool:
@@ -86,7 +118,12 @@ async def get_temporal_client() -> Optional[Any]:
         return None
 
     try:
-        _CLIENT = await Client.connect(temporal_host(), namespace=temporal_namespace())
+        _CLIENT = await Client.connect(
+            temporal_host(),
+            namespace=temporal_namespace(),
+            api_key=temporal_api_key(),
+            tls=temporal_tls(),
+        )
     except Exception as exc:
         if _production_runtime():
             raise RuntimeError(

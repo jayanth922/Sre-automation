@@ -66,8 +66,8 @@ Claude and fast narration on Gemini.
 
 - **Agent observability** — layered: the live incident timeline (transparency),
   `/agent/metrics` (per-node runs/latency/errors, always on), and full Langfuse
-  span tracing of every LLM/tool/chain call with tokens & cost when configured
-  (self-hostable).
+  Cloud span tracing of every LLM/tool/chain call with tokens & cost when
+  configured (free tier; no self-hosted option).
 - **Auth / sessions** — every HTTP and WebSocket route on the runtime requires
   an authenticated principal; tenant and cluster context are derived
   server-side from that principal, never accepted as trusted request input.
@@ -103,8 +103,8 @@ Claude and fast narration on Gemini.
 The fastest way to see Sentinel running is two Docker Compose stacks on your
 own machine: the **edge relay** (tool servers that reach your
 Prometheus/Loki/GitHub/runbooks) and the **platform** (API, agent, dashboard,
-Postgres/Redis/Qdrant, and a self-hosted Langfuse — all bundled, nothing to
-provision separately). `main_start.sh` brings up both with one command.
+Postgres/Redis/Qdrant — all bundled, nothing to provision separately).
+`main_start.sh` brings up both with one command.
 
 ```bash
 git clone <this-repo-url> && cd Sre-automation
@@ -135,19 +135,17 @@ or just wait — the built-in health monitor opens an incident on its own once
 it sees a breach.
 
 - API docs: http://localhost:8080/docs
-- Every LLM/tool call traced automatically: http://localhost:3030 (Langfuse)
+- Every LLM/tool call traced automatically to Langfuse Cloud (free tier) — set
+  `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` in `.env`; see ".env.example"'s
+  "Observability (Langfuse Cloud)" section. `LANGFUSE_TRACING=false` opts out.
 - Stop everything: `platform/stop.sh` and `edge_mcp_servers/stop.sh`
 - Logs: `docker compose --env-file .env -f platform/docker-compose.yaml logs -f sre-agent-api`
-- Resource-constrained machine? The self-hosted Langfuse stack (web+worker+clickhouse+minio,
-  5 of the platform's containers) is the heaviest piece and fully optional — see
-  ".env.example"'s "Observability (Langfuse)" section for switching to the free Langfuse
-  Cloud tier instead, which needs no local containers at all.
 
-Nothing here reaches the public internet except your LLM provider and
-whatever you connect (GitHub, Notion, Jira, Slack) — Postgres, Redis, Qdrant,
-and Langfuse all run locally in these two stacks. This is the same design as
-production, just on one machine: when you're ready to run it for real inside
-your own infrastructure, move to the Kubernetes deploy below.
+Nothing here reaches the public internet except your LLM provider, Langfuse
+Cloud, and whatever you connect (GitHub, Notion, Jira, Slack) — Postgres,
+Redis, and Qdrant all run locally in these two stacks. This is the same
+design as production, just on one machine: when you're ready to run it for
+real inside your own infrastructure, move to the Kubernetes deploy below.
 
 ## Deploy to production (same-machine Kubernetes)
 
