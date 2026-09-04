@@ -19,7 +19,35 @@ if [ ! -f "$repo_root/.env" ]; then
         exit 1
     fi
     cp "$repo_root/.env.example" "$repo_root/.env"
-    echo -e "${GREEN}✅ .env created. Set a real ANTHROPIC_API_KEY / GOOGLE_API_KEY before continuing.${NC}"
+
+    # CREDENTIAL_ENCRYPTION_KEY and MCP_SERVICE_TOKEN are internal shared
+    # secrets, not real credentials — safe to generate on first run so a
+    # fresh checkout only needs a real LLM API key, not two hand-generated
+    # keys hand-synced across two .env files.
+    GENERATED_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
+    GENERATED_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+    sed -i.bak "s|^CREDENTIAL_ENCRYPTION_KEY=\"\"\$|CREDENTIAL_ENCRYPTION_KEY=\"${GENERATED_ENC_KEY}\"|" "$repo_root/.env"
+    sed -i.bak "s|^MCP_SERVICE_TOKEN=\"\"\$|MCP_SERVICE_TOKEN=\"${GENERATED_MCP_TOKEN}\"|" "$repo_root/.env"
+    rm -f "$repo_root/.env.bak"
+
+    echo -e "${GREEN}✅ .env created (CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN auto-generated).${NC}"
+    echo -e "${YELLOW}   Set a real ANTHROPIC_API_KEY (or GOOGLE_API_KEY) before continuing.${NC}"
+fi
+
+# edge_mcp_servers is a second, independently-deployable Docker Compose
+# project with its own .env — main_start.sh brings it up directly, so
+# bootstrap it here too, and sync MCP_SERVICE_TOKEN so the two stacks trust
+# each other without a manual copy-paste.
+EDGE_DIR="$repo_root/edge_mcp_servers"
+if [ ! -f "$EDGE_DIR/.env" ] && [ -f "$EDGE_DIR/.env.example" ]; then
+    cp "$EDGE_DIR/.env.example" "$EDGE_DIR/.env"
+    MCP_TOKEN_VALUE="$(grep -E '^MCP_SERVICE_TOKEN=' "$repo_root/.env" | head -1 | cut -d'"' -f2)"
+    if [ -n "$MCP_TOKEN_VALUE" ]; then
+        sed -i.bak "s|^MCP_SERVICE_TOKEN=.*|MCP_SERVICE_TOKEN=${MCP_TOKEN_VALUE}|" "$EDGE_DIR/.env"
+        rm -f "$EDGE_DIR/.env.bak"
+    fi
+    echo -e "${GREEN}✅ edge_mcp_servers/.env created (MCP_SERVICE_TOKEN synced).${NC}"
+    echo -e "${YELLOW}   Set a real GITHUB_TOKEN (and GITHUB_REPO) in edge_mcp_servers/.env before continuing.${NC}"
 fi
 
 if ! command -v docker &> /dev/null; then

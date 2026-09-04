@@ -104,30 +104,26 @@ The fastest way to see Sentinel running is two Docker Compose stacks on your
 own machine: the **edge relay** (tool servers that reach your
 Prometheus/Loki/GitHub/runbooks) and the **platform** (API, agent, dashboard,
 Postgres/Redis/Qdrant, and a self-hosted Langfuse — all bundled, nothing to
-provision separately).
+provision separately). `main_start.sh` brings up both with one command.
 
 ```bash
 git clone <this-repo-url> && cd Sre-automation
 
-# 1. Configure the platform. The LLM key is the only thing you must set.
 cp .env.example .env
-#   - set ANTHROPIC_API_KEY (or GOOGLE_API_KEY + LLM_PROVIDER=gemini)
-#   - generate a real CREDENTIAL_ENCRYPTION_KEY (cluster secrets are encrypted
-#     at rest with it — Settings will fail to save without one):
-python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
-#   - pick any value for MCP_SERVICE_TOKEN — it must match edge_mcp_servers/.env below
+#   set ANTHROPIC_API_KEY (or GOOGLE_API_KEY + LLM_PROVIDER=gemini) — the
+#   only value you must fill in yourself; everything else below is handled
+#   for you
 
-# 2. Configure the edge relay — this is what points at your infrastructure.
-cp edge_mcp_servers/.env.example edge_mcp_servers/.env
-#   - set PROMETHEUS_URL / LOKI_URL / GITHUB_TOKEN / GITHUB_REPO for your stack
-#   - set the same MCP_SERVICE_TOKEN as .env above
-#   (defaults point at host.docker.internal, so a Prometheus/Loki already
-#   running on your machine works with no edits)
-
-# 3. Start both stacks.
-cd edge_mcp_servers && ./start.sh && cd ..   # tool servers on :4000-4006
-cd platform && ./start.sh && cd ..           # API :8080, dashboard :3002
+./main_start.sh
 ```
+
+`main_start.sh` creates `edge_mcp_servers/.env` for you and auto-generates
+the internal `CREDENTIAL_ENCRYPTION_KEY` / `MCP_SERVICE_TOKEN` secrets
+(syncing the shared token across both `.env` files — nothing to hand-copy).
+Edge relay defaults point at `host.docker.internal`, so a Prometheus/Loki
+already running on your machine works with no edits; set `GITHUB_TOKEN` /
+`GITHUB_REPO` in `edge_mcp_servers/.env` when you want GitHub-backed tools
+(code context, revert PRs) — optional, not required to start.
 
 Then open **http://localhost:3002** and register — the first sign-up creates
 your organization and makes you its admin. Add a cluster in Settings
