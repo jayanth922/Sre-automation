@@ -21,10 +21,63 @@ Qdrant/DB-backed store can be swapped in behind the same interface later.
 from __future__ import annotations
 
 import logging
+import os
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import (
+        Distance,
+        FieldCondition,
+        Filter,
+        MatchValue,
+        PointStruct,
+        VectorParams,
+    )
+    QDRANT_AVAILABLE = True
+except ImportError:
+    QDRANT_AVAILABLE = False
+    QdrantClient = None
+
 logger = logging.getLogger(__name__)
+
+# Qdrant collection for skill semantic recall — a separate collection from
+# memory_store.py's sre_incidents_v2 (different point schema: one skill_id per
+# point, not one per incident) but the same self-hosted Qdrant instance, so
+# enabling this costs no extra infra (see platform/docker-compose.yaml).
+SKILLS_COLLECTION = "sre_skills_v1"
+
+# Cosine-similarity floor for a semantic hit to even be considered a candidate,
+# applied at the Qdrant query itself. The final find_matching() threshold
+# (default 0.5, same 0..1 scale as match_score) is the real cutoff; this is
+# just a cheap floor to keep obviously-irrelevant points out of the merge.
+_SEMANTIC_QUERY_FLOOR = 0.3
+
+# Stable namespace for deriving Qdrant point IDs from skill_id (uuid5 is
+# deterministic across processes; distinct from memory_store.py's namespace so
+# the two collections' IDs can never collide if ever queried together).
+_SKILL_POINT_NAMESPACE = uuid.UUID("2e6a2f3c-8b1e-4b9f-a6b0-4c9f2a7d5e31")
+
+
+def _skill_point_id(skill_id: str) -> str:
+    return str(uuid.uuid5(_SKILL_POINT_NAMESPACE, skill_id))
+
+
+def signature_text(signature: "IncidentSignature", notes: str = "") -> str:
+    """Text representation of a skill's problem signature, for embedding.
+
+    Combines the fields match_score() already reasons about (failure_class,
+    service, alert_name) plus free-text notes, so semantic search can catch
+    incidents match_score's fixed keyword taxonomy misses — e.g. a novel
+    alert name/description that means the same thing as a past incident but
+    shares no keyword with it.
+    """
+    parts = [signature.failure_class, signature.service, signature.alert_name]
+    if notes:
+        parts.append(notes)
+    return " | ".join(p for p in parts if p and p.lower() != "unknown")
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -283,6 +336,15 @@ class InMemorySkillStore:
     def negatives(self) -> List[Dict[str, Any]]:
         return list(self._negatives.values())
 
+    def _skill_by_id(self, skill_id: str) -> Optional[Skill]:
+        # self._skills is keyed by signature.key(), not skill_id — a small
+        # linear scan (store sizes are one entry per failure-class/service
+        # combo, not per-incident) is simpler than maintaining a second index.
+        for skill in self._skills.values():
+            if skill.skill_id == skill_id:
+                return skill
+        return None
+
 
 def json_dumps(value: Any) -> str:
     import json
@@ -370,17 +432,174 @@ class JsonSkillStore(InMemorySkillStore):
         return skill
 
 
+class SemanticSkillStore(JsonSkillStore):
+    """JSON-persisted skill store with Qdrant-backed semantic recall.
+
+    ``find_matching()``'s keyword scoring (failure_class/service/alert_name
+    equality via ``match_score``) stays the source of truth — it is exact,
+    cheap, and requires no external service. This class *adds* a second,
+    independent recall path: skills are also embedded and indexed in Qdrant
+    (same self-hosted instance memory_store.py already uses), so an incident
+    whose wording doesn't hit any of skill_store.py's fixed failure-class
+    keywords can still surface a semantically similar past skill.
+
+    Guarded: any Qdrant/embedding failure — at init or per-call — degrades to
+    the inherited keyword-only behavior rather than raising, so this is safe
+    to make the platform default (mirrors sre_agent/litellm_backend.py's
+    fallback-on-failure convention).
+    """
+
+    def __init__(self, path: str, qdrant_url: Optional[str] = None) -> None:
+        super().__init__(path)
+        self._qdrant: Optional["QdrantClient"] = None
+        self._embed_text = None
+        self._semantic_available = False
+        self._init_semantic(qdrant_url)
+
+    def _init_semantic(self, qdrant_url: Optional[str]) -> None:
+        if not QDRANT_AVAILABLE:
+            logger.info("SkillStore: qdrant-client not installed; keyword-only recall")
+            return
+        try:
+            try:
+                from .embedding import embed_text
+            except ImportError:  # direct-file unit-test loading has no package context
+                from sre_agent.embedding import embed_text
+
+            url = qdrant_url or os.getenv("QDRANT_URL", "http://localhost:6333")
+            client = QdrantClient(url=url, timeout=10)
+            client.get_collections()  # connectivity check
+            embed_text("startup healthcheck")  # confirms the embedding model loads
+
+            self._qdrant = client
+            self._embed_text = embed_text
+            self._ensure_collection()
+            self._semantic_available = True
+            self._backfill_index()
+            logger.info("SkillStore: semantic recall enabled (%s)", SKILLS_COLLECTION)
+        except Exception as e:
+            logger.warning(
+                f"SkillStore: semantic recall unavailable ({e}); falling back to keyword-only match"
+            )
+            self._qdrant = None
+            self._semantic_available = False
+
+    def _ensure_collection(self) -> None:
+        try:
+            from .embedding import EMBEDDING_DIM
+        except ImportError:  # direct-file unit-test loading has no package context
+            from sre_agent.embedding import EMBEDDING_DIM
+
+        names = [c.name for c in self._qdrant.get_collections().collections]
+        if SKILLS_COLLECTION not in names:
+            self._qdrant.create_collection(
+                collection_name=SKILLS_COLLECTION,
+                vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+            )
+
+    def _index_skill(self, skill: Skill) -> None:
+        if not self._semantic_available:
+            return
+        try:
+            vector = self._embed_text(signature_text(skill.signature, skill.notes))
+            payload = {
+                "skill_id": skill.skill_id,
+                "organization_id": skill.signature.organization_id,
+                "cluster_id": skill.signature.cluster_id,
+            }
+            self._qdrant.upsert(
+                collection_name=SKILLS_COLLECTION,
+                points=[PointStruct(id=_skill_point_id(skill.skill_id), vector=vector, payload=payload)],
+            )
+        except Exception as e:
+            logger.warning(f"SkillStore: failed to index skill '{skill.skill_id}' for semantic recall: {e}")
+
+    def _backfill_index(self) -> None:
+        # Skills loaded from the JSON file (i.e. from before semantic recall
+        # existed, or from a run where Qdrant was briefly unavailable) have no
+        # Qdrant point yet — index them now so recall doesn't silently miss
+        # anything already on disk.
+        for skill in self._skills.values():
+            if not skill.invalidated and skill.outcome == "verified_success":
+                self._index_skill(skill)
+
+    def add(self, skill: Skill) -> Skill:
+        stored = super().add(skill)
+        self._index_skill(stored)
+        return stored
+
+    def invalidate(
+        self,
+        skill_id: str,
+        *,
+        reason: str,
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Skill]:
+        skill = super().invalidate(skill_id, reason=reason, evidence=evidence)
+        if skill is not None and self._semantic_available:
+            try:
+                self._qdrant.delete(
+                    collection_name=SKILLS_COLLECTION,
+                    points_selector=[_skill_point_id(skill_id)],
+                )
+            except Exception as e:
+                logger.warning(f"SkillStore: failed to remove '{skill_id}' from semantic index: {e}")
+        return skill
+
+    def find_matching(
+        self, signature: IncidentSignature, threshold: float = 0.5
+    ) -> List[Tuple[Skill, float]]:
+        by_id: Dict[str, Tuple[Skill, float]] = {
+            s.skill_id: (s, sc) for s, sc in super().find_matching(signature, threshold=threshold)
+        }
+        if not self._semantic_available:
+            return sorted(by_id.values(), key=lambda t: (t[1], t[0].success_count), reverse=True)
+
+        try:
+            query_vector = self._embed_text(signature_text(signature))
+            tenant_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="organization_id", match=MatchValue(value=signature.organization_id)
+                    ),
+                    FieldCondition(key="cluster_id", match=MatchValue(value=signature.cluster_id)),
+                ]
+            )
+            response = self._qdrant.query_points(
+                collection_name=SKILLS_COLLECTION,
+                query=query_vector,
+                limit=10,
+                score_threshold=_SEMANTIC_QUERY_FLOOR,
+                query_filter=tenant_filter,
+            )
+            for point in response.points:
+                skill_id = point.payload.get("skill_id")
+                skill = self._skill_by_id(skill_id) if skill_id else None
+                if skill is None or skill.invalidated or skill.outcome != "verified_success":
+                    continue
+                existing = by_id.get(skill.skill_id)
+                if existing is None or point.score > existing[1]:
+                    by_id[skill.skill_id] = (skill, point.score)
+        except Exception as e:
+            logger.warning(f"SkillStore: semantic recall query failed ({e}); using keyword-only matches")
+
+        hits = [t for t in by_id.values() if t[1] >= threshold]
+        hits.sort(key=lambda t: (t[1], t[0].success_count), reverse=True)
+        return hits
+
+
 _GLOBAL_STORE: Optional[InMemorySkillStore] = None
 
 
 def get_skill_store() -> InMemorySkillStore:
-    """Process store. JSON-backed (durable) when SKILL_STORE_PATH is set, else in-memory."""
+    """Process store. JSON-backed + semantic recall when SKILL_STORE_PATH is
+    set (falling back to keyword-only if Qdrant/embeddings aren't reachable),
+    else a process-local in-memory dict.
+    """
     global _GLOBAL_STORE
     if _GLOBAL_STORE is None:
-        import os
-
         path = os.getenv("SKILL_STORE_PATH")
-        _GLOBAL_STORE = JsonSkillStore(path) if path else InMemorySkillStore()
+        _GLOBAL_STORE = SemanticSkillStore(path) if path else InMemorySkillStore()
     return _GLOBAL_STORE
 
 
