@@ -13,13 +13,16 @@ Verified API (Langfuse Python SDK v3):
     handler = CallbackHandler()
     graph.astream(state, config={"callbacks": [handler]})
 
-Enabled by default (self-hosted Langfuse is wired into every deployment —
-docker-compose and the Helm chart both provision a working instance and
-matching API keys out of the box). Set LANGFUSE_TRACING=false to opt out.
-Guarded import so the module loads without langfuse installed, and so a
-deployment with tracing nominally on but no reachable Langfuse instance
-(e.g. bare local `uv run` outside compose/Helm) degrades to a silent no-op
-rather than failing.
+Enabled by default. CallbackHandler() takes no backend-specific args — it
+reads LANGFUSE_HOST/LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY from the
+environment, so this talks identically to a self-hosted instance (what
+docker-compose/Helm provision out of the box, see .env.example "Option A") or
+to Langfuse Cloud (just point LANGFUSE_HOST at cloud.langfuse.com with that
+project's keys, see .env.example "Option B" — no local containers needed).
+Set LANGFUSE_TRACING=false to opt out. Guarded import so the module loads
+without langfuse installed, and so a deployment with tracing nominally on but
+no reachable Langfuse instance (e.g. bare local `uv run` with nothing
+configured) degrades to a silent no-op rather than failing.
 """
 
 from __future__ import annotations

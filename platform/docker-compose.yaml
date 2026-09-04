@@ -92,6 +92,7 @@ services:
     image: clickhouse/clickhouse-server:25.12
     container_name: sre-clickhouse
     hostname: clickhouse
+    profiles: ["self-hosted-observability"]
     environment:
       - CLICKHOUSE_DB=langfuse
       - CLICKHOUSE_USER=langfuse
@@ -113,6 +114,7 @@ services:
     image: minio/minio:latest
     container_name: sre-minio
     hostname: minio
+    profiles: ["self-hosted-observability"]
     command: server /data --console-address ":9091"
     environment:
       - MINIO_ROOT_USER=${LANGFUSE_MINIO_ROOT_USER:-langfuse}
@@ -136,6 +138,7 @@ services:
   langfuse-db-init:
     image: postgres:15-alpine
     container_name: sre-langfuse-db-init
+    profiles: ["self-hosted-observability"]
     env_file:
       - ../.env
     entrypoint: [ "sh", "-c" ]
@@ -158,6 +161,7 @@ services:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     container_name: sre-langfuse-worker
     hostname: langfuse-worker
+    profiles: ["self-hosted-observability"]
     env_file:
       - ../.env
     environment:
@@ -198,6 +202,7 @@ services:
     image: docker.langfuse.com/langfuse/langfuse:4
     container_name: sre-langfuse-web
     hostname: langfuse-web
+    profiles: ["self-hosted-observability"]
     env_file:
       - ../.env
     environment:
@@ -269,12 +274,15 @@ services:
       - PYTHONPATH=/app
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
-      # Self-hosted Langfuse (wired by default, see sre_agent/tracing.py) — the
-      # public/secret pair matches langfuse-web's LANGFUSE_INIT_PROJECT_* below,
-      # so tracing works immediately after a fresh boot with zero manual setup.
-      - LANGFUSE_HOST=http://langfuse-web:3000
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_INIT_PROJECT_SECRET_KEY}
+      # Langfuse tracing (sre_agent/tracing.py) — defaults to the self-hosted
+      # stack (only started when COMPOSE_PROFILES includes
+      # self-hosted-observability; see clickhouse/minio/langfuse-* above), but
+      # every value is overridable from .env so pointing LANGFUSE_HOST at
+      # https://cloud.langfuse.com (+ that project's real pk-lf-/sk-lf- keys)
+      # traces to Langfuse Cloud instead — no local containers required.
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse-web:3000}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-sentinel-dev-0000000000000000}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-sentinel-dev-0000000000000000}
       # Verified-learning skill store (sre_agent/skill_store.py): without this,
       # get_skill_store() falls back to an in-process dict that's lost on every
       # restart, silently discarding every skill the agent has ever learned.
@@ -294,8 +302,6 @@ services:
       postgres:
         condition: service_healthy
       qdrant:
-        condition: service_started
-      langfuse-web:
         condition: service_started
     restart: unless-stopped
 

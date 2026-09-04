@@ -138,6 +138,10 @@ it sees a breach.
 - Every LLM/tool call traced automatically: http://localhost:3030 (Langfuse)
 - Stop everything: `platform/stop.sh` and `edge_mcp_servers/stop.sh`
 - Logs: `docker compose --env-file .env -f platform/docker-compose.yaml logs -f sre-agent-api`
+- Resource-constrained machine? The self-hosted Langfuse stack (web+worker+clickhouse+minio,
+  5 of the platform's containers) is the heaviest piece and fully optional — see
+  ".env.example"'s "Observability (Langfuse)" section for switching to the free Langfuse
+  Cloud tier instead, which needs no local containers at all.
 
 Nothing here reaches the public internet except your LLM provider and
 whatever you connect (GitHub, Notion, Jira, Slack) — Postgres, Redis, Qdrant,
