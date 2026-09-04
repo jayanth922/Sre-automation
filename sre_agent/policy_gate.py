@@ -57,12 +57,16 @@ class Reversibility(str, Enum):
 
 
 # Baseline reversibility per action_type (from RemediationAction's action_type
-# enum: restart, scale, rollback, config_change, patch, escalate, revert_commit).
+# enum: restart, scale, rollback, config_change, patch, escalate, revert_commit,
+# recreate_pod).
 _BASE_REVERSIBILITY: dict[str, Reversibility] = {
     "restart": Reversibility.REVERSIBLE,
     "rollback": Reversibility.REVERSIBLE,
     "revert_commit": Reversibility.REVERSIBLE,
     "escalate": Reversibility.REVERSIBLE,  # notify-only; no infra mutation
+    # Controller-owned pod, recreated immediately — same reversibility class as
+    # restart, and narrower blast radius (one pod, not the whole deployment).
+    "recreate_pod": Reversibility.REVERSIBLE,
     "scale": Reversibility.RISKY,  # reversible unless scaling to 0
     "config_change": Reversibility.RISKY,
     "patch": Reversibility.RISKY,

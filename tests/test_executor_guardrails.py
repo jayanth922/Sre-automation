@@ -71,5 +71,15 @@ def test_custom_min_replicas_floor(monkeypatch):
     assert guardrail_check("scale", "demo-app", {"replicas": 2})[0] is True
 
 
+def test_recreate_pod_in_allowed_namespace_ok():
+    ok, _ = guardrail_check("recreate_pod", "demo-app")
+    assert ok is True
+
+
+def test_recreate_pod_disallowed_namespace_refused():
+    ok, reason = guardrail_check("recreate_pod", "kube-system")
+    assert ok is False and "allow-list" in reason
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

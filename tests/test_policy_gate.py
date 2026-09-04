@@ -99,6 +99,19 @@ def test_scale_up_is_risky_not_irreversible():
     assert d.decision is AutonomyDecision.AUTONOMOUS
 
 
+def test_recreate_pod_is_reversible_like_restart():
+    action = FakeAction("recreate_pod", target="checkout-service-7d9f-x2k4p")
+    assert classify_reversibility(action) is Reversibility.REVERSIBLE
+    d = decide(action, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED)
+    assert d.decision is AutonomyDecision.AUTONOMOUS
+
+
+def test_recreate_pod_high_severity_requires_approval():
+    action = FakeAction("recreate_pod", target="checkout-service-7d9f-x2k4p")
+    d = decide(action, sev(Severity.SEV1), evaluate_fn=ALLOW, **CALIBRATED)
+    assert d.decision is AutonomyDecision.REQUIRES_APPROVAL
+
+
 def test_hard_policy_block_wins():
     d = decide(FakeAction("restart"), sev(Severity.SEV4), evaluate_fn=BLOCK)
     assert d.decision is AutonomyDecision.BLOCKED

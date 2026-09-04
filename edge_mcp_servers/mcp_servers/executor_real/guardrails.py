@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Tuple
 
-ALLOWED_ACTIONS = {"restart", "scale", "rollback", "patch_resource_limits"}
+ALLOWED_ACTIONS = {"restart", "scale", "rollback", "patch_resource_limits", "recreate_pod"}
 
 
 def allowed_namespaces() -> set[str]:

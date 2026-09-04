@@ -42,6 +42,7 @@ EXECUTOR_TOOL_MAP: Dict[str, str] = {
     "rollback": "rollback_deployment",
     "patch": "patch_resource_limits",
     "config_change": "patch_resource_limits",
+    "recreate_pod": "recreate_pod",
 }
 
 # Code-change remediation → github-exec MCP server tools. This is what makes an
@@ -122,6 +123,8 @@ def build_command(action: Any) -> str:
         return f"kubectl patch deployment/{target} -n {ns} --type merge -p '{patch}'"
     if action_type == "config_change":
         return f"kubectl apply -f <rendered-config for {target}> -n {ns}"
+    if action_type == "recreate_pod":
+        return f"kubectl delete pod/{target} -n {ns}"
     if action_type == "revert_commit":
         params = getattr(action, "parameters", None) or {}
         sha = params.get("commit_sha", params.get("sha", "<sha>")) if isinstance(params, dict) else "<sha>"

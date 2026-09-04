@@ -92,6 +92,17 @@ def _apps_api() -> Optional[client.AppsV1Api]:
     return client.AppsV1Api(k8s_client)
 
 
+def _core_api() -> Optional[client.CoreV1Api]:
+    global k8s_client
+    if k8s_client is None:
+        try:
+            _initialize_client()
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Kubernetes client: {e}")
+            return None
+    return client.CoreV1Api(k8s_client)
+
+
 def _refused(action: str, namespace: str, reason: str) -> str:
     return json.dumps(
         {"tool": action, "namespace": namespace, "status": "REFUSED", "reason": reason},
@@ -270,6 +281,40 @@ async def rollback_deployment(name: str, namespace: str = "demo-app", dry_run: b
     except Exception as e:
         return json.dumps({"tool": "rollback", "status": "ERROR",
                            "kubectl_equivalent": kubectl, "error": str(e)}, separators=(",", ":"))
+
+
+@mcp.tool()
+async def recreate_pod(name: str, namespace: str = "demo-app", dry_run: bool = True) -> str:
+    """Delete a single pod so its controller (ReplicaSet/StatefulSet) recreates it.
+
+    Narrower than ``restart`` (which rolling-restarts an entire deployment): use
+    this to clear one stuck/crash-looping pod — e.g. wedged in Terminating, or
+    the lone bad replica in an otherwise healthy set — without disturbing its
+    siblings. Equivalent to `kubectl delete pod`. Reversible in the same sense
+    as a restart: the controller recreates the pod immediately, it does not
+    reduce capacity.
+    """
+    allowed, reason = guardrail_check("recreate_pod", namespace)
+    if not allowed:
+        return _refused("recreate_pod", namespace, reason)
+
+    api = _core_api()
+    if not api:
+        return _refused("recreate_pod", namespace, "Kubernetes client unavailable")
+
+    kubectl = f"kubectl delete pod/{name} -n {namespace}"
+    try:
+        await asyncio.to_thread(
+            api.delete_namespaced_pod, name, namespace, **_dry_run_kwarg(dry_run)
+        )
+        return json.dumps({
+            "tool": "recreate_pod", "name": name, "namespace": namespace,
+            "dry_run": dry_run, "applied": not dry_run,
+            "kubectl_equivalent": kubectl, "status": "OK",
+        }, separators=(",", ":"))
+    except ApiException as e:
+        return json.dumps({"tool": "recreate_pod", "status": "ERROR", "kubectl_equivalent": kubectl,
+                           "code": e.status, "reason": e.reason}, separators=(",", ":"))
 
 
 if __name__ == "__main__":

@@ -60,9 +60,9 @@ dependencies = [
     # sre_agent/integrations/slack_bot.py). No-op at runtime unless SLACK_BOT_TOKEN
     # (and SLACK_APP_TOKEN for the Socket Mode bot) are configured.
     "slack-bolt>=1.18.0",
-    # LiteLLM model-router backend (sre_agent/litellm_backend.py). Off at runtime
-    # unless MODEL_ROUTER_BACKEND=litellm; langchain-community (already listed
-    # above) provides the ChatLiteLLM wrapper this talks through.
+    # LiteLLM model-router backend (sre_agent/litellm_backend.py). On by default
+    # via MODEL_ROUTER_BACKEND=litellm (.env.example); langchain-litellm provides
+    # the maintained ChatLiteLLM wrapper this talks through.
     "litellm>=1.50.0",
     "langchain-litellm>=0.7.1",
 ]

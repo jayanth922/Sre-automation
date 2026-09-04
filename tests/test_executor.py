@@ -54,6 +54,17 @@ def test_build_command_escalate_is_noop_notify():
     assert "no infrastructure mutation" in cmd
 
 
+def test_build_command_recreate_pod():
+    cmd = build_command(FakeAction("recreate_pod", target="checkout-service-7d9f-x2k4p",
+                                    parameters={"namespace": "demo-app"}))
+    assert cmd == "kubectl delete pod/checkout-service-7d9f-x2k4p -n demo-app"
+
+
+def test_rollback_command_for_recreate_pod_is_none():
+    # The controller already recreated the pod; there is nothing to "undo".
+    assert build_rollback_command(FakeAction("recreate_pod")) is None
+
+
 def test_dry_run_returns_command_and_audit_hash():
     ex = Executor(actor="sre-agent", incident_id="inc-1")
     result = ex.execute(FakeAction("restart"), gate_decision="autonomous", dry_run=True)
@@ -113,6 +124,23 @@ def test_aexecute_live_without_caller_is_error_not_silent():
     ex = Executor()
     res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=False, tool_caller=None))
     assert res.status == "ERROR"
+
+
+def test_aexecute_live_recreate_pod_routes_to_mapped_tool():
+    calls = {}
+
+    async def fake_caller(tool_name, args):
+        calls["tool"] = tool_name
+        calls["args"] = args
+        return {"status": "OK", "tool": tool_name}
+
+    ex = Executor()
+    action = FakeAction("recreate_pod", target="checkout-service-7d9f-x2k4p",
+                         parameters={"namespace": "demo-app"})
+    res = asyncio.run(ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=fake_caller))
+    assert res.status == "EXECUTED"
+    assert calls["tool"] == "recreate_pod"
+    assert calls["args"]["name"] == "checkout-service-7d9f-x2k4p"
 
 
 # ── _live_args target parsing ───────────────────────────────────────────────
