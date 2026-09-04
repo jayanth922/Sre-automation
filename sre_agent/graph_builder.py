@@ -1288,7 +1288,13 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
     try:
         from .skill_store import format_skills_for_prompt, get_skill_store, propose_skills
 
-        proposed = propose_skills(get_skill_store(), alert_context)
+        skill_metadata = state.get("metadata", {}) or {}
+        proposed = propose_skills(
+            get_skill_store(),
+            alert_context,
+            organization_id=skill_metadata.get("organization_id"),
+            cluster_id=skill_metadata.get("cluster_id"),
+        )
         if proposed:
             skill_context = format_skills_for_prompt(proposed)
             logger.info(f"🧠 PlannerNode: {len(proposed)} learned skill(s) proposed for this incident class")

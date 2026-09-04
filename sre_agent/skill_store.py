@@ -69,9 +69,14 @@ class IncidentSignature:
     alert_name: str
     service: str
     failure_class: str
+    organization_id: str = ""
+    cluster_id: str = ""
 
     def key(self) -> str:
-        return f"{self.alert_name.lower()}|{self.service.lower()}|{self.failure_class}"
+        return (
+            f"{self.organization_id}|{self.cluster_id}|"
+            f"{self.alert_name.lower()}|{self.service.lower()}|{self.failure_class}"
+        )
 
 
 @dataclass
@@ -109,6 +114,8 @@ class Skill:
                 "alert_name": self.signature.alert_name,
                 "service": self.signature.service,
                 "failure_class": self.signature.failure_class,
+                "organization_id": self.signature.organization_id,
+                "cluster_id": self.signature.cluster_id,
             },
             "actions": self.actions,
             "source_incident_id": self.source_incident_id,
@@ -132,6 +139,8 @@ class Skill:
                 sig.get("alert_name", ""),
                 sig.get("service", ""),
                 sig.get("failure_class", ""),
+                sig.get("organization_id", ""),
+                sig.get("cluster_id", ""),
             ),
             actions=d.get("actions", []),
             source_incident_id=d.get("source_incident_id"),
@@ -147,7 +156,12 @@ class Skill:
         )
 
 
-def signature_from_alert(alert: Any) -> IncidentSignature:
+def signature_from_alert(
+    alert: Any,
+    *,
+    organization_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
+) -> IncidentSignature:
     """Derive an incident signature from an alert context (dict or object)."""
     alert_name = str(
         _get(alert, "alert_name", "")
@@ -157,7 +171,11 @@ def signature_from_alert(alert: Any) -> IncidentSignature:
     labels = _get(alert, "labels", {}) or {}
     service = str(labels.get("service") or labels.get("app") or "unknown")
     return IncidentSignature(
-        alert_name=alert_name, service=service, failure_class=_failure_class(alert_name)
+        alert_name=alert_name,
+        service=service,
+        failure_class=_failure_class(alert_name),
+        organization_id=str(organization_id or ""),
+        cluster_id=str(cluster_id or ""),
     )
 
 
@@ -243,10 +261,17 @@ class InMemorySkillStore:
     def find_matching(
         self, signature: IncidentSignature, threshold: float = 0.5
     ) -> List[Tuple[Skill, float]]:
+        # Tenant/cluster scope is a hard boundary, not a similarity signal: a
+        # skill learned from one org's or cluster's incidents must never be
+        # proposed into another's investigation, so it's filtered out here
+        # before match_score ever runs, not merely ranked lower.
         scored = [
             (s, match_score(signature, s.signature))
             for s in self._skills.values()
-            if not s.invalidated and s.outcome == "verified_success"
+            if not s.invalidated
+            and s.outcome == "verified_success"
+            and s.signature.organization_id == signature.organization_id
+            and s.signature.cluster_id == signature.cluster_id
         ]
         hits = [(s, sc) for s, sc in scored if sc >= threshold]
         hits.sort(key=lambda t: (t[1], t[0].success_count), reverse=True)
@@ -364,13 +389,17 @@ def skill_from_remediation(
     actions: List[Dict[str, Any]],
     incident_id: Optional[str],
     *,
+    organization_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
     verification_status: str = "RESOLVED",
     reviewer_id: Optional[str] = None,
     run_manifest_sha256: Optional[str] = None,
     config_fingerprint: Optional[str] = None,
 ) -> Skill:
-    sig = signature_from_alert(alert)
-    skill_id = f"skill-{sig.failure_class}-{sig.service}"
+    sig = signature_from_alert(
+        alert, organization_id=organization_id, cluster_id=cluster_id
+    )
+    skill_id = f"skill-{sig.organization_id or 'default'}-{sig.cluster_id or 'default'}-{sig.failure_class}-{sig.service}"
     return Skill(
         skill_id=skill_id,
         signature=sig,
@@ -390,6 +419,8 @@ def record_successful_remediation(
     executed_actions: List[Dict[str, Any]],
     incident_id: Optional[str] = None,
     *,
+    organization_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
     verification_status: str = "RESOLVED",
     reviewer_id: Optional[str] = None,
     run_manifest_sha256: Optional[str] = None,
@@ -402,6 +433,8 @@ def record_successful_remediation(
         alert,
         executed_actions,
         incident_id,
+        organization_id=organization_id,
+        cluster_id=cluster_id,
         verification_status=verification_status,
         reviewer_id=reviewer_id,
         run_manifest_sha256=run_manifest_sha256,
@@ -415,10 +448,18 @@ def record_successful_remediation(
 
 
 def propose_skills(
-    store: InMemorySkillStore, alert: Any, limit: int = 3, threshold: float = 0.5
+    store: InMemorySkillStore,
+    alert: Any,
+    limit: int = 3,
+    threshold: float = 0.5,
+    *,
+    organization_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
 ) -> List[Skill]:
     """Retrieve prior skills that match the current incident, best-first."""
-    sig = signature_from_alert(alert)
+    sig = signature_from_alert(
+        alert, organization_id=organization_id, cluster_id=cluster_id
+    )
     return [s for s, _ in store.find_matching(sig, threshold=threshold)][:limit]
 
 

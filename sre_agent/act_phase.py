@@ -724,8 +724,12 @@ def apply_skill_learning(
         )
     if run_manifest_sha256 is None:
         run_manifest_sha256 = metadata.get("run_manifest_sha256")
+    organization_id = metadata.get("organization_id")
+    cluster_id = metadata.get("cluster_id")
 
-    proposed = propose_skills(store, alert)
+    proposed = propose_skills(
+        store, alert, organization_id=organization_id, cluster_id=cluster_id
+    )
     eligibility = assess_learning_eligibility(
         act_report=report,
         verification_outcome=verification,
@@ -745,6 +749,8 @@ def apply_skill_learning(
             alert,
             live,
             incident_id,
+            organization_id=organization_id,
+            cluster_id=cluster_id,
             verification_status=eligibility.verification_status or "RESOLVED",
             reviewer_id=reviewer_id,
             run_manifest_sha256=run_manifest_sha256,
