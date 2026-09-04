@@ -60,13 +60,21 @@ fi
 EDGE_DIR="$repo_root/edge_mcp_servers"
 if [ ! -f "$EDGE_DIR/.env" ] && [ -f "$EDGE_DIR/.env.example" ]; then
     cp "$EDGE_DIR/.env.example" "$EDGE_DIR/.env"
+    echo -e "${GREEN}✅ edge_mcp_servers/.env created.${NC}"
+    echo -e "${YELLOW}   Set a real GITHUB_TOKEN (and GITHUB_REPO) in edge_mcp_servers/.env before continuing.${NC}"
+fi
+
+# Sync by current value, not by whether the file above was just created --
+# if this .env was created on an earlier run before the root MCP_SERVICE_TOKEN
+# existed yet (e.g. this script failed partway through back then), it would
+# otherwise be stuck blank forever since the block above only runs once.
+if [ -f "$EDGE_DIR/.env" ] && grep -qE '^MCP_SERVICE_TOKEN=$' "$EDGE_DIR/.env"; then
     MCP_TOKEN_VALUE="$(grep -E '^MCP_SERVICE_TOKEN=' "$repo_root/.env" | head -1 | cut -d'"' -f2)"
     if [ -n "$MCP_TOKEN_VALUE" ]; then
         sed -i.bak "s|^MCP_SERVICE_TOKEN=.*|MCP_SERVICE_TOKEN=${MCP_TOKEN_VALUE}|" "$EDGE_DIR/.env"
         rm -f "$EDGE_DIR/.env.bak"
+        echo -e "${GREEN}✅ edge_mcp_servers/.env MCP_SERVICE_TOKEN synced from platform .env.${NC}"
     fi
-    echo -e "${GREEN}✅ edge_mcp_servers/.env created (MCP_SERVICE_TOKEN synced).${NC}"
-    echo -e "${YELLOW}   Set a real GITHUB_TOKEN (and GITHUB_REPO) in edge_mcp_servers/.env before continuing.${NC}"
 fi
 
 if ! command -v docker &> /dev/null; then
