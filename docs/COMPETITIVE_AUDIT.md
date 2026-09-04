@@ -41,7 +41,7 @@ dashboard would remove the approval/audit surface every serious tool has.
 | **Severity engine / policy gate** | incident.io / PagerDuty severity models; **OPA/Gatekeeper** for policy | **Comparable design**, simpler. Impact×urgency + reversibility floor is sound. |
 | **Executor** + guardrails | Shoreline, Robusta actions, **Event-Driven Ansible**, Rundeck | **Educational subset** — dry-run + allow-list + kubectl via MCP; real tools have richer action libraries and approvals. |
 | **Skill memory / self-improving** | **Mem0**, **Letta/MemGPT**, **Zep**, **Hermes** | **Educational subset** — a lightweight signature→skill store, now persisted (`SKILL_STORE_PATH` volume, 2026-09-04) and tenant/cluster-scoped rather than in-memory and global. Still exact-match recall, not the semantic + temporal graph memory Mem0/Letta/Zep offer. |
-| **Model router** | **LiteLLM** (per-user budgets, cost routing, 5 strategies), **RouteLLM**, **NotDiamond** (powers OpenRouter Auto Router; +39% on SRE benches), **Martian** | **Educational subset** — LiteLLM already does budgets + cost routing as a superset. Our SRE-task-tier framing is a reasonable custom angle; realistically you'd back it with LiteLLM. |
+| **Model router** | **LiteLLM** (per-user budgets, cost routing, 5 strategies), **RouteLLM**, **NotDiamond** (powers OpenRouter Auto Router; +39% on SRE benches), **Martian** | **Comparable design** — `MODEL_ROUTER_BACKEND=litellm` is the platform default (2026-09-04): every call now goes through the real LiteLLM client (`langchain-litellm`), which derives its model string from whichever provider/model is already resolved for that cluster/tier — no separate LiteLLM-only config needed, and it falls back to the direct provider SDK path if construction fails. Our SRE-task-tier policy sits on top, same framing as before. Still missing LiteLLM's per-user budget/cost-routing layer itself. |
 | **Domain benchmark** | **ITBench** (IBM, AAAI'26, SRE/FinOps/CISO, leaderboard), **AIOpsLab** (Microsoft), **SREGym** | **Educational subset** — ours is a home-grown mini-benchmark. The credible path is to run against ITBench/AIOpsLab (note: frontier models score <50% on ITBench-AA — the bar is high). |
 | **NL → verified query** | **PromptQL** (Hasura), Grafana/PromQL copilots, Text2SQL | **Educational subset** — the plan→generate→**verify** pattern is exactly right; small allow-listed template set. |
 | **Generative runbooks / postmortems** | incident.io AI postmortems, Rootly AI, Rundeck | **Educational subset** — LLM-authored runbook + course generator; mature tools tie postmortems to the full incident record. |
@@ -81,17 +81,22 @@ to the built-in path when the optional package/keys aren't present:
 2. **Langfuse tracing** (`sre_agent/tracing.py`) — Langfuse v3 CallbackHandler
    wired into the investigation config; enable with `LANGFUSE_PUBLIC_KEY`.
 3. **LiteLLM router backend** (`sre_agent/litellm_backend.py`) — `route_llm`
-   builds via `ChatLiteLLM` when `MODEL_ROUTER_BACKEND=litellm`; our SRE tier
-   policy stays on top.
+   builds via `ChatLiteLLM` (the maintained `langchain-litellm` package) when
+   `MODEL_ROUTER_BACKEND=litellm`, now the platform default (2026-09-04);
+   `litellm`/`langchain-litellm` are real `pyproject.toml` dependencies, not
+   optional installs, and the per-tier model is derived from whatever
+   provider/model the cluster already resolved. Our SRE tier policy stays on
+   top.
 4. **Toolset breadth** (`sre_agent/toolsets.py`) — explicit registry of the 7
    integrated MCP toolsets + HolmesGPT-style candidates to add behind the same
    interface.
 5. **E2B sandbox** (`sre_agent/code_sandbox.py` → `run_code_fix`,
    `SANDBOX_BACKEND=e2b`) — microVM isolation for running LLM code fixes.
 
-These swap toy components for the tools the industry actually uses. Each is
-validated at the logic level here; live use needs the optional package + keys on
-your machine.
+These swap toy components for the tools the industry actually uses. #1, #2 and
+#3 are wired in and on by default; #4 is a reference registry; #5 (E2B) is
+validated at the logic level but stays opt-in — it needs a real, paid E2B API
+key, so we don't force it on by default.
 
 ## Sources
 

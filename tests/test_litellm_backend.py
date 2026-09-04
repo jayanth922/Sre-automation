@@ -49,8 +49,38 @@ def test_tier_model_none_when_unset():
     assert lb.tier_litellm_model("balanced") is None
 
 
-def test_build_raises_clean_error_without_package():
-    # langchain_community/ChatLiteLLM not installed here → clear install hint.
+def test_derives_anthropic_model_when_no_override(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+    assert lb.tier_litellm_model("strong", provider="anthropic", model_id=None) == "anthropic/claude-sonnet-5"
+
+
+def test_derives_gemini_model_from_explicit_model_id():
+    assert lb.tier_litellm_model("fast", provider="gemini", model_id="gemini-2.0-flash") == "gemini/gemini-2.0-flash"
+
+
+def test_derivation_is_idempotent_on_prefixed_model_id():
+    assert lb.tier_litellm_model("balanced", provider="anthropic", model_id="anthropic/claude-opus-5") == "anthropic/claude-opus-5"
+
+
+def test_derivation_returns_none_for_unsupported_provider():
+    assert lb.tier_litellm_model("fast", provider="groq", model_id="llama-3.1-8b") is None
+
+
+def test_explicit_env_override_wins_over_derivation():
+    import os
+
+    os.environ["MODEL_ROUTER_STRONG_LITELLM_MODEL"] = "gpt-4o"
+    try:
+        assert lb.tier_litellm_model("strong", provider="anthropic", model_id="claude-sonnet-5") == "gpt-4o"
+    finally:
+        del os.environ["MODEL_ROUTER_STRONG_LITELLM_MODEL"]
+
+
+def test_build_raises_clean_error_without_package(monkeypatch):
+    # litellm/langchain-litellm are real dependencies now (competitive-audit
+    # upgrade: default backend), so simulate the package being unavailable
+    # rather than relying on the ambient environment lacking it.
+    monkeypatch.setitem(sys.modules, "litellm", None)
     with pytest.raises(RuntimeError, match="pip install litellm"):
         lb.build_litellm_llm("gpt-4o")
 

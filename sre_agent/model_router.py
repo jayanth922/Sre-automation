@@ -322,7 +322,9 @@ def route_llm(
     from .litellm_backend import build_litellm_llm, litellm_enabled, tier_litellm_model
 
     if litellm_enabled():
-        model = tier_litellm_model(decision.tier.value)
+        model = tier_litellm_model(
+            decision.tier.value, provider=decision.provider, model_id=decision.model_id
+        )
         if model:
             try:
                 return account(
