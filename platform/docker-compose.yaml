@@ -275,7 +275,13 @@ services:
       - LANGFUSE_HOST=http://langfuse-web:3000
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_INIT_PROJECT_SECRET_KEY}
+      # Verified-learning skill store (sre_agent/skill_store.py): without this,
+      # get_skill_store() falls back to an in-process dict that's lost on every
+      # restart, silently discarding every skill the agent has ever learned.
+      - SKILL_STORE_PATH=/app/data/skills.json
 
+    volumes:
+      - skill_store_data:/app/data
     networks:
       sre-network:
         aliases:
@@ -323,6 +329,8 @@ volumes:
   redis_data:
     driver: local
   qdrant_data:
+    driver: local
+  skill_store_data:
     driver: local
   # ollama_data:                   # Commented out — using Groq instead
   #   driver: local
