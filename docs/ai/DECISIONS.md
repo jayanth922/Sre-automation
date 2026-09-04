@@ -520,3 +520,30 @@
   logic in two places (drift risk) and still requires exactly this same fix
   at the detection site to avoid the action silently vanishing from the
   ACT report when neither path picks it up.
+
+## E2B sandbox backend removed — K8s Job sandbox is the sole mechanism
+
+- **Decision:** Deleted `sre_agent/code_sandbox.py` and its test file
+  entirely (`apply_and_test`, `apply_and_test_e2b`, `run_code_fix`, the
+  `SANDBOX_BACKEND`/`E2B_API_KEY` env vars, `pyproject.toml`'s `sandbox`
+  optional-dependency group). The only code-fix sandbox mechanism going
+  forward is `sandbox_workflow.py`'s Temporal-orchestrated, K8s-Job-based
+  `CodeFixVerificationWorkflow`, which dispatches to the `sandbox_real` edge
+  MCP server (`edge_mcp_servers/mcp_servers/sandbox_real/`).
+- **Reason:** `code_sandbox.py` had zero production callers — only its own
+  test file referenced it (confirmed by repo-wide grep). It was a second,
+  parallel sandbox mechanism (local subprocess + an E2B microVM backend
+  added 2026-09-04) that duplicated what the K8s Job path already does live,
+  while adding a paid, metered cloud dependency (E2B has no free tier) and
+  cost/timing-noise exposure for `benchmarks/bench_mttr.py`, which drives
+  real incidents through the live API. User decision: keep local K8s Jobs,
+  drop E2B.
+- **Consequences:** `docs/COMPETITIVE_AUDIT.md`'s "Highest-leverage
+  upgrades" list drops from 5 items to 4; `.env.example` no longer documents
+  `SANDBOX_BACKEND`/`E2B_API_KEY`; `pyproject.toml` no longer has a `sandbox`
+  extra. No production code path is affected since nothing called
+  `code_sandbox.py`.
+- **Rejected alternative:** Keep only the local-subprocess half of
+  `code_sandbox.py` (drop just the E2B function) as an unused fallback.
+  Rejected — it would still have zero callers and duplicate the K8s Job
+  path's purpose; keeping a dead module half-alive serves no one.

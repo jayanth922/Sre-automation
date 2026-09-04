@@ -73,7 +73,7 @@ features are deliberately small versions of mature tools.
 
 ## Highest-leverage upgrades — now BUILT (as real, guarded adapters)
 
-All five are implemented against the current SDK APIs, guarded so they fall back
+Four are implemented against the current SDK APIs, guarded so they fall back
 to the built-in path when the optional package/keys aren't present:
 
 1. **ITBench adapter** (`benchmarks/itbench_adapter.py`) — maps our output to the
@@ -90,13 +90,18 @@ to the built-in path when the optional package/keys aren't present:
 4. **Toolset breadth** (`sre_agent/toolsets.py`) — explicit registry of the 7
    integrated MCP toolsets + HolmesGPT-style candidates to add behind the same
    interface.
-5. **E2B sandbox** (`sre_agent/code_sandbox.py` → `run_code_fix`,
-   `SANDBOX_BACKEND=e2b`) — microVM isolation for running LLM code fixes.
 
 These swap toy components for the tools the industry actually uses. #1, #2 and
-#3 are wired in and on by default; #4 is a reference registry; #5 (E2B) is
-validated at the logic level but stays opt-in — it needs a real, paid E2B API
-key, so we don't force it on by default.
+#3 are wired in and on by default; #4 is a reference registry.
+
+A fifth upgrade, an E2B microVM backend for code-fix testing
+(`sre_agent/code_sandbox.py`), was built then removed (2026-09-04): it had zero
+production callers — the live code-fix path is `sandbox_workflow.py`'s
+Temporal-orchestrated K8s Job (`edge_mcp_servers/mcp_servers/sandbox_real/`),
+which already runs untrusted code in an isolated, allow-listed, RBAC-scoped
+namespace. Keeping a second, unused sandbox mechanism around (with a paid,
+metered cloud dependency) was pure duplication, not a real upgrade — see
+`docs/ai/DECISIONS.md`.
 
 ## Sources
 

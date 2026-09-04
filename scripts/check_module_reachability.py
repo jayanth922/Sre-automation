@@ -15,7 +15,6 @@ EXPERIMENTAL = frozenset(
     {
         "actor_runtime",
         "terminal_agent",
-        "code_sandbox",
         "toolsets",
         "agent_audit",
         "models",

@@ -404,6 +404,21 @@ Four-layer multi-agent incident-response system:
   framing was reworded. Full rationale: `docs/ai/DECISIONS.md` "Hermes
   removal". 848 tests pass (delta from 855 is exactly the 7 removed tests).
 
+- **2026-09-04 — E2B sandbox backend removed.** `sre_agent/code_sandbox.py`
+  (added earlier the same day, upgrade #5 in the competitive audit) had zero
+  production callers — only its own test file referenced `run_code_fix`.
+  Investigating Temporal's usage/duplication surfaced that
+  `sandbox_workflow.py`'s Temporal-orchestrated, K8s-Job-based
+  `CodeFixVerificationWorkflow` is the actual live code-fix sandbox
+  mechanism, and it already does everything `code_sandbox.py` was for —
+  isolated execution of an LLM-proposed patch, with real RBAC/namespace
+  isolation, no paid cloud dependency. User decision: keep local K8s Jobs,
+  drop E2B. Deleted `sre_agent/code_sandbox.py`, `tests/test_code_sandbox.py`,
+  `pyproject.toml`'s `sandbox` extra, `.env.example`'s
+  `SANDBOX_BACKEND`/`E2B_API_KEY` section. `docs/COMPETITIVE_AUDIT.md`'s
+  upgrade list now has 4 items, not 5. Full rationale: `docs/ai/DECISIONS.md`
+  "E2B sandbox backend removed".
+
 ## Housekeeping
 - Delete the accidental duplicate nested folder:
   `SRE_Agent_Intermediate/SRE_Agent_Intermediate/`.

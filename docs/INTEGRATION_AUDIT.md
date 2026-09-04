@@ -39,11 +39,11 @@ shelf, and decide what to properly wire.
 | **Concurrency / sandbox** | **Bolted-on** | Module only; **no slot acquired** around investigations | Acquire a slot in `agent_runtime_tasks` per incident |
 | **Monitor + on-call** | **Bolted-on** | `run_monitor_service` exists; **never started** | Launch it as a FastAPI startup background task; it's the whole "continuous/proactive" story |
 | **War-room forwarder** | **Bolted-on** | Routing logic real; **forwarder/transport never started** | Start a Slack service that subscribes to the bus + opens rooms |
-| **Code-fix sandbox** | **Bolted-on** | `run_code_fix` never called in an incident | Have the Planner emit a patch + test cmd; call it in `act_gate` |
+| **Code-fix sandbox** (`code_sandbox.py`) | **Removed (2026-09-04)** | Was `Bolted-on` — `run_code_fix` never called in an incident; deleted rather than wired, since `sandbox_workflow.py`'s Temporal/K8s-Job sandbox already covers this live — see `docs/ai/DECISIONS.md` "E2B sandbox backend removed" | — |
 | IncidentChatPanel | **Not mounted** | Component exists; not in any page | Mount into the incident workspace |
 | Cockpit | **Running-ish** | Page + nav link exist | ✔ reachable (per-incident live status needs checkpointer) |
 | Frontend redesign | **Mockup** | Concept only | Build the real app (the current thread) |
-| LiteLLM / E2B / Redis-PG checkpointer / ITBench | **Optional adapter** | Guarded; need pkg/keys | Fine as optional |
+| LiteLLM / Redis-PG checkpointer / ITBench | **Optional adapter** | Guarded; need pkg/keys | Fine as optional |
 | Hermes | **Removed (2026-09-03)** | Was an optional `AgentRuntime` backend; fully removed after safety review — see `docs/ai/DECISIONS.md` "Hermes removal" | — |
 | Terminal agent / sre_bench / toolsets | **Standalone tool** | Run on their own | Fine |
 

@@ -22,15 +22,18 @@ dashboard timeline, and a UI/UX pass (error states, loading states, dead CSS,
 accessibility labels — responsive/mobile layout deliberately deferred).
 
 Also done, 2026-09-04 (resource-optimization pass, unrelated to Phase 5
-logic): E2B wired as an opt-in `code_sandbox.py` backend
-(`SANDBOX_BACKEND=e2b`); Temporal (`sre_agent/temporal_client.py`) now
-supports both a local dev-server (`temporalio/temporal:latest server
-start-dev`, opt-in `COMPOSE_PROFILES=local-temporal`) and Temporal Cloud
+logic): Temporal (`sre_agent/temporal_client.py`) now supports both a local
+dev-server (`temporalio/temporal:latest server start-dev`, opt-in
+`COMPOSE_PROFILES=local-temporal`) and Temporal Cloud
 (`TEMPORAL_HOST`/`TEMPORAL_API_KEY`, TLS auto-enabled with an API key);
 self-hosted Langfuse (clickhouse/minio/langfuse-web/-worker) deleted
 entirely from `docker-compose.yaml`, `.env.example`, and the Helm chart —
 Langfuse Cloud (free tier) is now the only tracing backend. Commit
-`4804da5`, pushed to `origin/master`.
+`4804da5`, pushed to `origin/master`. Same day: `sre_agent/code_sandbox.py`
+(an opt-in E2B microVM backend added earlier the same day) removed entirely
+— zero production callers, pure duplication of `sandbox_workflow.py`'s
+K8s-Job-based sandbox, which is the sole code-fix sandbox mechanism now. See
+`docs/ai/DECISIONS.md` "E2B sandbox backend removed".
 
 ## Current architecture and invariants
 Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
@@ -78,8 +81,7 @@ that flow. Confirm whether it ran before assuming it did.
 - `docs/ai/DECISIONS.md` — durable technical decisions; check before
   re-deriving root causes already documented there.
 - `sre_agent/temporal_client.py` — Temporal bootstrap (local dev-server vs
-  Cloud, `TEMPORAL_ENABLED`/`TEMPORAL_API_KEY`); unrelated to
-  `code_sandbox.py`'s separate `SANDBOX_BACKEND`/E2B mechanism.
+  Cloud, `TEMPORAL_ENABLED`/`TEMPORAL_API_KEY`).
 
 ## Verification commands and latest results
 Full suite green as of commit `4804da5` (889 passed, 3 skipped); `helm lint`
