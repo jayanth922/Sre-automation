@@ -46,10 +46,24 @@ if grep -qE '^MCP_SERVICE_TOKEN=""$' "$repo_root/.env"; then
     sed -i.bak "s|^MCP_SERVICE_TOKEN=\"\"\$|MCP_SERVICE_TOKEN=\"${GENERATED_MCP_TOKEN}\"|" "$repo_root/.env"
     GENERATED_ANY=1
 fi
+# Langfuse hard-requires both at boot (ENCRYPTION_KEY as a 64-hex-char/32-byte
+# key) and exits immediately if either is blank — while everything else in
+# the stack has no such requirement and stays healthy, which is why a blank
+# .env.example default here shows up as "only the langfuse containers exited."
+if grep -qE '^LANGFUSE_SALT=""$' "$repo_root/.env"; then
+    GENERATED_LANGFUSE_SALT="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    sed -i.bak "s|^LANGFUSE_SALT=\"\"\$|LANGFUSE_SALT=\"${GENERATED_LANGFUSE_SALT}\"|" "$repo_root/.env"
+    GENERATED_ANY=1
+fi
+if grep -qE '^LANGFUSE_ENCRYPTION_KEY=""$' "$repo_root/.env"; then
+    GENERATED_LANGFUSE_ENC_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+    sed -i.bak "s|^LANGFUSE_ENCRYPTION_KEY=\"\"\$|LANGFUSE_ENCRYPTION_KEY=\"${GENERATED_LANGFUSE_ENC_KEY}\"|" "$repo_root/.env"
+    GENERATED_ANY=1
+fi
 rm -f "$repo_root/.env.bak"
 
 if [ "$GENERATED_ANY" = "1" ]; then
-    echo -e "${GREEN}✅ .env internal secrets auto-generated (SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN, whichever were still blank).${NC}"
+    echo -e "${GREEN}✅ .env internal secrets auto-generated (SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN / LANGFUSE_SALT / LANGFUSE_ENCRYPTION_KEY, whichever were still blank).${NC}"
     echo -e "${YELLOW}   No LLM key yet? That's fine — add ANTHROPIC_API_KEY (or GOOGLE_API_KEY) later, in .env or per-cluster in the dashboard.${NC}"
 fi
 
