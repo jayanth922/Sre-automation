@@ -232,12 +232,11 @@ benchmark remains the other deferred item, not yet started.
   broke it at 8 vs. hardcoded 7).
 
 ## Known blockers or risks
-- `sre-langfuse-web`/`worker` crash-looping (ClickHouse `ON CLUSTER default`
-  migration, no Zookeeper) — pre-existing, cosmetic only, doesn't affect the
-  incident pipeline.
-- GitHub Codespaces free tier is capped on core-hours — `gh codespace stop`
-  when idle. Codespace `jubilant-space-invention-4vjq497q4x63jx5q` confirmed
-  reachable and `Available` as of 2026-09-02.
+- GitHub Codespaces free tier is capped on core-hours — stop
+  `jubilant-space-invention-4vjq497q4x63jx5q` when idle (`gh codespace stop`).
+  Platform stack is fully torn down (no containers/volumes) and the Codespace
+  itself stopped as of 2026-09-03, pending a full end-to-end frontend test
+  run.
 - Approval requests (both the single-gate `ApprovalRequest` and the new
   `RemediationGateApproval` rows) expire ~30 min (`APPROVAL_TTL_MINUTES`) —
   see resolve→refire recipe below if re-testing live execution. This is a
