@@ -85,6 +85,10 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
     }
   }, [events.length, state, refreshCount, refreshApproval])
 
+  useEffect(() => {
+    if (state === "missing") router.replace("/")
+  }, [state, router])
+
   if (state === "loading") {
     return (
       <div className="sx-app">
@@ -97,7 +101,6 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
   }
 
   if (state === "missing" || !cluster) {
-    if (typeof window !== "undefined") router.replace("/")
     return null
   }
 
