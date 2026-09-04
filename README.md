@@ -137,7 +137,7 @@ it sees a breach.
 - API docs: http://localhost:8080/docs
 - Every LLM/tool call traced automatically: http://localhost:3030 (Langfuse)
 - Stop everything: `platform/stop.sh` and `edge_mcp_servers/stop.sh`
-- Logs: `docker compose -f platform/docker-compose.yaml logs -f sre-agent-api`
+- Logs: `docker compose --env-file .env -f platform/docker-compose.yaml logs -f sre-agent-api`
 
 Nothing here reaches the public internet except your LLM provider and
 whatever you connect (GitHub, Notion, Jira, Slack) — Postgres, Redis, Qdrant,
