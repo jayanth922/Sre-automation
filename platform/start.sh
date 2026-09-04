@@ -19,23 +19,37 @@ if [ ! -f "$repo_root/.env" ]; then
         exit 1
     fi
     cp "$repo_root/.env.example" "$repo_root/.env"
+fi
 
-    # SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY, and MCP_SERVICE_TOKEN are internal
-    # secrets, not real credentials — safe to generate on first run so a fresh
-    # checkout starts with no hand-editing at all. The LLM key is the one
-    # real credential and is deliberately NOT required here: the platform
-    # boots without it (see sre_agent/provider_config.py) and it's set
-    # per-cluster later from the dashboard's Settings page, or in this .env
-    # if you'd rather set it once up front.
+# SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY, and MCP_SERVICE_TOKEN are internal
+# secrets, not real credentials — safe to generate whenever they're still
+# blank/placeholder, whether .env was just created above or already existed
+# (e.g. from a manual `cp .env.example .env`). Checked by current value, not
+# by whether this script created the file, so it's idempotent and never
+# overwrites a real key you've already set. The LLM key is the one real
+# credential and is deliberately NOT generated here: the platform boots
+# without it (see sre_agent/provider_config.py) and it's set per-cluster
+# later from the dashboard's Settings page, or in this .env up front.
+GENERATED_ANY=0
+if grep -qE '^SECRET_KEY="?(sre_platform_dev_key_change_in_production)?"?$' "$repo_root/.env"; then
     GENERATED_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-    GENERATED_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
-    GENERATED_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     sed -i.bak "s|^SECRET_KEY=.*|SECRET_KEY=\"${GENERATED_SECRET_KEY}\"|" "$repo_root/.env"
+    GENERATED_ANY=1
+fi
+if grep -qE '^CREDENTIAL_ENCRYPTION_KEY=""$' "$repo_root/.env"; then
+    GENERATED_ENC_KEY="$(python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
     sed -i.bak "s|^CREDENTIAL_ENCRYPTION_KEY=\"\"\$|CREDENTIAL_ENCRYPTION_KEY=\"${GENERATED_ENC_KEY}\"|" "$repo_root/.env"
+    GENERATED_ANY=1
+fi
+if grep -qE '^MCP_SERVICE_TOKEN=""$' "$repo_root/.env"; then
+    GENERATED_MCP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     sed -i.bak "s|^MCP_SERVICE_TOKEN=\"\"\$|MCP_SERVICE_TOKEN=\"${GENERATED_MCP_TOKEN}\"|" "$repo_root/.env"
-    rm -f "$repo_root/.env.bak"
+    GENERATED_ANY=1
+fi
+rm -f "$repo_root/.env.bak"
 
-    echo -e "${GREEN}✅ .env created (SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN auto-generated).${NC}"
+if [ "$GENERATED_ANY" = "1" ]; then
+    echo -e "${GREEN}✅ .env internal secrets auto-generated (SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN, whichever were still blank).${NC}"
     echo -e "${YELLOW}   No LLM key yet? That's fine — add ANTHROPIC_API_KEY (or GOOGLE_API_KEY) later, in .env or per-cluster in the dashboard.${NC}"
 fi
 
