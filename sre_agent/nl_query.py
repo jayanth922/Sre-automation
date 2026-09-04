@@ -13,10 +13,11 @@ Pipeline (the "plan"):
     parse intent → generate PromQL → **validate** (allow-listed metrics/functions,
     bounded window, balanced syntax) → execute (only if valid).
 
-Deterministic templates cover the common intents (error rate, latency, traffic,
-saturation, payment failures) so the core is reliable and fully testable; an LLM
-fallback can be layered on for out-of-pattern questions. Chat transport
-(Slack/Buzz) is a thin outer layer — see docs/CHAT_INTEGRATION.md.
+Deterministic templates cover the common intents (error rate, error count,
+latency, database latency, traffic, saturation, payment failures, dependency
+status) so the core is reliable and fully testable; an LLM fallback can be
+layered on for out-of-pattern questions. Chat transport (Slack/Buzz) is a thin
+outer layer — see docs/CHAT_INTEGRATION.md.
 """
 
 from __future__ import annotations
@@ -49,7 +50,8 @@ _MAX_WINDOW_HOURS = 24
 
 @dataclass
 class QueryIntent:
-    metric_kind: str            # error_rate | latency | traffic | saturation | payment_failures
+    metric_kind: str            # error_rate | error_count | latency | db_latency | traffic
+                                 # | saturation | payment_failures | dependency_status
     service: Optional[str]
     window: str = "5m"
     quantile: float = 0.95
@@ -107,14 +109,23 @@ def _parse_quantile(q: str) -> float:
 
 def parse_intent(question: str) -> Optional[QueryIntent]:
     q = " ".join(question.lower().split())
+    q_words = q.split()
     service = _parse_service(q)
     window = _parse_window(q)
     quantile = _parse_quantile(q)
 
     if "payment" in q and ("fail" in q or "failure" in q):
         return QueryIntent("payment_failures", service, window, quantile)
+    if "payment" in q and any(w in q for w in ("up", "down", "outage", "healthy", "status", "available")):
+        return QueryIntent("dependency_status", service, window, quantile)
+    if q.startswith("how many") and any(w in q for w in ("error", "failure", "failing")):
+        return QueryIntent("error_count", service, window, quantile)
     if any(w in q for w in ("error rate", "error", "5xx", "failing", "failure")):
         return QueryIntent("error_rate", service, window, quantile)
+    if ("database" in q or "db" in q_words) and any(
+        w in q for w in ("latency", "slow", "duration", "query time")
+    ):
+        return QueryIntent("db_latency", service, window, quantile)
     if any(w in q for w in ("latency", "slow", "response time", "p95", "p99", "duration")):
         return QueryIntent("latency", service, window, quantile)
     if any(w in q for w in ("traffic", "throughput", "rps", "request rate", "requests per")):
@@ -137,14 +148,20 @@ def build_promql(intent: QueryIntent) -> str:
     if intent.metric_kind == "error_rate":
         return (f"sum(rate(http_errors_total{_sel(s)}[{w}])) "
                 f"/ sum(rate(http_requests_total{_sel(s)}[{w}]))")
+    if intent.metric_kind == "error_count":
+        return f"sum(increase(http_errors_total{_sel(s)}[{w}]))"
     if intent.metric_kind == "latency":
         return f"histogram_quantile({intent.quantile}, rate(http_request_duration_seconds_bucket{_sel(s)}[{w}]))"
+    if intent.metric_kind == "db_latency":
+        return f"histogram_quantile({intent.quantile}, rate(db_query_duration_seconds_bucket{_sel(s)}[{w}]))"
     if intent.metric_kind == "traffic":
         return f"sum(rate(http_requests_total{_sel(s)}[{w}]))"
     if intent.metric_kind == "saturation":
         return f"process_memory_bytes_simulated{_sel(s)}"
     if intent.metric_kind == "payment_failures":
         return f"rate(payment_failures_total[{w}])"
+    if intent.metric_kind == "dependency_status":
+        return "payment_provider_up"
     return ""
 
 

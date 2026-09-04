@@ -41,6 +41,37 @@ def test_unknown_intent_returns_none():
     assert nl.parse_intent("what's the meaning of life") is None
 
 
+def test_error_count_intent_distinct_from_error_rate():
+    i = nl.parse_intent("how many errors did checkout have in the last hour")
+    assert i.metric_kind == "error_count"
+    assert i.service == "checkout-service"
+    assert i.window == "1h"
+
+
+def test_db_latency_intent_distinct_from_generic_latency():
+    i = nl.parse_intent("how slow are database queries for inventory")
+    assert i.metric_kind == "db_latency"
+    assert i.service == "inventory-service"
+
+
+def test_db_latency_intent_matches_short_db_token():
+    i = nl.parse_intent("db latency for checkout over the last 15 minutes")
+    assert i.metric_kind == "db_latency"
+    assert i.window == "15m"
+
+
+def test_dependency_status_intent():
+    i = nl.parse_intent("is the payment provider down right now")
+    assert i.metric_kind == "dependency_status"
+
+
+def test_payment_failures_still_wins_over_dependency_status_when_both_present():
+    # "payment" + "failure" must still route to payment_failures, not
+    # dependency_status, even though both keyword sets are present.
+    i = nl.parse_intent("is payment failing right now")
+    assert i.metric_kind == "payment_failures"
+
+
 # ── PromQL generation ────────────────────────────────────────────────────────
 def test_build_error_rate_promql():
     i = nl.QueryIntent("error_rate", "checkout-service", "1h")
@@ -55,9 +86,28 @@ def test_build_latency_promql():
     assert "http_request_duration_seconds_bucket" in q
 
 
+def test_build_error_count_promql():
+    q = nl.build_promql(nl.QueryIntent("error_count", "checkout-service", "1h"))
+    assert q == 'sum(increase(http_errors_total{service="checkout-service"}[1h]))'
+
+
+def test_build_db_latency_promql():
+    q = nl.build_promql(nl.QueryIntent("db_latency", "inventory-service", "5m", 0.99))
+    assert q.startswith("histogram_quantile(0.99,")
+    assert "db_query_duration_seconds_bucket" in q
+
+
+def test_build_dependency_status_promql():
+    q = nl.build_promql(nl.QueryIntent("dependency_status", None))
+    assert q == "payment_provider_up"
+
+
 # ── validation (the verify step) ─────────────────────────────────────────────
 def test_valid_generated_queries_pass():
-    for kind in ("error_rate", "latency", "traffic", "saturation", "payment_failures"):
+    for kind in (
+        "error_rate", "error_count", "latency", "db_latency", "traffic",
+        "saturation", "payment_failures", "dependency_status",
+    ):
         q = nl.build_promql(nl.QueryIntent(kind, "checkout-service", "5m"))
         ok, reason = nl.validate_promql(q)
         assert ok, f"{kind}: {reason} ({q})"
@@ -93,6 +143,17 @@ def test_plan_valid_for_known_question():
 def test_plan_invalid_for_unknown_question():
     plan = nl.plan_and_generate("tell me a joke")
     assert not plan.valid
+
+
+def test_plan_valid_for_dependency_status_question():
+    plan = nl.plan_and_generate("is the payment provider down")
+    assert plan.valid and plan.promql == "payment_provider_up"
+
+
+def test_plan_valid_for_db_latency_question():
+    plan = nl.plan_and_generate("database query latency for checkout")
+    assert plan.valid
+    assert "db_query_duration_seconds_bucket" in plan.promql
 
 
 def test_run_executes_valid_query_via_tool_caller():
