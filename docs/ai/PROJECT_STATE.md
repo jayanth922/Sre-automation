@@ -21,6 +21,17 @@ Also done since: Hermes actor backend fully removed (single backend now,
 dashboard timeline, and a UI/UX pass (error states, loading states, dead CSS,
 accessibility labels — responsive/mobile layout deliberately deferred).
 
+Also done, 2026-09-04 (resource-optimization pass, unrelated to Phase 5
+logic): E2B wired as an opt-in `code_sandbox.py` backend
+(`SANDBOX_BACKEND=e2b`); Temporal (`sre_agent/temporal_client.py`) now
+supports both a local dev-server (`temporalio/temporal:latest server
+start-dev`, opt-in `COMPOSE_PROFILES=local-temporal`) and Temporal Cloud
+(`TEMPORAL_HOST`/`TEMPORAL_API_KEY`, TLS auto-enabled with an API key);
+self-hosted Langfuse (clickhouse/minio/langfuse-web/-worker) deleted
+entirely from `docker-compose.yaml`, `.env.example`, and the Helm chart —
+Langfuse Cloud (free tier) is now the only tracing backend. Commit
+`4804da5`, pushed to `origin/master`.
+
 ## Current architecture and invariants
 Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
 `policy_gate.decide()`), plus `EXECUTOR_LIVE` env var gating
@@ -40,10 +51,11 @@ commit-by-commit detail.
 Phase 5 is done. Two items remain, deferred until Phase 5 completed per
 standing instruction (`decision-production-grade-upgrade` memory): the
 **responsive/mobile layout pass** (not started) and the **AIOpsLab domain
-benchmark** (not started). User is about to run a full manual end-to-end
-frontend test (account creation → cluster connect → incident → resolved/
-closed) once the Codespace/platform are back up — watch logs live during
-that run.
+benchmark** (not started). The prior session's planned full manual
+end-to-end frontend test (account creation → cluster connect → incident →
+resolved/closed) — status unconfirmed as of this session; this session's
+work was infra/observability-stack cleanup only and didn't touch or verify
+that flow. Confirm whether it ran before assuming it did.
 
 ## Relevant files
 - `sre_agent/incident_remediation_workflow.py` — the two-gate Temporal
@@ -65,12 +77,17 @@ that run.
   gate-decision commands.
 - `docs/ai/DECISIONS.md` — durable technical decisions; check before
   re-deriving root causes already documented there.
+- `sre_agent/temporal_client.py` — Temporal bootstrap (local dev-server vs
+  Cloud, `TEMPORAL_ENABLED`/`TEMPORAL_API_KEY`); unrelated to
+  `code_sandbox.py`'s separate `SANDBOX_BACKEND`/E2B mechanism.
 
 ## Verification commands and latest results
-Full suite green as of the last several Phase 5 commits (851 passed, 3
-skipped); ruff/mypy findings confirmed pre-existing, not introduced. Re-run:
-`pytest`, `ruff check .`, `mypy .` — see `docs/ai/DECISIONS.md`/git log if a
-specific historical count is needed.
+Full suite green as of commit `4804da5` (889 passed, 3 skipped); `helm lint`
+and `helm template` clean on `deploy/helm/sentinel` after the Langfuse
+template deletion; `docker compose --env-file .env.example -f
+platform/docker-compose.yaml config` clean (no Langfuse services, `temporal`
+correctly inactive by default). Re-run: `pytest`, `ruff check .`, `mypy .` —
+see `docs/ai/DECISIONS.md`/git log if a specific historical count is needed.
 
 ## Known blockers or risks
 - GitHub Codespaces free tier is capped on core-hours — stop
@@ -83,12 +100,11 @@ specific historical count is needed.
   re-testing live execution during that run.
 
 ## Next bounded task
-User is about to run a full manual end-to-end test from the frontend
-(account creation → cluster settings → incident detected → remediation →
-resolved/closed). Watch logs live across the stack during that run and flag
-anything that looks off. After that: pick up either the responsive/mobile
-layout pass or the AIOpsLab domain benchmark (both deferred, neither
-started).
+Confirm whether the pending manual end-to-end frontend test (account
+creation → cluster settings → incident detected → remediation →
+resolved/closed) ran; if not, run it and watch logs live. Otherwise, pick up
+either the responsive/mobile layout pass or the AIOpsLab domain benchmark
+(both deferred, neither started).
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)
