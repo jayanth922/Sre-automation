@@ -168,6 +168,10 @@ services:
       - CLICKHOUSE_USER=langfuse
       - CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse}
       - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      # Single-node ClickHouse has no Zookeeper/Keeper, so the "ON CLUSTER
+      # default" migrations Langfuse issues by default fail with "no
+      # Zookeeper configuration". This opts into non-replicated migrations.
+      - CLICKHOUSE_CLUSTER_ENABLED=false
       - REDIS_CONNECTION_STRING=redis://redis:6379/2
       - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
       - LANGFUSE_S3_EVENT_UPLOAD_REGION=auto
@@ -204,6 +208,7 @@ services:
       - CLICKHOUSE_USER=langfuse
       - CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD:-langfuse}
       - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      - CLICKHOUSE_CLUSTER_ENABLED=false
       - REDIS_CONNECTION_STRING=redis://redis:6379/2
       - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
       - LANGFUSE_S3_EVENT_UPLOAD_REGION=auto
