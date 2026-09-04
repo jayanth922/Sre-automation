@@ -90,6 +90,12 @@ bench = [
 temporal = [
     "temporalio>=1.7.0",
 ]
+# E2B microVM backend for the code-fix sandbox (sre_agent/code_sandbox.py,
+# SANDBOX_BACKEND=e2b). Not installed by default: needs a paid E2B API key, and
+# the local (temp-dir + subprocess) backend is the safe default without one.
+sandbox = [
+    "e2b>=1.0.0",
+]
 
 
 
