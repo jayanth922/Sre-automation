@@ -2,14 +2,10 @@
   "name": "sre-automation-dev",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
   "features": {
-    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
-    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
-    "ghcr.io/devcontainers-extra/features/kind:1": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
-  "postCreateCommand": "curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH=\"$HOME/.local/bin:$PATH\" && echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && uv pip install --system -e . && (cd dashboard && npm install)",
-  "forwardPorts": [3000, 8000],
+  "postCreateCommand": "curl -LsSf https://astral.sh/uv/install.sh | sh || true; export PATH=\"$HOME/.local/bin:$PATH\"; echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc",
+  "forwardPorts": [3000, 8000, 3002],
   "customizations": {
     "vscode": {
       "extensions": [
