@@ -33,7 +33,32 @@ Langfuse Cloud (free tier) is now the only tracing backend. Commit
 (an opt-in E2B microVM backend added earlier the same day) removed entirely
 — zero production callers, pure duplication of `sandbox_workflow.py`'s
 K8s-Job-based sandbox, which is the sole code-fix sandbox mechanism now. See
-`docs/ai/DECISIONS.md` "E2B sandbox backend removed".
+`docs/ai/DECISIONS.md` "E2B sandbox backend removed". Small frontend fix same
+window: `dashboard/app/(dashboard)/clusters/[id]/layout.tsx` moved its
+missing-cluster redirect out of render into `useEffect` (commit `cafa5c1`).
+
+Also done, 2026-09-05/07 (`.devcontainer/devcontainer.json` fixed for
+GitHub Codespaces): Codespace creation was failing 5+ times in a row with
+"failed to start SSH server" even though the API reported `state:
+Available` — root cause was the base `ubuntu-24.04` devcontainer image
+needing the `sshd` feature explicitly (GitHub's own error message named the
+fix); added `ghcr.io/devcontainers/features/sshd:1` (commit `098569a`).
+Along the way also stripped `kubectl-helm-minikube`/`kind`/`node` (not
+needed just to run `main_start.sh`, which is pure `docker compose`) and
+switched `uv` from a devcontainer feature — which was silently failing and
+falling back to an unusable Alpine "recovery container" — to installing it
+via its own install script in `postCreateCommand` (commit `36a0ff4`), then
+restored the `python:3.12` feature (commit `6b533b2`) after finding
+`platform/start.sh` needs `python3` on the host to generate
+`SECRET_KEY`/`CREDENTIAL_ENCRYPTION_KEY`/etc. on first boot. Verified
+working end-to-end on a fresh codespace: SSH connects immediately, and
+`cp .env.example .env && ./main_start.sh` builds and brings up the full
+`platform/` stack (postgres/redis/qdrant/sre-agent-api/sre-dashboard, all
+healthy, dashboard on `:3002`). The `edge_mcp_servers` half of
+`main_start.sh` (7 MCP server images) was mid-build, not yet confirmed
+working, when the codespace was stopped on request — not a known-bad state,
+just unverified. Codespace `cuddly-winner-659v67gv695hrxjw` (repo
+`jayanth922/Sre-automation`, branch `master`) is stopped, not deleted.
 
 ## Current architecture and invariants
 Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
@@ -92,21 +117,28 @@ correctly inactive by default). Re-run: `pytest`, `ruff check .`, `mypy .` —
 see `docs/ai/DECISIONS.md`/git log if a specific historical count is needed.
 
 ## Known blockers or risks
-- GitHub Codespaces free tier is capped on core-hours — stop
-  `jubilant-space-invention-4vjq497q4x63jx5q` when idle (`gh codespace stop`).
-  Platform stack is fully torn down (no containers/volumes) and the
-  Codespace itself stopped as of 2026-09-03, pending the end-to-end frontend
-  test run.
+- GitHub Codespaces free tier is capped on core-hours — stop the active
+  codespace when idle (`gh codespace stop -c <name>`). `gh codespace list`
+  is the source of truth for which one(s) currently exist/are billing; a
+  stopped codespace has previously disappeared/404'd within ~1 day
+  (observed with `glowing-lamp-p9qj7jp756cjq5`), cause unconfirmed — don't
+  assume a stopped codespace is still resumable without checking
+  `gh codespace list` first.
 - Approval requests (`ApprovalRequest` and `RemediationGateApproval`) expire
   ~30 min (`APPROVAL_TTL_MINUTES`) — see resolve→refire recipe below if
   re-testing live execution during that run.
 
 ## Next bounded task
-Confirm whether the pending manual end-to-end frontend test (account
-creation → cluster settings → incident detected → remediation →
-resolved/closed) ran; if not, run it and watch logs live. Otherwise, pick up
-either the responsive/mobile layout pass or the AIOpsLab domain benchmark
-(both deferred, neither started).
+Resume `cuddly-winner-659v67gv695hrxjw` (or create a fresh codespace from
+current `master` if it's gone — devcontainer is now fixed, see above) and
+finish verifying `edge_mcp_servers` (`cd edge_mcp_servers && docker compose
+--progress=quiet up -d --build`, 7 services) actually comes up clean; then
+the user can check the dashboard themselves (`:3002`, port-forwarded from
+the Codespace). After that: confirm whether the pending manual end-to-end
+frontend test (account creation → cluster settings → incident detected →
+remediation → resolved/closed) ran; if not, run it and watch logs live.
+Otherwise, pick up either the responsive/mobile layout pass or the
+AIOpsLab domain benchmark (both deferred, neither started).
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)
