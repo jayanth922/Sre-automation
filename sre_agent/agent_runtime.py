@@ -288,10 +288,6 @@ async def agent_metrics():
 from sre_agent.api.v1 import alerts as alerts_router
 app.include_router(alerts_router.router, prefix="/api/v1")
 
-# Metrics Router (Golden Signals)
-from sre_agent.api.v1 import metrics as metrics_router
-app.include_router(metrics_router.router, prefix="/metrics")
-
 # Analytics Router (Trend dashboard)
 from sre_agent.api.v1 import analytics as analytics_router
 app.include_router(analytics_router.router, prefix="/api/v1")
@@ -361,9 +357,7 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
         )
 
         try:
-            provider = require_supported_provider(
-                context.llm_provider or os.getenv("LLM_PROVIDER") or "anthropic"
-            )
+            provider = require_supported_provider(context.llm_provider)
             validate_provider_credentials(
                 provider,
                 api_key=context.credentials.get("llm_api_key"),
@@ -1281,8 +1275,7 @@ async def _run_graph_impl(
                 f"Investigate alert: {alert_name} ({hints_text})"
             ),
             "metadata": {
-                "llm_provider": runtime.context.llm_provider
-                or os.getenv("LLM_PROVIDER", "anthropic"),
+                "llm_provider": runtime.context.llm_provider,
                 "llm": runtime.context.llm_manifest(),
                 "organization_id": runtime.context.organization_id,
                 "cluster_id": str(cluster_id),

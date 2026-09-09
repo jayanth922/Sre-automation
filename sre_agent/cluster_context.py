@@ -1,9 +1,13 @@
-"""Resolve a cluster's effective runtime context with a platform-default
-fallback — the single source of truth for per-cluster overrides.
+"""Resolve a cluster's effective runtime context — the single source of truth
+for per-cluster overrides.
 
 Only auth/org is platform-wide; everything a client brings (LLM brain, scope,
-integration credentials) resolves per-cluster here, falling back to the platform
-default when a cluster hasn't set an override.
+integration credentials) resolves per-cluster here. A bound cluster that
+hasn't set an override gets ``None``, not a silently-substituted platform
+default — ``authorize_llm``/``resolve_authorized_llm`` then fail closed with a
+clear error. The ``LLM_PROVIDER``/``LLM_MODEL``/``LLM_BASE_URL``/``LLM_API_KEY``
+env vars only apply when there is no cluster at all (local development /
+self-hosted single-tenant mode, i.e. ``cluster is None``).
 """
 
 from __future__ import annotations
@@ -59,20 +63,20 @@ def llm_run_budget() -> Optional[float]:
 
 
 def resolve_llm(cluster: Any) -> Dict[str, Optional[str]]:
-    """Per-cluster LLM brain with platform-default fallback.
+    """Per-cluster LLM brain.
 
-    provider is always resolved (cluster override → platform env → anthropic).
-    model/base_url/api_key prefer the cluster override, then platform env when
-    no cluster is bound (local development).
-    ``cluster`` may be None → platform defaults.
+    Every field prefers the cluster override; all four only fall back to the
+    platform env when there is no cluster bound at all (``cluster is None`` —
+    local development / self-hosted single-tenant mode). A real cluster that
+    hasn't set ``llm_provider`` gets ``provider=None`` here, not a silently
+    substituted default — callers must fail closed on that instead.
     """
     use_env_fallbacks = cluster is None
+    provider = _attr(cluster, "llm_provider") or (
+        os.getenv("LLM_PROVIDER", "anthropic") if use_env_fallbacks else None
+    )
     return {
-        "provider": (
-            _attr(cluster, "llm_provider") or os.getenv("LLM_PROVIDER", "anthropic")
-        )
-        .strip()
-        .lower(),
+        "provider": provider.strip().lower() if provider else None,
         "model": _attr(cluster, "llm_model")
         or (os.getenv("LLM_MODEL") if use_env_fallbacks else None),
         "base_url": _attr(cluster, "llm_base_url")
@@ -89,7 +93,13 @@ def authorize_llm(
     api_key: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     """Fail closed when provider/model/budget are outside operator policy."""
-    resolved_provider = (provider or os.getenv("LLM_PROVIDER", "anthropic")).strip().lower()
+    resolved_provider = (provider or "").strip().lower()
+    if not resolved_provider:
+        raise UnauthorizedLLMConfigError(
+            "No LLM provider configured for this cluster. Set one explicitly "
+            "in cluster Settings (or LLM_PROVIDER for local/self-hosted mode "
+            "with no bound cluster) — there is no silent platform default."
+        )
     if resolved_provider not in SUPPORTED_LLM_PROVIDERS:
         raise UnauthorizedLLMConfigError(
             f"Unsupported LLM provider {resolved_provider!r}; "

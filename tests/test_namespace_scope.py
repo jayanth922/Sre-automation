@@ -102,7 +102,10 @@ def test_from_cluster_fails_closed_without_namespace(monkeypatch):
         github_token=None,
         notion_api_key=None,
         llm_api_key=None,
-        llm_provider=None,
+        # Explicit provider: isolates this test to the namespace check. A
+        # cluster with no llm_provider now fails closed on that first (no
+        # silent platform-default substitution — see test_cluster_llm.py).
+        llm_provider="anthropic",
         llm_model=None,
         llm_base_url=None,
         key_version=1,

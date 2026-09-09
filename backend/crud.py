@@ -163,7 +163,6 @@ async def create_cluster(
         k8s_token=cluster.k8s_token,
         github_token=cluster.github_token,
         github_repo=cluster.github_repo,
-        github_app_installation_id=cluster.github_app_installation_id,
         notion_api_key=cluster.notion_api_key,
         notion_database_id=cluster.notion_database_id,
         jira_url=cluster.jira_url,
@@ -179,9 +178,10 @@ async def create_cluster(
         llm_base_url=cluster.llm_base_url or None,
         llm_api_key=cluster.llm_api_key or None,
     )
-    from sre_agent.cluster_context import resolve_authorized_llm
+    if db_cluster.llm_provider:
+        from sre_agent.cluster_context import resolve_authorized_llm
 
-    resolve_authorized_llm(db_cluster)
+        resolve_authorized_llm(db_cluster)
     db.add(db_cluster)
     await db.commit()
     await db.refresh(db_cluster)
@@ -215,7 +215,6 @@ async def update_cluster(
         "k8s_token",
         "github_token",
         "github_repo",
-        "github_app_installation_id",
         "notion_api_key",
         "notion_database_id",
         "jira_url",
@@ -225,8 +224,11 @@ async def update_cluster(
     ):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
-    # Scope + LLM override: an explicitly-sent empty string clears the field
-    # (revert to whole-cluster / platform-default), so honor blanks here.
+    # Scope: an explicitly-sent empty string clears namespace (revert to
+    # whole-cluster). LLM override: an explicitly-sent empty string clears the
+    # field too, leaving the cluster with no explicit LLM provider — there is
+    # no platform-default fallback, so investigations refuse clearly at run
+    # time (resolve_authorized_llm) until one is set again.
     for field in (
         "namespace",
         "llm_provider",
@@ -236,8 +238,12 @@ async def update_cluster(
     ):
         if field in data:
             setattr(cluster, field, data[field] or None)
-    # Refuse configs the runtime would reject at investigation start.
-    if any(field in data for field in ("llm_provider", "llm_model", "llm_base_url", "llm_api_key")):
+    # Refuse configs the runtime would reject at investigation start — but
+    # only when an override is actually being set; clearing back to
+    # "unconfigured" is allowed without validating a provider that isn't there.
+    if cluster.llm_provider and any(
+        field in data for field in ("llm_provider", "llm_model", "llm_base_url", "llm_api_key")
+    ):
         from sre_agent.cluster_context import resolve_authorized_llm
 
         resolve_authorized_llm(cluster)

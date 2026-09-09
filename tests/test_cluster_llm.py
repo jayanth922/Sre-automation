@@ -14,6 +14,7 @@ from sre_agent.cluster_context import (
     authorize_llm,
     llm_manifest,
     resolve_authorized_llm,
+    resolve_llm,
 )
 from sre_agent.execution_context import ExecutionContext
 from sre_agent.runtime_cache import AgentRuntimeCache, RuntimeBundle
@@ -56,6 +57,32 @@ def _cluster(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def test_resolve_llm_no_platform_default_for_bound_cluster(monkeypatch):
+    """A real cluster with no llm_provider override gets None, never LLM_PROVIDER env."""
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    cluster = _cluster()
+    assert resolve_llm(cluster)["provider"] is None
+
+
+def test_resolve_llm_env_fallback_only_with_no_cluster(monkeypatch):
+    """cluster=None means local dev / self-hosted single-tenant mode: env applies."""
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    assert resolve_llm(None)["provider"] == "gemini"
+
+
+def test_authorize_rejects_unconfigured_provider():
+    with pytest.raises(UnauthorizedLLMConfigError, match="No LLM provider configured"):
+        authorize_llm(None)
+
+
+def test_resolve_authorized_llm_fails_closed_for_unconfigured_cluster():
+    """Fails closed even though the autouse fixture leaves LLM_PROVIDER=anthropic
+    set — a bound cluster must never inherit that as a silent default."""
+    cluster = _cluster()
+    with pytest.raises(UnauthorizedLLMConfigError, match="No LLM provider configured"):
+        resolve_authorized_llm(cluster)
 
 
 def test_authorize_rejects_provider_outside_allowlist(monkeypatch):

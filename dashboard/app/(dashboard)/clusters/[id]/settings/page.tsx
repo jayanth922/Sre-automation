@@ -14,8 +14,9 @@ interface ConnCheck {
   detail: string
 }
 
-// Mirrors backend defaults (sre_agent/metrics_profile.DEFAULTS). Shown as
-// placeholders so a blank field means "use the platform default".
+// Mirrors backend examples (sre_agent/metrics_profile.EXAMPLES) — shown only
+// as placeholder illustrations. All 7 fields are required: Prometheus-backed
+// queries refuse to run for this cluster until every one is set explicitly.
 const METRIC_FIELDS: { key: string; label: string; def: string }[] = [
   { key: "service_label", label: "Service label", def: "service" },
   { key: "request_metric", label: "Request counter metric", def: "http_requests_total" },
@@ -37,6 +38,9 @@ export default function SettingsPage() {
     prometheus_url: "",
     loki_url: "",
     github_repo: "",
+    github_token: "",
+    k8s_api_server: "",
+    k8s_token: "",
     notion_database_id: "",
     notion_api_key: "",
     namespace: "",
@@ -45,17 +49,18 @@ export default function SettingsPage() {
     llm_base_url: "",
     llm_api_key: "",
   })
-  const [ghInstalling, setGhInstalling] = useState(false)
-  const [ghErr, setGhErr] = useState<string | null>(null)
   const [slackTeamId, setSlackTeamId] = useState<string | null>(null)
   const [slackInstalling, setSlackInstalling] = useState(false)
   const [slackErr, setSlackErr] = useState<string | null>(null)
+  const [slackManualToken, setSlackManualToken] = useState("")
+  const [slackSavingToken, setSlackSavingToken] = useState(false)
   const [metrics, setMetrics] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [conns, setConns] = useState<ConnCheck[] | null>(null)
   const [checking, setChecking] = useState(false)
+  const [tab, setTab] = useState<"infra" | "integrations" | "ai">("infra")
 
   const checkConnections = useCallback(async () => {
     setChecking(true)
@@ -87,6 +92,9 @@ export default function SettingsPage() {
       prometheus_url: cluster.prometheus_url ?? "",
       loki_url: cluster.loki_url ?? "",
       github_repo: cluster.github_repo ?? "",
+      github_token: "",
+      k8s_api_server: cluster.k8s_api_server ?? "",
+      k8s_token: "",
       notion_database_id: cluster.notion_database_id ?? "",
       notion_api_key: "",
       namespace: cluster.namespace ?? "",
@@ -117,11 +125,16 @@ export default function SettingsPage() {
         prometheus_url: endpoints.prometheus_url || undefined,
         loki_url: endpoints.loki_url || undefined,
         github_repo: endpoints.github_repo || undefined,
+        github_token: endpoints.github_token || undefined,
+        k8s_api_server: endpoints.k8s_api_server || undefined,
+        k8s_token: endpoints.k8s_token || undefined,
         notion_database_id: endpoints.notion_database_id || undefined,
         notion_api_key: endpoints.notion_api_key || undefined,
         metrics_config: cleanMetrics,
-        // Sent even when blank so they can be cleared (revert to whole-cluster /
-        // platform default). The API key is write-only: only sent when entered.
+        // Sent even when blank so they can be cleared: namespace reverts to
+        // whole-cluster, llm_provider/model/base_url revert to "not configured"
+        // (no platform-default substitution). The API key is write-only: only
+        // sent when entered.
         namespace: endpoints.namespace,
         llm_provider: endpoints.llm_provider,
         llm_model: endpoints.llm_model,
@@ -183,168 +196,250 @@ export default function SettingsPage() {
           )}
         </div>
 
-        <SectionTitle title="Endpoints" meta="how the platform reaches your infrastructure" />
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-          <div>
-            <label className="sx-label" htmlFor="set-name">Cluster name</label>
-            <input id="set-name" className="sx-input" value={endpoints.name} onChange={(e) => setEndpoints({ ...endpoints, name: e.target.value })} />
+        <div className="sx-tabs">
+          <button className={tab === "infra" ? "on" : ""} onClick={() => setTab("infra")}>Infrastructure</button>
+          <button className={tab === "integrations" ? "on" : ""} onClick={() => setTab("integrations")}>Integrations</button>
+          <button className={tab === "ai" ? "on" : ""} onClick={() => setTab("ai")}>AI &amp; metrics</button>
+        </div>
+
+        {tab === "infra" && (
+          <div style={{ marginTop: 6 }}>
+            <SectionTitle title="Endpoints" meta="how the platform reaches your infrastructure" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+              <div>
+                <label className="sx-label" htmlFor="set-name">Cluster name</label>
+                <input id="set-name" className="sx-input" value={endpoints.name} onChange={(e) => setEndpoints({ ...endpoints, name: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-prom">Prometheus URL</label>
+                <input id="set-prom" className="sx-input" placeholder="https://prometheus.your-infra:9090" value={endpoints.prometheus_url} onChange={(e) => setEndpoints({ ...endpoints, prometheus_url: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-loki">Loki URL</label>
+                <input id="set-loki" className="sx-input" placeholder="https://loki.your-infra:3100" value={endpoints.loki_url} onChange={(e) => setEndpoints({ ...endpoints, loki_url: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-repo">GitHub repo</label>
+                <input id="set-repo" className="sx-input" placeholder="org/repo" value={endpoints.github_repo} onChange={(e) => setEndpoints({ ...endpoints, github_repo: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-gh-token">GitHub PAT</label>
+                <input
+                  id="set-gh-token"
+                  type="password"
+                  className="sx-input sx-mono"
+                  style={{ fontSize: 12 }}
+                  placeholder={cluster?.github_repo ? "•••••••••••••••• (already set — leave blank to keep)" : "ghp_… (repo scope)"}
+                  value={endpoints.github_token}
+                  onChange={(e) => setEndpoints({ ...endpoints, github_token: e.target.value })}
+                />
+                <div style={{ color: "var(--ink3)", fontSize: 11, marginTop: 4 }}>
+                  Required for code-change remediation (revert PRs, patches) against the repo above. Write-only — never echoed back.
+                </div>
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-k8s-server">Kubernetes API server</label>
+                <input
+                  id="set-k8s-server"
+                  className="sx-input sx-mono"
+                  style={{ fontSize: 12 }}
+                  placeholder="https://<host>:6443"
+                  value={endpoints.k8s_api_server}
+                  onChange={(e) => setEndpoints({ ...endpoints, k8s_api_server: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-k8s-token">Kubernetes token</label>
+                <input
+                  id="set-k8s-token"
+                  type="password"
+                  className="sx-input sx-mono"
+                  style={{ fontSize: 12 }}
+                  placeholder={cluster?.k8s_api_server ? "•••••••••••••••• (already set — leave blank to keep)" : "service account bearer token"}
+                  value={endpoints.k8s_token}
+                  onChange={(e) => setEndpoints({ ...endpoints, k8s_token: e.target.value })}
+                />
+                <div style={{ color: "var(--ink3)", fontSize: 11, marginTop: 4 }}>
+                  Required for Kubernetes remediation actions (rollback, restart, scale) against this cluster. Write-only — never echoed back.
+                </div>
+              </div>
+            </div>
+
+            <SectionTitle title="Scope" meta="what this cluster monitors" />
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+              Required. Every cluster is scoped to one Kubernetes namespace — its metrics, service view, and remediation blast radius are limited to that namespace. That&apos;s how multiple apps on the same Kubernetes each become their own cluster, and how tenants stay isolated from each other.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 320 }}>
+              <div>
+                <label className="sx-label" htmlFor="set-ns">Namespace</label>
+                <input id="set-ns" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="e.g. production" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
+              </div>
+            </div>
           </div>
-          <div>
-            <label className="sx-label" htmlFor="set-prom">Prometheus URL</label>
-            <input id="set-prom" className="sx-input" placeholder="https://prometheus.your-infra:9090" value={endpoints.prometheus_url} onChange={(e) => setEndpoints({ ...endpoints, prometheus_url: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label" htmlFor="set-loki">Loki URL</label>
-            <input id="set-loki" className="sx-input" placeholder="https://loki.your-infra:3100" value={endpoints.loki_url} onChange={(e) => setEndpoints({ ...endpoints, loki_url: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label" htmlFor="set-repo">GitHub repo</label>
-            <input id="set-repo" className="sx-input" placeholder="org/repo" value={endpoints.github_repo} onChange={(e) => setEndpoints({ ...endpoints, github_repo: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label">GitHub App</label>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        )}
+
+        {tab === "integrations" && (
+          <div style={{ marginTop: 6 }}>
+            <SectionTitle title="Runbooks" meta="Notion (required — no runbooks without it)" />
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+              Point Sentinel at your team&apos;s runbook database in Notion. Share the database with a Notion integration and paste its token + the database ID. Notion is the only runbook source — without this configured, the catalog stays empty and the agent has no runbooks to search.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+              <div>
+                <label className="sx-label" htmlFor="set-notion-db">Notion database ID</label>
+                <input id="set-notion-db" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="32-char database id" value={endpoints.notion_database_id} onChange={(e) => setEndpoints({ ...endpoints, notion_database_id: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-notion-key">Notion integration token</label>
+                <input id="set-notion-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.notion_database_id ? "•••••• (set — leave blank to keep)" : "secret_..."} value={endpoints.notion_api_key} onChange={(e) => setEndpoints({ ...endpoints, notion_api_key: e.target.value })} />
+              </div>
+            </div>
+
+            <SectionTitle title="Slack" meta="incident notifications for the organization" />
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+              Connect Slack once per organization — every cluster&apos;s incidents post to it. Opens a Slack window to pick the workspace and channel.
+            </p>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <button
+                  className="sx-btn"
+                  style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+                  disabled={slackInstalling}
+                  onClick={async () => {
+                    setSlackInstalling(true)
+                    setSlackErr(null)
+                    try {
+                      const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
+                      window.location.href = data.install_url
+                    } catch (e) {
+                      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                      setSlackErr(detail || "Could not start the Slack install flow.")
+                      setSlackInstalling(false)
+                    }
+                  }}
+                >
+                  {slackInstalling ? "Redirecting…" : slackTeamId ? "Reconnect Slack" : "Connect Slack"}
+                </button>
+                <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>
+                  {slackTeamId ? `connected (${slackTeamId})` : "not connected"}
+                </span>
+              </div>
+              {slackErr && <div className="sx-dry" style={{ textAlign: "left", marginTop: 6, color: "var(--crit)" }}>{slackErr}</div>}
+            </div>
+
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 18, lineHeight: 1.6 }}>
+              Self-hosting your own Slack app instead? Paste its Bot User OAuth Token (<span className="sx-mono">xoxb-…</span>) directly — no OAuth redirect needed.
+            </p>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 420 }}>
+              <input
+                type="password"
+                className="sx-input sx-mono"
+                style={{ fontSize: 12 }}
+                placeholder="xoxb-…"
+                value={slackManualToken}
+                onChange={(e) => setSlackManualToken(e.target.value)}
+              />
               <button
                 className="sx-btn"
                 style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
-                disabled={ghInstalling}
+                disabled={slackSavingToken || !slackManualToken.trim()}
                 onClick={async () => {
-                  setGhInstalling(true)
-                  setGhErr(null)
+                  setSlackSavingToken(true)
+                  setSlackErr(null)
                   try {
-                    const { data } = await api.get<{ install_url: string }>(`/clusters/${id}/github-app/install-url`)
-                    window.location.href = data.install_url
-                  } catch {
-                    setGhErr("Could not start the GitHub App install flow.")
-                    setGhInstalling(false)
+                    const { data } = await api.post<{ slack_team_id: string | null }>(
+                      "/organization/slack/bot-token",
+                      { bot_token: slackManualToken.trim() }
+                    )
+                    setSlackTeamId(data.slack_team_id ?? null)
+                    setSlackManualToken("")
+                  } catch (e) {
+                    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                    setSlackErr(detail || "Slack rejected this token.")
+                  } finally {
+                    setSlackSavingToken(false)
                   }
                 }}
               >
-                {ghInstalling ? "Redirecting…" : cluster?.github_app_installation_id ? "Reinstall GitHub App" : "Install GitHub App"}
+                {slackSavingToken ? "Verifying…" : "Save token"}
               </button>
-              <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>
-                {cluster?.github_app_installation_id ? `installed (${cluster.github_app_installation_id})` : "not installed"}
-              </span>
-            </div>
-            {ghErr && <div className="sx-dry" style={{ textAlign: "left", marginTop: 6, color: "var(--crit)" }}>{ghErr}</div>}
-            <div style={{ color: "var(--ink2)", fontSize: 11.5, marginTop: 6, lineHeight: 1.5 }}>
-              Installing the GitHub App mints short-lived tokens per request instead of a static PAT — preferred over a raw GitHub token.
             </div>
           </div>
-        </div>
+        )}
 
-        <SectionTitle title="Scope" meta="what this cluster monitors" />
-        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Required. Every cluster is scoped to one Kubernetes namespace — its metrics, service view, and remediation blast radius are limited to that namespace. That&apos;s how multiple apps on the same Kubernetes each become their own cluster, and how tenants stay isolated from each other.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 320 }}>
-          <div>
-            <label className="sx-label" htmlFor="set-ns">Namespace</label>
-            <input id="set-ns" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="e.g. production" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
-          </div>
-        </div>
-
-        <SectionTitle title="Agent brain" meta="per-cluster LLM override (optional)" />
-        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Leave the provider blank to use the platform default. Overrides are validated against operator policy at run start and recorded as configured runtime metadata; deterministic router pinning is handled separately.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 420 }}>
-          <div>
-            <label className="sx-label" htmlFor="set-llm-provider">Provider</label>
-            <select id="set-llm-provider" className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
-              <option value="">Platform default</option>
-              <option value="anthropic">anthropic (Claude)</option>
-              <option value="gemini">gemini</option>
-            </select>
-          </div>
-          <div>
-            <label className="sx-label" htmlFor="set-llm-model">Model</label>
-            <input id="set-llm-model" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(provider default)" value={endpoints.llm_model} onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label" htmlFor="set-llm-url">Base URL (self-hosted)</label>
-            <input id="set-llm-url" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="http://host:11434/v1" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label" htmlFor="set-llm-key">API key</label>
-            <input id="set-llm-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "optional"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
-          </div>
-        </div>
-
-        <SectionTitle title="Runbooks" meta="Notion (required — no runbooks without it)" />
-        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Point Sentinel at your team&apos;s runbook database in Notion. Share the database with a Notion integration and paste its token + the database ID. Notion is the only runbook source — without this configured, the catalog stays empty and the agent has no runbooks to search.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-          <div>
-            <label className="sx-label" htmlFor="set-notion-db">Notion database ID</label>
-            <input id="set-notion-db" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="32-char database id" value={endpoints.notion_database_id} onChange={(e) => setEndpoints({ ...endpoints, notion_database_id: e.target.value })} />
-          </div>
-          <div>
-            <label className="sx-label" htmlFor="set-notion-key">Notion integration token</label>
-            <input id="set-notion-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.notion_database_id ? "•••••• (set — leave blank to keep)" : "secret_..."} value={endpoints.notion_api_key} onChange={(e) => setEndpoints({ ...endpoints, notion_api_key: e.target.value })} />
-          </div>
-        </div>
-
-        <SectionTitle title="Slack" meta="incident notifications for the organization" />
-        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Connect Slack once per organization — every cluster&apos;s incidents post to it. Opens a Slack window to pick the workspace and channel.
-        </p>
-        <div style={{ marginTop: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button
-              className="sx-btn"
-              style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
-              disabled={slackInstalling}
-              onClick={async () => {
-                setSlackInstalling(true)
-                setSlackErr(null)
-                try {
-                  const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
-                  window.location.href = data.install_url
-                } catch {
-                  setSlackErr("Could not start the Slack install flow.")
-                  setSlackInstalling(false)
-                }
-              }}
-            >
-              {slackInstalling ? "Redirecting…" : slackTeamId ? "Reconnect Slack" : "Connect Slack"}
-            </button>
-            <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>
-              {slackTeamId ? `connected (${slackTeamId})` : "not connected"}
-            </span>
-          </div>
-          {slackErr && <div className="sx-dry" style={{ textAlign: "left", marginTop: 6, color: "var(--crit)" }}>{slackErr}</div>}
-        </div>
-
-        <SectionTitle title="Observability profile" meta="your Prometheus conventions" />
-        <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-          Leave a field blank to use the platform default (shown as the placeholder). These map the golden-signal and per-service queries onto whatever metric names your workloads emit — the platform doesn’t assume any particular schema.
-        </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-          {METRIC_FIELDS.map((f) => (
-            <div key={f.key}>
-              <label className="sx-label" htmlFor={`set-metric-${f.key}`}>{f.label}</label>
-              <input
-                id={`set-metric-${f.key}`}
-                className="sx-input sx-mono"
-                style={{ fontSize: 12 }}
-                placeholder={f.def}
-                value={metrics[f.key] ?? ""}
-                onChange={(e) => setMetrics({ ...metrics, [f.key]: e.target.value })}
-              />
+        {tab === "ai" && (
+          <div style={{ marginTop: 6 }}>
+            <SectionTitle title="Agent brain" meta="per-cluster LLM provider" />
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+              There is no platform default: leave the provider unset and investigations for this cluster refuse to run until one is configured here. Once set, it's validated against operator policy at run start and recorded as configured runtime metadata; deterministic router pinning is handled separately.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 420 }}>
+              <div>
+                <label className="sx-label" htmlFor="set-llm-provider">Provider</label>
+                <select id="set-llm-provider" className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
+                  <option value="">Not configured</option>
+                  <option value="anthropic">anthropic (Claude)</option>
+                  <option value="gemini">gemini</option>
+                </select>
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-llm-model">Model</label>
+                <input id="set-llm-model" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(provider default)" value={endpoints.llm_model} onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-llm-url">Base URL (self-hosted)</label>
+                <input id="set-llm-url" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="http://host:11434/v1" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-llm-key">API key</label>
+                <input id="set-llm-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "optional"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
+              </div>
             </div>
-          ))}
-        </div>
+
+            <SectionTitle title="Observability profile" meta="your Prometheus conventions" />
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+              All fields below are required — the example shown as each placeholder is illustration only, never a fallback. Metrics, CPU/memory, and per-service views stay disabled until every field is set explicitly, since the platform can't safely guess your metric names.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+              {METRIC_FIELDS.map((f) => (
+                <div key={f.key}>
+                  <label className="sx-label" htmlFor={`set-metric-${f.key}`}>{f.label}</label>
+                  <input
+                    id={`set-metric-${f.key}`}
+                    className="sx-input sx-mono"
+                    style={{ fontSize: 12 }}
+                    placeholder={f.def}
+                    value={metrics[f.key] ?? ""}
+                    onChange={(e) => setMetrics({ ...metrics, [f.key]: e.target.value })}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {err && <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", padding: 14, marginTop: 18 }}>{err}</div>}
+      </div>
 
-        <div className="sx-btnrow" style={{ marginTop: 20, maxWidth: 260 }}>
-          <button className="sx-btn primary" onClick={save} disabled={!isAdmin || saving}>
-            {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
-          </button>
-        </div>
-        {!isAdmin && <div className="sx-dry" style={{ textAlign: "left", marginTop: 8 }}>Only admins can change cluster settings.</div>}
+      <div
+        style={{
+          position: "sticky",
+          bottom: 0,
+          marginTop: 28,
+          maxWidth: 620,
+          padding: "14px 0",
+          background: "var(--paper)",
+          borderTop: "1px solid var(--rule2)",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <button className="sx-btn primary" style={{ flex: "none", padding: "7px 18px" }} onClick={save} disabled={!isAdmin || saving}>
+          {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
+        </button>
+        {!isAdmin && <span className="sx-dry" style={{ textAlign: "left" }}>Only admins can change cluster settings.</span>}
+        <span style={{ color: "var(--ink3)", fontSize: 11 }}>Applies to all tabs above.</span>
       </div>
     </ConsolePage>
   )
