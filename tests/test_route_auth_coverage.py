@@ -44,7 +44,6 @@ USER_AUTH_ROUTERS = [
     "incidents.py",
     "jobs.py",
     "members.py",
-    "metrics.py",
     "mission_control.py",
     "recommendations.py",
     "runbooks.py",

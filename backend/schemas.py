@@ -84,14 +84,23 @@ class MemberStatusUpdate(BaseModel):
     is_active: bool
 
 
+class SlackBotTokenSet(BaseModel):
+    # Manual bot-token path for self-hosted, single-org deployments that
+    # register their own Slack app directly (Install to Workspace) instead
+    # of going through the multi-tenant OAuth "Add to Slack" flow.
+    bot_token: str
+
+
 # ----------------------------------------------------------------------
 # Organization invitations
 # ----------------------------------------------------------------------
 
 class InvitationCreate(BaseModel):
     email: EmailStr
-    role: UserRole = UserRole.MEMBER
-    expires_in_hours: int = Field(default=72, ge=1, le=720)
+    # No defaults: an admin sending an invite states the role and expiry
+    # explicitly rather than silently getting member/72h.
+    role: UserRole
+    expires_in_hours: int = Field(ge=1, le=720)
 
 
 class InvitationCreateResponse(BaseModel):
@@ -140,9 +149,6 @@ class ClusterCreate(BaseModel):
     k8s_token: Optional[str] = None
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
-    # GitHub App installation ID (Phase 4): when set, a short-lived
-    # installation token is minted per request instead of github_token.
-    github_app_installation_id: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
     jira_url: Optional[str] = None
@@ -167,7 +173,6 @@ class ClusterUpdate(BaseModel):
     k8s_token: Optional[str] = None
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
-    github_app_installation_id: Optional[str] = None
     notion_api_key: Optional[str] = None
     notion_database_id: Optional[str] = None
     jira_url: Optional[str] = None
@@ -193,7 +198,6 @@ class ClusterResponse(BaseModel):
     loki_url: Optional[str] = None
     k8s_api_server: Optional[str] = None
     github_repo: Optional[str] = None
-    github_app_installation_id: Optional[str] = None
     notion_database_id: Optional[str] = None
     jira_url: Optional[str] = None
     jira_email: Optional[str] = None
@@ -215,7 +219,9 @@ class ClusterResponse(BaseModel):
 class IncidentCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    severity: IncidentSeverity = IncidentSeverity.MEDIUM
+    # No default: a caller must state the severity it actually observed
+    # rather than have the platform silently assume MEDIUM.
+    severity: IncidentSeverity
 
 class IncidentResponse(BaseModel):
     id: uuid.UUID
@@ -292,7 +298,9 @@ class SLOCreate(BaseModel):
     name: str
     sli_metric: str
     target: float  # e.g., 99.9
-    window_days: int = 30
+    # No default: an SLO's window is a real commitment, not something to
+    # silently pick to 30 days on the caller's behalf.
+    window_days: int
 
 class SLOResponse(BaseModel):
     id: uuid.UUID

@@ -137,12 +137,12 @@
 - **Consequences:** `edge_mcp_servers` still must never import `sre_agent`
   (see `runbooks_notion/server.py`'s existing precedent) — header name
   constants are duplicated as plain strings on both sides and must be kept
-  in sync by hand. GitHub tokens now also come from a GitHub App
-  installation (`sre_agent/multitenant/github_app.py`) when
-  `Cluster.github_app_installation_id` is set, minting a short-lived (~1h)
-  token per resolution instead of relaying the long-lived stored PAT;
-  minting failures fall back to the stored PAT non-fatally, same convention
-  as `sre_agent/integrations/jira.py`. Slack similarly moves from a single
+  in sync by hand. GitHub credentials are relayed as the stored PAT
+  (`Cluster.github_token`) only — the GitHub App installation-token flow
+  (`sre_agent/multitenant/github_app.py`) was removed 2026-09-08 since the
+  platform authenticates to GitHub with a repo URL + PAT exclusively;
+  `Cluster.github_app_installation_id` (DB column) is now unused dead
+  storage, kept only to avoid an extra migration. Slack similarly moves from a single
   global `SLACK_BOT_TOKEN` to a per-`Organization` OAuth-installed token
   (`sre_agent/multitenant/slack_oauth.py`, `Organization.slack_bot_token`),
   with the env var kept as the self-hosted fallback.

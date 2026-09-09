@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import schemas, crud, models, database
 from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
+from sre_agent.multitenant import slack_oauth
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,30 @@ async def get_organization(
 ):
     """Return the caller's organization, including Slack-connected status."""
     org = await crud.get_org_by_id(db, user.org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
+
+
+@organization_router.post("/slack/bot-token", response_model=schemas.OrgResponse)
+async def set_slack_bot_token(
+    payload: schemas.SlackBotTokenSet,
+    admin: models.User = Depends(require_admin),
+    db: AsyncSession = Depends(database.get_db),
+):
+    """Manual bot-token path (self-hosted, single-org): admin pastes a token
+    from their own Slack app's 'Install to Workspace' page, in place of the
+    multi-tenant OAuth 'Add to Slack' flow. Stored the same as an OAuth
+    installation (Organization.slack_bot_token/slack_team_id), so the
+    Connections check and resolve_slack_bot_token() need no special-casing."""
+    try:
+        verified = await slack_oauth.verify_bot_token(payload.bot_token)
+    except slack_oauth.SlackOAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    org = await crud.set_org_slack_installation(
+        db, admin.org_id, bot_token=payload.bot_token, team_id=verified["team_id"]
+    )
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     return org

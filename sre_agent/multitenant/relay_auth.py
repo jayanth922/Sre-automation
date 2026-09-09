@@ -31,8 +31,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Dict, Optional
 
-from .github_app import resolve_github_credential
-
 if TYPE_CHECKING:
     from ..execution_context import ExecutionContext
 
@@ -55,7 +53,7 @@ async def build_relay_headers(
     credentials, resolved from ``context.credentials``."""
     headers = dict(context.transport_headers(service_token))
 
-    github_token = await resolve_github_credential(context.credentials)
+    github_token = context.credentials.get("github_token")
     github_repo = context.credentials.get("github_repo")
     if github_token and github_repo:
         headers[GITHUB_TOKEN_HEADER] = github_token

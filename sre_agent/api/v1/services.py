@@ -55,9 +55,9 @@ async def _query_by_label(client: httpx.AsyncClient, base: str, promql: str, lab
 
 
 def _prom_base(cluster: models.Cluster) -> str:
-    import os
-
-    return (cluster.prometheus_url or os.getenv("PROMETHEUS_URL") or "").rstrip("/")
+    # No platform-wide fallback: each cluster states its own Prometheus URL,
+    # or this feature is honestly "not configured" for it.
+    return (cluster.prometheus_url or "").rstrip("/")
 
 
 async def _load_cluster(cluster_id: uuid.UUID, user: models.User, db: AsyncSession) -> models.Cluster:
@@ -85,7 +85,10 @@ async def fetch_service_health(cluster: models.Cluster) -> List[Dict[str, Any]]:
     if not base:
         return []
 
-    cfg = mp.resolve(cluster.metrics_config, cluster.namespace)
+    try:
+        cfg = mp.resolve(cluster.metrics_config, cluster.namespace)
+    except mp.MetricsProfileNotConfigured:
+        return []
     label = cfg["service_label"]
 
     async with httpx.AsyncClient(timeout=6.0) as client:
@@ -128,6 +131,13 @@ async def get_cluster_services(
     cluster = await _load_cluster(cluster_id, user, db)
     if not _prom_base(cluster):
         raise HTTPException(status_code=503, detail="No Prometheus endpoint configured for this cluster.")
+    try:
+        mp.resolve(cluster.metrics_config, cluster.namespace)
+    except mp.MetricsProfileNotConfigured as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Observability profile is not fully configured: missing {', '.join(exc.missing)}. Set these in Settings -> AI & metrics.",
+        )
     return await fetch_service_health(cluster)
 
 
@@ -147,7 +157,8 @@ async def get_cluster_connections(
 
     cluster = await _load_cluster(cluster_id, user, db)
     prom = _prom_base(cluster)
-    loki = (cluster.loki_url or os.getenv("LOKI_URL") or "").rstrip("/")
+    # No platform-wide fallback: each cluster states its own Loki URL.
+    loki = (cluster.loki_url or "").rstrip("/")
     repo = cluster.github_repo
     gh_token = os.getenv("GITHUB_TOKEN")
     notion_db = cluster.notion_database_id
@@ -272,7 +283,13 @@ async def get_cluster_metrics(
     if not base:
         raise HTTPException(status_code=503, detail="No Prometheus endpoint configured for this cluster.")
 
-    cfg = mp.resolve(cluster.metrics_config, cluster.namespace)
+    try:
+        cfg = mp.resolve(cluster.metrics_config, cluster.namespace)
+    except mp.MetricsProfileNotConfigured as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Observability profile is not fully configured: missing {', '.join(exc.missing)}. Set these in Settings -> AI & metrics.",
+        )
     async with httpx.AsyncClient(timeout=6.0) as client:
         errors = await _query_scalar(client, base, mp.q_error_rate(cfg))
         latency = await _query_scalar(client, base, mp.q_latency_p95(cfg))

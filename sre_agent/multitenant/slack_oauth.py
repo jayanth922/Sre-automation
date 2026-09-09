@@ -7,9 +7,11 @@ each customer's own workspace, each installation getting its own bot token
 stored on ``Organization`` (``slack_bot_token``/``slack_team_id``) instead of
 in process environment.
 
-Self-hosted deployments that never run the OAuth flow keep working exactly
-as before: ``resolve_slack_bot_token`` falls back to ``SLACK_BOT_TOKEN`` when
-an organization has no stored token.
+A self-hosted deployment that skips the OAuth flow instead pastes its Slack
+app's bot token directly (``POST /organization/slack/bot-token``, verified via
+``verify_bot_token`` below) — stored the same way, on ``Organization``. There
+is no process-environment fallback: an organization's Slack connection is
+always something someone at that org explicitly set.
 """
 
 from __future__ import annotations
@@ -93,11 +95,32 @@ async def exchange_code_for_token(
     return {"bot_token": bot_token, "team_id": team["id"], "team_name": team.get("name")}
 
 
+async def verify_bot_token(bot_token: str) -> Dict[str, Any]:
+    """Confirm a manually-pasted bot token actually authenticates, the same
+    way the OAuth exchange's response is validated, so a typo or revoked
+    token fails loudly at save time instead of silently at incident time."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": f"Bearer {bot_token}"},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+
+    if not payload.get("ok"):
+        raise SlackOAuthError(
+            f"Slack rejected this token: {payload.get('error', 'unknown_error')}"
+        )
+    team_id = payload.get("team_id")
+    if not team_id:
+        raise SlackOAuthError("Slack auth.test response is missing team_id")
+    return {"team_id": team_id, "team_name": payload.get("team")}
+
+
 def resolve_slack_bot_token(organization: Any) -> Optional[str]:
-    """Per-org bot token when installed via OAuth, else the deployment's
-    static env-var token (a self-hosted deployment that registered its own
-    Slack app directly, without going through the OAuth install flow)."""
-    token = getattr(organization, "slack_bot_token", None)
-    if token:
-        return token
-    return os.getenv("SLACK_BOT_TOKEN")
+    """This organization's bot token, set explicitly via the OAuth install
+    flow or the manual-token Settings field. No env-var fallback: a token
+    silently inherited from process environment would connect the org to
+    whichever Slack workspace that variable happens to point at, without
+    anyone at the org having consciously chosen it."""
+    return getattr(organization, "slack_bot_token", None)

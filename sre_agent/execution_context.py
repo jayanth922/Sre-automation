@@ -128,9 +128,6 @@ class ExecutionContext:
                 "k8s_api_server": _value(cluster, "k8s_api_server"),
                 "github_token": _value(cluster, "github_token"),
                 "github_repo": _value(cluster, "github_repo"),
-                "github_app_installation_id": _value(
-                    cluster, "github_app_installation_id"
-                ),
                 "notion_api_key": _value(cluster, "notion_api_key"),
                 "notion_database_id": _value(cluster, "notion_database_id"),
                 "llm_api_key": llm.get("api_key") or _value(cluster, "llm_api_key"),

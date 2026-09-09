@@ -86,8 +86,9 @@ export default function TeamPage() {
               try {
                 const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
                 window.location.href = data.install_url
-              } catch {
-                setSlackErr("Could not start the Slack install flow.")
+              } catch (e) {
+                const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                setSlackErr(detail || "Could not start the Slack install flow.")
                 setSlackConnecting(false)
               }
             }}

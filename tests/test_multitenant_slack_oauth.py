@@ -121,7 +121,9 @@ def test_resolve_slack_bot_token_prefers_org_token(monkeypatch):
     assert slack_oauth.resolve_slack_bot_token(org) == "xoxb-org-specific"
 
 
-def test_resolve_slack_bot_token_falls_back_to_env(monkeypatch):
+def test_resolve_slack_bot_token_no_env_fallback(monkeypatch):
+    # No process-environment fallback: an org with no stored token has none,
+    # even if SLACK_BOT_TOKEN happens to be set in the process environment.
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-static")
     org = SimpleNamespace(slack_bot_token=None)
-    assert slack_oauth.resolve_slack_bot_token(org) == "xoxb-static"
+    assert slack_oauth.resolve_slack_bot_token(org) is None
