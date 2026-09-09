@@ -323,19 +323,36 @@ Full suite: 860 passed, 3 skipped. Hot-deployed
 (`cluster_context.py`/`crud.py`/`agent_runtime.py`) to
 `cuddly-winner-659v67gv695hrxjw`; `sre-agent-api` restarted clean/healthy.
 
-**Item 3 (not yet addressed, no user instruction given):**
-`sre_agent/war_room_service.py`/`integrations/slack_bot.py`'s standalone
-socket-mode bot reads `SLACK_BOT_TOKEN` directly with no per-org routing.
-
-All backend changes hot-deployed to `cuddly-winner-659v67gv695hrxjw`; not yet
-committed to git.
+**Item 3 (confirmed, fixed 2026-09-08 later same session):** the real bug was
+`war_room_service.py::maybe_open_war_room` — called per-incident (with a
+`cluster_id` available at the call site) but reading `os.getenv(
+"SLACK_BOT_TOKEN")` directly, ignoring per-org routing entirely. Fixed:
+signature is now `maybe_open_war_room(incident_id, cluster_id, summary)`; it
+resolves the incident's cluster → organization →
+`multitenant/slack_oauth.resolve_slack_bot_token(org)`, with no env fallback
+(mirrors `integrations/jira.py::maybe_create_jira_issue`'s per-cluster
+pattern). Call site in `agent_runtime.py` (`_run_graph_impl`) updated to pass
+`str(cluster_id)`. `integrations/slack_bot.py`'s standalone socket-mode bot
+(`run_slack_bot()`) was deliberately **left unchanged**: Slack Bolt's
+socket-mode `AsyncApp` binds one bot token per running process, so an
+operator-set `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` env pair is structurally a
+single-tenant-only feature, not a per-org routing bug — same precedent as
+item 1. Added `test_maybe_open_war_room_uses_org_token_not_env` and
+`test_maybe_open_war_room_noops_without_org_token` to
+`tests/test_war_room_service.py`. Full suite: 862 passed, 3 skipped.
+Hot-deployed (`war_room_service.py`/`agent_runtime.py`) to
+`cuddly-winner-659v67gv695hrxjw`; `sre-agent-api` restarted clean/healthy.
+Committed and pushed to `origin/master`.
 
 ## Next bounded task
 Wire a real GitHub PAT for `jayanth922/meridian-shop` into the new
 `kind-meridian` Cluster row (see "Found, not yet fixed" above) — needed
-before any software-side fault test. Per user instruction, do **not**
-inject any fault yet; let `kind-meridian` run quietly first. When ready,
-test a software-side fault first (a real buggy commit pushed to
+before any software-side fault test. Per standing sign-off policy, do not
+ask the user to paste the PAT into chat; have them enter it directly via the
+dashboard Settings UI (or `PATCH /api/v1/clusters/{id}` if no UI field
+exists yet — check first) outside the conversation. Per user instruction, do
+**not** inject any fault yet; let `kind-meridian` run quietly first. When
+ready, test a software-side fault first (a real buggy commit pushed to
 `meridian-shop`, not a `FAULTS.md` config toggle) before infra-level faults.
 If dropping the now-dead `github_app_installation_id` column is ever wanted,
 it needs a new Alembic migration (not yet written).

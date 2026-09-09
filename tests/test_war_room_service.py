@@ -81,5 +81,67 @@ async def test_get_registry_hydration_failure_is_non_fatal(monkeypatch):
     assert registry.thread_for("inc-1") is None
 
 
+@pytest.mark.asyncio
+async def test_maybe_open_war_room_uses_org_token_not_env(monkeypatch):
+    """No process-wide SLACK_BOT_TOKEN fallback: resolves the incident's own
+    cluster -> organization and uses that org's Slack token, or no-ops."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-operator-static")
+
+    cluster = SimpleNamespace(org_id="org-1")
+    org = SimpleNamespace(slack_bot_token="xoxb-org-1-real")
+
+    async def fake_get_cluster_by_id(db, cluster_id):
+        return cluster
+
+    async def fake_get_org_by_id(db, org_id):
+        assert org_id == "org-1"
+        return org
+
+    monkeypatch.setattr("backend.database.AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr("backend.crud.get_cluster_by_id", fake_get_cluster_by_id)
+    monkeypatch.setattr("backend.crud.get_org_by_id", fake_get_org_by_id)
+
+    captured = {}
+
+    class _FakeAsyncApp:
+        def __init__(self, token):
+            captured["token"] = token
+            # No .client mock: chat_postMessage will raise AttributeError,
+            # caught by the function's own non-fatal except — fine, the
+            # token capture above already happened by then.
+
+    monkeypatch.setattr("slack_bolt.async_app.AsyncApp", _FakeAsyncApp)
+
+    # cluster_id must parse as a UUID: maybe_open_war_room does
+    # uuid.UUID(str(cluster_id)) before the cluster lookup.
+    await war_room_service.maybe_open_war_room(
+        "inc-1", "00000000-0000-0000-0000-000000000001", "summary"
+    )
+
+    assert captured["token"] == "xoxb-org-1-real"
+
+
+@pytest.mark.asyncio
+async def test_maybe_open_war_room_noops_without_org_token(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    cluster = SimpleNamespace(org_id="org-1")
+    org = SimpleNamespace(slack_bot_token=None)
+
+    async def fake_get_cluster_by_id(db, cluster_id):
+        return cluster
+
+    async def fake_get_org_by_id(db, org_id):
+        return org
+
+    monkeypatch.setattr("backend.database.AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr("backend.crud.get_cluster_by_id", fake_get_cluster_by_id)
+    monkeypatch.setattr("backend.crud.get_org_by_id", fake_get_org_by_id)
+
+    # Must return cleanly without raising and without posting to Slack.
+    await war_room_service.maybe_open_war_room(
+        "inc-1", "00000000-0000-0000-0000-000000000001", "summary"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

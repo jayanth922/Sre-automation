@@ -1065,7 +1065,7 @@ async def _run_graph_impl(
     # configured). Fire-and-forget; never blocks or breaks the investigation.
     try:
         from sre_agent.war_room_service import maybe_open_war_room
-        asyncio.create_task(maybe_open_war_room(session_id, alert_name))
+        asyncio.create_task(maybe_open_war_room(session_id, str(cluster_id), alert_name))
     except Exception as war_err:
         logger.debug(f"war-room start skipped: {war_err}")
 

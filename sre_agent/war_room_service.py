@@ -1,10 +1,10 @@
 """War-room forwarder — mirrors an incident's investigation into Slack.
 
-When Slack is configured (SLACK_BOT_TOKEN set), opening a war room posts an
-"incident opened" message and then streams the agent's surfaced timeline events
-into that Slack thread via war_room.forward_events. Entirely optional: without
-Slack tokens this is a clean no-op, and every failure is non-fatal to incident
-processing.
+When the incident's owning cluster's organization has a Slack bot token
+configured, opening a war room posts an "incident opened" message and then
+streams the agent's surfaced timeline events into that Slack thread via
+war_room.forward_events. Entirely optional: without an org Slack token this
+is a clean no-op, and every failure is non-fatal to incident processing.
 """
 from __future__ import annotations
 
@@ -83,10 +83,28 @@ def _opening_text(summary: str) -> str:
     return f":rotating_light: *Incident opened*\n{summary}{mention}"
 
 
-async def maybe_open_war_room(incident_id: str, summary: str) -> None:
+async def maybe_open_war_room(incident_id: str, cluster_id: str, summary: str) -> None:
     """Open a Slack war-room thread for this incident and stream its events.
-    No-op unless SLACK_BOT_TOKEN is configured."""
-    if not os.getenv("SLACK_BOT_TOKEN"):
+
+    No-op unless the owning cluster's organization has a Slack bot token
+    configured (OAuth-installed or pasted manually in Settings) — there is no
+    process-wide SLACK_BOT_TOKEN fallback here: each org's war-room messages
+    must post with that org's own token, never another org's or the operator's."""
+    token: Optional[str] = None
+    try:
+        from backend import crud, database
+
+        async with database.AsyncSessionLocal() as db:
+            cluster = await crud.get_cluster_by_id(db, uuid.UUID(str(cluster_id)))
+            if cluster is not None:
+                org = await crud.get_org_by_id(db, cluster.org_id)
+                if org is not None:
+                    from sre_agent.multitenant.slack_oauth import resolve_slack_bot_token
+
+                    token = resolve_slack_bot_token(org)
+    except Exception as e:
+        logger.debug(f"war-room: cluster/org Slack token lookup skipped ({e})")
+    if not token:
         return
     try:
         from slack_bolt.async_app import AsyncApp
@@ -97,7 +115,7 @@ async def maybe_open_war_room(incident_id: str, summary: str) -> None:
     try:
         from sre_agent.war_room import ThreadRef, forward_events
 
-        app = AsyncApp(token=os.getenv("SLACK_BOT_TOKEN"))
+        app = AsyncApp(token=token)
         channel = os.getenv("SLACK_WAR_ROOM_CHANNEL", "#incidents")
         opened = await app.client.chat_postMessage(
             channel=channel,
