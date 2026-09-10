@@ -293,7 +293,7 @@ def build_run_manifest(
             "requested_cluster_model": getattr(execution_context, "llm_model", None),
             "routes": model_routes,
             "fallback_chain": [provider]
-            + [item for item in ("anthropic", "gemini") if item != provider],
+            + [item for item in ("anthropic",) if item != provider],
         },
         "tools": {
             "schema_version": os.getenv(

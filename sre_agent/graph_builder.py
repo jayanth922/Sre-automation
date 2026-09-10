@@ -546,7 +546,12 @@ async def _act_gate_node(
                 try:
                     from .model_router import TaskType, route_llm
 
-                    rb_llm = route_llm(TaskType.NARRATION, use_fallback=False)
+                    rb_llm = route_llm(
+                        TaskType.NARRATION,
+                        provider=getattr(execution_context, "llm_provider", None),
+                        use_fallback=False,
+                        router_enabled=getattr(execution_context, "llm_router_enabled", None),
+                    )
                     published = await write_runbook_generative(rb_input, rb_llm, execution_context)
                 except Exception:
                     published = await write_runbook(rb_input, execution_context)
@@ -988,8 +993,14 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
     llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "anthropic")
+    llm_router_enabled = metadata.get("llm_router_enabled")
     from .model_router import TaskType, route_llm
-    llm = route_llm(TaskType.REFLECTION, provider=llm_provider, use_fallback=False)
+    llm = route_llm(
+        TaskType.REFLECTION,
+        provider=llm_provider,
+        use_fallback=False,
+        router_enabled=llm_router_enabled,
+    )
 
     # Wrap attacker-influenceable telemetry so it's treated as data, not instructions.
     from .prompt_guard import UNTRUSTED_EVIDENCE_POLICY, wrap_untrusted
@@ -1328,8 +1339,14 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
     # Try to get from metadata, fallback to default
     metadata = state.get("metadata", {})
     llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "anthropic")
+    llm_router_enabled = metadata.get("llm_router_enabled")
     from .model_router import TaskType, route_llm
-    llm = route_llm(TaskType.PLANNING, provider=llm_provider, use_fallback=False)
+    llm = route_llm(
+        TaskType.PLANNING,
+        provider=llm_provider,
+        use_fallback=False,
+        router_enabled=llm_router_enabled,
+    )
 
     planning_prompt = f"""
     You are the PlannerNode in an SRE autonomic system. Generate a structured
@@ -1506,9 +1523,14 @@ def build_multi_agent_graph(
     # Create the state graph
     workflow = StateGraph(AgentState)
 
+    llm_router_enabled = getattr(execution_context, "llm_router_enabled", None)
+
     # Create supervisor (for backward compatibility and routing)
     supervisor = SupervisorAgent(
-        llm_provider=llm_provider, tools=tools, **llm_kwargs
+        llm_provider=llm_provider,
+        tools=tools,
+        llm_router_enabled=llm_router_enabled,
+        **llm_kwargs,
     )
 
     # Create agent nodes with filtered tools and metadata from constants
@@ -1516,24 +1538,28 @@ def build_multi_agent_graph(
         tools,
         agent_metadata=SREConstants.agents.agents["logs"],
         llm_provider=llm_provider,
+        llm_router_enabled=llm_router_enabled,
         **llm_kwargs,
     )
     metrics_agent = create_metrics_agent(
         tools,
         agent_metadata=SREConstants.agents.agents["metrics"],
         llm_provider=llm_provider,
+        llm_router_enabled=llm_router_enabled,
         **llm_kwargs,
     )
     runbooks_agent = create_runbooks_agent(
         tools,
         agent_metadata=SREConstants.agents.agents["runbooks"],
         llm_provider=llm_provider,
+        llm_router_enabled=llm_router_enabled,
         **llm_kwargs,
     )
     github_agent = create_github_agent(
         tools,
         agent_metadata=SREConstants.agents.agents["github"],
         llm_provider=llm_provider,
+        llm_router_enabled=llm_router_enabled,
         **llm_kwargs,
     )
 

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -40,10 +40,16 @@ def _load_agent_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _create_llm(provider: str = "anthropic", **kwargs):
+def _create_llm(provider: str = "anthropic", router_enabled: Optional[bool] = None, **kwargs):
     """Create a specialist LLM, routed to the balanced tier by the model router."""
     from .model_router import TaskType, route_llm
-    return route_llm(TaskType.SPECIALIST, provider=provider, use_fallback=False, **kwargs)
+    return route_llm(
+        TaskType.SPECIALIST,
+        provider=provider,
+        use_fallback=False,
+        router_enabled=router_enabled,
+        **kwargs,
+    )
 
 
 def _filter_tools_for_agent(
@@ -100,6 +106,7 @@ class BaseAgentNode:
         tools: List[BaseTool],
         llm_provider: str = "anthropic",
         agent_metadata: AgentMetadata = None,
+        llm_router_enabled: Optional[bool] = None,
         **llm_kwargs,
     ):
         # Use agent_metadata if provided, otherwise fall back to individual parameters
@@ -122,7 +129,7 @@ class BaseAgentNode:
         logger.info(
             f"Initializing {self.name} with LLM provider: {llm_provider}, actor_id: {self.actor_id}, tools: {[tool.name for tool in tools]}"
         )
-        self.llm = _create_llm(llm_provider, **llm_kwargs)
+        self.llm = _create_llm(llm_provider, router_enabled=llm_router_enabled, **llm_kwargs)
 
         # Tag the tool catalog for Anthropic prompt caching: this specialist's
         # tool set is stable across its entire multi-turn tool-calling loop

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed LLM provider and startup configuration validation.
 
-Sentinel supports only Anthropic and Gemini. Invalid provider values must never
+Sentinel supports only Anthropic. Invalid provider values must never
 be silently replaced with a default. This module is deliberately stdlib-only so
 deployment entrypoints can validate configuration before migrations or serving.
 """
@@ -12,18 +12,19 @@ import os
 import sys
 from typing import Mapping, Optional
 
-SUPPORTED_PROVIDERS = ("anthropic", "gemini")
+SUPPORTED_PROVIDERS = ("anthropic",)
 DEFAULT_PROVIDER = "anthropic"
 
 _ALIAS_HINTS: Mapping[str, str] = {
-    "groq": "Groq support was removed; use LLM_PROVIDER=anthropic or gemini.",
-    "ollama": "Ollama support was removed; use LLM_PROVIDER=anthropic or gemini.",
-    "nvidia": "NVIDIA NIM support was removed; use LLM_PROVIDER=anthropic or gemini.",
-    "openai": "OpenAI support was removed; use LLM_PROVIDER=anthropic or gemini.",
+    "groq": "Groq support was removed; use LLM_PROVIDER=anthropic.",
+    "ollama": "Ollama support was removed; use LLM_PROVIDER=anthropic.",
+    "nvidia": "NVIDIA NIM support was removed; use LLM_PROVIDER=anthropic.",
+    "openai": "OpenAI support was removed; use LLM_PROVIDER=anthropic.",
     "openai_compatible": (
-        "OpenAI-compatible providers were removed; use LLM_PROVIDER=anthropic "
-        "or gemini."
+        "OpenAI-compatible providers were removed; use LLM_PROVIDER=anthropic."
     ),
+    "gemini": "Gemini support was removed; use LLM_PROVIDER=anthropic.",
+    "google": "Gemini support was removed; use LLM_PROVIDER=anthropic.",
 }
 
 _PLACEHOLDER_VALUES = frozenset(
@@ -95,18 +96,6 @@ def validate_provider_credentials(
         if _is_placeholder(key):
             raise ProviderConfigError(
                 "LLM_PROVIDER=anthropic requires a real ANTHROPIC_API_KEY."
-            )
-        return
-
-    if provider == "gemini":
-        key = (
-            api_key
-            or _env(environ, "GOOGLE_API_KEY")
-            or _env(environ, "GEMINI_API_KEY")
-        ).strip()
-        if _is_placeholder(key):
-            raise ProviderConfigError(
-                "LLM_PROVIDER=gemini requires a real GOOGLE_API_KEY or GEMINI_API_KEY."
             )
         return
 

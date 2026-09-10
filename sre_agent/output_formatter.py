@@ -21,8 +21,13 @@ logger = logging.getLogger(__name__)
 class SREOutputFormatter:
     """Simple markdown output formatter for SRE multi-agent responses."""
 
-    def __init__(self, llm_provider: Optional[str] = None):
+    def __init__(
+        self,
+        llm_provider: Optional[str] = None,
+        llm_router_enabled: Optional[bool] = None,
+    ):
         self.llm_provider = llm_provider or os.getenv("LLM_PROVIDER", "anthropic")
+        self.llm_router_enabled = llm_router_enabled
         logger.info(
             f"SREOutputFormatter initialized with LLM provider: {self.llm_provider}"
         )
@@ -42,6 +47,7 @@ class SREOutputFormatter:
             TaskType.AGGREGATION,
             provider=self.llm_provider,
             use_fallback=False,
+            router_enabled=self.llm_router_enabled,
             max_tokens=formatter_config["max_tokens"],
             **kwargs,
         )
@@ -295,6 +301,11 @@ class SREOutputFormatter:
         return "\n".join(output)
 
 
-def create_formatter(llm_provider: Optional[str] = None) -> SREOutputFormatter:
+def create_formatter(
+    llm_provider: Optional[str] = None,
+    llm_router_enabled: Optional[bool] = None,
+) -> SREOutputFormatter:
     """Create and return a new SRE output formatter instance."""
-    return SREOutputFormatter(llm_provider=llm_provider)
+    return SREOutputFormatter(
+        llm_provider=llm_provider, llm_router_enabled=llm_router_enabled
+    )

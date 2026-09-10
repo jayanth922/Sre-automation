@@ -402,7 +402,6 @@ async def _build_runtime(context: ExecutionContext) -> RuntimeBundle:
             print(str(e))
             print("\n💡 Check provider credentials for your LLM_PROVIDER setting")
             print("   anthropic → ANTHROPIC_API_KEY")
-            print("   gemini → GOOGLE_API_KEY or GEMINI_API_KEY")
         else:
             logger.error(f"Failed to initialize SRE Agent system: {e}")
         raise
@@ -1276,6 +1275,7 @@ async def _run_graph_impl(
             ),
             "metadata": {
                 "llm_provider": runtime.context.llm_provider,
+                "llm_router_enabled": runtime.context.llm_router_enabled,
                 "llm": runtime.context.llm_manifest(),
                 "organization_id": runtime.context.organization_id,
                 "cluster_id": str(cluster_id),
@@ -1931,7 +1931,7 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "anthropic") -> st
 
     Args:
         prompt: The user prompt/query
-        provider: LLM provider (``anthropic`` or ``gemini``)
+        provider: LLM provider (``anthropic``)
 
     Returns:
         The agent's response as a string
@@ -1976,7 +1976,7 @@ def invoke_sre_agent(prompt: str, provider: str = "anthropic") -> str:
 
     Args:
         prompt: The user prompt/query
-        provider: LLM provider (``anthropic`` or ``gemini``)
+        provider: LLM provider (``anthropic``)
 
     Returns:
         The agent's response as a string
@@ -1993,7 +1993,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--provider",
         default=os.getenv("LLM_PROVIDER", "anthropic"),
-        help="LLM provider: anthropic | gemini (default: anthropic)",
+        help="LLM provider: anthropic (default: anthropic)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")

@@ -41,8 +41,8 @@ def test_tier_model_resolution(monkeypatch):
 
 
 def test_tier_model_falls_back_to_generic_model_env(monkeypatch):
-    monkeypatch.setenv("MODEL_ROUTER_FAST_MODEL", "gemini/gemini-2.0-flash")
-    assert lb.tier_litellm_model("fast") == "gemini/gemini-2.0-flash"
+    monkeypatch.setenv("MODEL_ROUTER_FAST_MODEL", "anthropic/claude-haiku-4-5-20251001")
+    assert lb.tier_litellm_model("fast") == "anthropic/claude-haiku-4-5-20251001"
 
 
 def test_tier_model_none_when_unset():
@@ -54,8 +54,8 @@ def test_derives_anthropic_model_when_no_override(monkeypatch):
     assert lb.tier_litellm_model("strong", provider="anthropic", model_id=None) == "anthropic/claude-sonnet-5"
 
 
-def test_derives_gemini_model_from_explicit_model_id():
-    assert lb.tier_litellm_model("fast", provider="gemini", model_id="gemini-2.0-flash") == "gemini/gemini-2.0-flash"
+def test_derives_anthropic_model_from_explicit_model_id():
+    assert lb.tier_litellm_model("fast", provider="anthropic", model_id="claude-haiku-4-5-20251001") == "anthropic/claude-haiku-4-5-20251001"
 
 
 def test_derivation_is_idempotent_on_prefixed_model_id():

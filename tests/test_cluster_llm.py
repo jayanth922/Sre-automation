@@ -61,15 +61,15 @@ def _cluster(**overrides):
 
 def test_resolve_llm_no_platform_default_for_bound_cluster(monkeypatch):
     """A real cluster with no llm_provider override gets None, never LLM_PROVIDER env."""
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_PROVIDER", "other-provider")
     cluster = _cluster()
     assert resolve_llm(cluster)["provider"] is None
 
 
 def test_resolve_llm_env_fallback_only_with_no_cluster(monkeypatch):
     """cluster=None means local dev / self-hosted single-tenant mode: env applies."""
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
-    assert resolve_llm(None)["provider"] == "gemini"
+    monkeypatch.setenv("LLM_PROVIDER", "other-provider")
+    assert resolve_llm(None)["provider"] == "other-provider"
 
 
 def test_authorize_rejects_unconfigured_provider():
@@ -85,10 +85,15 @@ def test_resolve_authorized_llm_fails_closed_for_unconfigured_cluster():
         resolve_authorized_llm(cluster)
 
 
-def test_authorize_rejects_provider_outside_allowlist(monkeypatch):
-    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "anthropic")
-    with pytest.raises(UnauthorizedLLMConfigError, match="ALLOWED_LLM_PROVIDERS"):
+def test_authorize_rejects_unsupported_provider():
+    with pytest.raises(UnauthorizedLLMConfigError, match="Unsupported LLM provider"):
         authorize_llm("gemini", model="gemini-2.0-flash")
+
+
+def test_authorize_rejects_provider_outside_allowlist(monkeypatch):
+    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "groq")
+    with pytest.raises(UnauthorizedLLMConfigError, match="ALLOWED_LLM_PROVIDERS"):
+        authorize_llm("anthropic", model="claude-3-5-sonnet-latest")
 
 
 def test_authorize_rejects_model_outside_allowlist(monkeypatch):
@@ -105,17 +110,17 @@ def test_authorize_rejects_exhausted_budget(monkeypatch):
 
 def test_from_cluster_resolves_authorized_effective_brain(monkeypatch):
     monkeypatch.setenv("MCP_METRICS_URI", "https://operator.internal/metrics")
-    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "gemini,anthropic")
+    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "anthropic")
     monkeypatch.setenv("ALLOWED_LLM_MODELS", "tenant-a-model,tenant-b-model")
     cluster = _cluster(
-        llm_provider="gemini",
+        llm_provider="anthropic",
         llm_model="tenant-a-model",
         llm_base_url="https://tenant-a.example/v1",
         llm_api_key="tenant-a-key",
     )
     context = ExecutionContext.from_cluster(cluster)
     assert context.llm_manifest() == {
-        "provider": "gemini",
+        "provider": "anthropic",
         "model": "tenant-a-model",
         "base_url": "https://tenant-a.example/v1",
     }
@@ -124,15 +129,15 @@ def test_from_cluster_resolves_authorized_effective_brain(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_two_clusters_cache_separate_provider_model_runtimes(monkeypatch):
+async def test_two_clusters_cache_separate_model_runtimes(monkeypatch):
     monkeypatch.setenv("MCP_METRICS_URI", "https://operator.internal/metrics")
-    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "gemini,anthropic")
+    monkeypatch.setenv("ALLOWED_LLM_PROVIDERS", "anthropic")
     monkeypatch.setenv(
         "ALLOWED_LLM_MODELS",
-        "gemini-fast,claude-strong",
+        "claude-fast,claude-strong",
     )
 
-    cluster_a = _cluster(llm_provider="gemini", llm_model="gemini-fast", namespace="ns-a")
+    cluster_a = _cluster(llm_provider="anthropic", llm_model="claude-fast", namespace="ns-a")
     cluster_b = _cluster(
         id=uuid.uuid4(),
         org_id=uuid.uuid4(),
@@ -169,11 +174,11 @@ async def test_two_clusters_cache_separate_provider_model_runtimes(monkeypatch):
     again_a = await cache.get_or_create(context_a, factory)
 
     assert len(created) == 2
-    assert {item[1] for item in created} == {"gemini", "anthropic"}
-    assert {item[2] for item in created} == {"gemini-fast", "claude-strong"}
+    assert {item[1] for item in created} == {"anthropic"}
+    assert {item[2] for item in created} == {"claude-fast", "claude-strong"}
     assert bundle_a is again_a
     assert bundle_a is not bundle_b
-    assert bundle_a.context.llm_manifest()["model"] == "gemini-fast"
+    assert bundle_a.context.llm_manifest()["model"] == "claude-fast"
     assert bundle_b.context.llm_manifest()["model"] == "claude-strong"
 
 

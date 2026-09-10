@@ -46,7 +46,6 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=6.1.0",
     # LLM providers (optional but must be listed for import to succeed)
     "langchain-openai>=0.1.0",
-    "langchain-google-genai>=2.0.0",
     "qdrant-client>=1.9.0",
     "fastembed>=0.3.0",
     # Observability — self-hosted Langfuse is wired by default (sre_agent/tracing.py).

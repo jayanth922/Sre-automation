@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Mapping, Optional
 
-SUPPORTED_LLM_PROVIDERS = frozenset({"anthropic", "gemini"})
+SUPPORTED_LLM_PROVIDERS = frozenset({"anthropic"})
 
 
 class UnauthorizedLLMConfigError(ValueError):

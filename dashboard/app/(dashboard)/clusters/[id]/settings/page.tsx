@@ -17,15 +17,21 @@ interface ConnCheck {
 // Mirrors backend examples (sre_agent/metrics_profile.EXAMPLES) — shown only
 // as placeholder illustrations. All 7 fields are required: Prometheus-backed
 // queries refuse to run for this cluster until every one is set explicitly.
-const METRIC_FIELDS: { key: string; label: string; def: string }[] = [
-  { key: "service_label", label: "Service label", def: "service" },
-  { key: "request_metric", label: "Request counter metric", def: "http_requests_total" },
-  { key: "status_label", label: "Status label", def: "status" },
-  { key: "error_regex", label: "Error status selector", def: "5.." },
-  { key: "latency_histogram", label: "Latency histogram metric", def: "http_request_duration_seconds" },
-  { key: "cpu_query", label: "CPU saturation query", def: "avg(rate(container_cpu_usage_seconds_total[5m])) * 100" },
-  { key: "mem_query", label: "Memory query", def: "sum(container_memory_usage_bytes) / (1024*1024*1024)" },
+const METRIC_FIELDS: { key: string; label: string; def: string; kind: "select" | "input" }[] = [
+  { key: "service_label", label: "Service label", def: "service", kind: "select" },
+  { key: "request_metric", label: "Request counter metric", def: "http_requests_total", kind: "select" },
+  { key: "status_label", label: "Status label", def: "status", kind: "select" },
+  { key: "error_regex", label: "Error status selector", def: "5..", kind: "input" },
+  { key: "latency_histogram", label: "Latency histogram metric", def: "http_request_duration_seconds", kind: "select" },
+  { key: "cpu_query", label: "CPU saturation query", def: "avg(rate(container_cpu_usage_seconds_total[5m])) * 100", kind: "input" },
+  { key: "mem_query", label: "Memory query", def: "sum(container_memory_usage_bytes) / (1024*1024*1024)", kind: "input" },
 ]
+
+interface MetricFieldDiscovery {
+  candidates?: string[]
+  suggestion?: string | null
+  note?: string | null
+}
 
 export default function SettingsPage() {
   const { id } = useParams<{ id: string }>()
@@ -48,7 +54,14 @@ export default function SettingsPage() {
     llm_model: "",
     llm_base_url: "",
     llm_api_key: "",
+    llm_router_enabled: false,
   })
+  const [models, setModels] = useState<{ id: string; display_name: string }[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
+  const [discovery, setDiscovery] = useState<Record<string, MetricFieldDiscovery> | null>(null)
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
   const [slackTeamId, setSlackTeamId] = useState<string | null>(null)
   const [slackInstalling, setSlackInstalling] = useState(false)
   const [slackErr, setSlackErr] = useState<string | null>(null)
@@ -102,6 +115,7 @@ export default function SettingsPage() {
       llm_model: cluster.llm_model ?? "",
       llm_base_url: cluster.llm_base_url ?? "",
       llm_api_key: "",
+      llm_router_enabled: cluster.llm_router_enabled ?? false,
     })
     try {
       setMetrics(cluster.metrics_config ? (JSON.parse(cluster.metrics_config) as Record<string, string>) : {})
@@ -109,6 +123,40 @@ export default function SettingsPage() {
       setMetrics({})
     }
   }, [cluster])
+
+  const loadModels = async () => {
+    setModelsLoading(true)
+    setModelsError(null)
+    try {
+      const { data } = await api.post<{ models: { id: string; display_name: string }[] }>(
+        `/clusters/${id}/llm-models`,
+        { api_key: endpoints.llm_api_key || undefined }
+      )
+      setModels(data.models)
+      if (data.models.length === 0) {
+        setModelsError("Anthropic returned no models for this key.")
+      }
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setModelsError(detail || "Could not load models.")
+    } finally {
+      setModelsLoading(false)
+    }
+  }
+
+  const discoverMetrics = async () => {
+    setDiscovering(true)
+    setDiscoveryError(null)
+    try {
+      const { data } = await api.post<Record<string, MetricFieldDiscovery>>(`/clusters/${id}/discover-metrics`, {})
+      setDiscovery(data)
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setDiscoveryError(detail || "Could not discover metrics.")
+    } finally {
+      setDiscovering(false)
+    }
+  }
 
   const save = async () => {
     setSaving(true)
@@ -134,12 +182,19 @@ export default function SettingsPage() {
         // Sent even when blank so they can be cleared: namespace reverts to
         // whole-cluster, llm_provider/model/base_url revert to "not configured"
         // (no platform-default substitution). The API key is write-only: only
-        // sent when entered.
+        // sent when entered. Anthropic is the only supported provider — this
+        // page has no provider picker, so llm_provider is only set to
+        // "anthropic" once the admin is actually configuring a model, key,
+        // or the router toggle this save; otherwise it stays untouched.
         namespace: endpoints.namespace,
-        llm_provider: endpoints.llm_provider,
+        llm_provider:
+          endpoints.llm_model || endpoints.llm_api_key || endpoints.llm_router_enabled
+            ? "anthropic"
+            : endpoints.llm_provider,
         llm_model: endpoints.llm_model,
         llm_base_url: endpoints.llm_base_url,
         llm_api_key: endpoints.llm_api_key || undefined,
+        llm_router_enabled: endpoints.llm_router_enabled,
       })
       setSaved(true)
       setTimeout(() => window.location.reload(), 700)
@@ -369,51 +424,150 @@ export default function SettingsPage() {
 
         {tab === "ai" && (
           <div style={{ marginTop: 6 }}>
-            <SectionTitle title="Agent brain" meta="per-cluster LLM provider" />
+            <SectionTitle title="Agent brain" meta="Anthropic (Claude) — the only supported provider" />
             <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-              There is no platform default: leave the provider unset and investigations for this cluster refuse to run until one is configured here. Once set, it's validated against operator policy at run start and recorded as configured runtime metadata; deterministic router pinning is handled separately.
+              There is no platform default: leave the API key unset and investigations for this cluster refuse to run until one is configured here. Once set, it&apos;s validated against operator policy at run start and recorded as configured runtime metadata.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 420 }}>
               <div>
-                <label className="sx-label" htmlFor="set-llm-provider">Provider</label>
-                <select id="set-llm-provider" className="sx-input" value={endpoints.llm_provider} onChange={(e) => setEndpoints({ ...endpoints, llm_provider: e.target.value })}>
-                  <option value="">Not configured</option>
-                  <option value="anthropic">anthropic (Claude)</option>
-                  <option value="gemini">gemini</option>
-                </select>
-              </div>
-              <div>
-                <label className="sx-label" htmlFor="set-llm-model">Model</label>
-                <input id="set-llm-model" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(provider default)" value={endpoints.llm_model} onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })} />
-              </div>
-              <div>
-                <label className="sx-label" htmlFor="set-llm-url">Base URL (self-hosted)</label>
-                <input id="set-llm-url" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="http://host:11434/v1" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
-              </div>
-              <div>
                 <label className="sx-label" htmlFor="set-llm-key">API key</label>
-                <input id="set-llm-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "optional"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
+                <input id="set-llm-key" className="sx-input sx-mono" style={{ fontSize: 12 }} type="password" placeholder={cluster?.llm_provider ? "•••••• (set — leave blank to keep)" : "sk-ant-…"} value={endpoints.llm_api_key} onChange={(e) => setEndpoints({ ...endpoints, llm_api_key: e.target.value })} />
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-llm-url">Base URL (self-hosted / proxy)</label>
+                <input id="set-llm-url" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="(default: api.anthropic.com)" value={endpoints.llm_base_url} onChange={(e) => setEndpoints({ ...endpoints, llm_base_url: e.target.value })} />
+              </div>
+
+              <div style={{ padding: 12, border: "1px solid var(--rule)", borderRadius: 6 }}>
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    style={{ marginTop: 3 }}
+                    checked={endpoints.llm_router_enabled}
+                    onChange={(e) => setEndpoints({ ...endpoints, llm_router_enabled: e.target.checked })}
+                  />
+                  <span>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>Auto-route to the best model per task (recommended)</div>
+                    <div style={{ color: "var(--ink2)", fontSize: 11.5, marginTop: 2, lineHeight: 1.5 }}>
+                      Dynamically picks a faster/cheaper Claude model for routing and narration, and a stronger model for high-stakes reflection and planning steps. When on, the model picked below is only used as the ultimate fallback.
+                    </div>
+                  </span>
+                </label>
+              </div>
+
+              <div>
+                <label className="sx-label" htmlFor="set-llm-model">Model{endpoints.llm_router_enabled ? " (fallback)" : ""}</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {models.length > 0 ? (
+                    <select
+                      id="set-llm-model"
+                      className="sx-input"
+                      style={{ flex: 1 }}
+                      value={endpoints.llm_model}
+                      onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })}
+                    >
+                      <option value="">Not configured</option>
+                      {models.map((m) => (
+                        <option key={m.id} value={m.id}>{m.display_name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id="set-llm-model"
+                      className="sx-input sx-mono"
+                      style={{ fontSize: 12, flex: 1 }}
+                      placeholder="e.g. claude-sonnet-5"
+                      value={endpoints.llm_model}
+                      onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className="sx-btn"
+                    style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
+                    onClick={loadModels}
+                    disabled={modelsLoading}
+                  >
+                    {modelsLoading ? "Loading…" : "Load available models"}
+                  </button>
+                </div>
+                {modelsError && <div style={{ color: "var(--crit)", fontSize: 11, marginTop: 4 }}>{modelsError}</div>}
               </div>
             </div>
 
-            <SectionTitle title="Observability profile" meta="your Prometheus conventions" />
+            <SectionTitle
+              title="Observability profile"
+              meta="your Prometheus conventions"
+              action={
+                <button
+                  type="button"
+                  className="sx-btn"
+                  style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
+                  onClick={discoverMetrics}
+                  disabled={discovering || !cluster?.prometheus_url}
+                  title={!cluster?.prometheus_url ? "Save a Prometheus URL on the Infrastructure tab first" : undefined}
+                >
+                  {discovering ? "Discovering…" : "Discover from Prometheus"}
+                </button>
+              }
+            />
             <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-              All fields below are required — the example shown as each placeholder is illustration only, never a fallback. Metrics, CPU/memory, and per-service views stay disabled until every field is set explicitly, since the platform can't safely guess your metric names.
+              All fields below are required — the example shown as each placeholder is illustration only, never a fallback. Metrics, CPU/memory, and per-service views stay disabled until every field is set explicitly, since the platform can't safely guess your metric names. Discovery only suggests values found on your own Prometheus — nothing is applied until you pick it and save.
             </p>
+            {discoveryError && <div style={{ color: "var(--crit)", fontSize: 11, marginTop: 4 }}>{discoveryError}</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-              {METRIC_FIELDS.map((f) => (
-                <div key={f.key}>
-                  <label className="sx-label" htmlFor={`set-metric-${f.key}`}>{f.label}</label>
-                  <input
-                    id={`set-metric-${f.key}`}
-                    className="sx-input sx-mono"
-                    style={{ fontSize: 12 }}
-                    placeholder={f.def}
-                    value={metrics[f.key] ?? ""}
-                    onChange={(e) => setMetrics({ ...metrics, [f.key]: e.target.value })}
-                  />
-                </div>
-              ))}
+              {METRIC_FIELDS.map((f) => {
+                const d = discovery?.[f.key]
+                const current = metrics[f.key] ?? ""
+                const candidates = d?.candidates ?? []
+                const selectOptions =
+                  current && !candidates.includes(current) ? [current, ...candidates] : candidates
+
+                return (
+                  <div key={f.key}>
+                    <label className="sx-label" htmlFor={`set-metric-${f.key}`}>{f.label}</label>
+                    {f.kind === "select" && selectOptions.length > 0 ? (
+                      <select
+                        id={`set-metric-${f.key}`}
+                        className="sx-input sx-mono"
+                        style={{ fontSize: 12 }}
+                        value={current}
+                        onChange={(e) => setMetrics({ ...metrics, [f.key]: e.target.value })}
+                      >
+                        <option value="">Not set</option>
+                        {selectOptions.map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        id={`set-metric-${f.key}`}
+                        className="sx-input sx-mono"
+                        style={{ fontSize: 12 }}
+                        placeholder={f.def}
+                        value={current}
+                        onChange={(e) => setMetrics({ ...metrics, [f.key]: e.target.value })}
+                      />
+                    )}
+                    {f.kind === "input" && d?.suggestion && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                        <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink2)" }}>
+                          Suggested: {d.suggestion}
+                        </span>
+                        <button
+                          type="button"
+                          className="sx-btn"
+                          style={{ flex: "none", padding: "2px 8px", fontSize: 10.5 }}
+                          onClick={() => setMetrics({ ...metrics, [f.key]: d.suggestion as string })}
+                        >
+                          Use
+                        </button>
+                      </div>
+                    )}
+                    {d?.note && <div style={{ color: "var(--ink3)", fontSize: 11, marginTop: 4 }}>{d.note}</div>}
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

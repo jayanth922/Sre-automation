@@ -25,21 +25,21 @@ pc = _load()
 
 
 def test_supported_providers_pass():
-    for provider in ("anthropic", "gemini"):
+    for provider in ("anthropic",):
         assert pc.require_supported_provider(provider) == provider
 
 
 @pytest.mark.parametrize(
     "bad",
-    ["groq", "ollama", "nvidia", "openai", "openai_compatible", "bogus", ""],
+    ["groq", "ollama", "nvidia", "openai", "openai_compatible", "gemini", "google", "bogus", ""],
 )
 def test_unsupported_providers_fail_closed(bad):
     with pytest.raises(pc.ProviderConfigError) as exc:
         pc.require_supported_provider(bad)
     msg = str(exc.value).lower()
     assert "not supported" in msg or "unset" in msg or "unsupported" in msg or "removed" in msg
-    if bad in ("groq", "ollama", "nvidia", "openai_compatible"):
-        assert "anthropic" in msg or "gemini" in msg
+    if bad in ("groq", "ollama", "nvidia", "openai_compatible", "gemini", "google"):
+        assert "anthropic" in msg
 
 
 def test_anthropic_requires_real_key():
@@ -50,12 +50,9 @@ def test_anthropic_requires_real_key():
     pc.validate_provider_credentials("anthropic", {"ANTHROPIC_API_KEY": "sk-ant-api-test-key"})
 
 
-def test_gemini_requires_real_key():
-    with pytest.raises(pc.ProviderConfigError, match="GOOGLE_API_KEY"):
-        pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": "YOUR_KEY"})
-    with pytest.raises(pc.ProviderConfigError, match="GOOGLE_API_KEY"):
-        pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": ""})
-    pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": "AIzaSyTestKey"})
+def test_gemini_is_rejected_as_removed():
+    with pytest.raises(pc.ProviderConfigError, match="removed"):
+        pc.validate_provider_credentials("gemini", {"GOOGLE_API_KEY": "AIzaSyTestKey"})
 
 
 def test_validate_startup_config_happy_path():

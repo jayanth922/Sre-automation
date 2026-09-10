@@ -93,6 +93,7 @@ class ExecutionContext:
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_base_url: Optional[str] = None
+    llm_router_enabled: bool = False
     environment: str = "production"
     key_version: int = 1
     context_version: int = 1
@@ -151,6 +152,7 @@ class ExecutionContext:
             llm_provider=llm["provider"],
             llm_model=llm["model"],
             llm_base_url=llm["base_url"],
+            llm_router_enabled=bool(getattr(cluster, "llm_router_enabled", False)),
             environment=operator_cluster_environment(),
             key_version=int(getattr(cluster, "key_version", 1) or 1),
             context_version=int(getattr(cluster, "execution_context_version", 1) or 1),
@@ -184,6 +186,8 @@ class ExecutionContext:
             llm_provider=llm["provider"],
             llm_model=llm["model"],
             llm_base_url=llm["base_url"],
+            llm_router_enabled=os.getenv("MODEL_ROUTER_ENABLED", "true").strip().lower()
+            in ("1", "true", "yes"),
             environment=operator_cluster_environment(),
             key_version=int(os.getenv("CREDENTIAL_ENCRYPTION_KEY_VERSION", "1")),
         )
@@ -219,6 +223,7 @@ class ExecutionContext:
             "llm_provider": self.llm_provider,
             "llm_model": self.llm_model,
             "llm_base_url": self.llm_base_url,
+            "llm_router_enabled": self.llm_router_enabled,
             "environment": self.environment,
             "key_version": self.key_version,
             "context_version": self.context_version,

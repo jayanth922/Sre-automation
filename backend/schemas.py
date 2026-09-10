@@ -164,6 +164,7 @@ class ClusterCreate(BaseModel):
     llm_model: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
+    llm_router_enabled: Optional[bool] = None
 
 class ClusterUpdate(BaseModel):
     name: Optional[str] = None
@@ -185,6 +186,7 @@ class ClusterUpdate(BaseModel):
     llm_model: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
+    llm_router_enabled: Optional[bool] = None
 
 class ClusterResponse(BaseModel):
     id: uuid.UUID
@@ -208,9 +210,15 @@ class ClusterResponse(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_base_url: Optional[str] = None
+    llm_router_enabled: bool = False
 
     class Config:
         from_attributes = True
+
+class LlmModelsRequest(BaseModel):
+    # Optional: lets the dashboard list models for a key the admin just typed
+    # but hasn't saved yet. Falls back to the cluster's saved llm_api_key.
+    api_key: Optional[str] = None
 
 # ----------------------------------------------------------------------
 # Incident Schemas

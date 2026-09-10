@@ -24,12 +24,6 @@ class ModelConfig(BaseModel):
         description="Default Anthropic model ID (override with ANTHROPIC_MODEL)",
     )
 
-    # Gemini
-    gemini_model: str = Field(
-        default=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-        description="Default Gemini model ID (override with GEMINI_MODEL)",
-    )
-
     # Model parameters
     default_temperature: float = Field(
         default=0.1,
@@ -275,16 +269,8 @@ class SREConstants:
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
 
-        if provider == "gemini":
-            return {
-                "model_id": kwargs.get("model_id", cls.model.gemini_model),
-                "api_key": kwargs.get("api_key", os.getenv("GOOGLE_API_KEY", "")),
-                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-            }
-
         raise ValueError(
-            f"Unsupported provider: {provider}. Supported: 'anthropic', 'gemini'."
+            f"Unsupported provider: {provider}. Supported: 'anthropic'."
         )
 
     @classmethod
@@ -292,7 +278,7 @@ class SREConstants:
         """Get model configuration for output formatter.
 
         Args:
-            provider: LLM provider (``anthropic`` or ``gemini``)
+            provider: LLM provider (``anthropic``)
             **kwargs: Additional configuration overrides
 
         Returns:
@@ -320,7 +306,6 @@ constants = SREConstants()
 
 # Legacy support - individual constants for backward compatibility if needed
 ANTHROPIC_MODEL_ID = constants.model.anthropic_model
-GEMINI_MODEL_ID = constants.model.gemini_model
 DEFAULT_TEMPERATURE = constants.model.default_temperature
 DEFAULT_MAX_TOKENS = constants.model.default_max_tokens
 GRAPH_EXECUTION_TIMEOUT_SECONDS = constants.timeouts.graph_execution_timeout_seconds

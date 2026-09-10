@@ -64,7 +64,7 @@ class SRETerminalAgent(_BaseAgent):
     def _env(self) -> Dict[str, str]:
         """Environment passed into the task container (model provider, keys)."""
         env = {"LLM_PROVIDER": os.getenv("LLM_PROVIDER", "anthropic")}
-        for key in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for key in ("ANTHROPIC_API_KEY",):
             if os.getenv(key):
                 env[key] = os.environ[key]
         return env

@@ -160,8 +160,8 @@ async def create_multi_agent_system(
     llm_kwargs = context_llm_kwargs
     logger.info(f"Creating multi-agent system with provider: {provider}")
 
-    if provider not in ["anthropic", "gemini"]:
-        raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic', 'gemini'.")
+    if provider not in ["anthropic"]:
+        raise ValueError(f"Unsupported provider: {provider}. Supported: 'anthropic'.")
 
     # Create MCP client and get tools with retry logic
     mcp_tools = []

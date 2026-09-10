@@ -126,8 +126,22 @@ class RoutingDecision:
     llm_kwargs: Dict = field(default_factory=dict)
 
 
-def _router_enabled() -> bool:
+def _router_enabled(override: Optional[bool] = None) -> bool:
+    if override is not None:
+        return override
     return os.getenv("MODEL_ROUTER_ENABLED", "true").lower() in ("true", "1", "yes")
+
+
+# Fixed platform tier defaults for Anthropic — Sentinel's only supported
+# provider. Used when a cluster has auto-routing on but no explicit
+# MODEL_ROUTER_<TIER>_MODEL[_PROVIDER] override, so "Auto" is meaningfully
+# dynamic (fast/cheap for routing & narration, strongest for reflection &
+# planning) without requiring any env configuration.
+_ANTHROPIC_TIER_DEFAULTS: Dict[ModelTier, str] = {
+    ModelTier.FAST: "claude-haiku-4-5-20251001",
+    ModelTier.BALANCED: "claude-sonnet-5",
+    ModelTier.STRONG: "claude-opus-5",
+}
 
 
 def _default_provider() -> str:
@@ -173,7 +187,12 @@ def _tier_model_override(tier: ModelTier, provider: str) -> Optional[str]:
     specific = os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_MODEL_{provider.upper()}")
     if specific:
         return specific
-    return os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_MODEL")
+    generic = os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_MODEL")
+    if generic:
+        return generic
+    if provider == "anthropic":
+        return _ANTHROPIC_TIER_DEFAULTS.get(tier)
+    return None
 
 
 def select_model(
@@ -182,6 +201,7 @@ def select_model(
     provider: Optional[str] = None,
     policy: Optional[Dict[TaskType, ModelTier]] = None,
     request: Optional[RequestContext] = None,
+    router_enabled: Optional[bool] = None,
 ) -> RoutingDecision:
     """Decide which model tier / provider / model a task should use.
 
@@ -199,6 +219,8 @@ def select_model(
         provider: Base provider override; defaults to ``LLM_PROVIDER`` env.
         policy: Optional task→tier policy override (defaults to the built-in one).
         request: Optional per-request budget/policy signals (see :class:`RequestContext`).
+        router_enabled: Per-cluster override for whether routing is active;
+            defaults to the ``MODEL_ROUTER_ENABLED`` env var when ``None``.
 
     Returns:
         A :class:`RoutingDecision` (check ``.blocked`` before using).
@@ -229,7 +251,7 @@ def select_model(
 
     # Router off → everything on the BALANCED tier with the base provider. This
     # reproduces the pre-router single-model behavior.
-    if not _router_enabled():
+    if not _router_enabled(router_enabled):
         return RoutingDecision(
             task_type=task_type,
             tier=ModelTier.BALANCED,
@@ -283,6 +305,7 @@ def route_llm(
     provider: Optional[str] = None,
     use_fallback: bool = True,
     request: Optional[RequestContext] = None,
+    router_enabled: Optional[bool] = None,
     **kwargs,
 ):
     """Select a model for ``task_type`` and build the LLM instance.
@@ -298,7 +321,13 @@ def route_llm(
     Returns:
         An LLM instance, exactly as ``create_llm_with_error_handling`` would.
     """
-    decision = select_model(task_type, complexity=complexity, provider=provider, request=request)
+    decision = select_model(
+        task_type,
+        complexity=complexity,
+        provider=provider,
+        request=request,
+        router_enabled=router_enabled,
+    )
     if decision.blocked:
         logger.warning(f"ModelRouter BLOCKED: {decision.block_reason}")
         raise ModelRouterBlocked(decision.block_reason)

@@ -14,11 +14,9 @@ Enabled with ``MODEL_ROUTER_BACKEND=litellm``. Per-tier model via
 back to ``MODEL_ROUTER_<TIER>_MODEL``, then — since Sentinel resolves its LLM
 provider/model per cluster (``LLM_PROVIDER``, dashboard Settings), not from a
 single global config — to a LiteLLM model string *derived* from whatever
-provider/model the router already resolved for this call. That derivation is
-what makes ``MODEL_ROUTER_BACKEND=litellm`` a safe platform-wide default: it
-never assumes Anthropic when a tenant's cluster is actually configured for
-Gemini. If no model can be resolved at all, the router uses its normal
-provider path — so this is purely additive.
+provider/model the router already resolved for this call. If no model can be
+resolved at all, the router uses its normal provider path — so this is purely
+additive.
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ logger = logging.getLogger(__name__)
 # LiteLLM's provider-routing prefix for each provider Sentinel supports
 # (provider_config.SUPPORTED_PROVIDERS). Anything outside this map has no
 # derived default — only an explicit MODEL_ROUTER_*_LITELLM_MODEL works.
-_LITELLM_PREFIX = {"anthropic": "anthropic", "gemini": "gemini"}
+_LITELLM_PREFIX = {"anthropic": "anthropic"}
 
 
 def litellm_enabled() -> bool:

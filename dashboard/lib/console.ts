@@ -23,6 +23,7 @@ export interface Cluster {
   llm_provider: string | null
   llm_model: string | null
   llm_base_url: string | null
+  llm_router_enabled: boolean
 }
 
 export interface Org {

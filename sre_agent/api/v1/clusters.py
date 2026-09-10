@@ -51,6 +51,56 @@ async def update_cluster_endpoint(
         raise HTTPException(status_code=404, detail="Cluster not found")
     return cluster
 
+@router.post("/{cluster_id}/llm-models")
+async def get_cluster_llm_models(
+    cluster_id: uuid.UUID,
+    body: schemas.LlmModelsRequest,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
+):
+    """List Anthropic models available to this cluster's API key."""
+    from sre_agent.anthropic_models import AnthropicModelsError, fetch_anthropic_models
+
+    api_key = (body.api_key or "").strip() or owned_cluster.llm_api_key
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter an Anthropic API key first",
+        )
+    try:
+        models_list = await fetch_anthropic_models(
+            api_key, base_url=owned_cluster.llm_base_url
+        )
+    except AnthropicModelsError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    return {"models": models_list}
+
+
+@router.post("/{cluster_id}/discover-metrics")
+async def discover_cluster_metrics(
+    cluster_id: uuid.UUID,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_cluster: models.Cluster = Depends(get_owned_cluster),
+):
+    """Discover candidate observability-profile values from this cluster's
+    saved Prometheus URL. Returns suggestions only — never writes config."""
+    from sre_agent.metrics_discovery import MetricsDiscoveryError, discover_metrics_profile
+
+    if not owned_cluster.prometheus_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Save a Prometheus URL first (Infrastructure tab)",
+        )
+    try:
+        return await discover_metrics_profile(
+            owned_cluster.prometheus_url, owned_cluster.namespace
+        )
+    except MetricsDiscoveryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
 @router.get("/{cluster_id}/health")
 async def get_cluster_health(
     cluster_id: uuid.UUID,

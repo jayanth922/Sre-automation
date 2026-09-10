@@ -194,6 +194,11 @@ class Cluster(Base):
     llm_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     llm_base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     llm_api_key: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
+    # Auto-routing: when true, the model router picks the best fixed-tier
+    # Anthropic model per task instead of always using llm_model.
+    llm_router_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="clusters")

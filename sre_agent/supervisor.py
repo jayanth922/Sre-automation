@@ -316,12 +316,16 @@ class SupervisorAgent:
         self,
         llm_provider: str = "anthropic",
         tools: Optional[List[Any]] = None,
+        llm_router_enabled: Optional[bool] = None,
         **llm_kwargs,
     ):
         self.llm_provider = llm_provider
+        self.llm_router_enabled = llm_router_enabled
         self.llm = self._create_llm(**llm_kwargs)
         self.system_prompt = _read_supervisor_prompt()
-        self.formatter = create_formatter(llm_provider=llm_provider)
+        self.formatter = create_formatter(
+            llm_provider=llm_provider, llm_router_enabled=llm_router_enabled
+        )
         # Live tool objects — kept off checkpointed graph state (never
         # serializable), so nodes that need to invoke a tool directly (e.g.
         # store_incident_memory here, search_runbooks in the planner) close
@@ -344,7 +348,13 @@ class SupervisorAgent:
         structured planning uses a strong-tier LLM (see create_investigation_plan).
         """
         from .model_router import TaskType, route_llm
-        return route_llm(TaskType.NARRATION, provider=self.llm_provider, use_fallback=False, **kwargs)
+        return route_llm(
+            TaskType.NARRATION,
+            provider=self.llm_provider,
+            use_fallback=False,
+            router_enabled=self.llm_router_enabled,
+            **kwargs,
+        )
 
     async def _retrieve_memory_context(
         self, query_text: str, state: Optional[AgentState] = None
@@ -505,7 +515,12 @@ User's query: {current_query}
         # support this path as well.
         # Structured investigation planning is high-stakes → strong tier.
         from .model_router import TaskType, route_llm
-        planning_llm = route_llm(TaskType.PLANNING, provider=self.llm_provider, use_fallback=False)
+        planning_llm = route_llm(
+            TaskType.PLANNING,
+            provider=self.llm_provider,
+            use_fallback=False,
+            router_enabled=self.llm_router_enabled,
+        )
         structured_llm = planning_llm.with_structured_output(
             InvestigationPlan, method="function_calling"
         )

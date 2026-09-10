@@ -68,29 +68,29 @@ def test_complexity_escalates_one_tier():
 def test_disabled_router_falls_back_to_balanced_base_provider(monkeypatch):
     """Disabled router reproduces the pre-router single-model behavior."""
     monkeypatch.setenv("MODEL_ROUTER_ENABLED", "false")
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_PROVIDER", "other")
     decision = select_model(TaskType.REFLECTION)
     assert decision.tier is ModelTier.BALANCED
-    assert decision.provider == "gemini"
+    assert decision.provider == "other"
     assert decision.model_id is None
 
 
 def test_default_provider_from_env(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
-    assert select_model(TaskType.SPECIALIST).provider == "gemini"
+    monkeypatch.setenv("LLM_PROVIDER", "other")
+    assert select_model(TaskType.SPECIALIST).provider == "other"
 
 
 def test_explicit_provider_overrides_env(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    assert select_model(TaskType.SPECIALIST, provider="gemini").provider == "gemini"
+    assert select_model(TaskType.SPECIALIST, provider="other").provider == "other"
 
 
 def test_per_tier_cross_provider_routing(monkeypatch):
     """Strong tier can be pinned to a different provider than the base."""
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "gemini")
+    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "other")
     decision = select_model(TaskType.PLANNING)  # planning → strong
-    assert decision.provider == "gemini"
+    assert decision.provider == "other"
     # Fast-tier tasks are unaffected and stay on the base provider.
     assert select_model(TaskType.ROUTING).provider == "anthropic"
 
@@ -102,10 +102,10 @@ def test_per_tier_model_override(monkeypatch):
 
 def test_provider_specific_model_override_wins(monkeypatch):
     """A (tier, provider)-specific override beats the generic tier override."""
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_PROVIDER", "other")
     monkeypatch.setenv("MODEL_ROUTER_STRONG_MODEL", "generic-strong")
-    monkeypatch.setenv("MODEL_ROUTER_STRONG_MODEL_GEMINI", "gemini-strong")
-    assert select_model(TaskType.PLANNING).model_id == "gemini-strong"
+    monkeypatch.setenv("MODEL_ROUTER_STRONG_MODEL_OTHER", "other-strong")
+    assert select_model(TaskType.PLANNING).model_id == "other-strong"
 
 
 def test_string_task_type_is_accepted():

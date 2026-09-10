@@ -84,8 +84,6 @@ def _provider_from_model(model: Any) -> Optional[str]:
     for marker, provider in (
         ("litellm", "litellm"),
         ("anthropic", "anthropic"),
-        ("google", "gemini"),
-        ("gemini", "gemini"),
         ("groq", "groq"),
         ("ollama", "ollama"),
         ("openai", "openai_compatible"),

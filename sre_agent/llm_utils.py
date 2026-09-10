@@ -40,7 +40,7 @@ def create_llm_with_error_handling(provider: str = DEFAULT_PROVIDER, **kwargs):
     """Create LLM instance with proper error handling and helpful error messages.
 
     Args:
-        provider: LLM provider — ``anthropic`` or ``gemini``
+        provider: LLM provider — ``anthropic``
         **kwargs: Additional configuration overrides
 
     Returns:
@@ -61,9 +61,6 @@ def create_llm_with_error_handling(provider: str = DEFAULT_PROVIDER, **kwargs):
         if provider == "anthropic":
             logger.info(f"Creating Anthropic (Claude) LLM - Model: {config['model_id']}")
             return _create_anthropic_llm(config)
-        elif provider == "gemini":
-            logger.info(f"Creating Gemini LLM - Model: {config['model_id']}")
-            return _create_gemini_llm(config)
 
     except Exception as e:
         error_msg = _get_helpful_error_message(provider, e)
@@ -101,25 +98,6 @@ def _create_anthropic_llm(config: Dict[str, Any]):
         api_key=api_key,
         max_tokens=config.get("max_tokens", 4096),
     )
-
-
-def _create_gemini_llm(config: Dict[str, Any]):
-    """Create Gemini LLM instance."""
-    try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        api_key = config.get("api_key") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY", "")
-        if not api_key:
-            raise LLMAuthenticationError("GOOGLE_API_KEY or GEMINI_API_KEY not found in environment")
-
-        return ChatGoogleGenerativeAI(
-            model=config["model_id"],
-            google_api_key=api_key,
-            temperature=config["temperature"],
-            convert_system_message_to_human=True,
-        )
-    except ImportError:
-        raise LLMProviderError("langchain-google-genai not installed. Run 'pip install langchain-google-genai'")
 
 
 def _is_auth_error(error: Exception) -> bool:
@@ -175,22 +153,6 @@ def _get_helpful_error_message(provider: str, error: Exception) -> str:
                 "  2. Check rate limits / quotas in the Anthropic console"
             )
 
-    if provider == "gemini":
-        if _is_auth_error(error):
-            return (
-                f"Gemini authentication failed: {base_error}\n"
-                "Solutions:\n"
-                "  1. Set GOOGLE_API_KEY or GEMINI_API_KEY environment variable\n"
-                "  2. Check if your API key is valid in Google AI Studio"
-            )
-        elif _is_access_error(error):
-            return (
-                f"Gemini access error: {base_error}\n"
-                "Solutions:\n"
-                "  1. Verify GEMINI_MODEL is available for your key\n"
-                "  2. Check quotas in Google AI Studio"
-            )
-
     return (
         f"{provider} provider error: {base_error}\n"
         "Solutions:\n"
@@ -242,11 +204,7 @@ def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
 
     primary_provider = require_supported_provider(primary_provider)
 
-    provider_bound = any(
-        kwargs.get(key) is not None for key in ("api_key", "model_id", "base_url")
-    )
-    fallback_chain = [primary_provider] if provider_bound else list(SUPPORTED_PROVIDERS)
-    ordered = [primary_provider] + [p for p in fallback_chain if p != primary_provider]
+    ordered = [primary_provider]
 
     last_error = None
     for provider in ordered:
@@ -271,7 +229,7 @@ def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
 
     raise LLMProviderError(
         f"All LLM providers exhausted. Last error: {last_error}\n"
-        "Check your API keys: ANTHROPIC_API_KEY and GOOGLE_API_KEY."
+        "Check your API key: ANTHROPIC_API_KEY."
     )
 
 
@@ -284,10 +242,6 @@ def get_recommended_provider() -> str:
     if validate_provider_access("anthropic"):
         logger.info("Recommended provider: anthropic")
         return "anthropic"
-
-    if validate_provider_access("gemini"):
-        logger.info("Recommended provider: gemini")
-        return "gemini"
 
     logger.warning("No providers accessible. Defaulting to anthropic.")
     return DEFAULT_PROVIDER

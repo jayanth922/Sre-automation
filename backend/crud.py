@@ -177,6 +177,7 @@ async def create_cluster(
         llm_model=cluster.llm_model or None,
         llm_base_url=cluster.llm_base_url or None,
         llm_api_key=cluster.llm_api_key or None,
+        llm_router_enabled=bool(cluster.llm_router_enabled),
     )
     if db_cluster.llm_provider:
         from sre_agent.cluster_context import resolve_authorized_llm
@@ -221,6 +222,7 @@ async def update_cluster(
         "jira_email",
         "jira_api_token",
         "jira_project_key",
+        "llm_router_enabled",
     ):
         if field in data and data[field] is not None:
             setattr(cluster, field, data[field])
@@ -255,6 +257,7 @@ async def update_cluster(
         "llm_provider",
         "llm_model",
         "llm_base_url",
+        "llm_router_enabled",
     }
     if credential_fields.intersection(data):
         cluster.key_version = crypto.current_key_version()
