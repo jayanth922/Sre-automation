@@ -119,9 +119,9 @@ def build_slack_app(registry=None, organization: Any = None):
     natural way to respond) is captured and routed through the real,
     memory-backed conversational endpoint the dashboard chat already uses.
 
-    `organization` (Phase 4) is the owning `Organization` row: when it has an
-    OAuth-installed bot token (`slack_oauth.resolve_slack_bot_token`), that
-    token is used instead of the static `SLACK_BOT_TOKEN` env var. Bolt's
+    `organization` (Phase 4) is the owning `Organization` row: when it has a
+    manually-pasted, verified bot token (`slack_oauth.resolve_slack_bot_token`),
+    that token is used instead of the static `SLACK_BOT_TOKEN` env var. Bolt's
     socket-mode `AsyncApp` is bound to one token per process either way, so
     this only changes *which* token a given process's bot uses — not whether
     one process can serve many workspaces.

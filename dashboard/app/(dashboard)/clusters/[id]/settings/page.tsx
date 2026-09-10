@@ -63,7 +63,6 @@ export default function SettingsPage() {
   const [discovering, setDiscovering] = useState(false)
   const [discoveryError, setDiscoveryError] = useState<string | null>(null)
   const [slackTeamId, setSlackTeamId] = useState<string | null>(null)
-  const [slackInstalling, setSlackInstalling] = useState(false)
   const [slackErr, setSlackErr] = useState<string | null>(null)
   const [slackManualToken, setSlackManualToken] = useState("")
   const [slackSavingToken, setSlackSavingToken] = useState(false)
@@ -352,39 +351,14 @@ export default function SettingsPage() {
 
             <SectionTitle title="Slack" meta="incident notifications for the organization" />
             <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-              Connect Slack once per organization — every cluster&apos;s incidents post to it. Opens a Slack window to pick the workspace and channel.
+              Connect Slack once per organization — every cluster&apos;s incidents post to it. Paste your Slack app&apos;s Bot User OAuth Token (<span className="sx-mono">xoxb-…</span>) from its &quot;OAuth &amp; Permissions&quot; page — verified against Slack before saving.
             </p>
-            <div style={{ marginTop: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <button
-                  className="sx-btn"
-                  style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
-                  disabled={slackInstalling}
-                  onClick={async () => {
-                    setSlackInstalling(true)
-                    setSlackErr(null)
-                    try {
-                      const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
-                      window.location.href = data.install_url
-                    } catch (e) {
-                      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-                      setSlackErr(detail || "Could not start the Slack install flow.")
-                      setSlackInstalling(false)
-                    }
-                  }}
-                >
-                  {slackInstalling ? "Redirecting…" : slackTeamId ? "Reconnect Slack" : "Connect Slack"}
-                </button>
-                <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>
-                  {slackTeamId ? `connected (${slackTeamId})` : "not connected"}
-                </span>
-              </div>
+            <div style={{ marginTop: 8 }}>
+              <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>
+                {slackTeamId ? `connected (${slackTeamId})` : "not connected"}
+              </span>
               {slackErr && <div className="sx-dry" style={{ textAlign: "left", marginTop: 6, color: "var(--crit)" }}>{slackErr}</div>}
             </div>
-
-            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 18, lineHeight: 1.6 }}>
-              Self-hosting your own Slack app instead? Paste its Bot User OAuth Token (<span className="sx-mono">xoxb-…</span>) directly — no OAuth redirect needed.
-            </p>
             <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 420 }}>
               <input
                 type="password"

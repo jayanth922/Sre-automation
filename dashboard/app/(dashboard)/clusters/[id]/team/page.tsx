@@ -24,7 +24,8 @@ export default function TeamPage() {
   const [org, setOrg] = useState<Org | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const [slackConnecting, setSlackConnecting] = useState(false)
+  const [slackToken, setSlackToken] = useState("")
+  const [slackSaving, setSlackSaving] = useState(false)
   const [slackErr, setSlackErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -75,31 +76,48 @@ export default function TeamPage() {
     <ConsolePage title="Team">
       <div style={{ maxWidth: 820 }}>
         <SectionTitle title="Slack" meta="incident notifications for your organization" />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 26 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 8 }}>
+          <input
+            className="sx-input"
+            type="password"
+            placeholder="xoxb-... bot token"
+            value={slackToken}
+            onChange={(e) => setSlackToken(e.target.value)}
+            disabled={!isAdmin || slackSaving}
+            style={{ flex: 1, maxWidth: 360 }}
+          />
           <button
             className="sx-btn"
             style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
-            disabled={!isAdmin || slackConnecting}
+            disabled={!isAdmin || slackSaving || !slackToken.trim()}
             onClick={async () => {
-              setSlackConnecting(true)
+              setSlackSaving(true)
               setSlackErr(null)
               try {
-                const { data } = await api.get<{ install_url: string }>("/organizations/slack/install-url")
-                window.location.href = data.install_url
+                const { data } = await api.post<Org>("/organization/slack/bot-token", {
+                  bot_token: slackToken.trim(),
+                })
+                setOrg(data)
+                setSlackToken("")
               } catch (e) {
                 const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-                setSlackErr(detail || "Could not start the Slack install flow.")
-                setSlackConnecting(false)
+                setSlackErr(detail || "Could not save this Slack bot token.")
+              } finally {
+                setSlackSaving(false)
               }
             }}
           >
-            {slackConnecting ? "Redirecting…" : org?.slack_team_id ? "Reconnect Slack" : "Add to Slack"}
+            {slackSaving ? "Saving…" : org?.slack_team_id ? "Update token" : "Connect"}
           </button>
           {org?.slack_team_id ? (
             <span className="sx-badge ok">connected · {org.slack_team_id}</span>
           ) : (
             !isAdmin && <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>only admins can connect Slack</span>
           )}
+        </div>
+        <div className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)", marginBottom: 18 }}>
+          Paste a Bot User OAuth Token from your Slack app&apos;s &quot;OAuth &amp; Permissions&quot; page
+          (Install to Workspace). Verified against Slack before saving.
         </div>
         {slackErr && <ErrorNote>{slackErr}</ErrorNote>}
 

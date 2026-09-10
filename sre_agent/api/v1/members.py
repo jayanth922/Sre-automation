@@ -60,10 +60,8 @@ async def set_slack_bot_token(
     admin: models.User = Depends(require_admin),
     db: AsyncSession = Depends(database.get_db),
 ):
-    """Manual bot-token path (self-hosted, single-org): admin pastes a token
-    from their own Slack app's 'Install to Workspace' page, in place of the
-    multi-tenant OAuth 'Add to Slack' flow. Stored the same as an OAuth
-    installation (Organization.slack_bot_token/slack_team_id), so the
+    """Admin pastes a token from their own Slack app's 'Install to Workspace'
+    page. Stored on Organization.slack_bot_token/slack_team_id, so the
     Connections check and resolve_slack_bot_token() need no special-casing."""
     try:
         verified = await slack_oauth.verify_bot_token(payload.bot_token)
