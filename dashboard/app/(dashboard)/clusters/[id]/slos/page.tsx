@@ -135,15 +135,18 @@ export default function SlosPage() {
           />
         </div>
         <div>
-          <label className="sx-label" htmlFor="slo-metric">SLI metric (PromQL-resolvable)</label>
+          <label className="sx-label" htmlFor="slo-metric">SLI query (raw PromQL, resolves to a 0-100 value)</label>
           <input
             id="slo-metric"
             className="sx-input sx-mono"
             style={{ fontSize: 12 }}
-            placeholder="e.g. checkout-service success rate"
+            placeholder='e.g. 100 * (1 - sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])))'
             value={form.sli_metric}
             onChange={(e) => setForm({ ...form, sli_metric: e.target.value })}
           />
+          <small style={{ color: "var(--ink3)", fontSize: 10.5 }}>
+            Evaluated against this cluster's Prometheus every 20s. Needs a Prometheus URL saved on the Infrastructure tab — without one, Current stays at the last value ever recorded.
+          </small>
         </div>
         <div style={{ display: "flex", gap: 12 }}>
           <div style={{ flex: 1 }}>
