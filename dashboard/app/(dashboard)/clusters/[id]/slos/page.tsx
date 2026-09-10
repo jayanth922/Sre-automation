@@ -8,6 +8,8 @@ import { ConsolePage } from "@/components/console/ConsolePage"
 import { SectionTitle, Spinner, Empty, ErrorNote, useFreshness } from "@/components/console/ui"
 import { type SLO, type SLOStatus, round } from "@/lib/console"
 
+const emptyForm = { name: "", sli_metric: "", target: "99.9", window_days: "30" }
+
 interface Row {
   slo: SLO
   remaining: number
@@ -23,6 +25,10 @@ export default function SlosPage() {
   const [err, setErr] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLen = useRef(0)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState(emptyForm)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -66,6 +72,117 @@ export default function SlosPage() {
 
   const freshness = useFreshness(updatedAt)
 
+  const createSlo = async () => {
+    setCreateError(null)
+    const target = parseFloat(form.target)
+    const windowDays = parseInt(form.window_days, 10)
+    if (!form.name.trim() || !form.sli_metric.trim()) {
+      setCreateError("Name and SLI metric are required.")
+      return
+    }
+    if (!Number.isFinite(target) || target <= 0 || target > 100) {
+      setCreateError("Target must be a percentage between 0 and 100.")
+      return
+    }
+    if (!Number.isFinite(windowDays) || windowDays <= 0) {
+      setCreateError("Window (days) must be a positive number.")
+      return
+    }
+    setCreating(true)
+    try {
+      await api.post(`/clusters/${id}/slos`, {
+        name: form.name.trim(),
+        sli_metric: form.sli_metric.trim(),
+        target,
+        window_days: windowDays,
+      })
+      setForm(emptyForm)
+      setShowForm(false)
+      await load()
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setCreateError(detail || "Could not create SLO.")
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const newSloButton = (
+    <button
+      type="button"
+      className="sx-btn"
+      style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
+      onClick={() => {
+        setCreateError(null)
+        setShowForm((v) => !v)
+      }}
+    >
+      {showForm ? "Cancel" : "New SLO"}
+    </button>
+  )
+
+  const form_panel = showForm && (
+    <div className="sx-dry" style={{ textAlign: "left", marginBottom: 18 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 420 }}>
+        <div>
+          <label className="sx-label" htmlFor="slo-name">Objective name</label>
+          <input
+            id="slo-name"
+            className="sx-input"
+            placeholder="e.g. Checkout availability"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+        </div>
+        <div>
+          <label className="sx-label" htmlFor="slo-metric">SLI metric (PromQL-resolvable)</label>
+          <input
+            id="slo-metric"
+            className="sx-input sx-mono"
+            style={{ fontSize: 12 }}
+            placeholder="e.g. checkout-service success rate"
+            value={form.sli_metric}
+            onChange={(e) => setForm({ ...form, sli_metric: e.target.value })}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <label className="sx-label" htmlFor="slo-target">Target %</label>
+            <input
+              id="slo-target"
+              className="sx-input sx-mono"
+              style={{ fontSize: 12 }}
+              placeholder="99.9"
+              value={form.target}
+              onChange={(e) => setForm({ ...form, target: e.target.value })}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="sx-label" htmlFor="slo-window">Window (days)</label>
+            <input
+              id="slo-window"
+              className="sx-input sx-mono"
+              style={{ fontSize: 12 }}
+              placeholder="30"
+              value={form.window_days}
+              onChange={(e) => setForm({ ...form, window_days: e.target.value })}
+            />
+          </div>
+        </div>
+        {createError && <div style={{ color: "var(--crit)", fontSize: 11 }}>{createError}</div>}
+        <button
+          type="button"
+          className="sx-btn primary"
+          style={{ flex: "none", padding: "7px 18px", alignSelf: "flex-start" }}
+          onClick={createSlo}
+          disabled={creating}
+        >
+          {creating ? "Creating…" : "Create SLO"}
+        </button>
+      </div>
+    </div>
+  )
+
   return (
     <ConsolePage title="Service level objectives" live={connected} updated={freshness}>
       {loading ? (
@@ -73,10 +190,15 @@ export default function SlosPage() {
       ) : err ? (
         <ErrorNote>Couldn’t load SLOs — the API may be unreachable.</ErrorNote>
       ) : rows.length === 0 ? (
-        <Empty>No SLOs defined for this cluster yet.</Empty>
+        <>
+          <SectionTitle title="Objectives" meta="0 tracked" action={newSloButton} />
+          {form_panel}
+          <Empty>No SLOs defined for this cluster yet.</Empty>
+        </>
       ) : (
         <>
-          <SectionTitle title="Objectives" meta={`${rows.length} tracked`} />
+          <SectionTitle title="Objectives" meta={`${rows.length} tracked`} action={newSloButton} />
+          {form_panel}
           <table className="sx-tbl">
             <thead>
               <tr>
