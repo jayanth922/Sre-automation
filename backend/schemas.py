@@ -310,6 +310,12 @@ class SLOCreate(BaseModel):
     # silently pick to 30 days on the caller's behalf.
     window_days: int
 
+class SLOUpdate(BaseModel):
+    name: Optional[str] = None
+    sli_metric: Optional[str] = None
+    target: Optional[float] = None
+    window_days: Optional[int] = None
+
 class SLOResponse(BaseModel):
     id: uuid.UUID
     cluster_id: uuid.UUID

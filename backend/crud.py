@@ -785,6 +785,21 @@ async def get_slo_by_id(db: AsyncSession, slo_id: uuid.UUID) -> Optional[models.
     return result.scalars().first()
 
 
+async def update_slo(
+    db: AsyncSession, slo_id: uuid.UUID, update: "schemas.SLOUpdate"
+) -> Optional[models.SLO]:
+    slo = await get_slo_by_id(db, slo_id)
+    if not slo:
+        return None
+    data = update.model_dump(exclude_unset=True)
+    for field in ("name", "sli_metric", "target", "window_days"):
+        if field in data:
+            setattr(slo, field, data[field])
+    await db.commit()
+    await db.refresh(slo)
+    return slo
+
+
 async def update_slo_metrics(
     db: AsyncSession,
     slo_id: uuid.UUID,

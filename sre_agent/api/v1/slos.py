@@ -48,6 +48,21 @@ async def create_slo(
     """Define a new SLO for a cluster."""
     return await crud.create_slo(db, cluster_id, slo)
 
+@router.patch("/{slo_id}", response_model=schemas.SLOResponse)
+async def update_slo_endpoint(
+    cluster_id: uuid.UUID,
+    slo_id: uuid.UUID,
+    update: schemas.SLOUpdate,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
+    owned_slo: models.SLO = Depends(get_owned_slo),
+):
+    """Edit an existing SLO's definition (name, SLI query, target, or window)."""
+    slo = await crud.update_slo(db, slo_id, update)
+    if not slo:
+        raise HTTPException(status_code=404, detail="SLO not found")
+    return slo
+
 @router.get("", response_model=List[schemas.SLOResponse])
 async def list_slos(
     cluster_id: uuid.UUID,

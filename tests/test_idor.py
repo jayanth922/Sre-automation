@@ -283,6 +283,7 @@ def _function_source(relative_path: str, function_name: str) -> str:
         ("sre_agent/api/v1/slos.py", "create_slo", "get_owned_cluster"),
         ("sre_agent/api/v1/slos.py", "list_slos", "get_owned_cluster"),
         ("sre_agent/api/v1/slos.py", "get_slo_status", "get_owned_slo"),
+        ("sre_agent/api/v1/slos.py", "update_slo_endpoint", "get_owned_slo"),
         ("sre_agent/api/v1/slos.py", "delete_slo_endpoint", "get_owned_slo"),
     ],
 )

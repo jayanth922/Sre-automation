@@ -26,6 +26,7 @@ export default function SlosPage() {
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLen = useRef(0)
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -72,7 +73,26 @@ export default function SlosPage() {
 
   const freshness = useFreshness(updatedAt)
 
-  const createSlo = async () => {
+  const closeForm = () => {
+    setShowForm(false)
+    setEditingId(null)
+    setForm(emptyForm)
+    setCreateError(null)
+  }
+
+  const startEdit = (slo: SLO) => {
+    setCreateError(null)
+    setEditingId(slo.id)
+    setForm({
+      name: slo.name,
+      sli_metric: slo.sli_metric,
+      target: String(slo.target),
+      window_days: String(slo.window_days),
+    })
+    setShowForm(true)
+  }
+
+  const saveSlo = async () => {
     setCreateError(null)
     const target = parseFloat(form.target)
     const windowDays = parseInt(form.window_days, 10)
@@ -90,18 +110,22 @@ export default function SlosPage() {
     }
     setCreating(true)
     try {
-      await api.post(`/clusters/${id}/slos`, {
+      const body = {
         name: form.name.trim(),
         sli_metric: form.sli_metric.trim(),
         target,
         window_days: windowDays,
-      })
-      setForm(emptyForm)
-      setShowForm(false)
+      }
+      if (editingId) {
+        await api.patch(`/clusters/${id}/slos/${editingId}`, body)
+      } else {
+        await api.post(`/clusters/${id}/slos`, body)
+      }
+      closeForm()
       await load()
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setCreateError(detail || "Could not create SLO.")
+      setCreateError(detail || (editingId ? "Could not save changes." : "Could not create SLO."))
     } finally {
       setCreating(false)
     }
@@ -113,8 +137,12 @@ export default function SlosPage() {
       className="sx-btn"
       style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
       onClick={() => {
-        setCreateError(null)
-        setShowForm((v) => !v)
+        if (showForm) {
+          closeForm()
+        } else {
+          setCreateError(null)
+          setShowForm(true)
+        }
       }}
     >
       {showForm ? "Cancel" : "New SLO"}
@@ -124,6 +152,7 @@ export default function SlosPage() {
   const form_panel = showForm && (
     <div className="sx-dry" style={{ textAlign: "left", marginBottom: 18 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 420 }}>
+        <div style={{ fontWeight: 500, fontSize: 12.5 }}>{editingId ? "Edit SLO" : "New SLO"}</div>
         <div>
           <label className="sx-label" htmlFor="slo-name">Objective name</label>
           <input
@@ -177,10 +206,10 @@ export default function SlosPage() {
           type="button"
           className="sx-btn primary"
           style={{ flex: "none", padding: "7px 18px", alignSelf: "flex-start" }}
-          onClick={createSlo}
+          onClick={saveSlo}
           disabled={creating}
         >
-          {creating ? "Creating…" : "Create SLO"}
+          {creating ? "Saving…" : editingId ? "Save changes" : "Create SLO"}
         </button>
       </div>
     </div>
@@ -213,6 +242,7 @@ export default function SlosPage() {
                   Error budget
                 </th>
                 <th>Status</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -236,6 +266,16 @@ export default function SlosPage() {
                   </td>
                   <td>
                     <span className={`sx-badge ${r.breaching ? "crit" : r.tone}`}>{r.breaching ? "Breaching" : r.tone === "ok" ? "Healthy" : "At risk"}</span>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="sx-btn"
+                      style={{ flex: "none", padding: "3px 9px", fontSize: 11 }}
+                      onClick={() => startEdit(r.slo)}
+                    >
+                      Edit
+                    </button>
                   </td>
                 </tr>
               ))}
