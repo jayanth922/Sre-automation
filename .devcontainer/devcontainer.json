@@ -8,7 +8,7 @@
     "ghcr.io/devcontainers/features/node:1": { "version": "20" }
   },
   "postCreateCommand": "curl -LsSf https://astral.sh/uv/install.sh | sh || true; export PATH=\"$HOME/.local/bin:$PATH\"; echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc",
-  "postStartCommand": "nohup bash /workspaces/Sre-automation/scripts/watch_meridian_deploy.sh >> /tmp/watch_meridian_deploy.log 2>&1 & disown || true",
+  "postStartCommand": "bash /workspaces/Sre-automation/scripts/codespace_boot.sh >> /tmp/codespace_boot.log 2>&1; nohup bash /workspaces/Sre-automation/scripts/watch_meridian_deploy.sh >> /tmp/watch_meridian_deploy.log 2>&1 & disown || true",
   "forwardPorts": [3000, 8000, 3002],
   "customizations": {
     "vscode": {
