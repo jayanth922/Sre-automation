@@ -155,6 +155,7 @@ services:
       sre-network:
         aliases:
           - sre-agent
+      shared-edge-network:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -210,6 +211,7 @@ services:
       sre-network:
         aliases:
           - temporal-worker
+      shared-edge-network:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -246,6 +248,15 @@ networks:
   sre-network:
     driver: bridge
     name: sre-platform-network
+  # Shared with edge_mcp_servers/docker-compose.yaml so sre-agent-api and
+  # temporal-worker reach the MCP servers by container name over an internal
+  # Docker network instead of via published host ports (which would force
+  # those ports to bind 0.0.0.0, breaking the loopback-only hardening
+  # tests/test_mcp_auth.py enforces). Created once with:
+  #   docker network create sre-shared-network
+  shared-edge-network:
+    external: true
+    name: sre-shared-network
 
 volumes:
   redis_data:

@@ -128,9 +128,10 @@ pass** and the **AIOpsLab domain benchmark** (neither started).
 
 ## Verification commands and latest results
 `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → 870
-passed, 3 skipped (2026-09-10, uncommitted per-org Langfuse work). `npx tsc
---noEmit -p dashboard/` clean. Re-run: `pytest`, `ruff check .`, `mypy .` —
-see `docs/ai/DECISIONS.md`/git log if a specific historical count is needed.
+passed, 3 skipped (2026-09-11, after the MCP shared-network fix). `npx tsc
+--noEmit -p dashboard/` clean as of 2026-09-10. Re-run: `pytest`,
+`ruff check .`, `mypy .` — see `docs/ai/DECISIONS.md`/git log if a specific
+historical count is needed.
 
 ## Known blockers or risks
 - GitHub Codespaces free tier is capped on core-hours — stop the active
@@ -382,47 +383,33 @@ clean on every new/touched line (pre-existing unrelated lint debt in
 syncing any of this to the Codespace, and no manual click-through of the new
 UI section in a browser (no browser tool available this session).
 
-Also done, 2026-09-11 (Codespace session): closed the Temporal-worker gap and
-proved it end-to-end. Added a `temporal-worker` service to `platform/
-docker-compose.yaml` (runs `sre_agent.sandbox_worker`, same "local-temporal"
-profile as `temporal`) — pushed, pulled onto the Codespace, and permanently
-enabled there (`TEMPORAL_ENABLED="true"`, `COMPOSE_PROFILES="local-temporal"`
-now set in the Codespace's `.env`, not just local). Fixed the same
-`platform_temporal_data`-volume-root-ownership crash-loop documented above,
-now confirmed to recur across environments — same fix
-(`chown -R 1000:1000`). Found and fixed a second, previously-undocumented gap
-blocking any real sandbox run: `MCP_SANDBOX_URI` was entirely absent from
-`.env`/`.env.example` (added, port 4007/sse, alongside the other `MCP_*_URI`
-vars), and `edge_mcp_servers/docker-compose.yaml`'s `mcp-sandbox` published
-on `127.0.0.1:4007:3000` — unreachable via `host.docker.internal` from the
-platform stack's separate Docker network (confirmed by raw TCP connect: a
-0.0.0.0-bound port like `redis`'s was reachable, a 127.0.0.1-bound one was
-refused). Rebound to `4007:3000` (fix scoped to `mcp-sandbox` only; the other
-edge MCP services share the same 127.0.0.1 restriction and are a known,
-unaddressed risk — see below). Also created the missing `sentinel-sandbox` k8s
-namespace and set `SANDBOX_ALLOWED_IMAGES=busybox:1.36` on the Codespace.
-Verified: started a real `CodeFixVerificationWorkflow` (workflow id
-`e2e-smoke-fa67fc26`) against the seeded `kind-meridian` cluster and a
-synthetic test `Incident` row — reached `COMPLETED` with verdict `RESOLVED`,
-and `kubectl get events -n sentinel-sandbox` showed real `busybox:1.36` Jobs
-created, run (baseline hit `BackoffLimitExceeded` as designed, candidate
-`Completed`), and torn down by `cleanup_activity`. Temporal task-queue
-pollers confirmed live throughout.
+Temporal sandbox workflow (2026-09-11): added `temporal-worker` to
+`platform/docker-compose.yaml` (runs `sre_agent.sandbox_worker`,
+"local-temporal" profile), permanently enabled on the Codespace
+(`TEMPORAL_ENABLED=true`). Verified end-to-end with a real
+`CodeFixVerificationWorkflow` against `kind-meridian` — reached `COMPLETED`/
+`RESOLVED`, with `kubectl get events -n sentinel-sandbox` confirming real
+`busybox:1.36` Jobs created, run, and torn down by `cleanup_activity`.
 
-Then checked whether the same `127.0.0.1`-binding bug hit the other 7 edge
-MCP services (`mcp-k8s`/`mcp-prometheus`/`mcp-loki`/`mcp-github`/
-`mcp-runbooks`/`mcp-executor`/`mcp-github-exec`) — it did, and severely: raw
-TCP connect from `sre-agent-api` to all 7 was refused, and
-`docker logs sre-agent-api` showed `Failed to load MCP tools` on every
-recent graph invocation, silently degrading to `mcp_tools = []` (0 MCP
-tools, only the local `get_current_time` tool) — the agent had been running
-with no k8s/metrics/logs/github/runbooks/executor access at all on the
-Codespace. Rebound all 7 to `<port>:3000` (no `127.0.0.1:` prefix), same as
-`mcp-sandbox`. Re-verified: all 8 MCP ports now reachable via
-`host.docker.internal` from `sre-agent-api`. Not yet re-verified with a real
-graph invocation (no alert was firing at check time to trigger one
-naturally) — the fix is confirmed at the network layer, not yet observed
-producing a nonzero MCP-tool-count log line.
+MCP cross-stack reachability (2026-09-11, fixed properly same day): all 8
+edge MCP servers were published `127.0.0.1:<port>:3000`, which is loopback-
+only on the *host* — unreachable from `platform/docker-compose.yaml`'s
+separate Docker Compose project via `host.docker.internal` (confirmed:
+`sre-agent-api` was silently running every graph invocation with 0 MCP tools
+loaded, `Failed to load MCP tools` WARNING). An initial fix rebinding all 8
+ports to `0.0.0.0` solved reachability but regressed a deliberate P0 security
+test (`tests/test_mcp_auth.py::test_compose_ports_are_loopback_only_and_
+require_token`) by exposing WRITE-capable servers (executor, github-exec,
+sandbox) on all interfaces. Corrected: both compose files now join a shared
+external Docker network (`sre-shared-network`, alias `shared-edge-network`;
+one-time setup `docker network create sre-shared-network`), so
+`sre-agent-api`/`temporal-worker` reach each MCP server by container name
+(e.g. `http://mcp-k8s:3000/sse`) instead of via a host port at all. Host
+ports reverted to `127.0.0.1`-only (test passes again). `.env`/`.env.example`
+`MCP_*_URI` vars updated to the container-name form. Verified on the
+Codespace: `docker port mcp-k8s` → `127.0.0.1:4000`; raw TCP connect from
+inside `sre-agent-api` and `sre-temporal-worker` to all 8 `mcp-*` container
+names on port 3000 succeeds. Full suite: 870 passed, 3 skipped.
 
 ## Next bounded task
 If continuing the Langfuse work: manually click through the new "Langfuse"

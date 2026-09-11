@@ -547,3 +547,38 @@
   `code_sandbox.py` (drop just the E2B function) as an unused fallback.
   Rejected — it would still have zero callers and duplicate the K8s Job
   path's purpose; keeping a dead module half-alive serves no one.
+
+## Platform-to-edge MCP traffic crosses a shared Docker network, not published host ports
+
+- **Decision:** `platform/docker-compose.yaml` and `edge_mcp_servers/
+  docker-compose.yaml` both join an external Docker network
+  (`sre-shared-network`, service alias `shared-edge-network`, created once
+  via `docker network create sre-shared-network`). `sre-agent-api` and
+  `temporal-worker` reach each MCP server by container name
+  (`http://mcp-k8s:3000/sse`, etc. — see `.env.example`). Each MCP server's
+  host-published port stays `127.0.0.1:<port>:3000`.
+- **Reason:** the two compose files are independent Compose projects/
+  networks. On Docker-in-Docker (this project's Codespace), a container in
+  one project reaches the other host's published ports via
+  `host.docker.internal`, which resolves to the bridge gateway — not the
+  true host loopback interface — so a `127.0.0.1`-bound port refuses the
+  connection at the kernel level. This was live in production on the
+  Codespace: `sre-agent-api` silently ran every graph invocation with 0 MCP
+  tools loaded (`Failed to load MCP tools` WARNING, no crash). A same-day
+  first-pass fix rebound all 8 MCP ports to `0.0.0.0` to restore
+  reachability, but that regressed `tests/test_mcp_auth.py::
+  test_compose_ports_are_loopback_only_and_require_token` — a deliberate P0
+  hardening control (`git log`: "Harden P0 trust and safety boundaries",
+  "feat: multi-tenant secure access (Phase 4)") pairing loopback-only
+  binding with `MCP_SERVICE_TOKEN` bearer auth as defense-in-depth. Exposing
+  WRITE-capable servers (`mcp-executor`, `mcp-github-exec`, `mcp-sandbox`) on
+  all interfaces was an unacceptable trade for reachability.
+- **Consequences:** cross-stack traffic never touches a host port; the
+  loopback-only host binding (and the test enforcing it) stays intact.
+  Anyone standing up a fresh environment must run
+  `docker network create sre-shared-network` before `docker compose up` in
+  either directory (both compose files declare it `external: true`).
+- **Rejected alternative:** bind all 8 MCP ports to `0.0.0.0`. Rejected —
+  regresses a deliberate security control for servers that can write to
+  GitHub, execute K8s mutations, and run sandboxed code, in exchange for
+  fixing a problem a shared network solves without exposure.

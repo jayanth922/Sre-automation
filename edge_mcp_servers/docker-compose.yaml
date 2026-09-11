@@ -18,12 +18,17 @@ services:
   # MCP Tool Servers (read from YOUR infra)
   # ============================================
   #
-  # Ports are bound to all interfaces (not 127.0.0.1-restricted): the platform
-  # stack (platform/docker-compose.yaml) is a separate Docker network/daemon
-  # namespace and reaches these over host.docker.internal, which arrives as a
-  # non-loopback connection — a 127.0.0.1-only bind refuses it outright
-  # (confirmed empirically 2026-09-11: sre-agent-api was silently running
-  # with 0 MCP tools loaded on the Codespace because of this).
+  # Host ports stay 127.0.0.1-only (tests/test_mcp_auth.py enforces this —
+  # defense-in-depth alongside the MCP_SERVICE_TOKEN bearer auth). The
+  # platform stack (platform/docker-compose.yaml) is a separate Docker
+  # Compose project/network and previously reached these over
+  # host.docker.internal, which arrives as a non-loopback connection that a
+  # 127.0.0.1-only bind refuses outright (confirmed empirically 2026-09-11:
+  # sre-agent-api was silently running with 0 MCP tools loaded on the
+  # Codespace because of this). Fixed properly by joining both stacks to the
+  # `shared-edge-network` external network below, so the platform reaches
+  # these servers by container name (e.g. http://mcp-k8s:3000/sse) instead of
+  # via a published host port at all — see .env MCP_*_URI.
 
   mcp-k8s:
     build:
@@ -39,9 +44,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4000:3000"
+      - "127.0.0.1:4000:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   mcp-prometheus:
@@ -57,9 +63,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4001:3000"
+      - "127.0.0.1:4001:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   mcp-loki:
@@ -75,9 +82,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4002:3000"
+      - "127.0.0.1:4002:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   mcp-github:
@@ -91,9 +99,10 @@ services:
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     ports:
-      - "4003:3000"
+      - "127.0.0.1:4003:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   mcp-runbooks:
@@ -108,9 +117,10 @@ services:
       - NOTION_API_KEY=${NOTION_API_KEY:-}
       - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
     ports:
-      - "4004:3000"
+      - "127.0.0.1:4004:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   # GitHub-exec — WRITE tools for code-change remediation (revert PRs). Dry-run
@@ -126,9 +136,10 @@ services:
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     ports:
-      - "4006:3000"
+      - "127.0.0.1:4006:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   # Executor — WRITE tools (restart/scale/patch/rollback). The ACT phase's hands.
@@ -151,9 +162,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4005:3000"
+      - "127.0.0.1:4005:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
   # Sandbox — runs ephemeral K8s Jobs to verify AI-generated code fixes
@@ -177,12 +189,21 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "4007:3000"
+      - "127.0.0.1:4007:3000"
     networks:
       - edge-network
+      - shared-edge-network
     restart: unless-stopped
 
 networks:
   edge-network:
     driver: bridge
     name: sre-edge-network
+  # Shared with platform/docker-compose.yaml so sre-agent-api and
+  # temporal-worker reach these servers by container name (e.g.
+  # http://mcp-k8s:3000) over an internal Docker network, without needing a
+  # published host port. Created once with:
+  #   docker network create sre-shared-network
+  shared-edge-network:
+    external: true
+    name: sre-shared-network
