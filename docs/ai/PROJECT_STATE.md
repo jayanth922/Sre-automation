@@ -143,16 +143,6 @@ see `docs/ai/DECISIONS.md`/git log if a specific historical count is needed.
 - Approval requests (`ApprovalRequest` and `RemediationGateApproval`) expire
   ~30 min (`APPROVAL_TTL_MINUTES`) — see resolve→refire recipe below if
   re-testing live execution during that run.
-- `edge_mcp_servers/docker-compose.yaml`'s other 7 MCP services
-  (`mcp-k8s`/`mcp-metrics`/`mcp-logs`/`mcp-github`/`mcp-runbooks`/
-  `mcp-executor`/`mcp-github-exec`) still publish on `127.0.0.1:<port>:3000`
-  — the same binding class just proven (2026-09-11) to refuse connections
-  from the platform stack's separate Docker network via
-  `host.docker.internal`. Only `mcp-sandbox` (port 4007) was fixed, since
-  that's what blocked the Temporal workflow test. Unconfirmed whether the
-  READ-phase tools (k8s/metrics/logs/runbooks/github) are actually reached
-  by `sre-agent-api` this same way in practice on the Codespace, or via some
-  other working path — worth checking before assuming they work.
 
 Also done, 2026-09-08 (later same session): stood up the `kind-meridian`
 target cluster inside the codespace per the plan recorded in commit
@@ -418,6 +408,21 @@ and `kubectl get events -n sentinel-sandbox` showed real `busybox:1.36` Jobs
 created, run (baseline hit `BackoffLimitExceeded` as designed, candidate
 `Completed`), and torn down by `cleanup_activity`. Temporal task-queue
 pollers confirmed live throughout.
+
+Then checked whether the same `127.0.0.1`-binding bug hit the other 7 edge
+MCP services (`mcp-k8s`/`mcp-prometheus`/`mcp-loki`/`mcp-github`/
+`mcp-runbooks`/`mcp-executor`/`mcp-github-exec`) — it did, and severely: raw
+TCP connect from `sre-agent-api` to all 7 was refused, and
+`docker logs sre-agent-api` showed `Failed to load MCP tools` on every
+recent graph invocation, silently degrading to `mcp_tools = []` (0 MCP
+tools, only the local `get_current_time` tool) — the agent had been running
+with no k8s/metrics/logs/github/runbooks/executor access at all on the
+Codespace. Rebound all 7 to `<port>:3000` (no `127.0.0.1:` prefix), same as
+`mcp-sandbox`. Re-verified: all 8 MCP ports now reachable via
+`host.docker.internal` from `sre-agent-api`. Not yet re-verified with a real
+graph invocation (no alert was firing at check time to trigger one
+naturally) — the fix is confirmed at the network layer, not yet observed
+producing a nonzero MCP-tool-count log line.
 
 ## Next bounded task
 If continuing the Langfuse work: manually click through the new "Langfuse"

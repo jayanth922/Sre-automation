@@ -17,10 +17,13 @@ services:
   # ============================================
   # MCP Tool Servers (read from YOUR infra)
   # ============================================
-
-  # ============================================
-  # MCP Tool Servers (read from YOUR infra)
-  # ============================================
+  #
+  # Ports are bound to all interfaces (not 127.0.0.1-restricted): the platform
+  # stack (platform/docker-compose.yaml) is a separate Docker network/daemon
+  # namespace and reaches these over host.docker.internal, which arrives as a
+  # non-loopback connection — a 127.0.0.1-only bind refuses it outright
+  # (confirmed empirically 2026-09-11: sre-agent-api was silently running
+  # with 0 MCP tools loaded on the Codespace because of this).
 
   mcp-k8s:
     build:
@@ -36,7 +39,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:4000:3000"
+      - "4000:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -54,7 +57,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:4001:3000"
+      - "4001:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -72,7 +75,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:4002:3000"
+      - "4002:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -88,7 +91,7 @@ services:
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     ports:
-      - "127.0.0.1:4003:3000"
+      - "4003:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -105,7 +108,7 @@ services:
       - NOTION_API_KEY=${NOTION_API_KEY:-}
       - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
     ports:
-      - "127.0.0.1:4004:3000"
+      - "4004:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -123,7 +126,7 @@ services:
       - HOST=0.0.0.0
       - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
     ports:
-      - "127.0.0.1:4006:3000"
+      - "4006:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -148,7 +151,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:4005:3000"
+      - "4005:3000"
     networks:
       - edge-network
     restart: unless-stopped
@@ -174,11 +177,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # Not 127.0.0.1-restricted like the other MCP servers on this compose
-      # file: the platform stack (sre_agent/sandbox_workflow.py) reaches this
-      # over host.docker.internal from its own separate Docker network/daemon
-      # namespace, which arrives as a non-loopback connection and would be
-      # refused by a host-only bind.
       - "4007:3000"
     networks:
       - edge-network
