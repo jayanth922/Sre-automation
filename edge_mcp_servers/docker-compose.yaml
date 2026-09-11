@@ -174,7 +174,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:4007:3000"
+      # Not 127.0.0.1-restricted like the other MCP servers on this compose
+      # file: the platform stack (sre_agent/sandbox_workflow.py) reaches this
+      # over host.docker.internal from its own separate Docker network/daemon
+      # namespace, which arrives as a non-loopback connection and would be
+      # refused by a host-only bind.
+      - "4007:3000"
     networks:
       - edge-network
     restart: unless-stopped

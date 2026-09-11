@@ -127,11 +127,9 @@ pass** and the **AIOpsLab domain benchmark** (neither started).
   Cloud, `TEMPORAL_ENABLED`/`TEMPORAL_API_KEY`).
 
 ## Verification commands and latest results
-Full suite green as of commit `4804da5` (889 passed, 3 skipped); `helm lint`
-and `helm template` clean on `deploy/helm/sentinel` after the Langfuse
-template deletion; `docker compose --env-file .env.example -f
-platform/docker-compose.yaml config` clean (no Langfuse services, `temporal`
-correctly inactive by default). Re-run: `pytest`, `ruff check .`, `mypy .` —
+`.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → 870
+passed, 3 skipped (2026-09-10, uncommitted per-org Langfuse work). `npx tsc
+--noEmit -p dashboard/` clean. Re-run: `pytest`, `ruff check .`, `mypy .` —
 see `docs/ai/DECISIONS.md`/git log if a specific historical count is needed.
 
 ## Known blockers or risks
@@ -145,6 +143,16 @@ see `docs/ai/DECISIONS.md`/git log if a specific historical count is needed.
 - Approval requests (`ApprovalRequest` and `RemediationGateApproval`) expire
   ~30 min (`APPROVAL_TTL_MINUTES`) — see resolve→refire recipe below if
   re-testing live execution during that run.
+- `edge_mcp_servers/docker-compose.yaml`'s other 7 MCP services
+  (`mcp-k8s`/`mcp-metrics`/`mcp-logs`/`mcp-github`/`mcp-runbooks`/
+  `mcp-executor`/`mcp-github-exec`) still publish on `127.0.0.1:<port>:3000`
+  — the same binding class just proven (2026-09-11) to refuse connections
+  from the platform stack's separate Docker network via
+  `host.docker.internal`. Only `mcp-sandbox` (port 4007) was fixed, since
+  that's what blocked the Temporal workflow test. Unconfirmed whether the
+  READ-phase tools (k8s/metrics/logs/runbooks/github) are actually reached
+  by `sre-agent-api` this same way in practice on the Codespace, or via some
+  other working path — worth checking before assuming they work.
 
 Also done, 2026-09-08 (later same session): stood up the `kind-meridian`
 target cluster inside the codespace per the plan recorded in commit
@@ -344,18 +352,86 @@ Hot-deployed (`war_room_service.py`/`agent_runtime.py`) to
 `cuddly-winner-659v67gv695hrxjw`; `sre-agent-api` restarted clean/healthy.
 Committed and pushed to `origin/master`.
 
+Also done, 2026-09-10 (local dev environment session): brought up local
+Temporal (`platform/docker-compose.yaml`'s `local-temporal` profile) —
+crash-looped at first with a misleading `"unable to open database file: out
+of memory (14)"`; real cause was the fresh `platform_temporal_data` named
+volume being root-owned while the container runs as uid 1000, fixed via a
+throwaway root `alpine` container doing `chown -R 1000:1000`. `.env`'s
+`TEMPORAL_ENABLED` flipped to `"true"`.
+
+Then implemented **per-organization Langfuse tracing** end-to-end (each org
+sets its own Langfuse project keys, mirroring `Organization.slack_bot_token`
+— no fallback to any operator-wide default once an org exists, so an
+unconfigured org just runs untraced rather than risking cross-tenant trace
+mixing): `backend/models.py` (`Organization.langfuse_public_key`/
+`_secret_key`/`_host`, new migration `d4e5f6a7b8c9`, applied), `backend/
+schemas.py` (`LangfuseConfigSet`, `OrgResponse` exposes public key/host only),
+`backend/crud.py::set_org_langfuse_config`, `POST /organization/langfuse`
+(`sre_agent/api/v1/members.py`, admin-only). Credential threading: `sre_agent/
+tracing.py::get_langfuse_callback`/`tracing_callbacks` take an optional
+`org_langfuse` dict and use the Langfuse SDK's per-`public_key` client
+registry (`Langfuse(public_key=...)` + `CallbackHandler(public_key=...)`) so
+two orgs' traces never share a client; `checkpointer.py::thread_config` and
+`execution_context.py::ExecutionContext.org_langfuse_credentials()`
+(`None` only for the true no-org local/CLI runtime) carry it through to
+every graph-invocation call site — all 5 in `agent_runtime.py` plus the one
+in `mission_control.py`'s approval-resume path (`get_agent_runtime` now
+takes an explicit `organization` row, fetched by callers before their DB
+session closes, avoiding a `DetachedInstanceError` on lazy-relationship
+access). Frontend: new "Langfuse" section in `clusters/[id]/team/page.tsx`
+(public/secret key + optional host, admin-only, mirrors the existing Slack
+section) and `Org` type in `dashboard/lib/console.ts` extended. Verified:
+full `pytest` suite green (870 passed, 3 skipped — includes new tests in
+`test_tracing.py`/`test_execution_context.py` and a bumped Alembic-head
+assertion in `test_canonical_models.py`), `tsc --noEmit` clean, `ruff check`
+clean on every new/touched line (pre-existing unrelated lint debt in
+`agent_runtime.py`/`mission_control.py` left as-is). `sre-agent-api` and
+`sre-dashboard` images rebuilt and confirmed healthy locally with the new
+`/organization/langfuse` route live in the OpenAPI schema. Not yet done:
+syncing any of this to the Codespace, and no manual click-through of the new
+UI section in a browser (no browser tool available this session).
+
+Also done, 2026-09-11 (Codespace session): closed the Temporal-worker gap and
+proved it end-to-end. Added a `temporal-worker` service to `platform/
+docker-compose.yaml` (runs `sre_agent.sandbox_worker`, same "local-temporal"
+profile as `temporal`) — pushed, pulled onto the Codespace, and permanently
+enabled there (`TEMPORAL_ENABLED="true"`, `COMPOSE_PROFILES="local-temporal"`
+now set in the Codespace's `.env`, not just local). Fixed the same
+`platform_temporal_data`-volume-root-ownership crash-loop documented above,
+now confirmed to recur across environments — same fix
+(`chown -R 1000:1000`). Found and fixed a second, previously-undocumented gap
+blocking any real sandbox run: `MCP_SANDBOX_URI` was entirely absent from
+`.env`/`.env.example` (added, port 4007/sse, alongside the other `MCP_*_URI`
+vars), and `edge_mcp_servers/docker-compose.yaml`'s `mcp-sandbox` published
+on `127.0.0.1:4007:3000` — unreachable via `host.docker.internal` from the
+platform stack's separate Docker network (confirmed by raw TCP connect: a
+0.0.0.0-bound port like `redis`'s was reachable, a 127.0.0.1-bound one was
+refused). Rebound to `4007:3000` (fix scoped to `mcp-sandbox` only; the other
+edge MCP services share the same 127.0.0.1 restriction and are a known,
+unaddressed risk — see below). Also created the missing `sentinel-sandbox` k8s
+namespace and set `SANDBOX_ALLOWED_IMAGES=busybox:1.36` on the Codespace.
+Verified: started a real `CodeFixVerificationWorkflow` (workflow id
+`e2e-smoke-fa67fc26`) against the seeded `kind-meridian` cluster and a
+synthetic test `Incident` row — reached `COMPLETED` with verdict `RESOLVED`,
+and `kubectl get events -n sentinel-sandbox` showed real `busybox:1.36` Jobs
+created, run (baseline hit `BackoffLimitExceeded` as designed, candidate
+`Completed`), and torn down by `cleanup_activity`. Temporal task-queue
+pollers confirmed live throughout.
+
 ## Next bounded task
-Wire a real GitHub PAT for `jayanth922/meridian-shop` into the new
-`kind-meridian` Cluster row (see "Found, not yet fixed" above) — needed
-before any software-side fault test. Per standing sign-off policy, do not
-ask the user to paste the PAT into chat; have them enter it directly via the
-dashboard Settings UI (or `PATCH /api/v1/clusters/{id}` if no UI field
-exists yet — check first) outside the conversation. Per user instruction, do
-**not** inject any fault yet; let `kind-meridian` run quietly first. When
-ready, test a software-side fault first (a real buggy commit pushed to
-`meridian-shop`, not a `FAULTS.md` config toggle) before infra-level faults.
-If dropping the now-dead `github_app_installation_id` column is ever wanted,
-it needs a new Alembic migration (not yet written).
+If continuing the Langfuse work: manually click through the new "Langfuse"
+section on `clusters/[id]/team` in a browser (save keys, confirm the
+"connected" badge and `org.langfuse_public_key` round-trip), then decide
+with the user whether/how to sync to the Codespace.
+
+Otherwise, longer-standing: wire a real GitHub PAT for
+`jayanth922/meridian-shop` into the `kind-meridian` Cluster row (see "Found,
+not yet fixed" above) — needed before any software-side fault test. Per
+standing sign-off policy, do not ask the user to paste the PAT into chat;
+have them enter it directly via the dashboard Settings UI outside the
+conversation. If dropping the now-dead `github_app_installation_id` column
+is ever wanted, it needs a new Alembic migration (not yet written).
 
 ## Resolve→refire recipe (for re-testing checkout-service fault, on the
 Codespace's `kind-meridian` cluster)
