@@ -122,6 +122,12 @@ def build_command(action: Any) -> str:
         patch = json.dumps(params.get("patch", params)) if isinstance(params, dict) else "{}"
         return f"kubectl patch deployment/{target} -n {ns} --type merge -p '{patch}'"
     if action_type == "config_change":
+        params = getattr(action, "parameters", None) or {}
+        memory = _find_resource_field(params, "memory") if isinstance(params, dict) else None
+        cpu = _find_resource_field(params, "cpu") if isinstance(params, dict) else None
+        if memory or cpu:
+            limits = ",".join(f"{k}={v}" for k, v in (("memory", memory), ("cpu", cpu)) if v)
+            return f"kubectl set resources deployment/{target} -c {target} --limits={limits} -n {ns}"
         return f"kubectl apply -f <rendered-config for {target}> -n {ns}"
     if action_type == "recreate_pod":
         return f"kubectl delete pod/{target} -n {ns}"

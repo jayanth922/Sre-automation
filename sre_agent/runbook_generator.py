@@ -104,7 +104,14 @@ def input_from_act(state: Any, report: Any, skill_id: Optional[str] = None) -> R
         severity_label=severity_label,
         hypothesis=hypothesis,
         confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
-        actions=[{"action_type": _get(a, "action_type", "?"), "target": _get(a, "target", "")} for a in actions],
+        actions=[
+            {
+                "action_type": _get(a, "action_type", "?"),
+                "target": _get(a, "target", ""),
+                "command": _get(a, "command", None),
+            }
+            for a in actions
+        ],
         namespace=namespace,
         incident_id=str(incident_id) if incident_id else None,
         skill_id=skill_id,
@@ -159,8 +166,10 @@ def generate_runbook_markdown(inp: RunbookInput) -> str:
     steps = []
     for i, a in enumerate(inp.actions, 1):
         at = str(a.get("action_type", "?")).lower()
-        tmpl = _KUBECTL.get(at, "# (no command mapping)")
-        cmd = tmpl.format(target=a.get("target", "<target>"), ns=inp.namespace)
+        cmd = a.get("command") or None
+        if not cmd:
+            tmpl = _KUBECTL.get(at, "# (no command mapping)")
+            cmd = tmpl.format(target=a.get("target", "<target>"), ns=inp.namespace)
         steps.append(f"{i}. **{at}** `{a.get('target', '')}`\n   ```bash\n   {cmd}\n   ```")
     steps_md = "\n".join(steps) if steps else "1. No automated remediation recorded; investigate manually."
 
