@@ -17,15 +17,58 @@ import {
   elapsed,
 } from "@/lib/console"
 
+interface LiveResultItem {
+  action_type?: string
+  target?: string
+  status?: string
+  command?: string
+  detail?: string
+}
+
+interface Verification {
+  status?: string
+  current_value?: number
+  threshold?: number
+  improvement_pct?: number
+  detail?: string
+}
+
+interface ActReportPayload {
+  live_results?: LiveResultItem[]
+  executed?: LiveResultItem[]
+  verification?: Verification
+  aggregate_decision?: string
+  summary?: string
+}
+
 interface GraphStatus {
   status: string
   next?: unknown
-  values?: Record<string, unknown>
+  values?: { act_report?: ActReportPayload } & Record<string, unknown>
   approval?: {
     approval_request_id: string
     action_hash: string
     expires_at: string
   } | null
+}
+
+const LIVE_STATUS_TONE: Record<string, string> = {
+  EXECUTED: "ok",
+  SUCCESS: "ok",
+  OK: "ok",
+  REVERT_REQUESTED: "ok",
+  REFUSED: "warn",
+  DENIED: "warn",
+  MANUAL_REQUIRED: "warn",
+  DRY_RUN: "warn",
+  ERROR: "crit",
+  FAILED: "crit",
+  FAILURE: "crit",
+  UNHEALTHY: "crit",
+}
+
+function liveStatusTone(status?: string): string {
+  return LIVE_STATUS_TONE[(status ?? "").toUpperCase()] ?? "sel"
 }
 
 interface GateApproval {
@@ -185,20 +228,34 @@ export default function IncidentConsolePage() {
   const isAdmin = (user?.role ?? "member") === "admin"
   const awaitingApproval = status?.status === "WAITING_APPROVAL"
 
-  // Concrete remediation actions from the act report on the timeline.
-  type ActItem = { decision?: string; command?: string; rollback_command?: string; action_type?: string }
-  const actReport = (() => {
+  // Concrete remediation actions: prefer the live graph-state act_report
+  // (current_state.values, updated the moment the Act node runs) over the
+  // transcript-derived one, which only updates once a matching trace_step
+  // event has been persisted and fetched.
+  type ActItem = { decision?: string; command?: string; rollback_command?: string; action_type?: string; target?: string }
+  const transcriptActReport = (() => {
     for (let i = events.length - 1; i >= 0; i--) {
       const p = events[i].payload as Record<string, unknown> | null
       if (p && p.act_report) return p.act_report as { executed?: ActItem[]; aggregate_decision?: string; summary?: string }
     }
     return null
   })()
-  const actions: ActItem[] = actReport?.executed ?? []
+  const liveActReport = status?.values?.act_report
+  const liveResults: LiveResultItem[] = liveActReport?.live_results ?? []
+  const normalizedTranscript: LiveResultItem[] = (transcriptActReport?.executed ?? []).map((a) => ({
+    action_type: a.action_type,
+    target: a.target,
+    command: a.command,
+    status: a.decision === "autonomous" ? "EXECUTED" : a.decision ? "MANUAL_REQUIRED" : undefined,
+    detail: a.rollback_command ? `rollback: ${a.rollback_command}` : undefined,
+  }))
+  // Live graph-state results win whenever present — they're the freshest
+  // signal (updated the instant the Act node runs), independent of the
+  // transcript event stream.
+  const actions: LiveResultItem[] = liveResults.length > 0 ? liveResults : normalizedTranscript
+  const aggregateDecision = liveActReport?.aggregate_decision ?? transcriptActReport?.aggregate_decision
+  const verification = liveActReport?.verification
   const pendingGates = gates.filter((g) => g.status === "PENDING")
-
-  // Conversation for the side panel: user + assistant follow-ups.
-  const chatEvents = events.filter((e) => e.speaker_role === "user" || e.event_type === "human_message" || /assistant|follow/.test(e.event_type))
 
   return (
     <ConsolePage
@@ -341,30 +398,11 @@ export default function IncidentConsolePage() {
           <div className="sx-pane">
             <div className="sx-pane-h">
               <span className="tick" style={{ background: connected ? "var(--ok)" : "var(--ink3)" }} />
-              Ask Sentinel
+              Live execution
             </div>
-            <div className="sx-chat sx-scroll">
-              {chatEvents.length === 0 && !tx.summary && (
-                <div className="sx-m2 a">
-                  <div className="who2">Sentinel</div>
-                  <div className="bub">Investigation in progress. Ask a question any time and I’ll fold it into the analysis.</div>
-                </div>
-              )}
-              {tx.summary && chatEvents.length === 0 && (
-                <div className="sx-m2 a">
-                  <div className="who2">Sentinel</div>
-                  <div className="bub">{tx.summary}</div>
-                </div>
-              )}
-              {chatEvents.map((e, i) => (
-                <div className={`sx-m2 ${e.speaker_role === "user" ? "u" : "a"}`} key={e.id ?? i}>
-                  <div className="who2">{e.speaker_role === "user" ? "You" : "Sentinel"}</div>
-                  <div className="bub">{e.content}</div>
-                </div>
-              ))}
-            </div>
-            <div className="sx-dry" style={{ textAlign: "left", marginTop: 8, color: "var(--ink3)" }}>
-              This conversation is read-only here. Reply in the incident's Slack thread to direct the investigation.
+            {tx.summary && <div className="sx-origin" style={{ marginBottom: 10 }}>{tx.summary}</div>}
+            <div className="sx-dry" style={{ textAlign: "left", color: "var(--ink3)" }}>
+              All approvals and communication happen in the incident's Slack thread. This panel just mirrors what the agent is doing right now.
             </div>
           </div>
 
@@ -396,7 +434,7 @@ export default function IncidentConsolePage() {
 
           {(actions.length > 0 || awaitingApproval) && (
             <div className="sx-remedy">
-              <div className="h">⚙ Proposed remediation</div>
+              <div className="h">⚙ {liveResults.length > 0 ? "Live execution" : "Proposed remediation"}</div>
               {actions.length === 0 ? (
                 <div className="sx-action">
                   <div className="at">
@@ -406,22 +444,38 @@ export default function IncidentConsolePage() {
                 </div>
               ) : (
                 actions.map((a, i) => {
-                  const autonomous = a.decision === "autonomous"
+                  const tone = liveStatusTone(a.status)
                   return (
                     <div className="sx-action" key={i} style={{ marginBottom: 10 }}>
                       <div className="at">
-                        <span className={`sx-badge ${autonomous ? "ok" : "warn"}`}>{autonomous ? "autonomous" : "needs approval"}</span>
+                        <span className={`sx-badge ${tone}`}>{(a.status || "pending").toLowerCase().replace(/_/g, " ")}</span>
                         {a.action_type || "action"}
+                        {a.target && <span style={{ color: "var(--ink3)" }}> · {a.target}</span>}
                       </div>
                       {a.command && <div className="ad">{a.command}</div>}
-                      {a.rollback_command && <div className="gate" style={{ color: "var(--ink2)" }}>rollback: {a.rollback_command}</div>}
+                      {a.detail && <div className="gate" style={{ color: "var(--ink2)" }}>{a.detail}</div>}
                     </div>
                   )
                 })
               )}
-              {actReport?.aggregate_decision && (
+              {verification && (
+                <div className="sx-action" style={{ marginBottom: 10 }}>
+                  <div className="at">
+                    <span className={`sx-badge ${liveStatusTone(verification.status)}`}>{(verification.status || "unknown").toLowerCase()}</span>
+                    verification
+                  </div>
+                  {verification.current_value !== undefined && verification.threshold !== undefined && (
+                    <div className="ad">
+                      {verification.current_value} vs threshold {verification.threshold}
+                      {verification.improvement_pct !== undefined && ` · ${verification.improvement_pct.toFixed(1)}% improvement`}
+                    </div>
+                  )}
+                  {verification.detail && <div className="gate" style={{ color: "var(--ink2)" }}>{verification.detail}</div>}
+                </div>
+              )}
+              {aggregateDecision && (
                 <div className="sx-dry" style={{ textAlign: "left", marginTop: 8 }}>
-                  Gate decision: {actReport.aggregate_decision} · dry-run verified
+                  Gate decision: {aggregateDecision} · dry-run verified
                 </div>
               )}
               {awaitingApproval && (
