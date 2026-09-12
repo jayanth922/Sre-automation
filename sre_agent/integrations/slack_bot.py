@@ -134,8 +134,10 @@ def build_slack_app(registry=None, organization: Any = None):
     from ..war_room import (
         ThreadRef,
         is_ack_command,
+        is_fix_approval_command,
         parse_gate_command,
         route_ack_command,
+        route_fix_approval_command,
         route_gate_command,
         route_thread_reply,
     )
@@ -179,6 +181,10 @@ def build_slack_app(registry=None, organization: Any = None):
             if parse_gate_command(text) is not None:
                 approver_email = await _slack_user_email(app, event.get("user"))
                 await route_gate_command(text, thread, registry, approver_email, poster)
+                return
+            if is_fix_approval_command(text):
+                approver_email = await _slack_user_email(app, event.get("user"))
+                await route_fix_approval_command(text, thread, registry, approver_email, poster)
                 return
 
             await route_thread_reply(text, thread, registry, poster)

@@ -579,3 +579,179 @@ async def decide_gate_approval(
             gate=row.gate,
             expires_at=row.expires_at,
         )
+
+
+# ── The LangGraph Act-phase interrupt gate (high-risk/critical remediation) ─
+#
+# Distinct from the Temporal gates above: this is a single durable
+# ApprovalRequest keyed off (incident_id, thread_id, action_hash), decided by
+# resuming the paused LangGraph run directly (langgraph.types.Command). Was
+# dashboard-only (mission_control.approve_incident_action); this pair lets a
+# Slack "approve fix" reply do the exact same thing.
+
+
+async def find_latest_pending_action_approval(*, incident_id: str) -> Optional[str]:
+    """Return the id of the newest PENDING ApprovalRequest for this incident,
+    or None. Slack's "approve fix" reply only knows the incident, not the
+    approval_request_id/action_hash the dashboard has from its own GET
+    /status call, so it resolves the id through here first.
+    """
+    from sqlalchemy import select
+
+    from backend import database, models
+
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.ApprovalRequest.id)
+            .where(
+                models.ApprovalRequest.incident_id == uuid.UUID(str(incident_id)),
+                models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+            )
+            .order_by(models.ApprovalRequest.created_at.desc())
+            .limit(1)
+        )
+        row_id = result.scalar_one_or_none()
+        return str(row_id) if row_id is not None else None
+
+
+async def decide_action_approval(
+    *,
+    approval_request_id: str,
+    incident_id: str,
+    organization_id: str,
+    cluster_id: str,
+    approver_user_id: str,
+) -> Optional[str]:
+    """Authorize and synchronously resume the one exact graph action pending
+    on this ApprovalRequest — the same CAS-then-resume mission_control's
+    dashboard endpoint performs, factored out so Slack can trigger it too.
+
+    Returns the incident's newly computed status on success, or None if no
+    ApprovalRequest matches the ownership scope (caller treats that as 404).
+    Raises ApprovalValidationError("not_pending" | "expired" | "hash_mismatch")
+    for the caller to translate into a user-facing message.
+    """
+    from sqlalchemy import select, update
+
+    from backend import database, models
+    from sre_agent.checkpointer import durable_checkpointer_configured
+
+    if not durable_checkpointer_configured():
+        raise RuntimeError("A durable checkpointer is required for approvals")
+
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.ApprovalRequest).where(
+                models.ApprovalRequest.id == uuid.UUID(str(approval_request_id)),
+                models.ApprovalRequest.incident_id == uuid.UUID(str(incident_id)),
+                models.ApprovalRequest.organization_id == uuid.UUID(str(organization_id)),
+                models.ApprovalRequest.cluster_id == uuid.UUID(str(cluster_id)),
+            )
+        )
+        pending = result.scalar_one_or_none()
+        if pending is None:
+            return None
+
+        now = utc_now()
+        # Slack's "approve fix" only names the incident, not the action hash —
+        # it trusts whichever plan is currently pending rather than requiring
+        # the hash to be retyped, so submitted == stored here by construction.
+        validate_pending_approval(
+            status=pending.status,
+            stored_action_hash=pending.action_hash,
+            submitted_action_hash=pending.action_hash,
+            expires_at=pending.expires_at,
+            now=now,
+        )
+
+        from sre_agent.agent_runtime import get_agent_runtime
+        from sre_agent.checkpointer import thread_config
+
+        try:
+            runtime = await get_agent_runtime(uuid.UUID(str(cluster_id)))
+        except Exception as exc:
+            raise RuntimeError("Agent system unavailable") from exc
+        graph = runtime.graph
+        config = thread_config(
+            pending.thread_id, org_langfuse=runtime.context.org_langfuse_credentials()
+        )
+        configurable = (config or {}).get("configurable", {})
+        if configurable.get("thread_id") != pending.thread_id:
+            raise RuntimeError("Durable checkpointing is required for approvals")
+
+        try:
+            snapshot = await graph.aget_state(config)
+        except Exception as exc:
+            raise RuntimeError("Pending graph interrupt unavailable") from exc
+
+        interrupt_payload = current_approval_interrupt(snapshot)
+        if not interrupt_payload:
+            raise ApprovalValidationError("not_pending")
+        interrupt_report = interrupt_payload.get("report")
+        if not isinstance(interrupt_report, dict):
+            raise ApprovalValidationError("not_pending")
+        current_hash = compute_action_hash(interrupt_report)
+        if (
+            str(interrupt_payload.get("approval_request_id")) != str(pending.id)
+            or str(interrupt_payload.get("thread_id")) != pending.thread_id
+            or not secrets.compare_digest(
+                str(interrupt_payload.get("action_hash", "")), pending.action_hash
+            )
+            or not secrets.compare_digest(current_hash, pending.action_hash)
+        ):
+            raise ApprovalValidationError("hash_mismatch")
+
+        cas = await db.execute(
+            update(models.ApprovalRequest)
+            .where(
+                models.ApprovalRequest.id == pending.id,
+                models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+            )
+            .values(
+                status=models.ApprovalStatus.APPROVED,
+                approver_user_id=uuid.UUID(str(approver_user_id)),
+                decided_at=now,
+            )
+        )
+        if cas.rowcount != 1:
+            await db.rollback()
+            raise ApprovalValidationError("not_pending")
+        await db.commit()
+
+    from langgraph.types import Command
+
+    try:
+        output = await graph.ainvoke(
+            Command(
+                resume={
+                    "approved": True,
+                    "approval_request_id": str(pending.id),
+                    "action_hash": pending.action_hash,
+                }
+            ),
+            config=config,
+        )
+    except Exception as exc:
+        raise RuntimeError("Approved action failed to resume") from exc
+
+    if not isinstance(output, dict):
+        return None
+
+    from sre_agent.incident_status import compute_incident_status
+
+    act_report = (output.get("metadata") or {}).get("act_report")
+    verification = (act_report or {}).get("verification")
+    computed_status = compute_incident_status(output, act_report, verification)
+    incident_values: Dict[str, Any] = {"status": computed_status}
+    if computed_status == models.IncidentStatus.RESOLVED:
+        incident_values["resolved_at"] = utc_now()
+
+    async with database.AsyncSessionLocal() as db:
+        await db.execute(
+            update(models.Incident)
+            .where(models.Incident.id == uuid.UUID(str(incident_id)))
+            .values(**incident_values)
+        )
+        await db.commit()
+
+    return computed_status

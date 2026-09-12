@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
-import { api, useAuth } from "@/lib/auth-context"
+import { api } from "@/lib/auth-context"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { useCluster } from "@/components/console/ClusterContext"
 import { ConsolePage } from "@/components/console/ConsolePage"
@@ -154,14 +154,12 @@ function FormattedText({ text }: { text: string }) {
 
 export default function IncidentConsolePage() {
   const { id, incidentId } = useParams<{ id: string; incidentId: string }>()
-  const { user } = useAuth()
   const cluster = useCluster()
   const { events: liveEvents, connected } = useLiveStream(incidentId)
   const [tx, setTx] = useState<Transcript | null>(null)
   const [status, setStatus] = useState<GraphStatus | null>(null)
   const [agent, setAgent] = useState<AgentMetrics | null>(null)
   const [loading, setLoading] = useState(true)
-  const [approving, setApproving] = useState(false)
   const [gates, setGates] = useState<GateApproval[]>([])
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLive = useRef(0)
@@ -230,20 +228,6 @@ export default function IncidentConsolePage() {
 
   const freshness = useFreshness(updatedAt)
 
-  const approve = async () => {
-    if (!status?.approval) return
-    setApproving(true)
-    try {
-      await api.post(`/incidents/${incidentId}/approve`, {
-        approval_request_id: status.approval.approval_request_id,
-        action_hash: status.approval.action_hash,
-      })
-      await loadStatus()
-    } finally {
-      setApproving(false)
-    }
-  }
-
   if (loading) {
     return (
       <ConsolePage crumb="incidents" title="Incident" live={connected}>
@@ -269,7 +253,6 @@ export default function IncidentConsolePage() {
   // plans, actions, trace steps), not a conversation log.
   const CHAT_EVENT_TYPES = new Set(["human_message", "assistant_message"])
   const events = tx.events.filter((e) => !CHAT_EVENT_TYPES.has(e.event_type))
-  const isAdmin = (user?.role ?? "member") === "admin"
   const awaitingApproval = status?.status === "WAITING_APPROVAL"
 
   // Concrete remediation actions: prefer the live graph-state act_report
@@ -535,14 +518,7 @@ export default function IncidentConsolePage() {
                 </div>
               )}
               {awaitingApproval && (
-                <>
-                  <div className="sx-btnrow">
-                    <button className="sx-btn primary" onClick={approve} disabled={!isAdmin || approving || !status?.approval}>
-                      {approving ? "Approving…" : "Approve & run"}
-                    </button>
-                  </div>
-                  {!isAdmin && <div className="sx-dry">Only admins can approve remediations.</div>}
-                </>
+                <div className="sx-dry">Reply "approve fix" in the incident's Slack thread to run it.</div>
               )}
             </div>
           )}

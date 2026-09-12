@@ -274,6 +274,124 @@ async def _decide_gate_for_incident(
     return {"mode": "gate_decision", "status": "ok", "message": f"✅ {verb} `{gate}` — thanks {approver.email}."}
 
 
+FIX_APPROVAL_COMMAND_RE = re.compile(r"^\s*approve\s+fix\s*$", re.IGNORECASE)
+
+
+def is_fix_approval_command(text: str) -> bool:
+    return bool(FIX_APPROVAL_COMMAND_RE.match(text or ""))
+
+
+async def route_fix_approval_command(
+    text: str,
+    thread: ThreadRef,
+    registry: WarRoomRegistry,
+    approver_email: Optional[str],
+    poster: Callable[[Optional[ThreadRef], str], Awaitable[Any]],
+) -> Optional[Dict[str, Any]]:
+    """Approve the pending high-risk remediation — the LangGraph Act-phase
+    interrupt gate — from an in-thread "approve fix" reply. This is the Slack
+    equivalent of the dashboard's former "Approve & run" button; there is no
+    "deny fix" because the button it replaces never had one either (denying a
+    high-risk plan just means leaving the incident paused). Returns None
+    (caller falls back to route_thread_reply) if `text` isn't this command.
+    """
+    if not is_fix_approval_command(text):
+        return None
+
+    incident_id = registry.incident_for(thread)
+    if not incident_id:
+        return {"mode": "ignored"}
+
+    result = await _decide_action_approval_for_incident(incident_id, approver_email)
+    await poster(thread, result["message"])
+    return result
+
+
+async def _decide_action_approval_for_incident(
+    incident_id: str, approver_email: Optional[str]
+) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from backend import crud, database, models
+
+    from .approval_flow import (
+        ApprovalValidationError,
+        decide_action_approval,
+        find_latest_pending_action_approval,
+    )
+
+    if not approver_email:
+        return {"mode": "action_decision", "status": "denied", "message": "Couldn't verify your Slack identity — no email on file."}
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, _uuid.UUID(incident_id))
+        if incident is None:
+            return {"mode": "ignored"}
+        cluster = await crud.get_cluster_by_id(db, incident.cluster_id)
+        if cluster is None:
+            return {"mode": "ignored"}
+
+        user_result = await db.execute(
+            select(models.User).where(models.User.email == approver_email)
+        )
+        approver = user_result.scalar_one_or_none()
+
+    if approver is None or str(approver.org_id) != str(cluster.org_id):
+        return {
+            "mode": "action_decision",
+            "status": "denied",
+            "message": f"{approver_email} isn't a member of this organization — can't approve this here.",
+        }
+    if approver.role != models.UserRole.ADMIN:
+        return {
+            "mode": "action_decision",
+            "status": "denied",
+            "message": "Only admins can approve remediations.",
+        }
+
+    approval_request_id = await find_latest_pending_action_approval(incident_id=incident_id)
+    if approval_request_id is None:
+        return {
+            "mode": "action_decision",
+            "status": "not_found",
+            "message": "No pending remediation approval for this incident right now.",
+        }
+
+    try:
+        computed_status = await decide_action_approval(
+            approval_request_id=approval_request_id,
+            incident_id=incident_id,
+            organization_id=str(cluster.org_id),
+            cluster_id=str(incident.cluster_id),
+            approver_user_id=str(approver.id),
+        )
+    except ApprovalValidationError as exc:
+        detail = {
+            "not_pending": "already decided",
+            "expired": "expired",
+            "hash_mismatch": "no longer matches the current plan",
+        }.get(exc.reason, exc.reason)
+        return {"mode": "action_decision", "status": exc.reason, "message": f"That approval is {detail}."}
+    except Exception:
+        logger.exception("approve fix: resume failed for incident %s", incident_id)
+        return {
+            "mode": "action_decision",
+            "status": "error",
+            "message": "Approved, but the remediation failed to resume — check the incident page.",
+        }
+
+    if computed_status is None:
+        return {"mode": "action_decision", "status": "not_found", "message": "Approval request not found."}
+
+    return {
+        "mode": "action_decision",
+        "status": "ok",
+        "message": f"✅ Approved — remediation is running. ({approver.email})",
+    }
+
+
 async def route_ack_command(
     text: str,
     thread: ThreadRef,
