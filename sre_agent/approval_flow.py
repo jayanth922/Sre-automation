@@ -421,6 +421,89 @@ async def decide_and_signal_gate(
     return row, delivered
 
 
+async def acknowledge_incident_resolution(
+    *,
+    incident_id: str,
+    organization_id: str,
+    cluster_id: str,
+) -> Optional[Any]:
+    """CAS an incident's status PENDING_ACKNOWLEDGMENT -> RESOLVED once a
+    human confirms a verified fix actually worked, and fire the same
+    side effects the old auto-resolve path used to fire inline (closing the
+    war room, publishing the "resolved" lifecycle event, transitioning any
+    linked Jira issue). Shared by the dashboard's resolve action and Slack's
+    "acknowledge" command (sre_agent/war_room.py) so neither surface can
+    race the other into a double resolution.
+
+    Raises ApprovalValidationError("not_pending") if the incident isn't
+    currently awaiting acknowledgment. Returns None if no incident matches
+    the ownership scope (caller treats that as 404).
+    """
+    from sqlalchemy import update
+
+    from backend import database, models
+
+    incident_uuid = uuid.UUID(str(incident_id))
+    organization_uuid = uuid.UUID(str(organization_id))
+    cluster_uuid = uuid.UUID(str(cluster_id))
+    now = utc_now()
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, incident_uuid)
+        if incident is None or str(incident.cluster_id) != str(cluster_uuid):
+            return None
+        cluster = await db.get(models.Cluster, cluster_uuid)
+        if cluster is None or str(cluster.org_id) != str(organization_uuid):
+            return None
+
+        if incident.status != models.IncidentStatus.PENDING_ACKNOWLEDGMENT:
+            raise ApprovalValidationError("not_pending")
+
+        cas = await db.execute(
+            update(models.Incident)
+            .where(
+                models.Incident.id == incident_uuid,
+                models.Incident.status == models.IncidentStatus.PENDING_ACKNOWLEDGMENT,
+            )
+            .values(status=models.IncidentStatus.RESOLVED, resolved_at=now)
+        )
+        if cas.rowcount != 1:
+            await db.rollback()
+            raise ApprovalValidationError("not_pending")
+        await db.commit()
+        await db.refresh(incident)
+
+    try:
+        from .war_room_service import close_war_room
+
+        await close_war_room(str(incident_id))
+    except Exception:
+        pass
+    try:
+        from .live_events import publish_lifecycle_event
+
+        await publish_lifecycle_event(
+            "resolved",
+            incident_id=str(incident_id),
+            alert_name=incident.title,
+            summary=incident.summary or "",
+            org_id=str(organization_id),
+            status=str(models.IncidentStatus.RESOLVED),
+        )
+    except Exception:
+        pass
+    try:
+        from .integrations.jira import transition_jira_issue
+
+        await transition_jira_issue(
+            str(incident_id), str(cluster_id), str(models.IncidentStatus.RESOLVED)
+        )
+    except Exception:
+        pass
+
+    return incident
+
+
 async def decide_gate_approval(
     *,
     gate_approval_id: str,

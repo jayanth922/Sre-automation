@@ -348,6 +348,7 @@ _ACTIVE_INCIDENT_STATUSES = (
     models.IncidentStatus.REMEDIATION_IN_PROGRESS,
     models.IncidentStatus.REMEDIATION_FAILED,
     models.IncidentStatus.VERIFICATION_UNKNOWN,
+    models.IncidentStatus.PENDING_ACKNOWLEDGMENT,
 )
 
 

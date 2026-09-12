@@ -34,7 +34,7 @@ export interface Org {
 }
 
 export type Severity = "critical" | "high" | "medium" | "low"
-export type IncidentStatusT = "open" | "investigating" | "resolved"
+export type IncidentStatusT = "open" | "investigating" | "resolved" | "pending_acknowledgment"
 
 export interface Incident {
   id: string
@@ -178,6 +178,7 @@ export function sev(s: Severity) {
 
 export function statusBadge(s: IncidentStatusT, summary?: string | null): { label: string; cls: string } {
   if (s === "resolved") return { label: "Resolved", cls: "ok" }
+  if (s === "pending_acknowledgment") return { label: "Fix verified — awaiting ack", cls: "warn" }
   if (s === "investigating") return { label: "Investigating", cls: "sel" }
   if (s === "open" && summary?.startsWith("Investigation Attempt Failed")) {
     return { label: "Investigation failed", cls: "warn" }

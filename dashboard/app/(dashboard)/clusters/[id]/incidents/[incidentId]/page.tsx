@@ -475,6 +475,19 @@ export default function IncidentConsolePage() {
             </div>
           )}
 
+          {inc.status === "pending_acknowledgment" && (
+            <div className="sx-remedy">
+              <div className="h">⚙ Awaiting acknowledgment</div>
+              <div className="sx-action" style={{ marginBottom: 10 }}>
+                <div className="at">
+                  <span className="sx-badge warn">verified</span> Live verification confirmed the fix
+                </div>
+                <div className="ad">Not marked resolved yet — a human still needs to confirm it.</div>
+              </div>
+              <div className="sx-dry">Reply "acknowledge" in the incident's Slack thread to mark this resolved.</div>
+            </div>
+          )}
+
           {(actions.length > 0 || awaitingApproval) && (
             <div className="sx-remedy">
               <div className="h">⚙ {liveResults.length > 0 ? "Live execution" : "Proposed remediation"}</div>

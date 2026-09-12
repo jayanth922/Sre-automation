@@ -131,7 +131,14 @@ def build_slack_app(registry=None, organization: Any = None):
     except Exception as e:  # pragma: no cover - only without slack_bolt
         raise RuntimeError("slack_bolt not installed; run: pip install 'slack_bolt>=1.18'") from e
 
-    from ..war_room import ThreadRef, parse_gate_command, route_gate_command, route_thread_reply
+    from ..war_room import (
+        ThreadRef,
+        is_ack_command,
+        parse_gate_command,
+        route_ack_command,
+        route_gate_command,
+        route_thread_reply,
+    )
     from ..multitenant.slack_oauth import resolve_slack_bot_token
 
     token = resolve_slack_bot_token(organization) if organization is not None else os.getenv("SLACK_BOT_TOKEN")
@@ -165,6 +172,10 @@ def build_slack_app(registry=None, organization: Any = None):
                 await say(text=text, thread_ts=thread.thread_ts)
 
             text = event.get("text", "")
+            if is_ack_command(text):
+                approver_email = await _slack_user_email(app, event.get("user"))
+                await route_ack_command(text, thread, registry, approver_email, poster)
+                return
             if parse_gate_command(text) is not None:
                 approver_email = await _slack_user_email(app, event.get("user"))
                 await route_gate_command(text, thread, registry, approver_email, poster)

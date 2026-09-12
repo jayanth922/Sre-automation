@@ -34,9 +34,14 @@ def compute_incident_status(
     verification_outcome: Any,
 ) -> IncidentStatus:
     """Derive the incident's status from the ACT report and the verification
-    outcome. ``RESOLVED`` is returned only when a plan was gated fully
-    autonomous, executed, and live verification confirmed the fix — this
-    function is meant to be the graph's only source of ``RESOLVED``.
+    outcome. ``PENDING_ACKNOWLEDGMENT`` is returned when a plan was gated
+    fully autonomous, executed, and live verification confirmed the fix —
+    automated verification alone is not sufficient to call an incident
+    ``RESOLVED``. Only a human acknowledging the fix (the "acknowledge"
+    Slack command, routed through
+    ``approval_flow.acknowledge_incident_resolution``) advances it to
+    ``RESOLVED``. This function is meant to be the graph's only source of
+    ``PENDING_ACKNOWLEDGMENT``.
     """
     plan_present = bool(_get(report_payload, "plan_present", False))
     if not plan_present:
@@ -61,7 +66,7 @@ def compute_incident_status(
 
     outcome_status = str(_get(verification_outcome, "status", "") or "").upper()
     if outcome_status == "RESOLVED":
-        return IncidentStatus.RESOLVED
+        return IncidentStatus.PENDING_ACKNOWLEDGMENT
     if outcome_status == "FAILED":
         return IncidentStatus.REMEDIATION_FAILED
     return IncidentStatus.VERIFICATION_UNKNOWN

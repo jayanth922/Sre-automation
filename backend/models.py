@@ -52,6 +52,7 @@ class IncidentStatus(str, Enum):
     REMEDIATION_IN_PROGRESS = "remediation_in_progress"
     REMEDIATION_FAILED = "remediation_failed"
     VERIFICATION_UNKNOWN = "verification_unknown"
+    PENDING_ACKNOWLEDGMENT = "pending_acknowledgment"
     RESOLVED = "resolved"
 
 class JobStatus(str, Enum):

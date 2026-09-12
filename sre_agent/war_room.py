@@ -142,6 +142,17 @@ GATE_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Distinct from GATE_COMMAND_RE's four Temporal-signaled gates: acknowledging
+# a resolution doesn't signal a running workflow (verification already ran
+# and there's nothing left waiting) — it just flips the incident's own
+# PENDING_ACKNOWLEDGMENT status to RESOLVED. See acknowledge_incident_resolution
+# in approval_flow.py.
+ACK_COMMAND_RE = re.compile(r"^\s*(?:acknowledge|ack)(?:\s+resolution)?\s*$", re.IGNORECASE)
+
+
+def is_ack_command(text: str) -> bool:
+    return bool(ACK_COMMAND_RE.match(text or ""))
+
 
 def parse_gate_command(text: str) -> Optional[tuple]:
     """Parse an in-thread reply like "approve start-fix" / "deny raise_pr"
@@ -215,7 +226,7 @@ async def _decide_gate_for_incident(
         )
         approver = user_result.scalar_one_or_none()
 
-    if approver is None or str(approver.org_id) != str(incident.org_id):
+    if approver is None or str(approver.org_id) != str(cluster.org_id):
         return {
             "mode": "gate_decision",
             "status": "denied",
@@ -240,7 +251,7 @@ async def _decide_gate_for_incident(
         row, delivered = await decide_and_signal_gate(
             gate_approval_id=gate_approval_id,
             incident_id=incident_id,
-            organization_id=str(incident.org_id),
+            organization_id=str(cluster.org_id),
             cluster_id=str(incident.cluster_id),
             approved=approved,
             approver_user_id=str(approver.id),
@@ -261,6 +272,98 @@ async def _decide_gate_for_incident(
 
     verb = "Approved" if approved else "Denied"
     return {"mode": "gate_decision", "status": "ok", "message": f"✅ {verb} `{gate}` — thanks {approver.email}."}
+
+
+async def route_ack_command(
+    text: str,
+    thread: ThreadRef,
+    registry: WarRoomRegistry,
+    approver_email: Optional[str],
+    poster: Callable[[Optional[ThreadRef], str], Awaitable[Any]],
+) -> Optional[Dict[str, Any]]:
+    """Handle an in-thread "acknowledge" reply confirming a verified fix is
+    actually done. Returns None (caller should fall back to route_gate_command
+    / route_thread_reply) if `text` isn't an ack command.
+
+    This is the human sign-off the user asked for: verification succeeding
+    is not enough to call an incident RESOLVED on its own anymore — see
+    sre_agent.incident_status.compute_incident_status, which now stops at
+    PENDING_ACKNOWLEDGMENT. Only an admin's "acknowledge" here (or the
+    equivalent dashboard action) advances it to RESOLVED.
+    """
+    if not is_ack_command(text):
+        return None
+
+    incident_id = registry.incident_for(thread)
+    if not incident_id:
+        return {"mode": "ignored"}
+
+    result = await _acknowledge_resolution_for_incident(incident_id, approver_email)
+    await poster(thread, result["message"])
+    return result
+
+
+async def _acknowledge_resolution_for_incident(
+    incident_id: str, approver_email: Optional[str]
+) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from backend import crud, database, models
+
+    from .approval_flow import ApprovalValidationError, acknowledge_incident_resolution
+
+    if not approver_email:
+        return {"mode": "ack_decision", "status": "denied", "message": "Couldn't verify your Slack identity — no email on file."}
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, _uuid.UUID(incident_id))
+        if incident is None:
+            return {"mode": "ignored"}
+        cluster = await crud.get_cluster_by_id(db, incident.cluster_id)
+        if cluster is None:
+            return {"mode": "ignored"}
+
+        user_result = await db.execute(
+            select(models.User).where(models.User.email == approver_email)
+        )
+        approver = user_result.scalar_one_or_none()
+
+    if approver is None or str(approver.org_id) != str(cluster.org_id):
+        return {
+            "mode": "ack_decision",
+            "status": "denied",
+            "message": f"{approver_email} isn't a member of this organization — can't acknowledge this incident here.",
+        }
+    if approver.role != models.UserRole.ADMIN:
+        return {
+            "mode": "ack_decision",
+            "status": "denied",
+            "message": "Only admins can acknowledge an incident's resolution.",
+        }
+
+    try:
+        resolved = await acknowledge_incident_resolution(
+            incident_id=incident_id,
+            organization_id=str(cluster.org_id),
+            cluster_id=str(incident.cluster_id),
+        )
+    except ApprovalValidationError:
+        return {
+            "mode": "ack_decision",
+            "status": "not_pending",
+            "message": "This incident isn't awaiting acknowledgment right now.",
+        }
+
+    if resolved is None:
+        return {"mode": "ack_decision", "status": "not_found", "message": "Incident not found."}
+
+    return {
+        "mode": "ack_decision",
+        "status": "ok",
+        "message": f"✅ Resolution acknowledged by {approver.email} — incident marked resolved.",
+    }
 
 
 async def route_thread_reply(

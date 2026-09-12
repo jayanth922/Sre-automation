@@ -82,7 +82,7 @@ TABLE = [
             "live_results": [{"status": "EXECUTED"}],
         },
         {"status": "resolved"},
-        IncidentStatus.RESOLVED,
+        IncidentStatus.PENDING_ACKNOWLEDGMENT,
         id="approved-executed-and-verified",
     ),
     pytest.param(
@@ -94,13 +94,13 @@ TABLE = [
     pytest.param(
         {"plan_present": True, "aggregate_decision": "autonomous"},
         {"status": "resolved"},
-        IncidentStatus.RESOLVED,
+        IncidentStatus.PENDING_ACKNOWLEDGMENT,
         id="autonomous-verification-resolved",
     ),
     pytest.param(
         {"plan_present": True, "aggregate_decision": "autonomous"},
         {"status": "RESOLVED"},
-        IncidentStatus.RESOLVED,
+        IncidentStatus.PENDING_ACKNOWLEDGMENT,
         id="autonomous-verification-resolved-uppercase",
     ),
     pytest.param(
@@ -156,7 +156,7 @@ def test_object_style_report_and_outcome_are_duck_typed():
 
     assert (
         compute_incident_status(state={}, report_payload=Report(), verification_outcome=Outcome())
-        == IncidentStatus.RESOLVED
+        == IncidentStatus.PENDING_ACKNOWLEDGMENT
     )
 
 

@@ -127,7 +127,7 @@ def test_alert_to_oracle_autonomous_path_can_resolve(monkeypatch):
         payload,
         SimpleNamespace(status="RESOLVED"),
     )
-    assert status == IncidentStatus.RESOLVED
+    assert status == IncidentStatus.PENDING_ACKNOWLEDGMENT
 
 
 @pytest.mark.integration
