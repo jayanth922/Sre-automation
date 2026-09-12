@@ -113,6 +113,45 @@ function pretty(s: string): string {
   return s.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+// Investigation text from the agent is prose/markdown-ish, not chat — render
+// paragraphs and bullet lists instead of dumping it as one unbroken blob.
+function FormattedText({ text }: { text: string }) {
+  const blocks = text.trim().split(/\n\s*\n/)
+  return (
+    <>
+      {blocks.map((block, i) => {
+        const lines = block.split("\n").map((l) => l.trim()).filter(Boolean)
+        if (lines.length === 0) return null
+        const bulleted = lines.every((l) => /^[-*•]\s+/.test(l))
+        const numbered = lines.every((l) => /^\d+[.)]\s+/.test(l))
+        if (lines.length > 1 && (bulleted || numbered)) {
+          const items = lines.map((l) => l.replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, ""))
+          const List = numbered ? "ol" : "ul"
+          return (
+            <List key={i} className="sx-fmt-list">
+              {items.map((it, j) => (
+                <li key={j}>{it}</li>
+              ))}
+            </List>
+          )
+        }
+        if (lines.length === 1 && /^#{1,4}\s+/.test(lines[0])) {
+          return (
+            <div key={i} className="sx-fmt-h">
+              {lines[0].replace(/^#{1,4}\s+/, "")}
+            </div>
+          )
+        }
+        return (
+          <p key={i} className="sx-fmt-p">
+            {lines.join(" ")}
+          </p>
+        )
+      })}
+    </>
+  )
+}
+
 export default function IncidentConsolePage() {
   const { id, incidentId } = useParams<{ id: string; incidentId: string }>()
   const { user } = useAuth()
@@ -224,7 +263,12 @@ export default function IncidentConsolePage() {
   const inc = tx.incident
   const sv = sev(inc.severity)
   const sb = statusBadge(inc.status, inc.summary)
-  const events = tx.events
+  // human_message/assistant_message are chat turns — communication now
+  // happens in the incident's Slack thread, so the investigation timeline
+  // shows only the agent's actual OODA-loop artifacts (findings, decisions,
+  // plans, actions, trace steps), not a conversation log.
+  const CHAT_EVENT_TYPES = new Set(["human_message", "assistant_message"])
+  const events = tx.events.filter((e) => !CHAT_EVENT_TYPES.has(e.event_type))
   const isAdmin = (user?.role ?? "member") === "admin"
   const awaitingApproval = status?.status === "WAITING_APPROVAL"
 
@@ -332,7 +376,7 @@ export default function IncidentConsolePage() {
                         {pretty(step)}
                         <span className={`sx-badge ${badgeCls}`} style={{ marginLeft: 8 }}>{status}</span>
                       </div>
-                      {ev.content && <div className="ed">{ev.content}</div>}
+                      {ev.content && <div className="ed"><FormattedText text={ev.content} /></div>}
                       {blob && (
                         <details>
                           <summary className="sx-tracesum">{diff ? "diff" : "logs"} ({blob.length} chars)</summary>
@@ -348,7 +392,6 @@ export default function IncidentConsolePage() {
                 )
               }
               const tag = sourceTag(ev)
-              const isUser = ev.speaker_role === "user"
               const rawConf = typeof ev.payload?.confidence === "number" ? (ev.payload.confidence as number) : null
               const conf = rawConf === null ? null : Math.round(rawConf <= 1 ? rawConf * 100 : rawConf)
               const confidenceLabel = ev.payload?.confidence_calibrated === true
@@ -357,7 +400,7 @@ export default function IncidentConsolePage() {
               return (
                 <div className="sx-ev" key={ev.id ?? ev.sequence ?? idx}>
                   <div className="rl">
-                    <div className={`node${isUser ? " user" : ""}`} />
+                    <div className="node" />
                     {idx < events.length - 1 && <div className="ln" />}
                   </div>
                   <div className="c2">
@@ -373,10 +416,10 @@ export default function IncidentConsolePage() {
                         </span>
                       )}
                     </div>
-                    {ev.content && <div className="ed">{ev.content}</div>}
+                    {ev.content && <div className="ed"><FormattedText text={ev.content} /></div>}
                     <div className="src">
                       {tag && <span className={`sx-t2 ${tag.cls}`}>{tag.label}</span>}
-                      {isUser ? "you" : ev.speaker_role || "agent"} · {timeAgo(ev.created_at)}
+                      {ev.speaker_role || "agent"} · {timeAgo(ev.created_at)}
                     </div>
                   </div>
                 </div>
@@ -388,7 +431,7 @@ export default function IncidentConsolePage() {
             <div className="sx-rootc">
               <div className="h">◆ Root cause · Sentinel summary</div>
               <h3>{inc.title}</h3>
-              <p>{tx.summary}</p>
+              <FormattedText text={tx.summary} />
             </div>
           )}
         </div>
