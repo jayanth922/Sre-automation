@@ -170,6 +170,46 @@ def _github_args(action: Any) -> Dict[str, Any]:
 _K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 
 
+_RESOURCE_FIELD_ALIASES = {
+    "memory": ("memory", "proposed_memory_limit", "memory_limit", "new_memory_limit"),
+    "cpu": ("cpu", "proposed_cpu_limit", "cpu_limit", "new_cpu_limit"),
+}
+
+
+def _find_resource_field(params: Dict[str, Any], field: str) -> Optional[str]:
+    """Find a memory/cpu limit value anywhere in planner-produced parameters.
+
+    The planner's parameter shape for a resource-limit change isn't stable
+    across runs — it may emit a flat {"memory": "512Mi"}, an alias like
+    {"proposed_memory_limit": "512Mi"}, or a nested
+    {"resources": {"limits": {"memory": "512Mi"}}}. Search recursively,
+    preferring a hit found under a "limit(s)" key over one under
+    "request(s)" when both are present.
+    """
+    aliases = _RESOURCE_FIELD_ALIASES[field]
+    limit_hits: list = []
+    other_hits: list = []
+
+    def walk(node: Any, under_limit: bool) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_lower = str(key).lower()
+                if key_lower in aliases and isinstance(value, (str, int, float)):
+                    (limit_hits if under_limit else other_hits).append(str(value))
+                else:
+                    walk(value, under_limit or "limit" in key_lower)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, under_limit)
+
+    walk(params, False)
+    if limit_hits:
+        return limit_hits[0]
+    if other_hits:
+        return other_hits[0]
+    return None
+
+
 def _live_args(action: Any) -> Dict[str, Any]:
     """Build the executor-MCP tool arguments for a live (real) execution."""
     params = getattr(action, "parameters", None) or {}
@@ -192,10 +232,12 @@ def _live_args(action: Any) -> Dict[str, Any]:
             args["replicas"] = 1
     if action_type in ("patch", "config_change"):
         args["container"] = params.get("container", resource_name)
-        if params.get("memory"):
-            args["memory"] = params["memory"]
-        if params.get("cpu"):
-            args["cpu"] = params["cpu"]
+        memory = _find_resource_field(params, "memory")
+        cpu = _find_resource_field(params, "cpu")
+        if memory:
+            args["memory"] = memory
+        if cpu:
+            args["cpu"] = cpu
     return args
 
 
