@@ -276,9 +276,7 @@ async def handle_list_pull_requests(params: ListPullRequestsParams) -> str:
 
     loop = asyncio.get_event_loop()
     try:
-        prs = await loop.run_in_executor(
-            None, repo.get_pulls, params.state if params.state != "all" else None
-        )
+        prs = await loop.run_in_executor(None, repo.get_pulls, params.state)
 
         results = []
         count = 0

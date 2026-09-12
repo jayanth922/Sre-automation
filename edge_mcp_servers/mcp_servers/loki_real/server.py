@@ -208,7 +208,7 @@ def get_error_logs(
     # Build LogQL query
     label_filters = []
     if app:
-        label_filters.append(f'app="{app}"')
+        label_filters.append(f'service="{app}"')
     if namespace:
         label_filters.append(f'namespace="{namespace}"')
 
