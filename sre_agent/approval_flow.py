@@ -653,6 +653,17 @@ async def decide_action_approval(
             return None
 
         now = utc_now()
+        # An approver reaching this line has already had their Slack identity
+        # and admin role freshly re-verified for *this* decide call — expiry
+        # is a clock papercut on the plan proposal, not a re-authorization
+        # requirement, so a still-pending (never approved/rejected) request
+        # that has merely gone stale is renewed rather than refused. This
+        # only fires while status is still "pending": an already
+        # approved/rejected/expired-and-superseded row is untouched.
+        if pending.status == models.ApprovalStatus.PENDING and is_expired(pending.expires_at, now):
+            pending.expires_at = now + approval_ttl()
+            await db.flush()
+
         # Slack's "approve fix" only names the incident, not the action hash —
         # it trusts whichever plan is currently pending rather than requiring
         # the hash to be retyped, so submitted == stored here by construction.
