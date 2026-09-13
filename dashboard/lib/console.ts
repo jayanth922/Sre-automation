@@ -31,6 +31,8 @@ export interface Org {
   name: string
   created_at: string
   slack_team_id: string | null
+  langfuse_public_key: string | null
+  langfuse_host: string | null
 }
 
 export type Severity = "critical" | "high" | "medium" | "low"

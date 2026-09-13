@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Polls meridian-shop's master branch for new commits and redeploys only the
-# services whose source changed into the local `kind` cluster. This exists
-# because the kind cluster only lives inside this codespace with no public
+# services whose source changed into the local `k3s` cluster. This exists
+# because the k3s cluster only lives inside this codespace with no public
 # ingress, so a GitHub-hosted Actions runner can't reach it to deploy on
 # push — this loop is the in-codespace equivalent of that CD step.
+#
+# k3s runs with --docker (shares this host's Docker daemon via cri-dockerd),
+# so a freshly built image is already visible to it — no `kind load` /
+# image-injection step needed, unlike the old kind-based setup.
 set -uo pipefail
 
 REPO_DIR="${MERIDIAN_REPO_DIR:-/workspaces/meridian-shop-deploy}"
 REPO_URL="${MERIDIAN_REPO_URL:-https://github.com/jayanth922/meridian-shop.git}"
 POLL_INTERVAL="${POLL_INTERVAL:-20}"
-KIND_CLUSTER="${KIND_CLUSTER:-meridian}"
 NAMESPACE="${MERIDIAN_NAMESPACE:-meridian}"
 STATE_FILE="$REPO_DIR/.last_deployed_sha"
 LOG_PREFIX="[watch-meridian-deploy]"
@@ -64,7 +67,6 @@ while true; do
           image="${IMAGE_MAP[$svc]}"
           log "rebuilding $svc ($image) from $path"
           if docker build -q -t "$image:latest" "$path" \
-             && kind load docker-image "$image:latest" --name "$KIND_CLUSTER" \
              && kubectl rollout restart "deployment/$svc" -n "$NAMESPACE" \
              && kubectl rollout status "deployment/$svc" -n "$NAMESPACE" --timeout=120s; then
             log "deployed $svc successfully"

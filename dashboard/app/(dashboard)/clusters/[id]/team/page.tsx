@@ -27,6 +27,11 @@ export default function TeamPage() {
   const [slackToken, setSlackToken] = useState("")
   const [slackSaving, setSlackSaving] = useState(false)
   const [slackErr, setSlackErr] = useState<string | null>(null)
+  const [langfusePublicKey, setLangfusePublicKey] = useState("")
+  const [langfuseSecretKey, setLangfuseSecretKey] = useState("")
+  const [langfuseHost, setLangfuseHost] = useState("")
+  const [langfuseSaving, setLangfuseSaving] = useState(false)
+  const [langfuseErr, setLangfuseErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -120,6 +125,75 @@ export default function TeamPage() {
           (Install to Workspace). Verified against Slack before saving.
         </div>
         {slackErr && <ErrorNote>{slackErr}</ErrorNote>}
+
+        <SectionTitle title="Langfuse" meta="LLM tracing for your organization's agent runs" />
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 8 }}>
+          <input
+            className="sx-input"
+            type="text"
+            placeholder="pk-lf-... public key"
+            value={langfusePublicKey}
+            onChange={(e) => setLangfusePublicKey(e.target.value)}
+            disabled={!isAdmin || langfuseSaving}
+            style={{ flex: 1, minWidth: 180, maxWidth: 260 }}
+          />
+          <input
+            className="sx-input"
+            type="password"
+            placeholder="sk-lf-... secret key"
+            value={langfuseSecretKey}
+            onChange={(e) => setLangfuseSecretKey(e.target.value)}
+            disabled={!isAdmin || langfuseSaving}
+            style={{ flex: 1, minWidth: 180, maxWidth: 260 }}
+          />
+          <input
+            className="sx-input"
+            type="text"
+            placeholder="host (optional, defaults to cloud.langfuse.com)"
+            value={langfuseHost}
+            onChange={(e) => setLangfuseHost(e.target.value)}
+            disabled={!isAdmin || langfuseSaving}
+            style={{ flex: 1, minWidth: 200, maxWidth: 300 }}
+          />
+          <button
+            className="sx-btn"
+            style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+            disabled={!isAdmin || langfuseSaving || !langfusePublicKey.trim() || !langfuseSecretKey.trim()}
+            onClick={async () => {
+              setLangfuseSaving(true)
+              setLangfuseErr(null)
+              try {
+                const { data } = await api.post<Org>("/organization/langfuse", {
+                  public_key: langfusePublicKey.trim(),
+                  secret_key: langfuseSecretKey.trim(),
+                  host: langfuseHost.trim() || null,
+                })
+                setOrg(data)
+                setLangfusePublicKey("")
+                setLangfuseSecretKey("")
+                setLangfuseHost("")
+              } catch (e) {
+                const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                setLangfuseErr(detail || "Could not save these Langfuse keys.")
+              } finally {
+                setLangfuseSaving(false)
+              }
+            }}
+          >
+            {langfuseSaving ? "Saving…" : org?.langfuse_public_key ? "Update keys" : "Connect"}
+          </button>
+          {org?.langfuse_public_key ? (
+            <span className="sx-badge ok">connected · {org.langfuse_public_key}</span>
+          ) : (
+            !isAdmin && <span className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>only admins can connect Langfuse</span>
+          )}
+        </div>
+        <div className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)", marginBottom: 18 }}>
+          Paste your Langfuse project&apos;s public and secret keys (Settings → API Keys in Langfuse).
+          Each organization traces to its own project — until this is set, this organization&apos;s
+          agent runs simply go untraced.
+        </div>
+        {langfuseErr && <ErrorNote>{langfuseErr}</ErrorNote>}
 
         <SectionTitle
           title="Members"
