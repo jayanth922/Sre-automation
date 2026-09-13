@@ -23,10 +23,24 @@ NAMESPACE="${MERIDIAN_NAMESPACE:-meridian}"
 SRE_AGENT_PORT="${SRE_AGENT_PORT:-8080}"
 
 if ! pgrep -f "k3s server" > /dev/null; then
-  log "k3s not running, starting it"
+  # --node-ip is not optional here. k3s persists the node's InternalIP in its
+  # datastore, but the Codespace gets a new eth0 address on most resumes, so
+  # without it k3s starts against the *stored* IP, finds no interface holding
+  # it, and kills itself seconds later with "failed to start networking:
+  # unable to initialize network policy controller: error getting node subnet".
+  # That looks like a crash long after this script has already logged success.
+  HOST_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+  if [ -n "$HOST_IP" ]; then
+    log "k3s not running, starting it (node-ip $HOST_IP)"
+    NODE_IP_ARG="--node-ip $HOST_IP"
+  else
+    log "k3s not running, starting it (could not detect host IP; letting k3s choose)"
+    NODE_IP_ARG=""
+  fi
   # setsid is required: a plain `... & disown` still dies when the Codespace's
   # postStartCommand shell session tears down, since it stays in that session.
-  sudo setsid nohup k3s server --docker > /tmp/k3s.log 2>&1 < /dev/null &
+  # shellcheck disable=SC2086  # NODE_IP_ARG must word-split into two args
+  sudo setsid nohup k3s server --docker $NODE_IP_ARG > /tmp/k3s.log 2>&1 < /dev/null &
 else
   log "k3s already running"
 fi
@@ -81,4 +95,14 @@ if [ -d /workspaces/Sre-automation/platform ]; then
     >> /tmp/codespace_boot_compose.log 2>&1
 fi
 
-log "done"
+# Re-check k3s at the very end rather than trusting the readiness loop above.
+# k3s can answer the API for a few seconds and *then* self-terminate (see the
+# --node-ip note), which previously let this script log "done" over a cluster
+# that was already gone — the failure only surfaced later as every kubectl
+# call refusing to connect.
+if pgrep -f "k3s server" > /dev/null && sudo k3s kubectl get nodes > /dev/null 2>&1; then
+  log "done (k3s healthy)"
+else
+  log "WARNING: k3s is not running at end of boot — see /tmp/k3s.log"
+  exit 1
+fi
