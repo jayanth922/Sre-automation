@@ -227,6 +227,12 @@ class BaseAgentNode:
             # We'll collect all messages and the final response
             all_messages = []
             agent_response = ""
+            # Genuine tool-call failures for this specialist, keyed off
+            # ToolMessage.status == "error" (set by langgraph's ToolNode when
+            # a bound tool raises). This is the ONLY reliable signal for "the
+            # tool itself failed" — see the note on agent_tool_failures in
+            # agent_state.py for why we don't scan the narrative text for it.
+            tool_failures: List[Dict[str, str]] = []
 
             # Add system prompt and user prompt. The system prompt is static
             # per agent type (no per-incident data), so it's tagged for
@@ -370,6 +376,20 @@ class BaseAgentNode:
                                         logger.debug(
                                             f"{self.name} - Full tool response: {msg.content if hasattr(msg, 'content') else 'No content'}"
                                         )
+                                        # langgraph's ToolNode sets status="error" on the
+                                        # ToolMessage when the bound tool itself raises
+                                        # (network error, MCP call failed, etc) — this is
+                                        # a real tool-infrastructure failure, distinct from
+                                        # the tool successfully returning data that merely
+                                        # *describes* the investigated service's own errors.
+                                        if getattr(msg, "status", "success") == "error":
+                                            tool_failures.append({
+                                                "tool": tool_name,
+                                                "error": content_preview,
+                                            })
+                                            logger.warning(
+                                                f"{self.name} - Real tool failure: {tool_name} (id: {tool_call_id}): {content_preview}"
+                                            )
 
                 logger.info(
                     f"{self.name} - Executing agent with timeout of {timeout_seconds} seconds"
@@ -425,6 +445,11 @@ class BaseAgentNode:
                     narrative=narrative_text,
                 )
                 finding_payload["narrative"] = narrative_text or finding_content
+                # Persisted alongside raw_response so a later follow-up chat
+                # (which reloads agent_results from this payload via
+                # load_incident_chat_context) can still tell real tool
+                # failures apart from the investigated service's own errors.
+                finding_payload["tool_failures"] = tool_failures
 
                 await emit_timeline_event(
                     incident_id,
@@ -449,6 +474,10 @@ class BaseAgentNode:
                     **state.get("agent_results", {}),
                     agent_key: agent_response,
                 },
+                "agent_tool_failures": {
+                    **state.get("agent_tool_failures", {}),
+                    agent_key: tool_failures,
+                },
                 "agents_invoked": state.get("agents_invoked", []) + [agent_key],
                 "metadata": {
                     **state.get("metadata", {}),
@@ -462,6 +491,10 @@ class BaseAgentNode:
                 "agent_results": {
                     **state.get("agent_results", {}),
                     agent_key: f"Error: {str(e)}",
+                },
+                "agent_tool_failures": {
+                    **state.get("agent_tool_failures", {}),
+                    agent_key: [{"tool": "agent_execution", "error": str(e)}],
                 },
                 "agents_invoked": state.get("agents_invoked", []) + [agent_key],
             }

@@ -321,6 +321,9 @@ class SupervisorAgent:
     ):
         self.llm_provider = llm_provider
         self.llm_router_enabled = llm_router_enabled
+        # The cluster's own chosen model (from ExecutionContext.llm_kwargs()),
+        # used as the anchor for relative tier escalation in create_investigation_plan.
+        self.llm_model = llm_kwargs.get("model_id")
         self.llm = self._create_llm(**llm_kwargs)
         self.system_prompt = _read_supervisor_prompt()
         self.formatter = create_formatter(
@@ -520,6 +523,7 @@ User's query: {current_query}
             provider=self.llm_provider,
             use_fallback=False,
             router_enabled=self.llm_router_enabled,
+            anchor_model=self.llm_model,
         )
         structured_llm = planning_llm.with_structured_output(
             InvestigationPlan, method="function_calling"
@@ -658,6 +662,7 @@ User's query: {current_query}
                 state.get("alert_context") or chat_context.get("alert_context") or {}
             )
             findings_for_followup = chat_context.get("agent_results") or {}
+            tool_failures_for_followup = chat_context.get("tool_failures") or {}
             prior_summary = (
                 chat_context.get("prior_summary")
                 or state.get("final_response")
@@ -744,6 +749,7 @@ User's query: {current_query}
                         alert_context=alert_context_for_followup,
                         prior_findings=findings_for_followup,
                         reasoning="User asked for a fresh probe.",
+                        tool_failures=tool_failures_for_followup,
                     )
                     decision_content, decision_payload = build_supervisor_decision_content(
                         fresh_specialist,
@@ -791,6 +797,7 @@ User's query: {current_query}
                 agent_results=findings_for_followup,
                 prior_summary=prior_summary,
                 incident_status=incident_status,
+                tool_failures=tool_failures_for_followup,
             )
             direct_content, direct_payload = build_supervisor_direct_answer_content(
                 current_query,
@@ -870,6 +877,7 @@ User's query: {current_query}
                         alert_context=state.get("alert_context"),
                         prior_findings=state.get("agent_results", {}) or {},
                         reasoning=f"User interrupted: {interrupt_question}",
+                        tool_failures=state.get("agent_tool_failures", {}) or {},
                     )
                 except Exception as e:
                     logger.warning(f"Revised-plan narration failed: {e}")
@@ -892,6 +900,7 @@ User's query: {current_query}
                         agent_results=state.get("agent_results", {}) or {},
                         prior_summary=metadata.get("incident_summary", "") or "",
                         incident_status="INVESTIGATING",
+                        tool_failures=state.get("agent_tool_failures", {}) or {},
                     )
                 except Exception as e:
                     logger.warning(f"Interrupt acknowledgement narration failed: {e}")
@@ -1132,6 +1141,7 @@ User's query: {current_query}
                         alert_context=state.get("alert_context"),
                         prior_findings=state.get("agent_results", {}) or {},
                         reasoning=step_description,
+                        tool_failures=state.get("agent_tool_failures", {}) or {},
                     )
                 except Exception as e:
                     logger.warning(f"Mid-investigation handoff narration failed: {e}")
@@ -1196,6 +1206,10 @@ User's query: {current_query}
                     **(chat_context.get("agent_results") or {}),
                     **agent_results,
                 }
+                merged_tool_failures = {
+                    **(chat_context.get("tool_failures") or {}),
+                    **(state.get("agent_tool_failures", {}) or {}),
+                }
                 follow_up_summary = ""
                 try:
                     follow_up_summary = await narrate_followup_answer(
@@ -1206,6 +1220,7 @@ User's query: {current_query}
                         agent_results=merged_findings,
                         prior_summary=chat_context.get("prior_summary") or "",
                         incident_status=chat_context.get("incident_status", ""),
+                        tool_failures=merged_tool_failures,
                     )
                 except Exception as e:
                     logger.warning(f"Follow-up specialist synthesis failed: {e}")
@@ -1552,6 +1567,7 @@ You can:
                 objective=state.get("current_query", "the incident"),
                 alert_context=alert_context,
                 agent_results=agent_results,
+                tool_failures=state.get("agent_tool_failures", {}) or {},
             )
         except Exception as e:
             logger.warning(f"Final summary narration failed, using fallback: {e}")

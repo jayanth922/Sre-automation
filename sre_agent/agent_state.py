@@ -225,6 +225,14 @@ class AgentState(TypedDict):
     # Intermediate results from each agent
     agent_results: Dict[str, Any]
 
+    # Real tool-call failures per agent, e.g. {"metrics_agent": [{"tool": "get_metric_range",
+    # "error": "..."}]}. Derived from ToolMessage.status == "error" during execution — NOT
+    # from scanning free-text findings, since a specialist's narrative legitimately quotes
+    # the *investigated* service's own 5xx/connection-error vocabulary (that's often the
+    # incident itself). Consumed by narrative.py to flag genuine tooling bugs without
+    # misattributing the monitored system's failures to the monitoring tools.
+    agent_tool_failures: Dict[str, List[Dict[str, str]]]
+
     # Current query being processed
     current_query: Optional[str]
 

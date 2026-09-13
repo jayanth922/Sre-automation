@@ -295,50 +295,34 @@ def _format_label_hint_block(alert_context: Any) -> str:
     return ", ".join(hints)
 
 
-_TOOL_ERROR_HINTS = (
-    "tool failed after",
-    "tool returned: error",
-    "internal server error",
-    "500 server error",
-    "502 bad gateway",
-    "503 service unavailable",
-    "504 gateway timeout",
-    "connection refused",
-    "connection reset",
-    "connect timeout",
-    "tool unavailable",
-    "tool error",
-)
-
-
-def _detect_tool_failures(text: str) -> List[str]:
-    """Return short descriptions of tool failures we can spot in raw output."""
-    if not text:
-        return []
-    lower = text.lower()
-    hits: List[str] = []
-    for marker in _TOOL_ERROR_HINTS:
-        if marker in lower:
-            hits.append(marker)
-    return hits
-
-
-def _format_findings_block(agent_results: Dict[str, Any]) -> str:
+def _format_findings_block(
+    agent_results: Dict[str, Any],
+    tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
+) -> str:
     if not agent_results:
         return "No specialist findings were captured yet."
 
+    tool_failures = tool_failures or {}
     blocks: List[str] = []
     for agent_name, response in agent_results.items():
         label = SPECIALIST_LABELS.get(agent_name, agent_name.replace("_", " ").title())
         body_raw = _safe_text(response)
         body = _truncate(body_raw, 1200)
-        # Surface any tool failures explicitly so the supervisor narrator
-        # treats them as a separate signal from "no data".
-        failures = _detect_tool_failures(body_raw)
+        # Tool-failure detection is structural (ToolMessage.status == "error",
+        # captured in agent_nodes.py), NOT text-sniffed from the narrative —
+        # a specialist's findings legitimately quote the *investigated*
+        # service's own 5xx/connection-error vocabulary (that's often the
+        # incident itself), which a substring scan can't tell apart from a
+        # real failure of the Prometheus/Loki/GitHub tool call.
+        failures = tool_failures.get(agent_name) or []
         header = f"### {label}"
         if failures:
+            failure_desc = "; ".join(
+                f"{f.get('tool', 'unknown')} failed: {f.get('error', '')[:120]}"
+                for f in failures
+            )
             header += (
-                f"\n[TOOL FAILURE DETECTED — markers: {', '.join(sorted(set(failures)))}; "
+                f"\n[TOOL FAILURE DETECTED — {failure_desc}; "
                 "treat this as a tooling bug to flag in 'Next steps', not as the root cause]"
             )
         blocks.append(
@@ -467,6 +451,7 @@ async def narrate_supervisor_handoff(
     alert_context: Any,
     prior_findings: Dict[str, Any],
     reasoning: str = "",
+    tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
 ) -> str:
     fallback = _fallback_handoff(next_agent, objective)
     if not llm:
@@ -475,7 +460,7 @@ async def narrate_supervisor_handoff(
     label = SPECIALIST_LABELS.get(next_agent, next_agent.replace("_", " ").title())
     scope = SPECIALIST_SCOPE.get(next_agent, "your area")
     alert_block = _format_alert_block(alert_context)
-    findings_block = _format_findings_block(prior_findings)
+    findings_block = _format_findings_block(prior_findings, tool_failures)
     reasoning_block = wrap_untrusted(
         "planner_reasoning", reasoning or "next planned step"
     )
@@ -588,13 +573,14 @@ async def narrate_supervisor_summary(
     objective: str,
     alert_context: Any,
     agent_results: Dict[str, Any],
+    tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
 ) -> str:
     fallback = _fallback_summary(objective, agent_results)
     if not llm:
         return fallback
 
     alert_block = _format_alert_block(alert_context)
-    findings_block = _format_findings_block(agent_results)
+    findings_block = _format_findings_block(agent_results, tool_failures)
     label_hints = _format_label_hint_block(alert_context)
     alert_facts = _extract_alert_evidence(alert_context)
     facts_block = wrap_untrusted(
@@ -688,13 +674,14 @@ async def narrate_followup_answer(
     prior_summary: str,
     incident_status: str = "",
     recent_turns: Optional[List[Dict[str, Any]]] = None,
+    tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
 ) -> str:
     fallback = _fallback_followup(question, prior_summary)
     if not llm:
         return fallback
 
     alert_block = _format_alert_block(alert_context)
-    findings_block = _format_findings_block(agent_results)
+    findings_block = _format_findings_block(agent_results, tool_failures)
     status_line = f"\nCurrent incident status: {incident_status}\n" if incident_status else ""
     summary_block = wrap_untrusted(
         "prior_supervisor_summary",

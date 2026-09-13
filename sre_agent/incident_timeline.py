@@ -637,6 +637,12 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
                          "finding" timeline events. Uses the structured
                          payload's `raw_response` when available, falling back
                          to the visible content otherwise.
+        tool_failures:   {agent_name: [{"tool", "error"}, ...]} reconstructed
+                         from the same "finding" events' `tool_failures`
+                         payload — real ToolMessage.status=="error" failures,
+                         not text-sniffed. Lets follow-up chat keep telling
+                         genuine tooling bugs apart from the investigated
+                         service's own errors after the live graph state is gone.
         prior_summary:   The most recent supervisor "summary" event content.
         recent_turns:    The last N {"role": "user"|"assistant", "content"}
                          chat turns, oldest first, so the narrator can resolve
@@ -651,6 +657,7 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
         "incident_status": "",
         "alert_context": {},
         "agent_results": {},
+        "tool_failures": {},
         "prior_summary": "",
         "recent_turns": [],
     }
@@ -682,6 +689,7 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
         )
 
     agent_results: Dict[str, str] = {}
+    tool_failures: Dict[str, List[Dict[str, str]]] = {}
     prior_summary: str = incident.summary or ""
     alert_context: Dict[str, Any] = {
         "alert_name": incident.title,
@@ -709,6 +717,9 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
             raw_response = payload.get("raw_response") or event.content or ""
             if agent_name:
                 agent_results[agent_name] = raw_response
+                event_failures = payload.get("tool_failures")
+                if isinstance(event_failures, list):
+                    tool_failures[agent_name] = event_failures
         elif event.event_type == "summary":
             prior_summary = event.content or prior_summary
             payload_alert = payload.get("alert_context")
@@ -725,6 +736,7 @@ async def load_incident_chat_context(incident_id: Optional[str]) -> Dict[str, An
         "incident_status": incident_status,
         "alert_context": alert_context,
         "agent_results": agent_results,
+        "tool_failures": tool_failures,
         "prior_summary": prior_summary,
         "recent_turns": recent_turns,
     }
