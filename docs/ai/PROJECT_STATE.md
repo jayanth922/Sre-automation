@@ -53,6 +53,21 @@ Just landed (2026-09-12/13, commits `abe0609`, `22e76fd`, `82fa810`,
   (`incident_timeline_events` deleted, `jobs.incident_id` nulled,
   `incidents` deleted — cascades handled `approval_requests`/
   `run_manifests`/`remediation_gate_approvals`) for a clean slate.
+- **Container drift eliminated**: all 120 tracked `.py` files under
+  `sre_agent/`+`backend/` in `sre-agent-api` are now md5-identical to pushed
+  HEAD (was 5 stale). The stale `incident_status.py` was returning
+  `RESOLVED` where HEAD returns `PENDING_ACKNOWLEDGMENT` — the other half of
+  the latent `AttributeError` found on the acknowledge path. Codespace repo
+  reset to `origin/master` (its WIP was strictly older; backed up anyway at
+  `/tmp/codespace_wip_backup.patch`).
+- **Langfuse deployed, awaiting keys**: migration `d4e5f6a7b8c9` applied,
+  `POST /api/v1/organization/langfuse` live, `sre-dashboard` image rebuilt
+  so the Settings → Team Langfuse section exists, langfuse `4.15.1` present
+  and its v3 API (`langfuse.langchain.CallbackHandler(public_key=...)`,
+  `Langfuse(public_key, secret_key, host)`) verified unchanged in v4. Org
+  `9240f8b0-…` still has null keys — a human must paste them into the
+  dashboard (never into chat). `LANGFUSE_TRACING` defaults on; unconfigured
+  orgs simply run untraced.
 
 ## Current architecture and invariants
 Two independent ACT-phase gates (`PolicyEngine.evaluate_action()` /
@@ -117,3 +132,5 @@ Trigger a fresh SLO-breaching incident on `checkout-service`, approve its
 fix via Slack, and mid-remediation ask "what's happening right now" in the
 same thread to confirm the live-status fix actually surfaces the current
 node — this is the one part of this session's work not yet live-verified.
+If Langfuse keys have been entered by then, the same run also verifies
+traces land in the org's Langfuse project.
