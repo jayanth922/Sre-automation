@@ -79,8 +79,42 @@ def tier_litellm_model(
     return None
 
 
-def build_litellm_llm(model: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> Any:
-    """Build a LangChain-compatible LLM backed by LiteLLM. Guarded import."""
+# Models that reject any temperature other than a fixed value (e.g. Anthropic's
+# extended-thinking-only models, which require temperature=1). Keyed by the
+# model's bare name (no provider prefix) so it matches regardless of how the
+# caller qualified it (``claude-opus-5`` or ``anthropic/claude-opus-5``).
+_FIXED_TEMPERATURE: dict[str, float] = {
+    "claude-opus-5": 1.0,
+    "claude-sonnet-5": 1.0,
+}
+
+
+def _resolve_temperature(model: str, temperature: Optional[float]) -> Optional[float]:
+    bare_model = model.rsplit("/", 1)[-1]
+    fixed = _FIXED_TEMPERATURE.get(bare_model)
+    if fixed is not None and temperature != fixed:
+        logger.info(
+            f"ModelRouter: {bare_model} only supports temperature={fixed}; "
+            f"overriding requested temperature={temperature}"
+        )
+        return fixed
+    return temperature
+
+
+def build_litellm_llm(
+    model: str,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    api_key: Optional[str] = None,
+) -> Any:
+    """Build a LangChain-compatible LLM backed by LiteLLM. Guarded import.
+
+    ``api_key`` is the caller's already-decrypted per-cluster credential.
+    Without it, LiteLLM/the provider SDK falls back to whatever is in the
+    process's own ``ANTHROPIC_API_KEY`` env var — which on this platform is
+    just a startup-validation placeholder, not a real usable key — so every
+    LiteLLM-backed call must pass this explicitly rather than relying on env.
+    """
     try:
         import litellm  # noqa: F401 - validates the optional runtime dependency
         from langchain_litellm import ChatLiteLLM  # maintained wrapper; lazy import
@@ -90,10 +124,13 @@ def build_litellm_llm(model: str, temperature: Optional[float] = None, max_token
             "pip install litellm langchain-litellm"
         ) from e
 
+    temperature = _resolve_temperature(model, temperature)
     kwargs: dict = {"model": model}
     if temperature is not None:
         kwargs["temperature"] = temperature
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if api_key:
+        kwargs["api_key"] = api_key
     logger.info(f"ModelRouter: using LiteLLM backend (model={model})")
     return ChatLiteLLM(**kwargs)

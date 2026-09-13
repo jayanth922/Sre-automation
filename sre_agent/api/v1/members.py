@@ -76,6 +76,28 @@ async def set_slack_bot_token(
     return org
 
 
+@organization_router.post("/langfuse", response_model=schemas.OrgResponse)
+async def set_langfuse_config(
+    payload: schemas.LangfuseConfigSet,
+    admin: models.User = Depends(require_admin),
+    db: AsyncSession = Depends(database.get_db),
+):
+    """Admin pastes their own Langfuse project's public/secret key. Stored on
+    Organization.langfuse_*, so tracing.py traces this org's agent runs to
+    its own project instead of running untraced (no operator-wide default —
+    see Organization.langfuse_public_key's docstring)."""
+    org = await crud.set_org_langfuse_config(
+        db,
+        admin.org_id,
+        public_key=payload.public_key,
+        secret_key=payload.secret_key,
+        host=payload.host,
+    )
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
+
+
 async def _member_in_org(db: AsyncSession, member_id: uuid.UUID, org_id: uuid.UUID) -> models.User:
     member = await crud.get_user_by_id(db, member_id)
     if not member or member.org_id != org_id:

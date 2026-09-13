@@ -189,6 +189,47 @@ def test_runtime_cache_deduplicates_concurrent_builds_and_closes_evictions():
     assert closed == ["a", "b"]
 
 
+def test_org_langfuse_credentials_local_runtime_returns_none():
+    context = ExecutionContext.from_environment()
+    assert context.organization_id == "local"
+    assert context.org_langfuse_credentials() is None
+
+
+def test_org_langfuse_credentials_bound_org_no_fallback(monkeypatch):
+    monkeypatch.setenv("MCP_METRICS_URI", "https://operator.internal/metrics")
+    cluster = SimpleNamespace(
+        id=uuid.uuid4(),
+        org_id=uuid.uuid4(),
+        k8s_api_server=None,
+        k8s_token=None,
+        github_token=None,
+        notion_api_key=None,
+        llm_api_key=None,
+        namespace="tenant-a",
+        llm_provider="anthropic",
+        llm_model="tenant-model",
+        llm_base_url=None,
+        key_version=1,
+        execution_context_version=1,
+    )
+    # Org exists but hasn't configured Langfuse: dict with blank values, no
+    # fallback to any operator-wide default.
+    org_without_langfuse = SimpleNamespace(langfuse_public_key=None, langfuse_secret_key=None, langfuse_host=None)
+    context = ExecutionContext.from_cluster(cluster, organization=org_without_langfuse)
+    creds = context.org_langfuse_credentials()
+    assert creds == {"public_key": None, "secret_key": None, "host": None}
+
+    org_with_langfuse = SimpleNamespace(
+        langfuse_public_key="pk-lf-org", langfuse_secret_key="sk-lf-org", langfuse_host=None
+    )
+    context2 = ExecutionContext.from_cluster(cluster, organization=org_with_langfuse)
+    assert context2.org_langfuse_credentials() == {
+        "public_key": "pk-lf-org",
+        "secret_key": "sk-lf-org",
+        "host": None,
+    }
+
+
 def test_agent_runtime_uses_context_cache_not_process_singletons():
     source = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
     assert "AgentRuntimeCache(" in source

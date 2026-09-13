@@ -91,6 +91,15 @@ class SlackBotTokenSet(BaseModel):
     bot_token: str
 
 
+class LangfuseConfigSet(BaseModel):
+    # Per-org Langfuse project (sre_agent/tracing.py). host defaults to
+    # Langfuse Cloud when omitted — self-hosted Langfuse was removed
+    # platform-wide, see docs/ai/PROJECT_STATE.md.
+    public_key: str
+    secret_key: str
+    host: Optional[str] = None
+
+
 # ----------------------------------------------------------------------
 # Organization invitations
 # ----------------------------------------------------------------------
@@ -132,6 +141,9 @@ class OrgResponse(BaseModel):
     name: str
     created_at: datetime
     slack_team_id: Optional[str] = None
+    # Public key only — never expose langfuse_secret_key here.
+    langfuse_public_key: Optional[str] = None
+    langfuse_host: Optional[str] = None
 
     class Config:
         from_attributes = True

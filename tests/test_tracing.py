@@ -46,7 +46,7 @@ def test_tracing_callbacks_passthrough_when_disabled(monkeypatch):
 
 def test_tracing_callbacks_appends_handler_when_enabled(monkeypatch):
     monkeypatch.setenv("LANGFUSE_TRACING", "true")
-    monkeypatch.setattr(tr, "get_langfuse_callback", lambda: "LF_HANDLER")
+    monkeypatch.setattr(tr, "get_langfuse_callback", lambda org_langfuse=None: "LF_HANDLER")
     cfg = tr.tracing_callbacks({"callbacks": ["existing"], "configurable": {"thread_id": "i1"}})
     assert cfg["callbacks"] == ["existing", "LF_HANDLER"]
     assert cfg["configurable"] == {"thread_id": "i1"}  # base preserved
@@ -54,6 +54,21 @@ def test_tracing_callbacks_appends_handler_when_enabled(monkeypatch):
 
 def test_flush_is_safe_when_disabled():
     tr.flush()  # no exception
+
+
+def test_get_langfuse_callback_org_without_keys_is_untraced(monkeypatch):
+    # An org that exists but hasn't configured Langfuse gets no tracing and no
+    # fallback to the operator's env vars (no cross-tenant trace mixing).
+    monkeypatch.setenv("LANGFUSE_TRACING", "true")
+    assert tr.get_langfuse_callback({"public_key": "", "secret_key": ""}) is None
+    assert tr.get_langfuse_callback({"public_key": None, "secret_key": None}) is None
+
+
+def test_tracing_callbacks_org_without_keys_passes_through(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_TRACING", "true")
+    base = {"callbacks": ["existing"]}
+    result = tr.tracing_callbacks(base, org_langfuse={"public_key": "", "secret_key": ""})
+    assert result is base
 
 
 if __name__ == "__main__":

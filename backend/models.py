@@ -100,6 +100,15 @@ class Organization(Base):
     # this org hasn't installed via OAuth; falls back to SLACK_BOT_TOKEN.
     slack_bot_token: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
     slack_team_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Per-org Langfuse tracing project (see sre_agent/tracing.py). Null = this
+    # org hasn't configured Langfuse; investigations for this org simply run
+    # untraced rather than falling back to any operator-wide default project
+    # (no cross-tenant trace-data mixing). Distinct from the process-wide
+    # LANGFUSE_* env vars, which remain the only path for the no-org local/
+    # self-hosted CLI runtime (ExecutionContext.from_environment).
+    langfuse_public_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    langfuse_secret_key: Mapped[Optional[str]] = mapped_column(EncryptedString(), nullable=True)
+    langfuse_host: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Relationships
     users: Mapped[List["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")

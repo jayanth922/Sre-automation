@@ -152,12 +152,20 @@ def thread_id_from_state(state: Any) -> str:
     return str(state.get("incident_id") or md.get("incident_id") or state.get("session_id") or "adhoc")
 
 
-def thread_config(thread_id: str, base: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def thread_config(
+    thread_id: str,
+    base: Optional[Dict[str, Any]] = None,
+    org_langfuse: Optional[Dict[str, Optional[str]]] = None,
+) -> Optional[Dict[str, Any]]:
     """Merge the required ``thread_id`` into an invoke config — only when enabled.
 
     When checkpointing is off, returns ``base`` unchanged (may be None), so
     existing invoke sites behave exactly as before. When on, adds
     ``configurable.thread_id`` so the checkpointer persists/resumes per thread.
+
+    ``org_langfuse`` is the calling context's resolved per-org Langfuse
+    credentials (``None`` for the no-cluster local/CLI runtime) — see
+    ``tracing.get_langfuse_callback`` for the two-mode contract.
     """
     # Always attach agent tracing (Langfuse) when configured, so every LLM /
     # tool / chain span is traced with tokens, cost, latency and the reasoning
@@ -168,7 +176,7 @@ def thread_config(thread_id: str, base: Optional[Dict[str, Any]] = None) -> Opti
     except ImportError:  # direct-file unit-test loading has no package context
         from sre_agent.tracing import tracing_callbacks
 
-    cfg = tracing_callbacks(base)
+    cfg = tracing_callbacks(base, org_langfuse)
     metadata = cfg.get("metadata", {}) if isinstance(cfg, dict) else {}
     if metadata.get("root_trace_id"):
         try:

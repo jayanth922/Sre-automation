@@ -411,9 +411,10 @@ async def get_agent_runtime(
     else:
         async with database.AsyncSessionLocal() as db:
             cluster = await db.get(models.Cluster, uuid.UUID(str(cluster_id)))
-        if cluster is None:
-            raise RuntimeError(f"Cluster {cluster_id} not found")
-        context = ExecutionContext.from_cluster(cluster)
+            if cluster is None:
+                raise RuntimeError(f"Cluster {cluster_id} not found")
+            organization = await db.get(models.Organization, cluster.org_id)
+        context = ExecutionContext.from_cluster(cluster, organization=organization)
     return await _runtime_cache.get_or_create(context, _build_runtime)
 
 
@@ -544,6 +545,9 @@ async def invoke_agent(request: InvocationRequest):
         runtime = await initialize_agent(request.input.get("cluster_id"))
         agent_graph, tools = runtime.graph, runtime.tools
 
+        from .model_router import bind_api_key
+        bind_api_key(runtime.context.credentials.get("llm_api_key"))
+
         # Extract user prompt
         user_prompt = request.input.get("prompt", "")
         if not user_prompt:
@@ -587,7 +591,10 @@ async def invoke_agent(request: InvocationRequest):
         from .checkpointer import thread_config, thread_id_from_state
         async for event in agent_graph.astream(
             initial_state,
-            config=thread_config(thread_id_from_state(initial_state)),
+            config=thread_config(
+                thread_id_from_state(initial_state),
+                org_langfuse=runtime.context.org_langfuse_credentials(),
+            ),
         ):
             for node_name, node_output in event.items():
                 logger.info(f"Processing node: {node_name}")
@@ -817,6 +824,9 @@ async def approve_remediation(session_id: str):
         runtime = await initialize_agent(cluster_id)
         agent_graph, tools = runtime.graph, runtime.tools
 
+        from .model_router import bind_api_key
+        bind_api_key(runtime.context.credentials.get("llm_api_key"))
+
         # Ensure we have all required state fields
         from .agent_state import AgentState
         from langchain_core.messages import HumanMessage
@@ -837,7 +847,10 @@ async def approve_remediation(session_id: str):
         from .checkpointer import thread_config, thread_id_from_state
         async for event in agent_graph.astream(
             current_state,
-            config=thread_config(thread_id_from_state(current_state)),
+            config=thread_config(
+                thread_id_from_state(current_state),
+                org_langfuse=runtime.context.org_langfuse_credentials(),
+            ),
         ):
             for node_name, node_output in event.items():
                 logger.info(f"Resuming execution - Processing node: {node_name}")
@@ -876,6 +889,9 @@ async def run_graph_background(
         cluster_id = (initial_state.get("metadata") or {}).get("cluster_id")
         runtime = await initialize_agent(cluster_id)
         agent_graph = runtime.graph
+
+        from .model_router import bind_api_key
+        bind_api_key(runtime.context.credentials.get("llm_api_key"))
         # Initial status update
         state_store.set(session_id, {
             "status": "RUNNING",
@@ -897,7 +913,11 @@ async def run_graph_background(
         from .checkpointer import thread_config, thread_id_from_state
         async for event in agent_graph.astream(
             initial_state,
-            config=thread_config(thread_id_from_state(initial_state), {"callbacks": [callback_handler]}),
+            config=thread_config(
+                thread_id_from_state(initial_state),
+                {"callbacks": [callback_handler]},
+                org_langfuse=runtime.context.org_langfuse_credentials(),
+            ),
         ):
             for node_name, node_output in event.items():
                 logger.info(f"Background processing node: {node_name}")
@@ -1121,9 +1141,17 @@ async def _run_graph_impl(
 
     runtime = None
     root_trace_id = None
+    api_key_token = None
     try:
         runtime = await initialize_agent(cluster_id)
         agent_graph, tools = runtime.graph, runtime.tools
+
+        # Bind the cluster's real decrypted API key for this task so route_llm()
+        # can pass it straight to LiteLLM. Task-local via contextvars (never
+        # placed into AgentState/metadata, which the checkpointer persists to
+        # Postgres/Redis) and reset in the finally below.
+        from .model_router import bind_api_key
+        api_key_token = bind_api_key(runtime.context.credentials.get("llm_api_key"))
         
         # Initialize State
         from .agent_state import AgentState, AlertContext
@@ -1327,6 +1355,7 @@ async def _run_graph_impl(
                     "job_id": str(job_id),
                 },
             },
+            org_langfuse=runtime.context.org_langfuse_credentials(),
         )
         async for event in agent_graph.astream(
             initial_state,
@@ -1731,31 +1760,61 @@ async def _run_graph_impl(
                 )
             )
              await db.execute(stmt_inc)
+             await db.commit()
 
              if job_id:
-                 from backend.models import JobStatus
-                 await db.execute(
-                     models.Job.__table__
-                     .update()
-                     .where(models.Job.id == job_id)
-                     .values(
-                         status=JobStatus.FAILED,
-                         completed_at=datetime.now(timezone.utc),
-                         result=json.dumps(
-                             {
-                                 "error": str(e),
-                                 "model_accounting": failed_model_accounting,
-                                 "trace_completeness": failed_trace_completeness,
-                             }
+                 # Route through job_store.fail_job() so attempt_count vs.
+                 # max_attempts is honored (retry to PENDING or DEAD_LETTER)
+                 # instead of hard-setting FAILED, which silently disabled
+                 # the durable queue's retry machinery.
+                 from .job_store import DurableJobError, fail_job
+
+                 job_row = await db.get(models.Job, job_id)
+                 error_detail = json.dumps(
+                     {
+                         "error": str(e),
+                         "model_accounting": failed_model_accounting,
+                         "trace_completeness": failed_trace_completeness,
+                     }
+                 )
+                 if job_row is not None and job_row.lease_owner:
+                     try:
+                         await fail_job(
+                             db,
+                             job_id,
+                             worker_id=job_row.lease_owner,
+                             error=error_detail,
+                         )
+                     except DurableJobError as fail_job_error:
+                         logger.warning(
+                             "fail_job() could not update job %s (%s); "
+                             "falling back to direct status write",
+                             job_id,
+                             fail_job_error,
+                         )
+                         job_row = None
+
+                 if job_row is None or not job_row.lease_owner:
+                     from backend.models import JobStatus
+
+                     await db.execute(
+                         models.Job.__table__
+                         .update()
+                         .where(models.Job.id == job_id)
+                         .values(
+                             status=JobStatus.FAILED,
+                             completed_at=datetime.now(timezone.utc),
+                             result=error_detail,
                          )
                      )
-                 )
-
-             await db.commit()
+                     await db.commit()
     finally:
         from .audit_context import clear_audit_context as _clear_audit_context
 
         _clear_audit_context()
+        if api_key_token is not None:
+            from .model_router import reset_api_key
+            reset_api_key(api_key_token)
 
 @app.post(
     "/webhook/alert",
@@ -1936,6 +1995,9 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "anthropic") -> st
         runtime = await initialize_agent()
         graph, tools = runtime.graph, runtime.tools
 
+        from .model_router import bind_api_key
+        bind_api_key(runtime.context.credentials.get("llm_api_key"))
+
         # Create initial state
         initial_state: AgentState = {
             "messages": [HumanMessage(content=prompt)],
@@ -1953,7 +2015,10 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "anthropic") -> st
         from .checkpointer import thread_config, thread_id_from_state
         async for event in graph.astream(
             initial_state,
-            config=thread_config(thread_id_from_state(initial_state)),
+            config=thread_config(
+                thread_id_from_state(initial_state),
+                org_langfuse=runtime.context.org_langfuse_credentials(),
+            ),
         ):
             for node_name, node_output in event.items():
                 if node_name == "aggregate":

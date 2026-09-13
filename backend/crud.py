@@ -46,6 +46,16 @@ async def get_org_by_slack_team_id(db: AsyncSession, slack_team_id: str):
     return result.scalars().first()
 
 
+async def get_org_with_slack_bot_token(db: AsyncSession):
+    """First organization with an installed Slack bot token (OAuth or manually
+    pasted). Used by the single-process Socket Mode listener, which serves one
+    Slack app connection per process regardless of how many orgs exist."""
+    result = await db.execute(
+        select(models.Organization).filter(models.Organization.slack_bot_token.isnot(None))
+    )
+    return result.scalars().first()
+
+
 async def set_org_slack_installation(
     db: AsyncSession, org_id: uuid.UUID, *, bot_token: str, team_id: str
 ):
@@ -54,6 +64,20 @@ async def set_org_slack_installation(
         return None
     org.slack_bot_token = bot_token
     org.slack_team_id = team_id
+    await db.commit()
+    await db.refresh(org)
+    return org
+
+
+async def set_org_langfuse_config(
+    db: AsyncSession, org_id: uuid.UUID, *, public_key: str, secret_key: str, host: Optional[str]
+):
+    org = await get_org_by_id(db, org_id)
+    if not org:
+        return None
+    org.langfuse_public_key = public_key
+    org.langfuse_secret_key = secret_key
+    org.langfuse_host = host
     await db.commit()
     await db.refresh(org)
     return org
@@ -573,11 +597,13 @@ async def set_incident_slack_thread(
 async def get_incidents_with_open_slack_threads(
     db: AsyncSession,
 ) -> List[models.Incident]:
+    # Any non-terminal status may still need an in-thread reply routed to it
+    # (approve/deny a gate, "approve fix", ack) — excluding just RESOLVED
+    # (rather than enumerating the statuses that currently expect a reply)
+    # keeps this correct as new intermediate statuses are added.
     result = await db.execute(
         select(models.Incident).filter(
-            models.Incident.status.in_(
-                [models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING]
-            ),
+            models.Incident.status != models.IncidentStatus.RESOLVED,
             models.Incident.slack_channel.isnot(None),
             models.Incident.slack_thread_ts.isnot(None),
         )

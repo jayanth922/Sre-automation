@@ -35,11 +35,31 @@ from __future__ import annotations
 
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Per-cluster decrypted LLM API key, bound for the duration of one graph
+# execution (see agent_runtime.py). Task-local via contextvars rather than
+# threaded as a plain argument/kwarg: route_llm() is called from deep inside
+# LangGraph node closures that only carry AgentState (which the checkpointer
+# persists to Postgres/Redis) — a real API key must never end up in that
+# state, so it travels out-of-band instead.
+_current_api_key: ContextVar[Optional[str]] = ContextVar(
+    "_current_api_key", default=None
+)
+
+
+def bind_api_key(api_key: Optional[str]):
+    """Bind the current task's LLM API key; returns a token for reset_api_key()."""
+    return _current_api_key.set(api_key)
+
+
+def reset_api_key(token) -> None:
+    _current_api_key.reset(token)
 
 
 # ── Task types (the "what am I about to do?" dimension) ─────────────────────────
@@ -132,16 +152,106 @@ def _router_enabled(override: Optional[bool] = None) -> bool:
     return os.getenv("MODEL_ROUTER_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
-# Fixed platform tier defaults for Anthropic — Sentinel's only supported
-# provider. Used when a cluster has auto-routing on but no explicit
-# MODEL_ROUTER_<TIER>_MODEL[_PROVIDER] override, so "Auto" is meaningfully
-# dynamic (fast/cheap for routing & narration, strongest for reflection &
-# planning) without requiring any env configuration.
+# Fallback tier defaults for Anthropic — used only when the caller has no
+# per-cluster anchor model to route relative to (e.g. a "local" execution
+# context, or a model the ladder below doesn't recognize at all).
 _ANTHROPIC_TIER_DEFAULTS: Dict[ModelTier, str] = {
     ModelTier.FAST: "claude-haiku-4-5-20251001",
     ModelTier.BALANCED: "claude-sonnet-5",
     ModelTier.STRONG: "claude-opus-5",
 }
+
+# Anthropic's model families ordered cheapest/fastest -> strongest/priciest.
+# Escalating/downgrading a tier moves ONE rung from the cluster's own chosen
+# model (the "anchor") instead of jumping straight to a fixed absolute model
+# — e.g. an anchor of claude-sonnet-4-5 escalates to claude-sonnet-5, not all
+# the way to claude-opus-5, when a task actually needs the strong tier. This
+# keeps cost proportional to how much stronger a task really needs to be, not
+# to how strong the platform's single hardcoded "best" model happens to be.
+_ANTHROPIC_LADDER: List[str] = [
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+]
+
+_FAMILY_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
+
+
+def _normalize_anthropic_model(model_id: str) -> str:
+    """Strip a litellm provider prefix, trailing date stamp, and "-latest"."""
+    bare = model_id.rsplit("/", 1)[-1]
+    parts = bare.split("-")
+    if parts and parts[-1] == "latest":
+        parts = parts[:-1]
+    if parts and parts[-1].isdigit() and len(parts[-1]) >= 6:
+        parts = parts[:-1]
+    return "-".join(parts)
+
+
+def _model_family_and_version(model_id: str) -> Optional[tuple]:
+    """Parse (family_rank, version_number) from a model id, or None if unrecognized.
+
+    The version number treats up-to-2-digit numeric tokens in the id as
+    decimal places, e.g. "sonnet-4-5" -> 4.5, "sonnet-5" -> 5.0, so ordering
+    stays correct across both hyphenated ("4-5") and un-hyphenated future
+    naming without needing every real model id hardcoded.
+    """
+    bare = _normalize_anthropic_model(model_id)
+    family = next((name for name in _FAMILY_RANK if name in bare), None)
+    if family is None:
+        return None
+    digits = [tok for tok in bare.split("-") if tok.isdigit() and len(tok) <= 2]
+    version = float(".".join(digits)) if digits else 0.0
+    return (_FAMILY_RANK[family], version)
+
+
+def _ladder_index(model_id: str) -> Optional[int]:
+    """Position of ``model_id`` in ``_ANTHROPIC_LADDER``, exact or nearest-match."""
+    bare = _normalize_anthropic_model(model_id)
+    for i, candidate in enumerate(_ANTHROPIC_LADDER):
+        if _normalize_anthropic_model(candidate) == bare:
+            return i
+
+    parsed = _model_family_and_version(model_id)
+    if parsed is None:
+        return None
+    # Nearest ladder entry by (family_rank, version) distance; ties favor the
+    # lower/cheaper index so an unfamiliar model doesn't over-escalate.
+    best_i, best_distance = None, None
+    for i, candidate in enumerate(_ANTHROPIC_LADDER):
+        lp = _model_family_and_version(candidate)
+        if lp is None:
+            continue
+        distance = abs(lp[0] - parsed[0]) * 100 + abs(lp[1] - parsed[1])
+        if best_distance is None or distance < best_distance:
+            best_i, best_distance = i, distance
+    return best_i
+
+
+def _anthropic_tier_model(tier: ModelTier, anchor_model: Optional[str]) -> Optional[str]:
+    """Resolve a tier to a model, relative to the cluster's own chosen model.
+
+    BALANCED always returns the anchor verbatim (never substitute the user's
+    own pick). FAST/STRONG step one rung down/up the ladder from the anchor's
+    position, clamped at the ladder's ends so an already-cheapest or already-
+    strongest anchor doesn't get a pointless "escalation"/"downgrade" that
+    doesn't actually change anything. Falls back to the fixed defaults only
+    when there's no anchor or the anchor isn't recognized at all.
+    """
+    if not anchor_model:
+        return _ANTHROPIC_TIER_DEFAULTS.get(tier)
+
+    if tier == ModelTier.BALANCED:
+        return anchor_model
+
+    idx = _ladder_index(anchor_model)
+    if idx is None:
+        return _ANTHROPIC_TIER_DEFAULTS.get(tier)
+
+    if tier == ModelTier.STRONG:
+        return _ANTHROPIC_LADDER[min(idx + 1, len(_ANTHROPIC_LADDER) - 1)]
+    return _ANTHROPIC_LADDER[max(idx - 1, 0)]
 
 
 def _default_provider() -> str:
@@ -173,7 +283,9 @@ def _tier_provider(tier: ModelTier, default_provider: str) -> str:
     return os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_PROVIDER", default_provider)
 
 
-def _tier_model_override(tier: ModelTier, provider: str) -> Optional[str]:
+def _tier_model_override(
+    tier: ModelTier, provider: str, anchor_model: Optional[str] = None
+) -> Optional[str]:
     """Explicit model id for a (tier, provider), if configured.
 
     Checked most-specific first so you can pin a model per provider *and* tier::
@@ -181,8 +293,10 @@ def _tier_model_override(tier: ModelTier, provider: str) -> Optional[str]:
         MODEL_ROUTER_STRONG_MODEL_NVIDIA=meta/llama-3.3-70b-instruct
         MODEL_ROUTER_FAST_MODEL=llama-3.1-8b-instant
 
-    Returns None when nothing is configured, in which case the provider's
-    default model from ``constants.py`` is used.
+    An explicit env override always wins (operator opt-in). Absent that, for
+    Anthropic the tier is resolved relative to ``anchor_model`` (the cluster's
+    own chosen model) via ``_anthropic_tier_model`` — see that function for
+    why this doesn't just jump to the strongest model available.
     """
     specific = os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_MODEL_{provider.upper()}")
     if specific:
@@ -191,7 +305,7 @@ def _tier_model_override(tier: ModelTier, provider: str) -> Optional[str]:
     if generic:
         return generic
     if provider == "anthropic":
-        return _ANTHROPIC_TIER_DEFAULTS.get(tier)
+        return _anthropic_tier_model(tier, anchor_model)
     return None
 
 
@@ -202,6 +316,7 @@ def select_model(
     policy: Optional[Dict[TaskType, ModelTier]] = None,
     request: Optional[RequestContext] = None,
     router_enabled: Optional[bool] = None,
+    anchor_model: Optional[str] = None,
 ) -> RoutingDecision:
     """Decide which model tier / provider / model a task should use.
 
@@ -221,6 +336,10 @@ def select_model(
         request: Optional per-request budget/policy signals (see :class:`RequestContext`).
         router_enabled: Per-cluster override for whether routing is active;
             defaults to the ``MODEL_ROUTER_ENABLED`` env var when ``None``.
+        anchor_model: The cluster's own chosen model (e.g. from Settings). When
+            given, FAST/STRONG tiers resolve to one rung below/above this model
+            on the Anthropic ladder instead of a fixed absolute model — see
+            ``_anthropic_tier_model``.
 
     Returns:
         A :class:`RoutingDecision` (check ``.blocked`` before using).
@@ -279,7 +398,7 @@ def select_model(
         tier = bumped_down
 
     tier_provider = _tier_provider(tier, base_provider)
-    model_override = _tier_model_override(tier, tier_provider)
+    model_override = _tier_model_override(tier, tier_provider, anchor_model)
 
     reason = f"{task_type.value} → {tier.value} tier on '{tier_provider}'"
     if escalated:
@@ -306,6 +425,7 @@ def route_llm(
     use_fallback: bool = True,
     request: Optional[RequestContext] = None,
     router_enabled: Optional[bool] = None,
+    anchor_model: Optional[str] = None,
     **kwargs,
 ):
     """Select a model for ``task_type`` and build the LLM instance.
@@ -327,6 +447,7 @@ def route_llm(
         provider=provider,
         request=request,
         router_enabled=router_enabled,
+        anchor_model=anchor_model,
     )
     if decision.blocked:
         logger.warning(f"ModelRouter BLOCKED: {decision.block_reason}")
@@ -361,6 +482,7 @@ def route_llm(
                         model,
                         temperature=decision.temperature,
                         max_tokens=kwargs.get("max_tokens"),
+                        api_key=kwargs.get("api_key") or _current_api_key.get(),
                     )
                 )
             except Exception as e:

@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Tuple, cast
+from typing import Any, Dict, Mapping, Optional, Tuple, cast
 
 _MCP_ENDPOINT_ENV = {
     "k8s": "MCP_K8S_URI",
@@ -111,7 +111,7 @@ class ExecutionContext:
         )
 
     @classmethod
-    def from_cluster(cls, cluster: Any) -> "ExecutionContext":
+    def from_cluster(cls, cluster: Any, organization: Any = None) -> "ExecutionContext":
         if cluster is None or getattr(cluster, "id", None) is None:
             raise ValueError("A persisted cluster is required for execution context")
 
@@ -132,6 +132,9 @@ class ExecutionContext:
                 "notion_api_key": _value(cluster, "notion_api_key"),
                 "notion_database_id": _value(cluster, "notion_database_id"),
                 "llm_api_key": llm.get("api_key") or _value(cluster, "llm_api_key"),
+                "langfuse_public_key": _value(organization, "langfuse_public_key"),
+                "langfuse_secret_key": _value(organization, "langfuse_secret_key"),
+                "langfuse_host": _value(organization, "langfuse_host"),
             }.items()
             if value
         }
@@ -157,6 +160,21 @@ class ExecutionContext:
             key_version=int(getattr(cluster, "key_version", 1) or 1),
             context_version=int(getattr(cluster, "execution_context_version", 1) or 1),
         )
+
+    def org_langfuse_credentials(self) -> Optional[Dict[str, Optional[str]]]:
+        """Resolved per-org Langfuse creds for ``tracing.get_langfuse_callback``.
+
+        ``None`` for the no-cluster local/CLI runtime (legacy env-var
+        tracing); a dict (possibly with blank values, meaning "no tracing,
+        no fallback") for any bound cluster/org.
+        """
+        if self.organization_id == "local":
+            return None
+        return {
+            "public_key": self.credentials.get("langfuse_public_key"),
+            "secret_key": self.credentials.get("langfuse_secret_key"),
+            "host": self.credentials.get("langfuse_host"),
+        }
 
     @classmethod
     def from_environment(cls) -> "ExecutionContext":
