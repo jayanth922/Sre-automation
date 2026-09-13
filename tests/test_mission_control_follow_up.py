@@ -103,7 +103,7 @@ async def test_closed_incident_follow_up_queues_same_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_closed_incident_chat_only_follow_up_also_queues_same_thread(monkeypatch):
+async def test_closed_incident_chat_only_message_gets_immediate_reply(monkeypatch):
     incident_id = uuid.uuid4()
     cluster_id = uuid.uuid4()
     org_id = uuid.uuid4()
@@ -154,9 +154,13 @@ async def test_closed_incident_chat_only_follow_up_also_queues_same_thread(monke
         coro.close()
         return SimpleNamespace()
 
+    async def fake_build_chat_reply(message, incident, cluster):
+        return "You're welcome!"
+
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
     monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
 
     response = await mission_control.send_incident_message(
         str(incident_id),
@@ -165,11 +169,14 @@ async def test_closed_incident_chat_only_follow_up_also_queues_same_thread(monke
         db=fake_db,
     )
 
-    assert response["status"] == "FOLLOW_UP_QUEUED"
-    assert response["conversation_mode"] == "assistant"
+    # A chat-only message ("Thanks") is answered immediately from existing
+    # context instead of queuing a full re-investigation turn.
+    assert response["status"] == "RESPONDED"
+    assert response["response"] == "You're welcome!"
     assert created_events[0]["event_type"] == "human_message"
-    assert created_events[0]["payload"]["mode"] == "post_summary_follow_up"
-    assert "coroutine" in scheduled
+    assert created_events[1]["event_type"] == "assistant_message"
+    assert created_events[1]["payload"]["mode"] == "direct_reply"
+    assert "coroutine" not in scheduled
 
 
 @pytest.mark.asyncio

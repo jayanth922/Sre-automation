@@ -664,6 +664,30 @@ def _fallback_summary(objective: str, agent_results: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_live_execution_line(live_execution: Optional[Dict[str, Any]]) -> str:
+    """One line describing what the graph is doing *right now*, per the
+    redis-backed state_store (keyed by incident id — see agent_runtime.py's
+    _run_graph_impl). This is the only source of truth for "what's happening
+    at this exact moment": incident.status/timeline events only update at
+    checkpoint boundaries (a new summary, a status transition), so a question
+    asked mid-step would otherwise get an answer that's already out of date.
+    """
+    if not live_execution:
+        return ""
+    status = live_execution.get("status")
+    node = live_execution.get("current_node")
+    if not status and not node:
+        return ""
+    parts = []
+    if status:
+        parts.append(f"status={status}")
+    if node:
+        parts.append(f"current step={node}")
+    timestamp = live_execution.get("timestamp")
+    when = f" (as of {timestamp})" if timestamp else ""
+    return f"\nLive execution state right now: {', '.join(parts)}{when}\n"
+
+
 async def narrate_followup_answer(
     llm: Any,
     *,
@@ -675,24 +699,35 @@ async def narrate_followup_answer(
     incident_status: str = "",
     recent_turns: Optional[List[Dict[str, Any]]] = None,
     tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
+    live_execution: Optional[Dict[str, Any]] = None,
 ) -> str:
-    fallback = _fallback_followup(question, prior_summary)
+    fallback = _fallback_followup(question, prior_summary, live_execution)
     if not llm:
         return fallback
 
     alert_block = _format_alert_block(alert_context)
     findings_block = _format_findings_block(agent_results, tool_failures)
     status_line = f"\nCurrent incident status: {incident_status}\n" if incident_status else ""
+    live_line = _format_live_execution_line(live_execution)
     summary_block = wrap_untrusted(
         "prior_supervisor_summary",
         _truncate(prior_summary or "(no prior summary captured)", 2400),
     )
     turns_block = _format_recent_turns_block(recent_turns)
 
+    still_running = bool(live_execution and live_execution.get("status") == "RUNNING")
+    stage_framing = (
+        "The graph is still actively executing right now — treat the 'Live "
+        "execution state' line below as the authoritative answer to any "
+        "'what's happening right now' / 'current status' question, since the "
+        "prior wrap-up summary and specialist findings below may predate it."
+        if still_running
+        else "The investigation has already wrapped up and you're now in a "
+        "follow-up Q&A with the on-call engineer in the same incident chat."
+    )
     system = (
         f"{_BASE_SUPERVISOR_TONE}\n\n"
-        "The investigation has already wrapped up and you're now in a "
-        "follow-up Q&A with the on-call engineer in the same incident chat. "
+        f"{stage_framing} "
         "Answer their question directly and conversationally, grounded in the "
         "alert context, the specialist findings, the prior wrap-up summary, "
         "and the recent conversation turns below. Use the recent turns to "
@@ -706,7 +741,7 @@ async def narrate_followup_answer(
     )
     user = (
         f"User's follow-up question: {question}\n\n"
-        f"Incident objective: {objective}{status_line}\n"
+        f"Incident objective: {objective}{status_line}{live_line}\n"
         f"Alert payload:\n{alert_block}\n\n"
         f"Specialist findings from the original investigation:\n{findings_block}\n\n"
         f"My prior wrap-up summary:\n---\n{summary_block}\n---\n\n"
@@ -716,7 +751,13 @@ async def narrate_followup_answer(
     return out or fallback
 
 
-def _fallback_followup(question: str, prior_summary: str) -> str:
+def _fallback_followup(
+    question: str, prior_summary: str, live_execution: Optional[Dict[str, Any]] = None
+) -> str:
+    if live_execution and live_execution.get("status") == "RUNNING":
+        node = live_execution.get("current_node")
+        if node:
+            return f"Still running — currently on step '{node}'. I'll have more once that finishes."
     if prior_summary:
         compact = _truncate(_clean(prior_summary), 600)
         return (

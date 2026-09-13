@@ -150,10 +150,20 @@ async def maybe_open_war_room(incident_id: str, cluster_id: str, summary: str) -
 
 
 async def run_slack_bot() -> None:
-    """Start the Slack bot (socket mode) so on-call engineers can @mention it in
-    their channel — it answers verified metric questions and steers the active
-    investigation. No-op unless SLACK_BOT_TOKEN and SLACK_APP_TOKEN are set."""
-    if not (os.getenv("SLACK_BOT_TOKEN") and os.getenv("SLACK_APP_TOKEN")):
+    """Start the Slack bot (socket mode) so on-call engineers can reply in a
+    war-room thread — "approve fix", "approve/deny {gate}", "ack", or a plain
+    question routed to the memory-backed investigation handler. This is the
+    only inbound channel in the Slack-only approval/communication design, so
+    it must start whenever a bot is actually installed.
+
+    Requires SLACK_APP_TOKEN (the Slack app's Socket Mode app-level token,
+    xapp-..., generated once in the Slack app's settings — distinct from any
+    org's installed bot token). The bot token itself comes from whichever
+    organization has one installed (OAuth or manually pasted in Settings), not
+    from a global env var: a single process serves one Slack app connection,
+    so with multiple orgs the first one with a token installed is used."""
+    app_token = os.getenv("SLACK_APP_TOKEN")
+    if not app_token:
         return
     try:
         from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -162,9 +172,19 @@ async def run_slack_bot() -> None:
         logger.info(f"slack bot: not started ({e})")
         return
     try:
+        organization = None
+        if not os.getenv("SLACK_BOT_TOKEN"):
+            from backend import crud, database
+
+            async with database.AsyncSessionLocal() as db:
+                organization = await crud.get_org_with_slack_bot_token(db)
+            if organization is None:
+                logger.info("slack bot: not started (no organization has a Slack bot token installed)")
+                return
+
         registry = await _get_registry()
-        app = build_slack_app(registry)
-        handler = AsyncSocketModeHandler(app, os.getenv("SLACK_APP_TOKEN"))
+        app = build_slack_app(registry, organization=organization)
+        handler = AsyncSocketModeHandler(app, app_token)
         logger.info("🤖 Slack bot connecting (socket mode)…")
         await handler.start_async()  # long-running
     except Exception as e:

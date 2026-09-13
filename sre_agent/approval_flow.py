@@ -730,9 +730,19 @@ async def decide_action_approval(
         await db.commit()
 
     from langgraph.types import Command
+    from .redis_state_store import get_state_store
 
+    state_store = get_state_store()
+    session_id = str(incident_id)
+
+    # Stream (not a single ainvoke) so the redis-backed live status that
+    # Slack/dashboard "what's happening right now" questions read
+    # (state_store, keyed by incident id — see agent_runtime.py's
+    # _run_graph_impl) keeps advancing through the post-approval remediation
+    # nodes too, instead of going stale the moment the graph resumes.
+    output: Dict[str, Any] = {}
     try:
-        output = await graph.ainvoke(
+        async for event in graph.astream(
             Command(
                 resume={
                     "approved": True,
@@ -741,11 +751,24 @@ async def decide_action_approval(
                 }
             ),
             config=config,
-        )
+        ):
+            for node_name, node_output in event.items():
+                if isinstance(node_output, dict):
+                    output = {**output, **node_output}
+                state_store.set(
+                    session_id,
+                    {
+                        "status": "RUNNING",
+                        "current_node": node_name,
+                        "timestamp": utc_now().isoformat(),
+                    },
+                    ttl=3600,
+                )
     except Exception as exc:
+        state_store.set(session_id, {"status": "ERROR", "error": str(exc)}, ttl=3600)
         raise RuntimeError("Approved action failed to resume") from exc
 
-    if not isinstance(output, dict):
+    if not isinstance(output, dict) or not output:
         return None
 
     from sre_agent.incident_status import compute_incident_status

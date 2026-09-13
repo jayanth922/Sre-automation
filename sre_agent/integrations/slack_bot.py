@@ -134,6 +134,7 @@ def build_slack_app(registry=None, organization: Any = None):
     from ..war_room import (
         ThreadRef,
         is_ack_command,
+        is_approval_intent_near_miss,
         is_fix_approval_command,
         parse_gate_command,
         route_ack_command,
@@ -185,6 +186,17 @@ def build_slack_app(registry=None, organization: Any = None):
             if is_fix_approval_command(text):
                 approver_email = await _slack_user_email(app, event.get("user"))
                 await route_fix_approval_command(text, thread, registry, approver_email, poster)
+                return
+            if is_approval_intent_near_miss(text):
+                # Deliberately does NOT reach the LLM chat path here: that
+                # path has no structural signal for "did an approval actually
+                # happen" and will narrate a plausible-sounding but false
+                # confirmation instead of surfacing that nothing was recorded.
+                await poster(
+                    thread,
+                    "To actually authorize the pending remediation I need the exact "
+                    "phrase *approve fix* sent as its own message — could you resend it?",
+                )
                 return
 
             await route_thread_reply(text, thread, registry, poster)

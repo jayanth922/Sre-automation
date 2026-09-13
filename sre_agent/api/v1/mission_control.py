@@ -107,6 +107,31 @@ def _is_chat_only_message(message: str) -> bool:
     }:
         return True
 
+    # A question about the investigation itself (the plan, findings, status,
+    # why approval is needed) is asking the supervisor to explain what's
+    # already known — never a reason to kick off a brand-new investigation
+    # graph run. Checked before the keyword veto below, since a question like
+    # "why does this need approval" or "explain the fix" legitimately
+    # contains investigation vocabulary without requesting new investigation.
+    # Deliberately NOT a blanket `endswith("?")` — a substantive question
+    # like "what changed recently after the deploy?" still needs the keyword
+    # veto below to route it into a fresh investigation instead of a reply
+    # from stale context.
+    if normalized.startswith(
+        (
+            "explain ",
+            "why ",
+            "why's",
+            "what does",
+            "what is the",
+            "what's the",
+            "how does",
+            "how is",
+            "can you explain",
+        )
+    ):
+        return True
+
     if any(keyword in normalized for keyword in _INVESTIGATION_KEYWORDS):
         return False
 
@@ -173,6 +198,14 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
                 recent_turns=recent_turns,
             )
 
+        # incident.status/timeline events only move at checkpoint boundaries
+        # (a new summary, a status transition), so a "what's happening right
+        # now" question mid-step needs the redis-backed live execution state
+        # (current_node/status, written per-node by _run_graph_impl) rather
+        # than just the last persisted snapshot.
+        from sre_agent.redis_state_store import get_state_store
+        live_execution = get_state_store().get(str(incident.id))
+
         return await narrate_followup_answer(
             llm,
             question=message,
@@ -182,6 +215,7 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
             prior_summary=prior_summary,
             incident_status=incident_status,
             recent_turns=recent_turns,
+            live_execution=live_execution,
         )
     except Exception as exc:
         # Never let a chat reply hard-fail; produce a deterministic fallback.
@@ -447,6 +481,34 @@ async def handle_incident_message(
             incident_id,
             f"[{datetime.now(timezone.utc).isoformat()}] USER: {message}"
         )
+
+        # A pure Q&A follow-up ("explain the fix", "why does this need
+        # approval") is answered immediately from context already gathered
+        # (findings, prior summary, plan reasoning) instead of re-running the
+        # full investigation graph, which produces a fresh plan/summary, not
+        # an answer to the question actually asked.
+        if _is_chat_only_message(message):
+            assistant_reply = await _build_chat_reply(message, incident, cluster)
+
+            await crud.create_incident_timeline_event(
+                db,
+                incident_uuid,
+                event_type="assistant_message",
+                speaker_role="supervisor",
+                title="Supervisor",
+                content=assistant_reply,
+                payload={"source": source, "mode": "direct_reply"},
+            )
+            state_store.append_log(
+                incident_id,
+                f"[{datetime.now(timezone.utc).isoformat()}] ASSISTANT: {assistant_reply}"
+            )
+
+            return {
+                "status": "RESPONDED",
+                "incident_id": incident_id,
+                "response": assistant_reply,
+            }
 
         asyncio.create_task(
             _run_post_summary_follow_up(
@@ -777,8 +839,16 @@ async def approve_incident_action(
         await db.commit()
         raise HTTPException(status_code=410, detail="Approval request expired") from exc
 
-    graph = await get_agent_graph(owned_incident.cluster_id)
-    config = thread_config(pending.thread_id)
+    from sre_agent.agent_runtime import get_agent_runtime
+
+    try:
+        runtime = await get_agent_runtime(owned_incident.cluster_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Agent system unavailable") from exc
+    graph = runtime.graph
+    config = thread_config(
+        pending.thread_id, org_langfuse=runtime.context.org_langfuse_credentials()
+    )
     configurable = (config or {}).get("configurable", {})
     if configurable.get("thread_id") != pending.thread_id:
         raise HTTPException(

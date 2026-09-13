@@ -137,8 +137,24 @@ async def forward_events(
     return processed
 
 
+def _normalize_command_text(text: str) -> str:
+    """Strip the client-side noise that would otherwise defeat an exact
+    command match: a Slack @mention prefix (<@U123>), markdown emphasis
+    (*bold*/_italic_/`code`) a client may add around the command, and
+    trailing punctuation mobile keyboards like to auto-append ("approve
+    fix."). Anchored full-string regexes on the raw text are too brittle for
+    a channel real users type into — this is the single normalization point
+    every command matcher below runs through.
+    """
+    text = text or ""
+    text = re.sub(r"<@[^>]+>", "", text)
+    text = text.strip().strip("*_~`")
+    text = text.rstrip(".!?,;: \t\n")
+    return text.strip()
+
+
 GATE_COMMAND_RE = re.compile(
-    r"^\s*(approve|deny)\s+(start[-_]fix|raise[-_]pr|retry[-_]fix|close[-_]incident)\s*$",
+    r"^(approve|deny)\s+(start[-_]fix|raise[-_]pr|retry[-_]fix|close[-_]incident)$",
     re.IGNORECASE,
 )
 
@@ -147,11 +163,11 @@ GATE_COMMAND_RE = re.compile(
 # and there's nothing left waiting) — it just flips the incident's own
 # PENDING_ACKNOWLEDGMENT status to RESOLVED. See acknowledge_incident_resolution
 # in approval_flow.py.
-ACK_COMMAND_RE = re.compile(r"^\s*(?:acknowledge|ack)(?:\s+resolution)?\s*$", re.IGNORECASE)
+ACK_COMMAND_RE = re.compile(r"^(?:acknowledge|ack)(?:\s+resolution)?$", re.IGNORECASE)
 
 
 def is_ack_command(text: str) -> bool:
-    return bool(ACK_COMMAND_RE.match(text or ""))
+    return bool(ACK_COMMAND_RE.match(_normalize_command_text(text)))
 
 
 def parse_gate_command(text: str) -> Optional[tuple]:
@@ -160,7 +176,7 @@ def parse_gate_command(text: str) -> Optional[tuple]:
     no Slack, no DB — so it's unit-testable the same way format_reply and
     format_event_for_slack are.
     """
-    match = GATE_COMMAND_RE.match(text or "")
+    match = GATE_COMMAND_RE.match(_normalize_command_text(text))
     if not match:
         return None
     verb, gate_raw = match.group(1).lower(), match.group(2).lower().replace("-", "_")
@@ -274,11 +290,32 @@ async def _decide_gate_for_incident(
     return {"mode": "gate_decision", "status": "ok", "message": f"✅ {verb} `{gate}` — thanks {approver.email}."}
 
 
-FIX_APPROVAL_COMMAND_RE = re.compile(r"^\s*approve\s+fix\s*$", re.IGNORECASE)
+FIX_APPROVAL_COMMAND_RE = re.compile(r"^approve\s+fix$", re.IGNORECASE)
+
+# Fixed, exact-match set of common ways an on-call engineer signals approval
+# intent without typing the literal command — "approved", "go ahead", "lgtm",
+# etc. Matched deterministically against a known set, NOT a substring/keyword
+# scan over free text, so it can't misfire on an unrelated sentence that
+# happens to contain the word "approve". When one of these is seen instead of
+# the exact command, the caller should ask for the exact phrase rather than
+# falling through to the LLM chat path, which has no structural signal for
+# whether an approval actually happened and will narrate a plausible-sounding
+# but false confirmation if it's allowed to answer freely.
+_APPROVAL_INTENT_NEAR_MISSES = {
+    "approve", "approved", "yes approve", "please approve", "approve it",
+    "approve the fix", "approve plan", "approve the plan", "approve remediation",
+    "go ahead", "do it", "lgtm", "approved fix", "ok approve", "yes, approve",
+}
 
 
 def is_fix_approval_command(text: str) -> bool:
-    return bool(FIX_APPROVAL_COMMAND_RE.match(text or ""))
+    return bool(FIX_APPROVAL_COMMAND_RE.match(_normalize_command_text(text)))
+
+
+def is_approval_intent_near_miss(text: str) -> bool:
+    """True for a reply that clearly means to approve the pending fix but
+    isn't the exact required command — see _APPROVAL_INTENT_NEAR_MISSES."""
+    return _normalize_command_text(text).lower() in _APPROVAL_INTENT_NEAR_MISSES
 
 
 async def route_fix_approval_command(
