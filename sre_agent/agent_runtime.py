@@ -468,6 +468,16 @@ async def startup_event():
     # online heartbeats for every cluster.
     asyncio.create_task(_heartbeat_reconcile_loop())
 
+    # A post-approval remediation runs in the caller's process with no durable
+    # job behind it, so a restart strands its incident in the transient
+    # REMEDIATION_IN_PROGRESS forever. Sweep for those and tell the on-call.
+    try:
+        from sre_agent.incident_reconciler import start_reconciler
+
+        start_reconciler()
+    except Exception as reconciler_err:  # pragma: no cover - never block startup
+        logger.warning("Incident reconciler failed to start: %s", reconciler_err)
+
     # Incidents are opened by the client's own Alertmanager (their tuned SLO /
     # burn-rate / business rules) via the /alerts/webhook — Sentinel receives and
     # investigates, it does not impose platform-side fixed thresholds. There is
@@ -529,6 +539,12 @@ async def shutdown_event():
         await stop_job_worker()
     except Exception as worker_err:
         logger.warning(f"Durable job worker shutdown failed: {worker_err}")
+    try:
+        from sre_agent.incident_reconciler import stop_reconciler
+
+        await stop_reconciler()
+    except Exception as reconciler_err:
+        logger.warning(f"Incident reconciler shutdown failed: {reconciler_err}")
     await _runtime_cache.close_all()
 
 

@@ -69,6 +69,48 @@ async def close_war_room(incident_id: str) -> None:
         logger.debug(f"war-room: close skipped (non-fatal): {e}")
 
 
+async def post_to_incident_thread(incident_id: str, text: str) -> bool:
+    """Post one message into an incident's existing Slack thread.
+
+    The war room's normal outbound path is `forward_events`, an asyncio task
+    that `maybe_open_war_room` starts when the thread is opened. That task
+    does not survive a process restart — the registry is rehydrated from the
+    DB, the forwarder is not — so anything that must reach the on-call
+    *after* a restart cannot go through the bus. This posts straight to the
+    channel/ts persisted on the incident row, with the owning org's own
+    token, and reports whether it actually reached Slack.
+
+    Returns False (never raises) when the org has no Slack token, the
+    incident has no thread, or Slack rejects the post.
+    """
+    from backend import crud, database, models
+
+    try:
+        async with database.AsyncSessionLocal() as db:
+            incident = await db.get(models.Incident, uuid.UUID(str(incident_id)))
+            if incident is None or not incident.slack_channel or not incident.slack_thread_ts:
+                return False
+            channel = incident.slack_channel
+            thread_ts = incident.slack_thread_ts
+            cluster = await crud.get_cluster_by_id(db, incident.cluster_id)
+            org = await crud.get_org_by_id(db, cluster.org_id) if cluster else None
+        if org is None:
+            return False
+        from sre_agent.multitenant.slack_oauth import resolve_slack_bot_token
+
+        token = resolve_slack_bot_token(org)
+        if not token:
+            return False
+        from slack_bolt.async_app import AsyncApp
+
+        app = AsyncApp(token=token)
+        await app.client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=text)
+        return True
+    except Exception as exc:
+        logger.warning("war-room: thread post failed for %s (non-fatal): %s", incident_id, exc)
+        return False
+
+
 def _opening_text(summary: str) -> str:
     """Compose the Slack open message, mentioning on-call when configured."""
     mention = ""
