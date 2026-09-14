@@ -1562,6 +1562,16 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
          Values must be scalars, and names that identify a credential
          (PASSWORD, TOKEN, SECRET, API_KEY, …) are refused at the execution
          boundary — never propose one.
+       An env var the deployment sources from a ConfigMap or Secret
+       (`valueFrom`) is ALSO refused at that boundary: the executor will not
+       replace an indirected value with a literal, because that silently
+       detaches the variable from the thing that owns it. If your evidence
+       shows the variable you want to change is `valueFrom` — an inspect or
+       k8s finding showing `configMapKeyRef`/`secretKeyRef` rather than a
+       literal `value` — then a 'config_change' on that name CANNOT run, and
+       proposing one as a "stopgap" or to "win over" the ConfigMap wastes a
+       human approval on a step that will be refused. Use 'escalate' and say
+       which ConfigMap or Secret key a human must edit.
        Describing a config change only in the description field, with neither
        form in parameters, produces a step nothing can execute: it is blocked
        with a capability gap instead of being run. If the change you need is
