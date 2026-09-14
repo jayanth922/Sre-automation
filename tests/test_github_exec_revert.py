@@ -31,17 +31,23 @@ def github_exec(monkeypatch):
             return decorator
 
     fake_mcp = SimpleNamespace(FastMCP=_FakeMCP)
-    sys.modules["mcp"] = SimpleNamespace(server=SimpleNamespace(fastmcp=fake_mcp))
-    sys.modules["mcp.server"] = SimpleNamespace(fastmcp=fake_mcp)
-    sys.modules["mcp.server.fastmcp"] = fake_mcp
+    # `setitem`, not assignment: `mcp` is a real installed package, and leaving
+    # these stubs behind breaks every later test in the session that imports
+    # something built on it — `langchain_mcp_adapters` does `from mcp import
+    # ClientSession`, so `sre_agent.agent_runtime` stops importing at all.
+    monkeypatch.setitem(
+        sys.modules, "mcp", SimpleNamespace(server=SimpleNamespace(fastmcp=fake_mcp))
+    )
+    monkeypatch.setitem(sys.modules, "mcp.server", SimpleNamespace(fastmcp=fake_mcp))
+    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fake_mcp)
 
-    sys.path.insert(0, str(_SERVER))
+    monkeypatch.syspath_prepend(str(_SERVER))
     for name in ("guardrails", "server"):
-        sys.modules.pop(name, None)
+        monkeypatch.delitem(sys.modules, name, raising=False)
 
     spec = importlib.util.spec_from_file_location("github_exec_server_r11", _SERVER / "server.py")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["github_exec_server_r11"] = module
+    monkeypatch.setitem(sys.modules, "github_exec_server_r11", module)
     spec.loader.exec_module(module)
     module.REPO = "acme/demo"
     return module

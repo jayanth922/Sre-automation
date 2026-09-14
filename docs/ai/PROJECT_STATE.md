@@ -70,8 +70,14 @@ polls past "still firing" *and* past a too-early "clear":
 keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 (#27).
 
+**Resolution is terminal.** Every resolve path — Alertmanager clear, Slack
+`acknowledge`, Slack `mark resolved` — goes through
+`approval_flow.fire_resolution_side_effects`, whose *first* act is
+`job_store.cancel_incident_investigations`. `_run_graph_impl` refuses to start
+on an already-resolved incident, before it opens a war room (#28).
+
 ## Completed or verified work
-Twenty-seven defects found by live fire; per-defect detail is in git log. The
+Twenty-eight defects found by live fire; per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
 - **Check the sweep, not just the handler** (#19). Of any deadline stated in
@@ -85,15 +91,34 @@ the truth, records it, and then does not tell the human.** Corollaries:
 - **Ask which direction of an error a safeguard was written for** (#27). The
   poll loop's comment reasoned only about false negatives; the false positive
   sat underneath it untouched.
+- **Machinery whose only caller is a manual endpoint has no caller** (#28).
+  `request_job_cancel` was complete and correct and nothing on any resolve
+  path reached it. Grep for callers, not for the function.
+- **A test that passes alone and fails in the suite is usually global state a
+  fixture never gave back** (#28). Two leaks, both silent: a `sys.modules`
+  stub for `mcp` left installed, and a re-imported `backend.database` — a
+  second module object with its own engine, so patching
+  `backend.database.AsyncSessionLocal` patched something nothing held. Mutate
+  `sys.modules` only through `monkeypatch`, and patch the module object the
+  code under test is holding.
 
-The four most recent, all committed, none pushed: **#25** retry machinery
+The five most recent, all committed, none pushed: **#25** retry machinery
 disabled by SQLAlchemy identity-map aliasing — `fail_job()`'s `select()` hands
 back the caller's own object, so only its *return value* distinguishes;
 **#25b** terminal investigation failures now post to Slack instead of leaving
 the thread at "Incident opened" forever; **#26** no plan had ever survived
 parsing (4/4 runs, `actions` arrived as a JSON string), which is why
 `patch_resource_limits` had never run; **#27** the settle floor above, from
-`d2fb7c5d`'s "RESOLVED … after 0s".
+`d2fb7c5d`'s "RESOLVED … after 0s"; **#28** a resolved alert did not stop its
+own investigation — `bb5d557e` cleared at 17:11:15 and ran 13 more minutes and
+five specialists, was retried after a restart, and ended `investigating` with
+`resolved_at` stamped, heading for an approval request for an alert that had
+stopped firing. Both halves fixed: the resolve paths now cancel, and the
+INVESTIGATING write refuses a resolved incident (automatic triggers only — a
+person replying in the thread may still reopen one). Confirmed live by
+re-running the failure: `0b932c9c` was `investigating` with its job `running`
+when the resolved webhook arrived, and 15s later read `resolved` / `cancelled`,
+attempt count not consumed, with the cancellation posted to the Slack thread.
 
 **Observability repairs** (live, not in git): promtail uses k8s pod discovery
 instead of a hand-maintained allow-list (13/13 pods; the `pod` label the Loki
@@ -117,18 +142,6 @@ walkthrough, **never naming the `approve fix` reply that was the one thing
 needed**. Same family as #21–#24, and the Slack-only rule makes it
 load-bearing. Prompt-only fixes do not hold here (8/8 replays): put the
 correction below the model's text, as `narrative._echoed_alert_claims` does.
-
-**#28, found 2026-09-14, not yet fixed: a resolved alert does not stop its
-own investigation.** `bb5d557e` got an Alertmanager *resolved* notification at
-17:11:15 — logged `investigating → resolved, mark_resolved=True`, `resolved_at`
-stamped — and then kept investigating for 13+ more minutes (timeline seq 4–15,
-five specialists, real LLM spend), ending with `status='investigating'` while
-`resolved_at` was already set. Two things are wrong: the in-flight
-investigation overwrites the resolve (last writer wins, so the row now
-contradicts itself), and nothing cancels the job — `jobs.cancel_requested_at`
-exists and is unused on this path. The Slack consequence is the one that
-matters: this run is heading for an approval request asking a human to
-approve a remediation for an alert that stopped firing 13 minutes ago.
 
 ## Relevant files
 `sre_agent/`: `agent_state.py` (LLM-facing schemas + container decoding),

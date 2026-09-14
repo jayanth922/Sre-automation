@@ -1151,6 +1151,36 @@ async def run_graph_background_saas(
             logger.warning("admission release skipped: %s", release_err)
 
 
+# Investigation triggers nobody chose. `alertmanager_webhook` is the alert
+# pipeline; `durable_queue` is `enqueue_and_kick`'s default, which is what a
+# caller that never said gets. Anything else — `manual_trigger` from the
+# dashboard, `slack` from a thread reply — is a person asking for the work on
+# purpose, and stays allowed even on a resolved incident.
+_AUTOMATIC_INVESTIGATION_TRIGGERS = frozenset(
+    {"alertmanager_webhook", "durable_queue"}
+)
+
+
+def _investigation_trigger(job_row: Any) -> str:
+    """What asked for this investigation, per the job's own payload.
+
+    Unreadable or absent means automatic: the alert pipeline is the
+    overwhelming majority of jobs, and a run with no recorded requester is
+    exactly the kind this guard is here to stop.
+    """
+    if job_row is None:
+        return "durable_queue"
+    payload = getattr(job_row, "payload", None)
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload or "{}")
+        except ValueError:
+            return "durable_queue"
+    if not isinstance(payload, dict):
+        return "durable_queue"
+    return str(payload.get("triggered_by") or "durable_queue")
+
+
 async def _run_graph_impl(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
@@ -1173,6 +1203,88 @@ async def _run_graph_impl(
     # Use incident ID as session ID for internal state
     session_id = str(incident_id)
     logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id} (Job: {job_id})")
+
+    # Backstop: never (re)start an *automatic* investigation for an
+    # already-resolved incident. Resolution now cancels in-flight
+    # investigations, but that is a handler and this is the write it protects
+    # against: the status update below sets INVESTIGATING, so a run that
+    # starts after a resolve — a retry claimed from the queue, or a race with
+    # the resolve itself — drags the incident back open. Live on 2026-09-14
+    # incident bb5d557e cleared at 17:11:15 and came back `investigating`
+    # with `resolved_at` still stamped.
+    #
+    # Work a person asked for is deliberately exempt. Someone replying in the
+    # thread of a resolved incident has chosen to reopen it, and Slack is the
+    # only channel this product has — refusing that request in a timeline
+    # event nobody reads would be the same silence this guard exists to stop.
+    # Only `_AUTOMATIC_INVESTIGATION_TRIGGERS` are refused.
+    #
+    # Placed above the war-room, Jira and lifecycle publishes on purpose: a
+    # run that will not happen should not announce itself first.
+    async with database.AsyncSessionLocal() as db:
+        existing_incident = await db.get(models.Incident, incident_id)
+        existing_status = getattr(
+            getattr(existing_incident, "status", None), "value", None
+        ) or getattr(existing_incident, "status", None)
+        triggered_by = _investigation_trigger(
+            await db.get(models.Job, job_id) if job_id else None
+        )
+        if (
+            existing_status == IncidentStatus.RESOLVED.value
+            and triggered_by in _AUTOMATIC_INVESTIGATION_TRIGGERS
+        ):
+            logger.info(
+                "⏹️ Incident %s is already resolved; not starting investigation "
+                "(job %s)",
+                incident_id,
+                job_id,
+            )
+            try:
+                await crud.create_incident_timeline_event(
+                    db,
+                    incident_id,
+                    event_type="investigation_cancelled",
+                    speaker_role="system",
+                    title="Investigation not started",
+                    content=(
+                        "This incident was already resolved, so the "
+                        f"investigation of `{alert_name}` was not started. "
+                        "Nothing further will be asked of the on-call for it."
+                    ),
+                    payload={
+                        "source": "runtime",
+                        "job_id": str(job_id) if job_id else None,
+                        "reason": "incident_already_resolved",
+                    },
+                )
+            except Exception as timeline_error:
+                logger.warning(
+                    "Failed to persist investigation-cancelled event for %s: %s",
+                    incident_id,
+                    timeline_error,
+                )
+            if job_id:
+                # Stamp the cancel flag and hand the job back to the worker's
+                # own failure path, which reads that flag and records
+                # CANCELLED without consuming a retry. Finalising the row here
+                # instead would make the worker's `complete_job` fail on an
+                # unowned lease and report this as a lost lease.
+                from .durable_jobs import DurableJobError
+
+                await db.execute(
+                    models.Job.__table__.update()
+                    .where(
+                        models.Job.id == job_id,
+                        models.Job.cancel_requested_at.is_(None),
+                    )
+                    .values(cancel_requested_at=datetime.now(timezone.utc))
+                )
+                await db.commit()
+                raise DurableJobError(
+                    f"incident {incident_id} is already resolved; "
+                    "investigation not started"
+                )
+            return
 
     # Mirror this incident into a Slack war-room thread (no-op unless Slack is
     # configured). Fire-and-forget; never blocks or breaks the investigation.
@@ -1211,12 +1323,22 @@ async def _run_graph_impl(
 
     # Update Incident Status to INVESTIGATING and Job to RUNNING
     async with database.AsyncSessionLocal() as db:
-        # Update Incident
+        # Update Incident. `resolved_at` is written alongside the status, not
+        # left as it was: a person can reopen a resolved incident by asking
+        # for work in its thread, and a row reading `investigating` while
+        # still carrying a `resolved_at` is the contradiction that made #28
+        # hard to see. `resolved_at_for_status` is the one place that decides
+        # which of the two the row gets, in both directions.
         stmt_inc = (
             models.Incident.__table__
             .update()
             .where(models.Incident.id == incident_id)
-            .values(status=IncidentStatus.INVESTIGATING)
+            .values(
+                status=IncidentStatus.INVESTIGATING,
+                resolved_at=resolved_at_for_status(
+                    IncidentStatus.INVESTIGATING, datetime.now(timezone.utc)
+                ),
+            )
         )
         await db.execute(stmt_inc)
 

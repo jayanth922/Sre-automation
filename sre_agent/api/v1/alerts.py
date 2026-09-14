@@ -389,6 +389,27 @@ async def _reconcile_resolved_alert(
         )
         await db.commit()
 
+    # An externally-cleared incident is resolved like any other, and owes the
+    # same side effects — above all, stopping its own investigation. This path
+    # was the one resolve path that fired none of them: live on 2026-09-14
+    # bb5d557e cleared at 17:11:15 and its investigation kept running, was
+    # retried after a restart, dragged the row back to `investigating` while
+    # `resolved_at` stayed stamped, and spent five more specialists on a
+    # condition that no longer existed.
+    if decision.mark_resolved:
+        try:
+            from sre_agent.approval_flow import fire_resolution_side_effects
+
+            await fire_resolution_side_effects(
+                incident, str(cluster.org_id), str(cluster.id)
+            )
+        except Exception as side_effect_err:
+            logger.warning(
+                "Resolution side effects failed for incident %s: %s",
+                incident.id,
+                side_effect_err,
+            )
+
     await crud.create_incident_timeline_event(
         db,
         incident.id,

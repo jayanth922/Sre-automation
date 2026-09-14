@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class ApprovalValidationError(ValueError):
@@ -593,23 +596,75 @@ async def acknowledge_incident_resolution(
         await db.commit()
         await db.refresh(incident)
 
-    await _fire_resolution_side_effects(incident, organization_id, cluster_id)
+    await fire_resolution_side_effects(incident, organization_id, cluster_id)
     return incident
 
 
-async def _fire_resolution_side_effects(
+async def fire_resolution_side_effects(
     incident: Any, organization_id: str, cluster_id: str
 ) -> None:
-    """Close the war room, publish the lifecycle event and transition Jira.
+    """Stop the investigation, close the war room, publish, transition Jira.
 
-    Every path that resolves an incident owes the same three side effects —
-    an incident closed without them leaves its Slack thread live and the
-    dashboards showing it open — so they live here once rather than in each
-    caller.
+    Every path that resolves an incident owes the same four side effects —
+    an incident closed without them leaves its Slack thread live, the
+    dashboards showing it open, and its investigation still running — so they
+    live here once rather than in each caller.
     """
-    from backend import models
+    from backend import database, models
 
     incident_id = str(incident.id)
+    # First, because it is the only one that stops work still being done. An
+    # investigation does not notice that its incident was resolved underneath
+    # it: it keeps querying, planning, and finally asks a human in Slack to
+    # approve a cluster write for an alert that has stopped firing.
+    cancelled: list = []
+    try:
+        from .job_store import cancel_incident_investigations
+
+        async with database.AsyncSessionLocal() as db:
+            cancelled = await cancel_incident_investigations(db, incident.id)
+        if cancelled:
+            logger.info(
+                "Resolution of %s cancelled %d in-flight investigation job(s): %s",
+                incident_id,
+                len(cancelled),
+                ", ".join(str(job_id) for job_id in cancelled),
+            )
+    except Exception as cancel_err:
+        logger.warning(
+            "Could not cancel investigations for resolved incident %s: %s",
+            incident_id,
+            cancel_err,
+        )
+    if cancelled:
+        # Slack is the only channel this platform has, and the thread the
+        # on-call is watching currently reads ":rotating_light: Incident
+        # opened" and nothing else. Stopping the work silently is the same
+        # failure as failing silently: the reader cannot tell a cancelled
+        # investigation from one still thinking. Only sent when something was
+        # actually stopped — saying "stopped" about nothing is its own lie.
+        notified = False
+        try:
+            from .war_room_service import post_to_incident_thread
+
+            notified = await post_to_incident_thread(
+                incident_id,
+                f":white_check_mark: `{incident.title}` is resolved, so the "
+                "investigation that was still running for it has been stopped. "
+                "No approval will be requested for this incident.",
+            )
+        except Exception as notify_err:
+            logger.warning(
+                "Cancellation notice failed for incident %s: %s",
+                incident_id,
+                notify_err,
+            )
+        if not notified:
+            logger.error(
+                "Incident %s resolved and its investigation cancelled, but NO "
+                "Slack notice was delivered to the thread",
+                incident_id,
+            )
     try:
         from .war_room_service import close_war_room
 
@@ -695,7 +750,7 @@ async def mark_incident_resolved_by_human(
         await db.commit()
         await db.refresh(incident)
 
-    await _fire_resolution_side_effects(incident, organization_id, cluster_id)
+    await fire_resolution_side_effects(incident, organization_id, cluster_id)
     return incident
 
 

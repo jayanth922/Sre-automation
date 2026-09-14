@@ -244,6 +244,50 @@ async def request_job_cancel(
     return _to_record(job)
 
 
+async def cancel_incident_investigations(
+    db: AsyncSession, incident_id: uuid.UUID, *, now: Optional[datetime] = None
+) -> list[uuid.UUID]:
+    """Ask every unfinished investigation for one incident to stop.
+
+    The cancellation machinery was complete and unreachable: `request_job_cancel`
+    had exactly one caller, a manual HTTP endpoint, so in practice nothing ever
+    stopped an investigation that had been overtaken by events. An incident
+    whose alert clears externally is the common case, and everything the run
+    does after that point is predicated on a condition that no longer exists —
+    it queries a firing alert, plans a remediation for it, and finally asks a
+    human in Slack to authorise a cluster write to fix something that already
+    stopped happening.
+
+    Returns the jobs actually asked to stop, so the caller can say so in the
+    timeline rather than claiming a cancellation that did not happen.
+    """
+    clock = now or _utcnow()
+    result = await db.execute(
+        select(models.Job).where(
+            models.Job.incident_id == incident_id,
+            models.Job.job_type == models.JobType.INVESTIGATION,
+            models.Job.status.in_(
+                [models.JobStatus.PENDING, models.JobStatus.RUNNING]
+            ),
+            models.Job.cancel_requested_at.is_(None),
+        )
+    )
+    cancelled: list[uuid.UUID] = []
+    for job in result.scalars().all():
+        job.cancel_requested_at = clock
+        # A pending job has no worker to notice the flag, so retire it here.
+        # A running one is left RUNNING on purpose: its own heartbeat raises,
+        # the worker cancels the task, and `fail_job` records the CANCELLED —
+        # marking it terminal from the outside would strand that worker.
+        if job.status == models.JobStatus.PENDING:
+            job.status = models.JobStatus.CANCELLED
+            job.completed_at = clock
+        cancelled.append(job.id)
+    if cancelled:
+        await db.commit()
+    return cancelled
+
+
 async def complete_job(
     db: AsyncSession,
     job_id: uuid.UUID,

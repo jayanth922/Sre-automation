@@ -138,8 +138,23 @@ def test_database_module_uses_strict_debug(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
 
     # Ensure a clean settings cache + module import.
-    sys.modules.pop("sre_agent.config", None)
-    sys.modules.pop("backend.database", None)
+    #
+    # Through `monkeypatch`, not `sys.modules.pop`: re-importing
+    # `backend.database` mints a *second* module object with its own engine and
+    # `AsyncSessionLocal`, and every module that already did `from backend
+    # import database` keeps the first one. Leaving the new one installed
+    # splits the process in two for the rest of the session — a later test that
+    # patches `backend.database.AsyncSessionLocal` then patches an object no
+    # running code holds, and its fake session is silently ignored in favour of
+    # a real one. The re-import rebinds the attribute on the parent package as
+    # well as the `sys.modules` entry, so both halves have to be restored.
+    import backend
+    import sre_agent
+
+    monkeypatch.delitem(sys.modules, "sre_agent.config", raising=False)
+    monkeypatch.delitem(sys.modules, "backend.database", raising=False)
+    monkeypatch.setattr(backend, "database", backend.database, raising=False)
+    monkeypatch.setattr(sre_agent, "config", sre_agent.config, raising=False)
     # Load real package modules.
     if str(_ROOT) not in sys.path:
         sys.path.insert(0, str(_ROOT))
