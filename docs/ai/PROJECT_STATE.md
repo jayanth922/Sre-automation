@@ -63,6 +63,18 @@ synchronously in the caller's process, no lease, no retry). An approval
 deadline is likewise a clock, not an event: every other `EXPIRED` write is
 reactive, so a lapsed offer is retired only here.
 
+**An active incident is either *worked* or *parked*.** `OPEN`,
+`INVESTIGATING`, `REMEDIATION_IN_PROGRESS` have work in flight and
+`AWAITING_APPROVAL` has a question in front of a human — dedup there is
+silent and right. `INVESTIGATED`, `REMEDIATION_FAILED`,
+`VERIFICATION_UNKNOWN`, `PENDING_ACKNOWLEDGMENT` are parked: nothing runs and
+nobody was asked, so no future event moves them and the re-firing alert dies
+in the dedup branch. `alerts._PARKED_INCIDENT_STATUSES` posts one notice per
+hour there. **Nothing re-runs an investigation** — there is no war-room
+command and `/incidents/trigger` dedups on the same title — so `mark
+resolved` (closing the incident so the next alert opens a fresh one) is the
+only real way forward, and it is what both parked and lapse notices say.
+
 **Every node that emits a namespace must be told the cluster's namespace.**
 `act_phase` hard-blocks actions outside it; the swarm and the planner
 (`planner_namespace_scope`) both receive it explicitly.
@@ -72,40 +84,49 @@ and resolved, so `alerts.py` clears a condition only when no member of the
 same payload still reports it firing.
 
 ## Completed or verified work
-Nineteen defects found and fixed by live fire. The recurring pattern, and the
-thing to keep testing for: **the system computes the truth, records it, and
-then does not tell the human.** Learning demanded a status the graph cannot
-produce; a stranded remediation stayed silent for 27h; the approval prompt
-counted notifications and unexecutable actions as cluster writes; a PROD
-rollback could be authorized only by the planner's own parameters, never by
-the human whose approval the system asks for; an approval announced its own
-deadline and never said when it passed. Per-defect detail is in git log.
+Twenty-two defects found and fixed by live fire. The recurring pattern, and
+the thing to keep testing for: **the system computes the truth, records it,
+and then does not tell the human.** Learning demanded a status the graph
+cannot produce; a stranded remediation stayed silent for 27h; the approval
+prompt counted notifications and unexecutable actions as cluster writes; a
+PROD rollback could be authorized only by the planner's own parameters, never
+by the human whose approval the system asks for; an approval announced its
+own deadline and never said when it passed; a re-firing alert died in the
+dedup branch. Per-defect detail is in git log.
 
-Corollary from #19: **check the sweep, not just the handler.** The
-late-`approve fix` handler was correct throughout, so every test passed while
-the DB lied for hours. Ask of any deadline stated in Slack: what fires then?
+Two corollaries worth applying to anything new:
+- **Check the sweep, not just the handler** (#19). The late-`approve fix`
+  handler was correct throughout, so every test passed while the DB lied for
+  hours. Ask of any deadline stated in Slack: what fires then?
+- **Check where the alert goes when the incident is already open** (#22).
+  Dedup is the one path with no investigation behind it, so nothing else
+  would ever notice the condition again.
+- **Check that a message names a command the system accepts** (#22). Two
+  notices offered "re-run the investigation"; nothing does that.
 
 ## Active problem
 None blocking. #18 (`policy_gate` rollback floor) is deployed but unseen live,
-as no run has proposed a production rollback since.
-
-Open honesty defect: the Supervisor's TL;DR for `d3ca5138` asserted "49 MiB
-away from the 256 Mi pod limit and OOMKill" while its own metrics in the same
-message read 305.2 MiB and the Reflector had already refused the claim
-("imminent OOMKill is not confirmed"). The narrative trusted a stale alert
-annotation over the investigation's own evidence. Root fix is the
-`*MemoryApproachingLimit` descriptions in the meridian manifests; the wider
-question is why the summariser outranked its own data.
+as no run has proposed a production rollback since. #20 (planner must
+`escalate` rather than propose a `valueFrom` `config_change`) and #21
+(narrative must not restate a stale alert annotation as fact) are deployed
+but not yet live-exercised — both need a fresh memory-leak investigation,
+which is blocked below.
 
 ## Relevant files
 `sre_agent/`: `executor.py`, `act_phase.py`, `approval_flow.py` (the Slack
 message that gates everything), `policy_gate.py`, `incident_reconciler.py`,
-`graph_builder.py` (planner/swarm prompts), `resolution_report.py`; plus
+`api/v1/alerts.py` (dedup + parked-incident notice), `graph_builder.py`
+(planner/swarm prompts), `narrative.py` (the human-facing TL;DR),
+`resolution_report.py`; plus
 `edge_mcp_servers/mcp_servers/executor_real/server.py` (edge guardrails).
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1132 passed,
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1164 passed,
   3 skipped**.
+- **Parked re-fire notice confirmed live**: `d3ca5138` and `f8ca9a54` each
+  got exactly one notice (11:19:00Z / 11:14:38Z) with an `alert_refired`
+  timeline row; the 11:20:00Z redelivery was suppressed by the cooldown and
+  dedup still created zero incidents.
 - **Clean end-to-end live run, `dc1712ca`**: 7 firing series → one incident →
   correct root cause → Slack `approve fix` → `1/1 mutating action EXECUTED` →
   `Verification: RESOLVED (alert no longer firing after 330s)` → generative
@@ -153,13 +174,27 @@ are lowercase; `incident_timeline_events.payload_json` is **text**, so cast
 capped.
 
 ## Next bounded task
-Task #4 classes exercised: slow-query (`dc1712ca`), dependency-down
-(`8c925dbd`, `b5287f11`), client-side/false-positive (`2c49ac9d` — the agent
-correctly proposed **zero** mutations), unhandled application exception
-(`f8ca9a54`), memory-leak (`d3ca5138`, investigation only — window lapsed).
+Task #4 classes exercised: slow-query (`dc1712ca` — executed a real
+`config_change` → `patch_deployment_env`, so that path is closed),
+dependency-down (`8c925dbd`, `b5287f11`), client-side/false-positive
+(`2c49ac9d` — the agent correctly proposed **zero** mutations), unhandled
+application exception (`f8ca9a54`), memory-leak (`d3ca5138`, investigation
+only — window lapsed).
 
-Remaining: re-run the memory-leak class and approve it promptly — still the
-only route to the *executable* `config_change` path, and an honesty test since
-a restart is only a band-aid there. Then Task #5 (hardware-type incidents).
-One real in-thread Slack *question* remains the last unexercised link of the
-follow-up path.
+**Blocked on a human in Slack.** `d3ca5138` is parked at `investigated` and
+dedup folds every re-firing memory alert into it, so no fresh investigation
+can start. Reply `mark resolved` on its thread; the next delivery (about a
+minute) opens a new incident, and replying `approve fix` promptly on that one
+exercises #20 (the planner should `escalate` about ConfigMap
+`meridian-config`, not propose a `config_change` on the `valueFrom`-sourced
+`CHAOS_MODE`), #21 (the TL;DR must not repeat the rule's stale "256Mi / an
+OOMKill is imminent" prose over its own 305 MiB measurement against the live
+768Mi limit), and restart-as-band-aid honesty. The leak is live at the app
+default 1 KB/request, ~236 MB simulated against a 200 MB threshold —
+comfortably firing, no OOM risk. Tune it at
+`POST http://<checkout clusterIP>:8001/admin/config`
+`{"leak_kb_per_request": N}` (ClusterIPs are reachable from the Codespace
+host; `kubectl port-forward` is not — the node has no `socat`).
+
+Then Task #5 (hardware-type incidents). One real in-thread Slack *question*
+remains the last unexercised link of the follow-up path.
