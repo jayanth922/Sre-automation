@@ -235,6 +235,17 @@ def build_specialist_task_brief(
         "failure — flag it explicitly) from 'tool returned no data' "
         "(a real signal). Never conflate the two."
     )
+    lines.append(
+        "6. The 'summary' and 'description' above are sentences a human "
+        "typed into a rule file, not measurements. Their thresholds, "
+        "resource limits and predicted consequences routinely no longer "
+        "match the live system. Use them to aim your queries, then report "
+        "only what your tools returned. If you repeat a limit or an event "
+        "from that prose ('the 256Mi pod limit', 'an OOMKill'), say where "
+        "it came from and that you did not verify it — the supervisor "
+        "cannot tell your measurements from your quotations, and an "
+        "unmarked quotation reaches the on-call engineer as fact."
+    )
     if auto_approve:
         lines.append("")
         lines.append(
@@ -252,11 +263,18 @@ _NUMERIC_PATTERN = re.compile(
 
 
 def _extract_alert_evidence(alert_context: Any) -> List[str]:
-    """Pull out the numeric facts the alert ITSELF stated.
+    """Pull out the numbers that appear in the alert's own text.
 
-    These prove the monitoring pipeline produced data, so the supervisor
-    must NOT later conclude that 'monitoring is broken'. We surface them
-    explicitly into the synthesis prompt to forbid that bad outcome.
+    Collectively they prove the monitoring pipeline produced data, so the
+    supervisor must NOT later conclude that 'monitoring is broken'. We
+    surface them into the synthesis prompt to forbid that bad outcome.
+
+    Individually they are not facts, and the prompt must not call them
+    that. The values are scraped out of the `summary`/`description` prose,
+    where a live figure templated in by Prometheus sits in the same
+    sentence as a threshold and a pod limit the rule author typed by hand
+    ("simulated heap is 226.1MiB, above 200MB (pod limit is 256Mi)"). No
+    text-level rule separates the measured one from the stale ones.
     """
     data = _alert_to_dict(alert_context)
     if not data:
@@ -296,6 +314,123 @@ def _extract_alert_evidence(alert_context: Any) -> List[str]:
         if len(facts) >= 6:
             break
     return facts
+
+
+# A figure is a number welded to a unit: "256Mi", "200MB", "226.1MiB", "81%",
+# "330s". Bare numbers are excluded on purpose — "147" matches a line number
+# as readily as a threshold. The tail is `(?!\w)` rather than `\b`: after a
+# "%" there is no word boundary before a space, so `\b` silently refused to
+# match "85% limit" at all.
+_FIGURE = r"\d+(?:\.\d+)?\s*(?:%|Ki?B?|Mi?B?|Gi?B?|Ti?B?|ms|s)(?!\w)"
+
+# ...and only a figure the prose presents as a CAPACITY of the running
+# system is a claim worth flagging. An alert's description mixes three kinds
+# of number: the live value Prometheus templated in, the threshold that made
+# the rule fire, and a capacity the author typed from memory. Only the third
+# is a claim about the cluster, and only the third goes stale silently — the
+# threshold is true by construction (it is why the alert exists) and the live
+# value is a measurement.
+#
+# Flagging all three would put "carried over from the alert text, not
+# measured" on a slow-query alert's "p99 is 2.5s" the moment the Prometheus
+# Specialist measures 2.5s itself and says so — telling the on-call to
+# distrust the one number in the message that two sources agree on. A caveat
+# that cries wolf is worse than no caveat.
+_CAPACITY_WORDS = r"limit|capacity|quota|ceiling|cap|maximum|max|allocation"
+# Either order, with room for the words alert authors put between: "pod
+# limit is 256Mi", "limit of 768Mi", "the 512Mi memory cap".
+_CAPACITY_FIGURE_RE = re.compile(
+    rf"(?:{_CAPACITY_WORDS})\b[\s:=(]*(?:of|is|are|was|at|to)?[\s:=(]*({_FIGURE})"
+    rf"|({_FIGURE})\s*(?:\w+\s+){{0,2}}(?:{_CAPACITY_WORDS})\b",
+    re.IGNORECASE,
+)
+
+# Consequences a rule author predicts in prose. Deliberately short, and
+# deliberately without "restart" or "error": a specialist can genuinely
+# measure a restart count or an error rate, and flagging a real measurement
+# as an echo would teach the narrator to doubt its own evidence.
+_PREDICTED_EVENTS = (
+    "oomkill",
+    "crashloop",
+    "diskfull",
+    "eviction",
+    "throttling",
+    "saturation",
+)
+
+
+def _squash(text: str) -> str:
+    """Lowercase, strip everything but digits/letters/dots.
+
+    "256 Mi", "256Mi" and "256mi" are the same claim; "OOM kill", "OOM-kill"
+    and "OOMKill" are the same word.
+    """
+    return re.sub(r"[^a-z0-9.]", "", (text or "").lower())
+
+
+def _echoed_alert_claims(
+    alert_context: Any, agent_results: Dict[str, Any]
+) -> List[str]:
+    """Capacities and predicted consequences the alert asserts and a finding
+    only repeats.
+
+    Specialists are handed the alert's `summary`/`description` and quote them
+    back. By the time the quotation reaches the synthesis prompt it is inside
+    a block headed "Prometheus Specialist" and reads exactly like something a
+    tool returned — on d3ca5138 the specialist wrote "climbed ... well past
+    the 256Mi pod limit, then froze flat, which lines up with an OOMKill",
+    and both halves came from the rule file, not from a graph. The live limit
+    was 768Mi and the container had never been OOMKilled.
+
+    Asking the model to notice the overlap does not work; four replays of the
+    real evidence asserted it anyway. The overlap is computable, so compute
+    it here. Kept deliberately narrow — see `_CAPACITY_FIGURE_RE` and
+    `_PREDICTED_EVENTS` for what is excluded and why.
+    """
+    data = _alert_to_dict(alert_context)
+    annotations = (data.get("annotations") if isinstance(data, dict) else {}) or {}
+    prose = " ".join(
+        str(annotations.get(key) or "")
+        for key in ("summary", "description")
+        if isinstance(annotations, dict)
+    )
+    if data.get("summary"):
+        prose += " " + str(data["summary"])
+    if not prose.strip() or not agent_results:
+        return []
+
+    findings = _squash(
+        " ".join(_safe_text(value) for value in agent_results.values())
+    )
+    if not findings:
+        return []
+
+    echoed: List[str] = []
+    seen: set = set()
+    for match in _CAPACITY_FIGURE_RE.finditer(prose):
+        figure = (match.group(1) or match.group(2) or "").strip()
+        key = _squash(figure)
+        if key and key not in seen and key in findings:
+            seen.add(key)
+            echoed.append(figure)
+    squashed_prose = _squash(prose)
+    for event in _PREDICTED_EVENTS:
+        if event in squashed_prose and event in findings and event not in seen:
+            seen.add(event)
+            echoed.append(_as_written(event, prose))
+    return echoed[:8]
+
+
+def _as_written(term: str, prose: str) -> str:
+    """`term` spelled the way the alert spells it.
+
+    The vocabulary is squashed for matching ("oomkill"), but the caveat is
+    read by a person and quoting the alert back to them only helps if it
+    looks like the alert: "OOMKill", not "oomkill".
+    """
+    pattern = r"[\s\-_]*".join(re.escape(char) for char in term)
+    found = re.search(pattern, prose, re.IGNORECASE)
+    return found.group(0) if found else term
 
 
 def _format_label_hint_block(alert_context: Any) -> str:
@@ -623,6 +758,10 @@ async def narrate_supervisor_summary(
     label_hints_block = wrap_untrusted(
         "alert_label_hints", label_hints or "(none)"
     )
+    echoed = _echoed_alert_claims(alert_context, agent_results)
+    echoed_block = wrap_untrusted(
+        "echoed_alert_claims", ", ".join(echoed) if echoed else "(none)"
+    )
 
     system = (
         f"{_BASE_SUPERVISOR_TONE}\n\n"
@@ -672,12 +811,38 @@ async def narrate_supervisor_summary(
         "wins — say so explicitly and name both numbers. Never restate an "
         "annotation's prediction ('an OOMKill is imminent', 'the disk will "
         "fill in an hour') as something that is happening; if the gathered "
-        "evidence does not support it, report that the alert overstates it."
+        "evidence does not support it, report that the alert overstates it.\n"
+        "- A specialist repeating the alert's own wording is STILL the alert's "
+        "wording, not a measurement. Specialists are handed the same "
+        "annotations you are, and they quote them back ('well past the 256Mi "
+        "pod limit', 'which lines up with an OOMKill'). You cannot tell that "
+        "apart by reading, so you are not asked to: the ECHOED CLAIMS list "
+        "below was computed for you, and every entry in it appears both in "
+        "the alert's prose and in a specialist's report. Each one is the same "
+        "unverified claim arriving twice, never corroboration. You are "
+        "FORBIDDEN from writing an echoed claim as measured, confirmed, "
+        "observed, or established — including hedged forms ('appears to have "
+        "hit an OOMKill', 'likely past the limit'), which read to an on-call "
+        "engineer as a finding. Attribute it to the alert, and name the one "
+        "check that would settle it (`kubectl describe pod` for an OOMKill, "
+        "the deployment's `resources.limits` for a limit)."
     )
     user = (
         f"Incident objective: {objective}\n\n"
         f"Alert payload:\n{alert_block}\n\n"
-        f"Numeric facts already in the alert (proof the pipeline worked): {facts_block}\n"
+        # Deliberately NOT called "facts": _extract_alert_evidence scrapes
+        # these out of the annotation prose, so the list mixes live values
+        # templated in by Prometheus with thresholds and pod limits the rule
+        # author typed by hand. Calling the mixture "numeric facts" is what
+        # let a stale "256Mi pod limit" reach the on-call as measurement.
+        f"Numbers appearing in the alert text — proof the pipeline produced "
+        f"data, but a MIX of live values and hand-typed thresholds/limits, so "
+        f"no single one of them is a verified property of the running system: "
+        f"{facts_block}\n"
+        f"ECHOED CLAIMS — these appear in the alert's own prose AND in a "
+        f"specialist's report, so a specialist is quoting the alert back to "
+        f"you. Not corroboration. Never write one as measured or confirmed: "
+        f"{echoed_block}\n"
         f"Actionable label hints from the alert: {label_hints_block}\n\n"
         f"Evidence gathered (raw; attribute each item to the source named in its "
         f"heading):\n{findings_block}\n\n"

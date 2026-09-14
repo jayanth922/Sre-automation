@@ -10,6 +10,9 @@ from sqlalchemy import select
 
 from backend import crud, database, models
 
+# Safe at module scope: narrative imports only prompt_guard from this package.
+from .narrative import _echoed_alert_claims
+
 logger = logging.getLogger(__name__)
 
 VISIBLE_SPECIALIST_LABELS = {
@@ -503,6 +506,32 @@ def build_supervisor_summary_content(
                 f"⚠️ **Unreconciled figures — {conflict_text}.** The available "
                 "facts are inconsistent on those values, so treat none of them "
                 "as a settled number until the sources are reconciled.",
+            ]
+        )
+
+    # Figures and consequences the alert's prose asserts and a specialist
+    # merely repeats. The narrator is told about these and told not to
+    # present them as findings, and it does anyway: on d3ca5138's real
+    # evidence, eight of eight replays wrote "past the 256 Mi pod limit"
+    # and "appears to have hit an OOMKill" — the live limit is 768Mi and
+    # the container has never been OOMKilled. A prompt rule is an argument
+    # with a model; the correction underneath it is not, so the on-call
+    # gets the caveat whether or not the narration cooperated.
+    echoed = _echoed_alert_claims(alert_context, agent_results)
+    if echoed:
+        content = "\n".join(
+            [
+                content,
+                "",
+                "---",
+                f"⚠️ **Carried over from the alert text, not measured — "
+                f"{', '.join(echoed)}.** Those appear in this alert's own "
+                "`summary`/`description` *and* in a specialist's report, so "
+                "the specialist is quoting the rule file back, not "
+                "confirming it. Alert prose goes stale: verify against the "
+                "live system (`kubectl describe pod` for a kill or restart, "
+                "the deployment's `resources.limits` for a limit) before "
+                "acting on any of them.",
             ]
         )
 

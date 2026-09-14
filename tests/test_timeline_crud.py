@@ -223,3 +223,98 @@ def test_genuinely_different_latency_readings_still_get_flagged():
     )
 
     assert payload["conflicting_numeric_facts"]["latency"]
+
+
+# --- Claims the alert asserts and a specialist only repeats ----------------
+#
+# d3ca5138, live: the rule's description says "(pod limit is 256Mi) — an
+# OOMKill is imminent". The real limit is 768Mi and the container has never
+# been OOMKilled. The Prometheus Specialist was handed that description and
+# wrote it back as "well past the 256Mi pod limit ... lines up with an
+# OOMKill", at which point it reached the narrator inside a block headed
+# with a specialist's name and became, to the on-call, a measurement.
+#
+# Eight replays of that exact evidence through the deployed prompt — four
+# before the narrator was warned about echoes and four after — asserted it
+# every time. So the caveat is appended here, below the narration, where no
+# model gets a vote.
+
+_MEMORY_ALERT = SimpleNamespace(
+    alert_name="CheckoutMemoryApproachingLimit",
+    severity="critical",
+    annotations={
+        "summary": "checkout-service memory approaching pod limit",
+        "description": (
+            "checkout-service simulated heap is 226.1MiB, above 200MB "
+            "(pod limit is 256Mi) — an OOMKill is imminent unless the leak "
+            "is reverted."
+        ),
+    },
+)
+
+_ECHOING_FINDING = (
+    "Confirmed the memory leak — process_resident_memory_bytes climbed from "
+    "~101.8 MiB to a ~305.2 MiB plateau, well past the 256Mi pod limit, then "
+    "froze flat, which lines up with an OOMKill."
+)
+
+
+def test_an_echoed_limit_and_consequence_are_flagged_as_unmeasured():
+    content, _payload = build_supervisor_summary_content(
+        "",
+        {"metrics_agent": _ECHOING_FINDING},
+        query="Investigate memory",
+        alert_context=_MEMORY_ALERT,
+        narrative="## TL;DR\nappears to have hit an OOMKill past the 256 Mi limit.",
+    )
+
+    assert "Carried over from the alert text, not measured" in content
+    assert "256Mi" in content
+    assert "OOMKill" in content
+    assert "kubectl describe pod" in content
+
+
+def test_the_echo_caveat_keeps_the_narration_above_it():
+    """Same rule as the conflict caveat: a caveat annotates the conclusion,
+    it never replaces it."""
+    content, _payload = build_supervisor_summary_content(
+        "",
+        {"metrics_agent": _ECHOING_FINDING},
+        query="Investigate memory",
+        alert_context=_MEMORY_ALERT,
+        narrative="## TL;DR\nA ValueError at app.py:147 is leaking memory.",
+    )
+
+    assert "A ValueError at app.py:147 is leaking memory." in content
+    assert content.index("ValueError") < content.index("Carried over")
+
+
+def test_nothing_is_flagged_when_the_specialists_measured_it_themselves():
+    """The caveat must be rare enough to mean something. A specialist that
+    never repeats the alert's figures gets no footer at all."""
+    content, _payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": (
+                "process_resident_memory_bytes plateaued at 305.2 MiB; the "
+                "deployment's limit is 768Mi, so there is plenty of headroom."
+            )
+        },
+        query="Investigate memory",
+        alert_context=_MEMORY_ALERT,
+        narrative="## TL;DR\nMemory is elevated but nowhere near the limit.",
+    )
+
+    assert "Carried over from the alert text" not in content
+
+
+def test_an_alert_with_no_findings_yet_gets_no_echo_caveat():
+    content, _payload = build_supervisor_summary_content(
+        "",
+        {},
+        query="Investigate memory",
+        alert_context=_MEMORY_ALERT,
+        narrative="## TL;DR\nNo specialist evidence came back.",
+    )
+
+    assert "Carried over from the alert text" not in content
