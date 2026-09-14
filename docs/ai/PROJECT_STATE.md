@@ -118,6 +118,18 @@ needed**. Same family as #21–#24, and the Slack-only rule makes it
 load-bearing. Prompt-only fixes do not hold here (8/8 replays): put the
 correction below the model's text, as `narrative._echoed_alert_claims` does.
 
+**#28, found 2026-09-14, not yet fixed: a resolved alert does not stop its
+own investigation.** `bb5d557e` got an Alertmanager *resolved* notification at
+17:11:15 — logged `investigating → resolved, mark_resolved=True`, `resolved_at`
+stamped — and then kept investigating for 13+ more minutes (timeline seq 4–15,
+five specialists, real LLM spend), ending with `status='investigating'` while
+`resolved_at` was already set. Two things are wrong: the in-flight
+investigation overwrites the resolve (last writer wins, so the row now
+contradicts itself), and nothing cancels the job — `jobs.cancel_requested_at`
+exists and is unused on this path. The Slack consequence is the one that
+matters: this run is heading for an approval request asking a human to
+approve a remediation for an alert that stopped firing 13 minutes ago.
+
 ## Relevant files
 `sre_agent/`: `agent_state.py` (LLM-facing schemas + container decoding),
 `graph_builder.py` (planner/swarm prompts, fallback plan), `act_phase.py`,
@@ -136,7 +148,11 @@ correction below the model's text, as `narrative._echoed_alert_claims` does.
 - **Promtail fix improved diagnosis, live**: on `4a0b0254` the Loki Specialist
   reported "6 restarts each dying right after logging 'warming 150 MiB page
   cache', backoff 13s→166s" — logs that never reached Loki before.
-- **#25/#25b are unit-tested only** (`tests/test_investigation_failure_path.py`).
+- **#25's retry fix is now confirmed live**, incidentally: two API restarts
+  killed `bb5d557e`'s investigation mid-flight and job `1a06f204` climbed to
+  `attempt_count=3 of 3` and resumed. Before the fix every interrupted job
+  died at 1 of 3. (#25b remains unit-tested only —
+  `tests/test_investigation_failure_path.py`.)
 - `dc1712ca` remains the reference clean run (`patch_deployment_env`,
   `RESOLVED after 330s`, generative runbook).
 
