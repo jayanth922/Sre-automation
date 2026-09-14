@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
+import json
 import logging
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Configure logging with basicConfig
 logging.basicConfig(
@@ -15,6 +16,36 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_json_container(value: Any) -> Any:
+    """Accept a JSON-encoded list/dict where a real one is expected.
+
+    Function-calling models routinely serialize a nested container into the
+    tool-call argument as a *string* — `"actions": "[{...}]"` instead of
+    `"actions": [{...}]` — and Pydantic rejects that outright with
+    `Input should be a valid list`. The model's answer was correct; only its
+    encoding of it was not.
+
+    That failure is not cosmetic here. `_planner_node` catches the
+    ValidationError and substitutes a fallback plan of one `escalate
+    manual_review` action, so a string-encoded `actions` field turns a real
+    remediation plan into a page. Live on 2026-09-14 this happened on every
+    planner invocation without exception — four for four — which is why
+    `patch_resource_limits` had never once been proposed: the planner *was*
+    proposing inspect/config_change steps and every one of them was thrown
+    away before anything downstream could see it.
+
+    Anything that is not a string, or is a string that does not parse, is
+    handed back untouched so the field's own validation still produces the
+    real error.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return value
 
 
 # Pydantic Models for Structured State
@@ -116,6 +147,15 @@ class ReflectorAnalysis(BaseModel):
     )
     reasoning: str = Field(..., description="Reasoning behind the analysis")
 
+    _decode_containers = field_validator(
+        "discrepancies",
+        "causal_chain",
+        "evidence",
+        "unknowns",
+        "recommended_agents",
+        mode="before",
+    )(_decode_json_container)
+
 
 class RemediationAction(BaseModel):
     """Single remediation action in a plan."""
@@ -133,6 +173,14 @@ class RemediationAction(BaseModel):
     )
     rollback_plan: Optional[str] = Field(
         None, description="How to rollback this action if it fails"
+    )
+
+    # `parameters` is what decides whether an action can run at all:
+    # `live_tool_for_action` reads memory/cpu/env out of it, and a str here
+    # resolves to no tool, which the executor then reports as a capability
+    # gap — blaming the platform for a quoting artifact.
+    _decode_containers = field_validator("parameters", mode="before")(
+        _decode_json_container
     )
 
 
@@ -175,6 +223,19 @@ class RemediationPlan(BaseModel):
     slo_impact: Optional[str] = Field(
         None, description="Expected impact on SLOs"
     )
+    planning_failed: Optional[str] = Field(
+        None,
+        description=(
+            "Set only by the planner's own except branch, to the error that "
+            "killed it. A plan carrying this was not reasoned about — it is a "
+            "placeholder standing in for one, and nothing may present it as a "
+            "recommendation"
+        ),
+    )
+
+    _decode_containers = field_validator(
+        "actions", "verification_metrics", mode="before"
+    )(_decode_json_container)
 
 
 class AgentState(TypedDict):

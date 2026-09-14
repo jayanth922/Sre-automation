@@ -1635,7 +1635,13 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
 
     except Exception as e:
         logger.error(f"❌ PlannerNode: Planning failed: {e}")
-        # Fallback plan
+        # Fallback plan. It is a placeholder for a plan, not a plan: nothing
+        # here was reasoned about, so `planning_failed` carries the reason all
+        # the way to the approval message. Without it the human is shown
+        # "Proposed plan (1 action): escalate manual_review" attributed to
+        # whatever the policy gate says — on 2026-09-14, "unknown or
+        # incomplete telemetry" — which names the wrong cause entirely and
+        # reads as a considered decision to page someone.
         fallback_plan = RemediationPlan(
             plan_id=f"plan-fallback-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             hypothesis=reflector_analysis.hypothesis,
@@ -1650,6 +1656,7 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
             risk_level="high",
             requires_approval=True,
             verification_metrics=["error_rate", "latency"],
+            planning_failed=str(e),
         )
         return {
             "remediation_plan": fallback_plan,

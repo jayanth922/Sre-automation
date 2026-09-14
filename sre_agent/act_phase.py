@@ -211,6 +211,10 @@ class ActReport:
     minimum_autonomy_probability: Optional[float] = None
     calibration_artifact_version: Optional[str] = None
     calibration_artifact_sha256: Optional[str] = None
+    # The planner's own error, when the "plan" being gated is the fallback
+    # placeholder rather than anything the planner produced. Carried through
+    # so the approval message can say so — see RemediationPlan.planning_failed.
+    planning_failed: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -585,6 +589,7 @@ def build_act_report(
         minimum_autonomy_probability=minimum_autonomy_probability,
         calibration_artifact_version=artifact_version,
         calibration_artifact_sha256=artifact_sha256,
+        planning_failed=(_get(plan, "planning_failed") or None),
     )
 
 

@@ -156,6 +156,29 @@ def format_approval_request(
     lines = [
         f"🔒 Approval required — severity *{severity}*, plan gated `{decision}`.",
         confidence_line,
+    ]
+
+    # When the planner itself died, what follows is a placeholder — one
+    # `escalate manual_review` the fallback branch hard-codes — and the per-
+    # action reason under it comes from the policy gate, which knows nothing
+    # about the crash and will confidently attribute the escalation to
+    # something else. Say so before the reader gets there, or the message
+    # reads as a considered decision to page a human.
+    planning_failed = report_payload.get("planning_failed")
+    if planning_failed:
+        detail = " ".join(str(planning_failed).split())
+        if len(detail) > 300:
+            detail = detail[:299] + "…"
+        lines += [
+            "",
+            ":warning: *The planner failed — no remediation was actually "
+            "proposed.* The single action below is a placeholder, not a "
+            "recommendation, and its stated reason is the policy gate's, not "
+            "a diagnosis.",
+            f"```{detail}```",
+        ]
+
+    lines += [
         "",
         f"Proposed plan ({len(reports)} action{plural}):",
     ]
