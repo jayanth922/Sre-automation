@@ -376,8 +376,27 @@ def test_the_lapse_notice_says_plainly_that_nothing_ran():
     assert "cluster is unchanged" in text
     assert "still open" in text
     assert "investigated" in text
-    # It must not imply the fix landed or that the incident is done.
-    assert "resolved" not in text.lower()
+    # It must not imply the fix landed or that the incident is done. The bare
+    # word "resolved" now appears as the name of the command the notice offers
+    # (`mark resolved`), so the guard is on the claim, not the substring.
+    assert "is resolved" not in text.lower()
+    assert "has been resolved" not in text.lower()
+    assert "fixed" not in text.lower()
+
+
+def test_the_lapse_notice_offers_a_command_the_thread_accepts():
+    """It used to end with "re-run the investigation to raise a fresh
+    approval". Nothing re-runs an investigation: there is no such war-room
+    command, and POST /incidents/trigger dedups on the same title, so the
+    only real way forward is to close the incident first."""
+    from sre_agent import war_room
+    from sre_agent.incident_reconciler import lapsed_message
+
+    text = lapsed_message(
+        title="[checkout-service] Whatever", lapsed_for=timedelta(minutes=5)
+    )
+    assert "mark resolved" in text
+    assert war_room.is_resolve_command("mark resolved")
 
 
 def _lapse_env(monkeypatch, *, approval_claimed=True, other_pending=False,

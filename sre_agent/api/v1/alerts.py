@@ -10,11 +10,11 @@ rules (never masking ``REMEDIATION_FAILED``).
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import crud, database, models, schemas
@@ -91,6 +91,185 @@ def _status_str(status: Any) -> Optional[str]:
     if status is None:
         return None
     return str(getattr(status, "value", status))
+
+
+# ---------------------------------------------------------------------------
+# A re-firing alert that lands on a parked incident
+# ---------------------------------------------------------------------------
+#
+# Dedup collapses a re-firing alert into the incident already tracking it for
+# as long as that incident is non-resolved, which is right: one condition, one
+# war room. But "non-resolved" covers two very different situations, and the
+# dedup branch treated them the same — log a line, drop the alert.
+#
+# In OPEN / INVESTIGATING / REMEDIATION_IN_PROGRESS something is running, and
+# in AWAITING_APPROVAL a question is already sitting in front of a human. There
+# the silence is correct; repeating ourselves would be noise.
+#
+# The statuses below are the other kind. Nothing is running on the incident and
+# nobody has been asked anything, so no future event will move it: the alert is
+# swallowed, and it will be swallowed again every group interval, forever.
+#
+# Observed live on 2026-09-14T11:08:00Z. `d3ca5138` investigated a checkout
+# memory leak, asked for approval, and got no reply; the lapse sweep retired
+# the request, moved it to `investigated`, and told the thread — accurately —
+# "the problem is still open ... to act on it now, a human has to take it from
+# here or re-run the investigation to raise a fresh approval." The alert then
+# re-fired and the dedup branch discarded it with a log line nobody reads. The
+# system knew the condition was live, had an open Slack thread for it, and said
+# nothing. Slack is the only channel this product has, so a parked incident
+# quietly absorbing its own alert is the channel failing.
+_PARKED_INCIDENT_STATUSES = frozenset({
+    models.IncidentStatus.INVESTIGATED,
+    models.IncidentStatus.REMEDIATION_FAILED,
+    models.IncidentStatus.VERIFICATION_UNKNOWN,
+    models.IncidentStatus.PENDING_ACKNOWLEDGMENT,
+})
+
+# Alertmanager redelivers a firing group every group_interval (about once a
+# minute here), so the notice needs a floor or the thread becomes a metronome.
+# It is deliberately a repeat rather than a one-shot: an unattended incident
+# whose alert is still firing an hour later is worth saying again.
+_REFIRE_NOTICE_COOLDOWN_MINUTES = 60
+
+_REFIRE_EVENT_TYPE = "alert_refired"
+
+# What each parked status means for someone reading the thread cold. Phrased so
+# the reader learns what did *not* happen, which is the part the status name
+# hides.
+_PARKED_STATUS_MEANING = {
+    models.IncidentStatus.INVESTIGATED: (
+        "the investigation finished and *nothing was changed on the cluster*"
+    ),
+    models.IncidentStatus.REMEDIATION_FAILED: (
+        "the last remediation attempt *failed*, so the cluster was not fixed"
+    ),
+    models.IncidentStatus.VERIFICATION_UNKNOWN: (
+        "a remediation was started and its outcome was *never confirmed*"
+    ),
+    models.IncidentStatus.PENDING_ACKNOWLEDGMENT: (
+        "a fix was applied and verified — this alert coming back means it "
+        "*did not hold*"
+    ),
+}
+
+
+def refire_message(*, alertname: str, status: Any, title: str) -> str:
+    """The Slack notice for an alert that re-fired onto a parked incident."""
+    meaning = _PARKED_STATUS_MEANING.get(
+        status, "no work is in progress on it and nobody has been asked anything"
+    )
+    return (
+        ":rotating_light: *Still firing, and nothing is working on it*\n"
+        f"`{alertname}` fired again just now. It belongs to *{title}*, which is "
+        f"sitting at `{_status_str(status)}` — {meaning}.\n"
+        "Sentinel will not open a second incident while this one is here, and "
+        "it will not re-investigate on its own — there is no \"investigate "
+        "again\" command. This alert has nowhere else to go. Reply "
+        "`mark resolved` to close this incident and the next firing alert "
+        "opens a fresh one with a fresh investigation, or fix it by hand.\n"
+        f"_Repeated at most once every {_REFIRE_NOTICE_COOLDOWN_MINUTES} "
+        "minutes while this stays true._"
+    )
+
+
+async def _recently_announced_refire(
+    db: AsyncSession, incident_id: Any, *, now: datetime
+) -> bool:
+    """True if this incident's thread was already told inside the cooldown."""
+    result = await db.execute(
+        select(models.IncidentTimelineEvent.created_at)
+        .filter(
+            models.IncidentTimelineEvent.incident_id == incident_id,
+            models.IncidentTimelineEvent.event_type == _REFIRE_EVENT_TYPE,
+        )
+        .order_by(models.IncidentTimelineEvent.created_at.desc())
+        .limit(1)
+    )
+    last = result.scalars().first()
+    if last is None:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return now - last < timedelta(minutes=_REFIRE_NOTICE_COOLDOWN_MINUTES)
+
+
+async def _announce_refire_on_parked_incident(
+    db: AsyncSession,
+    incident: models.Incident,
+    alert: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Tell the incident's thread that its alert is firing again.
+
+    Returns True when a notice was posted. Never raises: a webhook that 500s
+    makes Alertmanager retry the whole group, and losing the alert entirely is
+    worse than losing the notice.
+    """
+    now = now or datetime.now(timezone.utc)
+    if incident.status not in _PARKED_INCIDENT_STATUSES:
+        return False
+    try:
+        if await _recently_announced_refire(db, incident.id, now=now):
+            return False
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning(
+            "refire notice: cooldown lookup failed for %s: %s", incident.id, exc
+        )
+        return False
+
+    message = refire_message(
+        alertname=alert["alertname"],
+        status=incident.status,
+        title=incident.title,
+    )
+
+    # Written before the post so the cooldown holds even if Slack is down —
+    # otherwise a broken Slack turns this into a retry storm against Slack.
+    try:
+        await crud.create_incident_timeline_event(
+            db,
+            incident.id,
+            event_type=_REFIRE_EVENT_TYPE,
+            speaker_role="system",
+            title="Alert fired again on a parked incident",
+            content=(
+                f"{alert['alertname']} is firing again while this incident sits "
+                f"at {_status_str(incident.status)}. No investigation or "
+                "remediation is in progress and no approval is outstanding."
+            ),
+            payload={
+                "alertname": alert["alertname"],
+                "incident_status": _status_str(incident.status),
+                "labels": alert.get("labels") or {},
+            },
+        )
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning(
+            "refire notice: timeline write failed for %s: %s", incident.id, exc
+        )
+        return False
+
+    notified = False
+    try:
+        from sre_agent.war_room_service import post_to_incident_thread
+
+        notified = await post_to_incident_thread(str(incident.id), message)
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning(
+            "refire notice: Slack notify failed for %s: %s", incident.id, exc
+        )
+    if not notified:
+        # The Slack message is the entire point; a re-fire nobody is told about
+        # is the bug this exists to fix.
+        logger.error(
+            "refire notice: '%s' re-fired on parked incident %s but NO Slack "
+            "notice was delivered",
+            alert["alertname"],
+            incident.id,
+        )
+    return notified
 
 
 async def _record_correlation_shadow(
@@ -371,6 +550,11 @@ async def receive_alertmanager_webhook(
             # rule), so a payload that is entirely duplicates is the norm, not
             # the edge case.
             await db.commit()
+            # Done after the commit so the dedup lock is not held across a
+            # Slack round trip. Most dedups land on an incident that is being
+            # worked and say nothing; see _PARKED_INCIDENT_STATUSES for the
+            # ones that do.
+            await _announce_refire_on_parked_incident(db, existing, alert)
             continue
 
         # Create incident

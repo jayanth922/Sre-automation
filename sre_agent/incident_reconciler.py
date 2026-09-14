@@ -342,8 +342,10 @@ def lapsed_message(*, title: str, lapsed_for: timedelta) -> str:
         "with no reply, so *nothing was run* — the cluster is unchanged and the "
         "problem is still open.\n"
         "`approve fix` will no longer be accepted on this thread. Status moved "
-        "to `investigated`. To act on it now, a human has to take it from here "
-        "or re-run the investigation to raise a fresh approval."
+        "to `investigated`. There is no way to re-run the investigation on "
+        "this incident — while it stays open, dedup folds the re-firing alert "
+        "into it. Fix it by hand, or reply `mark resolved` to close it so the "
+        "next firing alert opens a fresh incident and a fresh approval."
     )
 
 

@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend import crud
+from backend import crud, models
 from sre_agent.api.v1 import alerts as alerts_module
 
 
@@ -111,7 +111,15 @@ def deduping_webhook(monkeypatch):
     """The endpoint with a session that dedups every alert."""
     db = FakeSession()
     cluster = FakeCluster(db)
-    existing = SimpleNamespace(id=uuid.uuid4())
+    # INVESTIGATING: an incident actively being worked, so the dedup branch
+    # collapses the alert silently. The parked statuses also post a re-fire
+    # notice — that path is covered in test_alert_refire_on_parked_incident.py
+    # and would add Slack calls to the lock/commit behaviour under test here.
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="[checkout-service] CheckoutHighErrorRate",
+        status=models.IncidentStatus.INVESTIGATING,
+    )
 
     async def no_heartbeat(*args, **kwargs):
         return None
