@@ -23,6 +23,29 @@ saying so. Instead a stranded incident is moved to the status that is actually
 true — `VERIFICATION_UNKNOWN`, "something was applied, nothing confirmed it" —
 and the on-call is told, in the incident's own Slack thread, that the run was
 interrupted and needs a human.
+
+The same silence exists one step *earlier*, before any approval is given, and
+is handled here too. `format_approval_request` ends every gate message with
+"Expires <t>." but nothing ever fires at that time: every write of
+`ApprovalStatus.EXPIRED` in the codebase is reactive, reached only when someone
+*tries* to act — a new request for the same incident
+(`approval_flow` lines 263/380), or a decision attempted on a dead one
+(`approval_flow` 722, `mission_control` 954). With nobody trying, the approval
+row stays `pending` forever and the incident stays `AWAITING_APPROVAL` forever.
+
+Observed live on 2026-09-14: five approval requests sat `pending` hours past
+`expires_at` — d3ca5138 among them, whose window closed at 07:51:17Z and which
+was still `awaiting_approval` at 10:39Z with no message after the one telling
+the on-call when it would lapse.
+
+Safety was never the issue: `war_room` rejects a late `approve fix` as
+"expired" on the timestamp, regardless of the stored status, so nothing can run
+after the window. What was broken is that Slack — the only channel this
+platform has — announced the offer and never announced its death. A human who
+stepped away could not tell from the thread whether the fix had run, was still
+waiting, or had quietly lapsed. `reconcile_lapsed_approvals` retires the row,
+moves the incident to `INVESTIGATED` ("investigated, nothing was authorized,
+nothing ran") and says so in the thread.
 """
 
 from __future__ import annotations
@@ -293,12 +316,205 @@ async def reconcile_interrupted_remediations(
     return recovered
 
 
+@dataclass(frozen=True)
+class LapsedApproval:
+    """One approval offer this sweep retired because its window closed."""
+
+    incident_id: str
+    title: str
+    expires_at: datetime
+    lapsed_for: timedelta
+    new_status: str
+    slack_notified: bool
+
+
+def lapsed_message(*, title: str, lapsed_for: timedelta) -> str:
+    """What the on-call reads when the window closes with no answer.
+
+    States the one thing that is unambiguously true — nothing ran — because
+    the failure this repairs is a human unable to tell a silent success from a
+    silent lapse.
+    """
+    minutes = int(lapsed_for.total_seconds() // 60)
+    return (
+        ":hourglass: *Approval window closed*\n"
+        f"The approval requested for *{title}* expired {minutes} minute(s) ago "
+        "with no reply, so *nothing was run* — the cluster is unchanged and the "
+        "problem is still open.\n"
+        "`approve fix` will no longer be accepted on this thread. Status moved "
+        "to `investigated`. To act on it now, a human has to take it from here "
+        "or re-run the investigation to raise a fresh approval."
+    )
+
+
+async def reconcile_lapsed_approvals(
+    *, now: Optional[datetime] = None
+) -> list[LapsedApproval]:
+    """Retire every approval offer whose deadline passed with no decision.
+
+    Claimed with a compare-and-set on the *approval* row rather than the
+    incident, because the approval is the authorization-bearing record and the
+    one a second replica must not also retire. Marking it `EXPIRED` cannot
+    widen what is permitted: `war_room` already refuses a late `approve fix` by
+    comparing `expires_at` to the clock, so this only makes the stored state
+    agree with the answer the handler was giving all along.
+
+    Every expired row is retired regardless of its incident's status — an
+    offer past its deadline is dead whatever happened around it, and live runs
+    left `pending` rows behind on incidents that had already moved on
+    (2c49ac9d was `resolved` with one still open). Moving the incident and
+    telling Slack are the narrower steps: both are reserved for an incident
+    still sitting in `AWAITING_APPROVAL` with no other live offer, which is
+    the only case where a human is actually waiting on an answer.
+    """
+    from sqlalchemy import select, update
+
+    from backend import crud, database, models
+
+    now = now or utc_now()
+    lapsed: list[LapsedApproval] = []
+
+    async with database.AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(models.ApprovalRequest, models.Incident)
+                .join(
+                    models.Incident,
+                    models.Incident.id == models.ApprovalRequest.incident_id,
+                )
+                .where(
+                    models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+                    models.ApprovalRequest.expires_at <= now,
+                )
+            )
+        ).all()
+
+        for request, incident in rows:
+            claimed = await db.execute(
+                update(models.ApprovalRequest)
+                .where(
+                    models.ApprovalRequest.id == request.id,
+                    models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+                )
+                .values(status=models.ApprovalStatus.EXPIRED, decided_at=now)
+            )
+            if claimed.rowcount != 1:
+                # Another replica retired it, or a human decided it in the
+                # moment between the scan and this write.
+                await db.rollback()
+                continue
+
+            # Only move the incident when this was its last live offer. A
+            # newer pending request means the incident is legitimately still
+            # waiting on a human and must stay AWAITING_APPROVAL.
+            still_open = (
+                await db.execute(
+                    select(models.ApprovalRequest.id)
+                    .where(
+                        models.ApprovalRequest.incident_id == incident.id,
+                        models.ApprovalRequest.status
+                        == models.ApprovalStatus.PENDING,
+                    )
+                    .limit(1)
+                )
+            ).first()
+            moved = False
+            if still_open is None:
+                status_write = await db.execute(
+                    update(models.Incident)
+                    .where(
+                        models.Incident.id == incident.id,
+                        models.Incident.status
+                        == models.IncidentStatus.AWAITING_APPROVAL,
+                    )
+                    .values(status=models.IncidentStatus.INVESTIGATED)
+                )
+                moved = status_write.rowcount == 1
+            await db.commit()
+
+            expires_at = _as_aware(request.expires_at) or now
+            lapsed_for = now - expires_at
+
+            if not moved:
+                # The row is retired either way, but with the incident left
+                # where it was there is nothing new to tell the on-call.
+                continue
+
+            try:
+                await crud.create_incident_timeline_event(
+                    db,
+                    incident.id,
+                    event_type="approval_expired",
+                    speaker_role="system",
+                    title="Approval window closed",
+                    content=(
+                        "The approval request expired after "
+                        f"{int(lapsed_for.total_seconds())}s with no decision. "
+                        "No action was executed; status moved to investigated."
+                    ),
+                    payload={
+                        "approval_request_id": str(request.id),
+                        "expires_at": expires_at.isoformat(),
+                        "lapsed_seconds": int(lapsed_for.total_seconds()),
+                        "previous_status": (
+                            models.IncidentStatus.AWAITING_APPROVAL.value
+                        ),
+                    },
+                )
+            except Exception as exc:  # pragma: no cover - never block recovery
+                logger.warning(
+                    "reconciler: timeline write failed for %s: %s", incident.id, exc
+                )
+
+            notified = False
+            try:
+                from sre_agent.war_room_service import post_to_incident_thread
+
+                notified = await post_to_incident_thread(
+                    str(incident.id),
+                    lapsed_message(title=incident.title, lapsed_for=lapsed_for),
+                )
+            except Exception as exc:  # pragma: no cover - never block recovery
+                logger.warning(
+                    "reconciler: Slack notify failed for %s: %s", incident.id, exc
+                )
+            if not notified:
+                # The entire point of this sweep is the Slack message; a lapse
+                # nobody is told about is the bug it was written to fix.
+                logger.error(
+                    "reconciler: approval for incident %s lapsed but NO Slack "
+                    "notice was delivered",
+                    incident.id,
+                )
+
+            lapsed.append(
+                LapsedApproval(
+                    incident_id=str(incident.id),
+                    title=incident.title,
+                    expires_at=expires_at,
+                    lapsed_for=lapsed_for,
+                    new_status=models.IncidentStatus.INVESTIGATED.value,
+                    slack_notified=notified,
+                )
+            )
+
+    if lapsed:
+        logger.warning(
+            "reconciler: retired %d lapsed approval(s): %s",
+            len(lapsed),
+            ", ".join(r.incident_id for r in lapsed),
+        )
+    return lapsed
+
+
 async def reconcile_loop() -> None:
     """Sweep periodically, not only at startup.
 
     A restart is the common way a remediation dies, but not the only one: the
     driving task can be cancelled, or the request can be abandoned, while the
-    process lives on. Those incidents would wait for the next deploy.
+    process lives on. Those incidents would wait for the next deploy. An
+    approval deadline is a clock, not an event, so it can only ever be noticed
+    by a sweep like this one.
     """
     logger.info("Incident reconciler started (every %.0fs)", sweep_interval())
     while not _STOP.is_set():
@@ -306,6 +522,11 @@ async def reconcile_loop() -> None:
             await reconcile_interrupted_remediations()
         except Exception as exc:
             logger.exception("reconciler sweep failed: %s", exc)
+        try:
+            # Kept separate so a failure in one sweep cannot silence the other.
+            await reconcile_lapsed_approvals()
+        except Exception as exc:
+            logger.exception("reconciler: lapsed-approval sweep failed: %s", exc)
         try:
             await asyncio.wait_for(_STOP.wait(), timeout=sweep_interval())
         except asyncio.TimeoutError:

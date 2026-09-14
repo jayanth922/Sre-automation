@@ -351,3 +351,208 @@ async def test_a_recovery_slack_never_received_is_logged_as_an_error(
     assert len(recovered) == 1
     assert recovered[0].slack_notified is False
     assert "NO Slack notice" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# A lapsed approval is the same silence one step earlier: the gate message
+# promises "Expires <t>" and nothing ever fires at that time. Live on
+# 2026-09-14, five approvals sat `pending` hours past their deadline with the
+# incidents stuck in `awaiting_approval` and no further word in Slack.
+# ---------------------------------------------------------------------------
+
+
+def test_the_lapse_notice_says_plainly_that_nothing_ran():
+    """The bug this repairs is a human unable to distinguish a silent success
+    from a silent lapse, so 'nothing ran' has to be unmissable."""
+    from sre_agent.incident_reconciler import lapsed_message
+
+    text = lapsed_message(
+        title="[checkout-service] CheckoutMemoryApproachingLimit",
+        lapsed_for=timedelta(minutes=168),
+    )
+    assert "Approval window closed" in text
+    assert "168 minute(s) ago" in text
+    assert "nothing was run" in text
+    assert "cluster is unchanged" in text
+    assert "still open" in text
+    assert "investigated" in text
+    # It must not imply the fix landed or that the incident is done.
+    assert "resolved" not in text.lower()
+
+
+def _lapse_env(monkeypatch, *, approval_claimed=True, other_pending=False,
+               incident_claimed=True, slack_ok=True):
+    """Fake session covering the lapsed-approval sweep's four statements."""
+    import sre_agent.incident_reconciler as reconciler
+
+    state = {"posted": [], "timeline": [], "updates": []}
+
+    class FakeApproval:
+        id = "a0000000-0000-4000-8000-000000000001"
+        expires_at = _at(20)
+
+    class FakeIncident:
+        id = "d3ca5138-7d5a-4f2d-96a7-f5c2958e60d2"
+        title = "[checkout-service] CheckoutMemoryApproachingLimit"
+
+    class FakeResult:
+        def __init__(self, rows=None, rowcount=0):
+            self._rows = rows or []
+            self.rowcount = rowcount
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    class FakeDB:
+        def __init__(self):
+            self.committed = 0
+            self.rolled_back = 0
+
+        async def execute(self, stmt):
+            sql = str(stmt).lower()
+            if sql.startswith("update approval_requests"):
+                state["updates"].append("approval")
+                return FakeResult(rowcount=1 if approval_claimed else 0)
+            if sql.startswith("update incidents"):
+                state["updates"].append("incident")
+                return FakeResult(rowcount=1 if incident_claimed else 0)
+            if "join" in sql:
+                return FakeResult(rows=[(FakeApproval(), FakeIncident())])
+            # The "is any other offer still live?" probe.
+            return FakeResult(rows=[("another-id",)] if other_pending else [])
+
+        async def commit(self):
+            self.committed += 1
+
+        async def rollback(self):
+            self.rolled_back += 1
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    db = FakeDB()
+    state["db"] = db
+    monkeypatch.setattr(reconciler, "utc_now", lambda: _at(50))
+
+    import backend.database as database
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", lambda: db)
+
+    import backend.crud as crud
+
+    async def fake_timeline(_db, incident_id, **kwargs):
+        state["timeline"].append({"incident_id": incident_id, **kwargs})
+
+    monkeypatch.setattr(crud, "create_incident_timeline_event", fake_timeline)
+
+    import sre_agent.war_room_service as wrs
+
+    async def fake_post(incident_id, text):
+        state["posted"].append((incident_id, text))
+        return slack_ok
+
+    monkeypatch.setattr(wrs, "post_to_incident_thread", fake_post)
+    return reconciler, state
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_approval_is_retired_and_the_thread_is_told(monkeypatch):
+    reconciler, state = _lapse_env(monkeypatch)
+
+    lapsed = await reconciler.reconcile_lapsed_approvals()
+
+    assert len(lapsed) == 1
+    assert lapsed[0].new_status == "investigated"
+    assert lapsed[0].lapsed_for == timedelta(minutes=30)
+    assert lapsed[0].slack_notified is True
+    assert state["updates"] == ["approval", "incident"]
+    assert state["timeline"][0]["event_type"] == "approval_expired"
+    assert "Approval window closed" in state["posted"][0][1]
+
+
+@pytest.mark.asyncio
+async def test_an_incident_with_another_live_offer_keeps_waiting(monkeypatch):
+    """Retiring one expired request must not declare the incident unattended
+    while a newer request is still genuinely open for a human to answer."""
+    reconciler, state = _lapse_env(monkeypatch, other_pending=True)
+
+    lapsed = await reconciler.reconcile_lapsed_approvals()
+
+    assert lapsed == []
+    assert state["updates"] == ["approval"]  # the dead row, and nothing else
+    assert state["posted"] == []
+
+
+@pytest.mark.asyncio
+async def test_losing_the_claim_race_retires_nothing_and_says_nothing(monkeypatch):
+    """Two replicas sweeping at once, or a human deciding in the same instant:
+    exactly one may retire the row, and only that one may post."""
+    reconciler, state = _lapse_env(monkeypatch, approval_claimed=False)
+
+    lapsed = await reconciler.reconcile_lapsed_approvals()
+
+    assert lapsed == []
+    assert state["posted"] == []
+    assert state["db"].rolled_back == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_slack_post_is_reported_not_swallowed(monkeypatch):
+    """Slack is the only channel; an undelivered lapse notice is the original
+    bug, so it must be visible rather than reported as success."""
+    reconciler, state = _lapse_env(monkeypatch, slack_ok=False)
+
+    lapsed = await reconciler.reconcile_lapsed_approvals()
+
+    assert len(lapsed) == 1
+    assert lapsed[0].slack_notified is False
+
+
+@pytest.mark.asyncio
+async def test_each_sweep_runs_even_when_the_other_one_raises(monkeypatch):
+    """The two sweeps cover different failures; one breaking must not take the
+    other down with it."""
+    import sre_agent.incident_reconciler as reconciler
+
+    ran: list[str] = []
+
+    async def boom():
+        ran.append("interrupted")
+        raise RuntimeError("sweep exploded")
+
+    async def ok():
+        ran.append("lapsed")
+        reconciler._STOP.set()  # one pass is enough; let the loop fall out
+        return []
+
+    monkeypatch.setattr(reconciler, "reconcile_interrupted_remediations", boom)
+    monkeypatch.setattr(reconciler, "reconcile_lapsed_approvals", ok)
+    monkeypatch.setattr(reconciler, "sweep_interval", lambda: 30.0)
+    reconciler._STOP.clear()
+
+    try:
+        await reconciler.reconcile_loop()
+    finally:
+        reconciler._STOP.clear()
+
+    assert ran == ["interrupted", "lapsed"]
+
+
+@pytest.mark.asyncio
+async def test_a_dead_row_on_a_moved_on_incident_is_still_retired_quietly(monkeypatch):
+    """Live runs left `pending` rows behind on incidents that had already
+    finished (2c49ac9d was `resolved` with one still open). The row is dead and
+    must be recorded as such, but nobody is waiting, so nobody is paged."""
+    reconciler, state = _lapse_env(monkeypatch, incident_claimed=False)
+
+    lapsed = await reconciler.reconcile_lapsed_approvals()
+
+    assert lapsed == []           # nothing announced
+    assert state["posted"] == []  # nobody was waiting on it
+    assert "approval" in state["updates"]  # but the row is retired
