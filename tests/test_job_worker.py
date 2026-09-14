@@ -46,3 +46,136 @@ async def test_lease_renewer_heartbeats_repeatedly(monkeypatch):
         (job_id, "worker-a", 60),
         (job_id, "worker-a", 60),
     ]
+
+
+# --- A claimed batch must not starve behind its own first member -------------
+# `claim_jobs` marks every job in the batch RUNNING with a lease that starts
+# ticking at claim time, but only `execute_claimed_job` starts a job's lease
+# renewal. Awaiting the batch one job at a time therefore left the queued
+# siblings holding leases nobody renewed; by the time their turn came the
+# opening heartbeat raised "lease expired" and failed them into a retry — a
+# second full investigation of work the first attempt had already done.
+
+
+class _FakeSessionContext:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+def _job(job_id=None):
+    from sre_agent.job_store import DurableJob
+
+    return DurableJob(
+        id=job_id or uuid.uuid4(),
+        cluster_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        incident_id=uuid.uuid4(),
+        job_type="investigation",
+        status="running",
+        payload={"handler": "run_graph_background_saas"},
+        attempt_count=1,
+        max_attempts=3,
+    )
+
+
+@pytest.fixture
+def batch_worker(monkeypatch):
+    """`worker_loop` wired to a one-shot claim of a given batch."""
+    started: list[uuid.UUID] = []
+    finished: list[uuid.UUID] = []
+    failed: list[tuple[uuid.UUID, str]] = []
+    release = asyncio.Event()
+
+    def configure(jobs, *, first_blocks=True):
+        claimed_once = {"done": False}
+
+        async def fake_claim(db, *, worker_id, limit, lease_seconds):
+            if claimed_once["done"]:
+                job_worker._STOP.set()
+                return []
+            claimed_once["done"] = True
+            return list(jobs)
+
+        async def fake_execute(job, *, worker_id):
+            started.append(job.id)
+            # The first job is the long investigation the others queued behind.
+            if first_blocks and job.id == jobs[0].id:
+                await release.wait()
+            finished.append(job.id)
+
+        async def fake_fail(db, job_id, *, worker_id, error):
+            failed.append((job_id, error))
+
+        monkeypatch.setattr(job_worker, "claim_jobs", fake_claim)
+        monkeypatch.setattr(job_worker, "execute_claimed_job", fake_execute)
+        monkeypatch.setattr(job_worker, "fail_job", fake_fail)
+        monkeypatch.setattr(
+            job_worker.database, "AsyncSessionLocal", lambda: _FakeSessionContext()
+        )
+        monkeypatch.setattr(job_worker, "_poll_interval", lambda: 0.001)
+        monkeypatch.setattr(job_worker, "_batch_size", lambda: 10)
+        monkeypatch.setattr(job_worker, "default_lease_seconds", lambda: 60)
+
+        class FakeAdmission:
+            def stats(self):
+                return {"available": 10}
+
+        import sre_agent.concurrency as concurrency
+
+        monkeypatch.setattr(
+            concurrency, "get_admission_controller", lambda: FakeAdmission()
+        )
+
+    job_worker._STOP.clear()
+    yield configure, started, finished, failed, release
+    job_worker._STOP.set()
+
+
+@pytest.mark.asyncio
+async def test_a_long_job_does_not_hold_up_the_rest_of_its_batch(batch_worker):
+    configure, started, finished, failed, release = batch_worker
+    jobs = [_job(), _job(), _job()]
+    configure(jobs)
+
+    loop_task = asyncio.create_task(job_worker.worker_loop("worker-a"))
+    # The siblings must be under way while the first job is still blocked.
+    for _ in range(200):
+        if len(started) == 3:
+            break
+        await asyncio.sleep(0.005)
+
+    assert [j.id for j in jobs[1:]] == [i for i in started if i != jobs[0].id], (
+        "queued siblings never started while the first job ran; they sit with "
+        "un-renewed leases until the heartbeat rejects them"
+    )
+    assert set(finished) == {jobs[1].id, jobs[2].id}
+
+    release.set()
+    await asyncio.wait_for(loop_task, timeout=5)
+    assert set(finished) == {j.id for j in jobs}
+    assert failed == []
+
+
+@pytest.mark.asyncio
+async def test_one_failing_job_does_not_cancel_its_siblings(batch_worker, monkeypatch):
+    """A batch is gathered, so a raise in one member must be recorded on that
+    job alone — never propagated into the loop or its siblings."""
+    configure, started, finished, failed, release = batch_worker
+    jobs = [_job(), _job()]
+    configure(jobs, first_blocks=False)
+
+    async def explode(job, *, worker_id):
+        started.append(job.id)
+        if job.id == jobs[0].id:
+            raise job_worker.DurableJobError("lease expired")
+        finished.append(job.id)
+
+    monkeypatch.setattr(job_worker, "execute_claimed_job", explode)
+    await asyncio.wait_for(job_worker.worker_loop("worker-a"), timeout=5)
+
+    assert finished == [jobs[1].id]
+    assert [jid for jid, _ in failed] == [jobs[0].id]
+    assert failed[0][1] == "lease expired"

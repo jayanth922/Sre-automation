@@ -147,6 +147,30 @@ async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
         await complete_job(db, job.id, worker_id=worker_id, result_payload={"ok": True})
 
 
+async def _execute_and_finalize(job: DurableJob, owner: str) -> None:
+    """Run one claimed job, recording a failure rather than raising.
+
+    One member of a claimed batch must never take its siblings down with it,
+    so every exception is turned into `fail_job` here.
+    """
+    if _STOP.is_set():
+        return
+    try:
+        await execute_claimed_job(job, worker_id=owner)
+        return
+    except DurableJobError as exc:
+        logger.warning("Job %s cancelled or lost lease: %s", job.id, exc)
+        error = str(exc)
+    except Exception as exc:  # noqa: BLE001 - recorded on the job, not raised
+        logger.exception("Job %s failed: %s", job.id, exc)
+        error = str(exc)
+    async with database.AsyncSessionLocal() as db:
+        try:
+            await fail_job(db, job.id, worker_id=owner, error=error)
+        except DurableJobError:
+            pass
+
+
 async def worker_loop(worker_id: Optional[str] = None) -> None:
     owner = worker_id or _worker_id()
     logger.info("Durable job worker started as %s", owner)
@@ -176,25 +200,26 @@ async def worker_loop(worker_id: Optional[str] = None) -> None:
                 except asyncio.TimeoutError:
                     pass
                 continue
-            for job in claimed:
-                if _STOP.is_set():
-                    break
-                try:
-                    await execute_claimed_job(job, worker_id=owner)
-                except DurableJobError as exc:
-                    logger.warning("Job %s cancelled or lost lease: %s", job.id, exc)
-                    async with database.AsyncSessionLocal() as db:
-                        try:
-                            await fail_job(db, job.id, worker_id=owner, error=str(exc))
-                        except DurableJobError:
-                            pass
-                except Exception as exc:
-                    logger.exception("Job %s failed: %s", job.id, exc)
-                    async with database.AsyncSessionLocal() as db:
-                        try:
-                            await fail_job(db, job.id, worker_id=owner, error=str(exc))
-                        except DurableJobError:
-                            pass
+            # Every job in the batch is already RUNNING with a lease that
+            # started ticking at claim time, but only `execute_claimed_job`
+            # starts a job's lease renewal. Awaiting them one at a time left
+            # the rest of the batch holding leases nobody was renewing: an
+            # investigation runs for minutes, the queued siblings' 60s leases
+            # expired, and when their turn finally came the opening
+            # `heartbeat_job` raised "lease expired" and failed them into a
+            # retry — a second full LLM investigation of an incident the
+            # first attempt had already finished, sometimes of an incident
+            # already resolved, while genuinely new incidents starved behind
+            # it. Observed live on 2026-09-14: one job on attempt 3, another
+            # on attempt 2, both for incidents that were already resolved.
+            #
+            # The batch is sized by the admission controller's *available*
+            # capacity, so running its members concurrently is what the claim
+            # was for; the controller still bounds real concurrency inside
+            # `run_incident_investigation`.
+            await asyncio.gather(
+                *(_execute_and_finalize(job, owner) for job in claimed)
+            )
         except Exception as exc:
             logger.exception("Durable job worker loop error: %s", exc)
             await asyncio.sleep(_poll_interval())
