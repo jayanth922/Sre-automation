@@ -79,10 +79,23 @@ one payload with many members** that may mix firing and resolved, so a
 condition clears only when no member of the same payload still reports it
 firing.
 
+**A specialist repeating the alert's prose is not a second source.**
+Specialists get the same `summary`/`description` annotations as the
+supervisor and quote them back, so the claim reaches the narrator inside a
+block headed with a specialist's name and reads as a measurement. Prompt
+rules cannot see that difference and do not hold — eight real-model replays
+of `d3ca5138` asserted "past the 256Mi pod limit / OOMKill" every time, four
+of them *after* the narrator was warned about echoes. So the guarantee is
+deterministic, per the "Unreconciled figures" precedent:
+`narrative._echoed_alert_claims` computes the overlap and
+`build_supervisor_summary_content` appends a "Carried over from the alert
+text, not measured" footer. **An honesty fix that only edits a prompt is
+unfinished**; put the correction below the model's text.
+
 ## Completed or verified work
-Twenty-two defects found and fixed by live fire. The recurring pattern, and
+Twenty-three defects found and fixed by live fire. The recurring pattern, and
 the thing to keep testing for: **the system computes the truth, records it,
-and then does not tell the human.** Per-defect detail is in git log. Three
+and then does not tell the human.** Per-defect detail is in git log. Four
 corollaries to apply to anything new:
 - **Check the sweep, not just the handler** (#19). The late-`approve fix`
   handler was correct throughout, so every test passed while the DB lied for
@@ -91,14 +104,23 @@ corollaries to apply to anything new:
   Dedup is the one path with no investigation behind it.
 - **Check that a message names a command the system accepts** (#22). Two
   notices offered "re-run the investigation"; nothing does that.
+- **Replay the real evidence against the real model before believing a
+  prompt fix** (#23). #21 passed its unit tests and failed 8/8 live.
 
 ## Active problem
 None blocking. #18 (`policy_gate` rollback floor) is deployed but unseen live
 — no run has proposed a production rollback since. #20 (planner must
-`escalate` rather than propose a `valueFrom` `config_change`) and #21
-(narrative must not restate a stale alert annotation as fact) are deployed and
-tested but not yet live-exercised; both need the fresh memory-leak
+`escalate` rather than propose a `valueFrom` `config_change`) is deployed and
+tested but not yet live-exercised; it needs the fresh memory-leak
 investigation blocked below.
+
+**Honest residual on #23.** The footer reaches the on-call 4/4, but the
+model's own TL;DR still asserts "past the 256 MiB pod limit" in all four
+replays — the footer contradicts it a few lines below rather than preventing
+it. One run's next-steps did open with "run `kubectl describe pod` to confirm
+the OOMKill". Whether a reader trusts the TL;DR over the footer is untested
+with a real on-call; if this matters more, the next lever is rewriting the
+offending sentence deterministically, not another prompt rule.
 
 ## Relevant files
 `sre_agent/`: `executor.py`, `act_phase.py`, `approval_flow.py` (the Slack
@@ -109,22 +131,27 @@ message that gates everything), `policy_gate.py`, `incident_reconciler.py`,
 `edge_mcp_servers/mcp_servers/executor_real/server.py` (edge guardrails).
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1164 passed,
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1184 passed,
   3 skipped**.
+- **Echo caveat, live (#23)**: `d3ca5138`'s exact evidence replayed four
+  times through `narrate_supervisor_summary` →
+  `build_supervisor_summary_content` on the real NARRATION model
+  (`claude-haiku-4-5-20251001`); the "Carried over from the alert text"
+  footer naming `256Mi, OOMKill` was delivered 4/4. Harness:
+  `docker exec -w /app sre-agent-api uv run python narr_check.py 4`. Build
+  the LLM the way `SupervisorAgent._create_llm` does — the container's
+  `ANTHROPIC_MODEL=claude-3-5-sonnet-latest` 404s, and
+  `narrate_supervisor_summary` then silently returns its template fallback,
+  which reads like a clean pass.
 - **Clean end-to-end live run, `dc1712ca`**: 7 firing series → one incident →
   correct root cause → Slack `approve fix` → `1/1 mutating action EXECUTED`
   (a real `config_change` → `patch_deployment_env`) → `Verification: RESOLVED
   (alert no longer firing after 330s)` → generative runbook →
   `pending_acknowledgment`.
-- **Parked re-fire notice, live**: `d3ca5138` and `f8ca9a54` each got exactly
-  one notice (11:19:00Z / 11:14:38Z) with an `alert_refired` timeline row; the
-  11:20:00Z redelivery was suppressed by the cooldown; dedup still created
-  zero incidents.
-- **Lapsed-approval sweep, live**: retired six stale `pending` rows, moved
-  `d3ca5138` to `investigated`, posted to the real thread; `approved` rows
-  untouched.
-- **Edge guardrails, live**: `DATABASE_PASSWORD`, `kube-system`, `valueFrom`
-  and prose-only `config_change` all refused.
+- Also verified live, detail in git log: the parked re-fire notice (one per
+  hour, cooldown holds), the lapsed-approval sweep (retires `pending`, never
+  `approved`), and the edge guardrails (`DATABASE_PASSWORD`, `kube-system`,
+  `valueFrom` and prose-only `config_change` all refused).
 
 ## Known blockers or risks
 - **Live mutation surface includes arbitrary env vars** in an allow-listed
@@ -137,6 +164,13 @@ message that gates everything), `policy_gate.py`, `incident_reconciler.py`,
   `1e6` bytes while claiming 200MB; checkout's real limit is `768Mi`, not the
   `256Mi` its description asserts.
 - **Runbook ownership gap**: `#checkout-oncall` owns an inventory runbook.
+- **`ANTHROPIC_MODEL=claude-3-5-sonnet-latest` in the API container 404s**,
+  so any path using `create_llm_with_fallback()` defaults (e.g.
+  `sre_agent/nl_query.py:543`, `:579`) runs on a silently-degraded LLM. The
+  agent path is unaffected — it routes via `ExecutionContext`/`route_llm`.
+  Related: `ExecutionContext.llm_manifest()` is documented as the "exact
+  authorized LLM settings" while NARRATION actually runs on
+  `claude-haiku-4-5-20251001`, not the cluster's `claude-sonnet-5`.
 - Known app bug: `checkout-service app.py:147` `int(order_id[-1])` raises
   ValueError on non-numeric order ids — the real cause of
   `CheckoutHighErrorRate`, correctly root-caused and not agent-fixable.
@@ -171,10 +205,12 @@ dedup folds every re-firing memory alert into it, so no fresh investigation
 can start. Reply `mark resolved` on its thread; the next delivery (~1 min)
 opens a new incident, and a prompt `approve fix` on that one exercises #20
 (the planner should `escalate` about ConfigMap `meridian-config`, not propose
-a `config_change` on the `valueFrom`-sourced `CHAOS_MODE`), #21 (the TL;DR
-must not repeat the rule's stale "256Mi / OOMKill is imminent" prose over its
-own measurement against the live 768Mi limit), and restart-as-band-aid
-honesty. The leak runs at the app default 1 KB/request, ~236 MB simulated
+a `config_change` on the `valueFrom`-sourced `CHAOS_MODE`), the
+specialist-brief half of #23 (a specialist must mark what it quotes from the
+alert rather than reporting "well past the 256Mi pod limit" as its own
+finding), and restart-as-band-aid honesty. The #23 footer itself is already
+verified live on this alert's real evidence.
+The leak runs at the app default 1 KB/request, ~236 MB simulated
 against a 200 MB threshold — firing, no OOM risk; tune it with
 `POST http://<checkout clusterIP>:8001/admin/config {"leak_kb_per_request": N}`.
 
