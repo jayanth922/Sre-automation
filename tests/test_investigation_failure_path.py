@@ -124,6 +124,123 @@ async def test_lease_owner_is_not_evidence_that_fail_job_failed():
     assert caller_reference.lease_owner is None
 
 
+# ---------------------------------------------------------------------------
+# The caller: what it writes on the row, and what it tells the on-call
+# ---------------------------------------------------------------------------
+
+class _UpdateResult:
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
+class _RecordingSession(_IdentityMapSession):
+    """Adds the two things `record_investigation_job_failure` needs.
+
+    `db.get()` returns the same instance as the `select()` inside `fail_job`,
+    which is the whole point — and `execute()` has to tell a `select` apart
+    from the conditional `UPDATE ... WHERE status = 'running'` fallback, and
+    honour that WHERE clause, because the fallback landing on a row it does
+    not own is the bug under test.
+    """
+
+    def __init__(self, job, *, refresh_to=None) -> None:
+        super().__init__(job)
+        self.updates = []
+        self._refresh_to = refresh_to
+
+    async def get(self, _model, _pk):
+        return self._job
+
+    async def execute(self, stmt):
+        if getattr(stmt, "is_update", False):
+            self.updates.append(stmt)
+            if self._job is None or self._job.status != models.JobStatus.RUNNING:
+                return _UpdateResult(0)
+            self._job.status = models.JobStatus.FAILED
+            return _UpdateResult(1)
+        return await super().execute(stmt)
+
+    async def refresh(self, obj):
+        if self._refresh_to is not None:
+            obj.status = self._refresh_to
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_attempts_left_is_not_announced_to_the_on_call():
+    """The retry is the answer; telling the thread it failed would be wrong,
+    and the next attempt would contradict it."""
+    from sre_agent.agent_runtime import record_investigation_job_failure
+
+    job = _running_job(attempt_count=1)
+    db = _RecordingSession(job)
+
+    terminal = await record_investigation_job_failure(db, job.id, '{"error":"boom"}')
+
+    assert terminal is False
+    assert job.status == models.JobStatus.PENDING
+    assert db.updates == [], "fail_job handled it; no fallback write"
+
+
+@pytest.mark.asyncio
+async def test_a_dead_lettered_failure_is_announced():
+    from sre_agent.agent_runtime import record_investigation_job_failure
+
+    job = _running_job(attempt_count=3)
+    db = _RecordingSession(job)
+
+    assert await record_investigation_job_failure(db, job.id, "{}") is True
+    assert job.status == models.JobStatus.DEAD_LETTER
+
+
+@pytest.mark.asyncio
+async def test_a_reclaimed_job_is_not_overwritten_with_failed():
+    """The second way into the retry bypass.
+
+    No lease can mean the lease reaper got there first, and the reaper returns
+    an expired RUNNING job to PENDING for another attempt. The old fallback
+    wrote FAILED unconditionally and killed that attempt, so the write is
+    conditional on the row still being RUNNING.
+    """
+    from sre_agent.agent_runtime import record_investigation_job_failure
+
+    job = _running_job(attempt_count=1)
+    job.status = models.JobStatus.PENDING  # reaper already requeued it
+    job.lease_owner = None
+    db = _RecordingSession(job, refresh_to=models.JobStatus.PENDING)
+
+    terminal = await record_investigation_job_failure(db, job.id, "{}")
+
+    assert job.status == models.JobStatus.PENDING, "the requeue must survive"
+    assert terminal is False, "a job queued to run again has not finished failing"
+
+
+@pytest.mark.asyncio
+async def test_a_leaseless_job_still_running_is_hard_failed():
+    """The fallback still has to work. A RUNNING row nobody else has touched
+    is ours to finish, and leaving it RUNNING forever is how a job becomes a
+    lease the reaper keeps re-queuing."""
+    from sre_agent.agent_runtime import record_investigation_job_failure
+
+    job = _running_job(attempt_count=1)
+    job.lease_owner = None
+    db = _RecordingSession(job)
+
+    assert await record_investigation_job_failure(db, job.id, "{}") is True
+    assert job.status == models.JobStatus.FAILED
+    assert len(db.updates) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_job_row_that_vanished_is_still_announced():
+    """Nothing is going to retry a job that does not exist, so the thread has
+    to hear about it rather than wait for an attempt that never comes."""
+    from sre_agent.agent_runtime import record_investigation_job_failure
+
+    db = _RecordingSession(None)
+
+    assert await record_investigation_job_failure(db, uuid.uuid4(), "{}") is True
+
+
 def test_the_failure_notice_says_what_the_on_call_needs():
     from sre_agent.war_room_service import investigation_failed_text
 

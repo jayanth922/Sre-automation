@@ -244,6 +244,33 @@ async def request_job_cancel(
     return _to_record(job)
 
 
+async def has_live_investigation_job(
+    db: AsyncSession, incident_id: uuid.UUID
+) -> bool:
+    """True if an investigation for this incident is queued or running.
+
+    The incident's own `status` is not evidence of this. `OPEN` is written
+    twice — once when the incident is created and the job is about to be
+    enqueued, and again by the failure path in `agent_runtime` when a run dies
+    — and `INVESTIGATING` is written at the start of a run and never unwound if
+    the process dies before it can record an outcome. In all three of those the
+    incident *looks* live and nothing is working on it. The job table is the
+    only place that knows.
+    """
+    result = await db.execute(
+        select(models.Job.id)
+        .where(
+            models.Job.incident_id == incident_id,
+            models.Job.job_type == models.JobType.INVESTIGATION,
+            models.Job.status.in_(
+                [models.JobStatus.PENDING, models.JobStatus.RUNNING]
+            ),
+        )
+        .limit(1)
+    )
+    return result.scalars().first() is not None
+
+
 async def cancel_incident_investigations(
     db: AsyncSession, incident_id: uuid.UUID, *, now: Optional[datetime] = None
 ) -> list[uuid.UUID]:

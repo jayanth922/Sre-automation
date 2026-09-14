@@ -1181,6 +1181,82 @@ def _investigation_trigger(job_row: Any) -> str:
     return str(payload.get("triggered_by") or "durable_queue")
 
 
+async def record_investigation_job_failure(
+    db: Any, job_id: uuid.UUID, error_detail: str
+) -> bool:
+    """Record a dead investigation on its job row. Returns: is this terminal?
+
+    Terminal means the on-call has to be told in Slack. A job `fail_job()`
+    returned to PENDING gets another attempt and says nothing yet; a
+    dead-lettered or hard-failed one is the end of the line.
+
+    Two ways to bypass the retry machinery have been found here, both of which
+    hard-wrote FAILED over a row the queue had already decided to retry:
+
+    1. Deciding on `job_row.lease_owner` instead of on what `fail_job()`
+       returned. `fail_job()` selects the same row in this same session, so it
+       hands back the identity-mapped object the caller is holding and nulls
+       `lease_owner` on it — re-reading that attribute after a *successful*
+       call always looked like "no lease". Live on 2026-09-14: five
+       investigations died on a transient provider error at `attempt_count=1`
+       of 3 and not one was retried.
+    2. The fallback write itself. No lease can also mean the lease reaper got
+       there first, and it returns an expired RUNNING job to PENDING for
+       another attempt. So the write is conditional on the row still being
+       RUNNING, and if it is not, the row's own status decides what is said.
+    """
+    from backend.models import JobStatus
+
+    from .job_store import DurableJobError, fail_job
+
+    job_row = await db.get(models.Job, job_id)
+
+    failed_job = None
+    if job_row is not None and job_row.lease_owner:
+        try:
+            failed_job = await fail_job(
+                db, job_id, worker_id=job_row.lease_owner, error=error_detail
+            )
+        except DurableJobError as fail_job_error:
+            logger.warning(
+                "fail_job() could not update job %s (%s); falling back to "
+                "direct status write",
+                job_id,
+                fail_job_error,
+            )
+
+    if failed_job is not None:
+        return failed_job.status != JobStatus.PENDING
+
+    update_result = await db.execute(
+        models.Job.__table__
+        .update()
+        .where(models.Job.id == job_id, models.Job.status == JobStatus.RUNNING)
+        .values(
+            status=JobStatus.FAILED,
+            completed_at=datetime.now(timezone.utc),
+            result=error_detail,
+        )
+    )
+    await db.commit()
+    if update_result.rowcount:
+        return True
+
+    if job_row is not None:
+        try:
+            await db.refresh(job_row)
+        except Exception:  # pragma: no cover - the row is gone
+            job_row = None
+    current_status = getattr(job_row, "status", None)
+    logger.warning(
+        "Job %s was already %s when its run failed; left as-is rather than "
+        "overwritten with FAILED",
+        job_id,
+        getattr(current_status, "value", current_status),
+    )
+    return current_status != JobStatus.PENDING
+
+
 async def _run_graph_impl(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
@@ -2041,15 +2117,6 @@ async def _run_graph_impl(
              terminal_failure = True
 
              if job_id:
-                 # Route through job_store.fail_job() so attempt_count vs.
-                 # max_attempts is honored (retry to PENDING or DEAD_LETTER)
-                 # instead of hard-setting FAILED, which silently disabled
-                 # the durable queue's retry machinery.
-                 from backend.models import JobStatus
-
-                 from .job_store import DurableJobError, fail_job
-
-                 job_row = await db.get(models.Job, job_id)
                  error_detail = json.dumps(
                      {
                          "error": str(e),
@@ -2057,48 +2124,9 @@ async def _run_graph_impl(
                          "trace_completeness": failed_trace_completeness,
                      }
                  )
-                 # Decide the fallback on what fail_job() *returned*, not on
-                 # job_row. fail_job() selects the same row in this same
-                 # session, so it hands back the identity-mapped object we
-                 # are holding and nulls `lease_owner` on it. Re-reading that
-                 # attribute after a successful call therefore always looked
-                 # like "no lease", and the fallback below overwrote the
-                 # PENDING status fail_job() had just set — restoring the
-                 # exact hard-FAILED behaviour the routing was added to
-                 # remove. Live on 2026-09-14 three investigations died on a
-                 # transient API error with attempt_count=1 of 3 and none was
-                 # ever retried.
-                 failed_job = None
-                 if job_row is not None and job_row.lease_owner:
-                     try:
-                         failed_job = await fail_job(
-                             db,
-                             job_id,
-                             worker_id=job_row.lease_owner,
-                             error=error_detail,
-                         )
-                     except DurableJobError as fail_job_error:
-                         logger.warning(
-                             "fail_job() could not update job %s (%s); "
-                             "falling back to direct status write",
-                             job_id,
-                             fail_job_error,
-                         )
-
-                 if failed_job is None:
-                     await db.execute(
-                         models.Job.__table__
-                         .update()
-                         .where(models.Job.id == job_id)
-                         .values(
-                             status=JobStatus.FAILED,
-                             completed_at=datetime.now(timezone.utc),
-                             result=error_detail,
-                         )
-                     )
-                     await db.commit()
-                 else:
-                     terminal_failure = failed_job.status != JobStatus.PENDING
+                 terminal_failure = await record_investigation_job_failure(
+                     db, job_id, error_detail
+                 )
 
         # Slack is the only channel this platform has. An investigation that
         # dies leaves a thread that says "Incident opened" and then nothing

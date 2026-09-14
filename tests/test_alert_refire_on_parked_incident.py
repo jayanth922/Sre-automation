@@ -30,10 +30,14 @@ from types import SimpleNamespace
 import pytest
 
 from backend import crud, models
-from sre_agent import job_worker, war_room, war_room_service
+from sre_agent import job_store, job_worker, war_room, war_room_service
 from sre_agent.api.v1 import alerts as alerts_module
 
 NOW = datetime(2026, 9, 14, 11, 8, 0, tzinfo=timezone.utc)
+
+# Older than `_INVESTIGATION_START_GRACE_SECONDS`, so the grace window is not
+# what any of these tests are measuring.
+LONG_AGO = NOW - timedelta(hours=6)
 
 
 def _alert(alertname="CheckoutMemoryApproachingLimit", service="checkout-service"):
@@ -84,6 +88,29 @@ class FakeSession:
         raise AssertionError("the webhook must not roll back")
 
 
+@pytest.fixture(autouse=True)
+def no_live_job(monkeypatch):
+    """Default: the job table says nothing is running.
+
+    Only `open` and `investigating` consult it at all, and the tests that care
+    about the distinction override this. Defaulting to "no live job" keeps the
+    unconditionally-parked cases reading exactly as they did before this
+    lookup existed.
+    """
+    async def none_running(_db, _incident_id):
+        return False
+
+    monkeypatch.setattr(job_store, "has_live_investigation_job", none_running)
+
+
+@pytest.fixture
+def live_job(monkeypatch):
+    async def one_running(_db, _incident_id):
+        return True
+
+    monkeypatch.setattr(job_store, "has_live_investigation_job", one_running)
+
+
 @pytest.fixture
 def spies(monkeypatch):
     """Capture what the notice writes and what it says."""
@@ -103,8 +130,14 @@ def spies(monkeypatch):
     return SimpleNamespace(events=events, posts=posts)
 
 
-def _incident(status, title="[checkout-service] CheckoutMemoryApproachingLimit"):
-    return SimpleNamespace(id=uuid.uuid4(), title=title, status=status)
+def _incident(
+    status,
+    title="[checkout-service] CheckoutMemoryApproachingLimit",
+    created_at=LONG_AGO,
+):
+    return SimpleNamespace(
+        id=uuid.uuid4(), title=title, status=status, created_at=created_at
+    )
 
 
 def _announce(db, incident, alert=None, now=NOW):
@@ -148,8 +181,6 @@ def test_a_parked_incident_is_told_its_alert_came_back(spies, status):
 @pytest.mark.parametrize(
     "status",
     [
-        models.IncidentStatus.OPEN,
-        models.IncidentStatus.INVESTIGATING,
         models.IncidentStatus.AWAITING_APPROVAL,
         models.IncidentStatus.REMEDIATION_IN_PROGRESS,
     ],
@@ -163,19 +194,118 @@ def test_an_incident_that_is_being_worked_is_left_alone(spies, status):
     assert spies.events == []
 
 
-def test_every_parked_status_is_a_non_working_status():
+@pytest.mark.parametrize(
+    "status",
+    [models.IncidentStatus.OPEN, models.IncidentStatus.INVESTIGATING],
+)
+def test_a_live_investigation_keeps_its_incident_quiet(spies, live_job, status):
+    """`open` and `investigating` are silent for the reason they always were —
+    a run is genuinely in flight — but now that is checked, not assumed."""
+    assert _announce(FakeSession(), _incident(status)) is False
+    assert spies.posts == []
+    assert spies.events == []
+
+
+def test_every_active_status_is_classified_deliberately():
     """Guards the split itself: if a new status is added to the active set it
     must be classified deliberately, not inherited by accident."""
     working = {
-        models.IncidentStatus.OPEN,
-        models.IncidentStatus.INVESTIGATING,
         models.IncidentStatus.AWAITING_APPROVAL,
         models.IncidentStatus.REMEDIATION_IN_PROGRESS,
     }
-    assert alerts_module._PARKED_INCIDENT_STATUSES | working == set(
-        crud._ACTIVE_INCIDENT_STATUSES
+    parked = alerts_module._PARKED_INCIDENT_STATUSES
+    conditional = alerts_module._CONDITIONALLY_PARKED_STATUSES
+
+    assert parked | conditional | working == set(crud._ACTIVE_INCIDENT_STATUSES)
+    assert not (parked & conditional)
+    assert not (parked & working)
+    assert not (conditional & working)
+    # Every conditional status needs a phrasing for the dead case, or the
+    # lookup succeeds and the notice KeyErrors inside the webhook.
+    assert conditional == set(alerts_module._DEAD_INVESTIGATION_MEANING)
+
+
+# ---------------------------------------------------------------------------
+# The statuses whose name disagrees with the truth (#29)
+# ---------------------------------------------------------------------------
+
+def test_a_dead_investigation_left_open_is_not_a_black_hole(spies):
+    """Live on 2026-09-14: `3b879513` ([pdf-thumbnailer] PodOOMKilled) lost its
+    investigation to a transient LLM error two seconds in, the failure path
+    wrote the incident back to `open`, and the alert then re-fired for six
+    hours into a dedup branch that discarded every one of them. `open` was the
+    single parked status the notice did not cover, because `open` is also what
+    a brand-new incident looks like."""
+    incident = _incident(models.IncidentStatus.OPEN)
+
+    assert _announce(FakeSession(), incident) is True
+
+    message = spies.posts[0][1]
+    assert "no investigation is queued or running for it" in message
+    assert "mark resolved" in message
+    assert len(spies.events) == 1
+    assert spies.events[0]["event_type"] == "alert_refired"
+
+
+def test_a_stale_investigating_label_is_not_a_black_hole(spies):
+    """`investigating` is written at the start of a run and never unwound if
+    the worker dies before recording an outcome. Same black hole, different
+    label."""
+    assert _announce(FakeSession(), _incident(models.IncidentStatus.INVESTIGATING)) is True
+    message = spies.posts[0][1]
+    assert "*no investigation job exists*" in message
+    assert "the label is stale" in message
+
+
+def test_a_just_created_incident_is_given_time_to_start_investigating(spies):
+    """An incident is `open` for the milliseconds between `create_incident`
+    committing and its job being enqueued. A delivery landing in that window
+    must not announce that nobody is working on it."""
+    fresh = _incident(models.IncidentStatus.OPEN, created_at=NOW - timedelta(seconds=5))
+    assert _announce(FakeSession(), fresh) is False
+    assert spies.posts == []
+
+
+def test_the_grace_window_does_not_excuse_a_stale_investigating_label(spies):
+    """The window exists for the enqueue race, which only touches `open`. An
+    `investigating` incident has already had a worker pick its job up."""
+    fresh = _incident(
+        models.IncidentStatus.INVESTIGATING, created_at=NOW - timedelta(seconds=5)
     )
-    assert not (alerts_module._PARKED_INCIDENT_STATUSES & working)
+    assert _announce(FakeSession(), fresh) is True
+
+
+def test_a_naive_created_at_does_not_crash_the_grace_window(spies):
+    """`created_at` comes back without a tzinfo on some drivers; subtracting it
+    from an aware `now` raises TypeError, which would 500 the webhook."""
+    incident = _incident(
+        models.IncidentStatus.OPEN, created_at=LONG_AGO.replace(tzinfo=None)
+    )
+    assert _announce(FakeSession(), incident) is True
+
+
+def test_a_failed_live_job_lookup_stays_silent_rather_than_guessing(
+    spies, monkeypatch
+):
+    """Silence is the safe error: it is what a healthy in-flight run gets. The
+    loud branch claims nobody is working on the incident, and saying that
+    wrongly is how the notice loses its credibility."""
+    async def boom(_db, _incident_id):
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(job_store, "has_live_investigation_job", boom)
+    assert _announce(FakeSession(), _incident(models.IncidentStatus.OPEN)) is False
+    assert spies.posts == []
+
+
+def test_an_unconditionally_parked_incident_never_queries_the_job_table(spies, monkeypatch):
+    """`investigated` and friends are parked by definition. Making them pay for
+    a query — and inherit its failure mode — would be a regression."""
+    async def never(_db, _incident_id):
+        raise AssertionError("the job table is not consulted for this status")
+
+    monkeypatch.setattr(job_store, "has_live_investigation_job", never)
+    assert _announce(FakeSession(), _incident(models.IncidentStatus.INVESTIGATED)) is True
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +324,16 @@ def test_a_verified_fix_coming_back_is_reported_as_a_regression(spies):
     _announce(FakeSession(), _incident(models.IncidentStatus.PENDING_ACKNOWLEDGMENT))
     message = spies.posts[0][1]
     assert "did not hold" in message
+
+
+def test_the_timeline_records_the_same_reason_without_slack_markup(spies):
+    """The timeline is read in the dashboard, where `*no investigation*` is
+    literal asterisks. Same sentence, no markup, so the two channels cannot
+    drift apart."""
+    _announce(FakeSession(), _incident(models.IncidentStatus.OPEN))
+    event = spies.events[0]
+    assert "no investigation is queued or running for it" in event["content"]
+    assert "*" not in event["payload"]["parked_reason"]
 
 
 def test_the_notice_says_no_one_else_will_pick_this_up(spies):

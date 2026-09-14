@@ -77,7 +77,7 @@ keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 on an already-resolved incident, before it opens a war room (#28).
 
 ## Completed or verified work
-Twenty-eight defects found by live fire; per-defect detail is in git log. The
+Twenty-nine defects found by live fire; per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
 - **Check the sweep, not just the handler** (#19). Of any deadline stated in
@@ -101,8 +101,32 @@ the truth, records it, and then does not tell the human.** Corollaries:
   `backend.database.AsyncSessionLocal` patched something nothing held. Mutate
   `sys.modules` only through `monkeypatch`, and patch the module object the
   code under test is holding.
+- **A status is a label, not evidence** (#29). `open` and `investigating` both
+  name an activity; neither proves one is happening, because the failure path
+  writes `open` and a dead worker leaves `investigating` behind. Ask the table
+  that actually knows (`jobs`), and classify the ambiguous states rather than
+  letting them inherit the happy-path reading.
+- **Re-read the row before blaming the current build** (#30, withdrawn). Five
+  jobs at `status=failed, attempt_count=1 of 3` looked like a live retry
+  bypass; `last_error` *and* `result` were both set, which only the pre-#25
+  code produces, and the container's `agent_runtime.py` post-dates them.
 
-The five most recent, all committed, none pushed: **#25** retry machinery
+**#29** (fixed, live-confirmed): an investigation that dies leaves a silent
+alert black hole. `3b879513` ([pdf-thumbnailer] PodOOMKilled) lost its run two
+seconds in to a transient provider error; the failure path wrote the incident
+back to `open` — the one parked state `_PARKED_INCIDENT_STATUSES` omitted,
+because `open` is also what a brand-new incident looks like. For eleven hours
+every re-firing deduped into it and was discarded: one timeline event, nothing
+in Slack. `open`/`investigating` are now *conditionally* parked, decided by
+`job_store.has_live_investigation_job`, with a 120s grace window covering the
+create→enqueue race. Confirmed by replaying the webhook against the live DB:
+the thread that had said "Incident opened" and nothing since received the
+notice, the second firing was correctly suppressed by the 60-minute cooldown,
+and `incidents_created` stayed 0. The fallback in `record_investigation_job_
+failure` (extracted from `_run_graph_impl` to make it testable) also no longer
+hard-writes `FAILED` over a row the lease reaper has already requeued.
+
+The five older ones, all committed, none pushed: **#25** retry machinery
 disabled by SQLAlchemy identity-map aliasing — `fail_job()`'s `select()` hands
 back the caller's own object, so only its *return value* distinguishes;
 **#25b** terminal investigation failures now post to Slack instead of leaving
@@ -151,8 +175,8 @@ correction below the model's text, as `narrative._echoed_alert_claims` does.
 `narrative.py`, `job_store.py`, `war_room_service.py`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1207 passed,
-  3 skipped**. Health is `/ping` on **port 8080** (`/health` 404s).
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1233 passed,
+  3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
 - **Task #5 done, live**: `555a3acb` [ocr-extractor] 64Mi→512Mi and `d2fb7c5d`
   [thumb-worker] →256Mi+200m, real `kubectl set resources` after a Slack
   `approve fix`, both pods `1/1 Running` 0 restarts. First live exercise of

@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import crud, database, models, schemas
+from sre_agent import job_store
 from sre_agent.alert_resolution import reconcile_resolved_alert
 from sre_agent.incident_correlation import CorrelationCandidate, correlate
 
@@ -93,6 +94,11 @@ def _status_str(status: Any) -> Optional[str]:
     return str(getattr(status, "value", status))
 
 
+def _plain(text: str) -> str:
+    """Drop Slack's `*bold*` markers so the same phrase reads in the dashboard."""
+    return text.replace("*", "")
+
+
 # ---------------------------------------------------------------------------
 # A re-firing alert that lands on a parked incident
 # ---------------------------------------------------------------------------
@@ -126,6 +132,38 @@ _PARKED_INCIDENT_STATUSES = frozenset({
     models.IncidentStatus.PENDING_ACKNOWLEDGMENT,
 })
 
+# The statuses above are parked by definition. These two are parked *or* busy,
+# and the status alone cannot tell you which — only the job table can.
+#
+# `OPEN` is written twice with opposite meanings: once by `create_incident`, a
+# beat before the investigation job is enqueued, and again by the failure path
+# in `agent_runtime` when a run dies. `INVESTIGATING` is written at the start
+# of a run and never unwound if the worker dies before recording an outcome.
+# In the dead cases the incident reads as live, no job exists, and every later
+# firing of the alert dedups into it and is discarded.
+#
+# Observed live on 2026-09-14. Incident `3b879513` ([pdf-thumbnailer]
+# PodOOMKilled) opened at 12:37; its investigation died two seconds later on a
+# transient LLM credit error and the failure path wrote the incident back to
+# `open`. Over the next six hours the alert re-fired at least thirteen times,
+# each one logged as `Dedup: ... already open as incident 3b879513` and thrown
+# away. The incident still has exactly one timeline event and its Slack thread
+# was never told anything. A pod was OOMKilling all afternoon on the only
+# channel this product has.
+_CONDITIONALLY_PARKED_STATUSES = frozenset({
+    models.IncidentStatus.OPEN,
+    models.IncidentStatus.INVESTIGATING,
+})
+
+# A newly created incident is `OPEN` for the few milliseconds between
+# `create_incident` committing and `enqueue_and_kick` committing its job. A
+# concurrent delivery landing inside that window would find no live job and
+# announce "nothing is working on it" about an incident that is about to be
+# investigated. Alertmanager's group_interval is around a minute, so this is
+# nearly unreachable, but the notice is a loud one and being wrong on it costs
+# more than being a minute late.
+_INVESTIGATION_START_GRACE_SECONDS = 120
+
 # Alertmanager redelivers a firing group every group_interval (about once a
 # minute here), so the notice needs a floor or the thread becomes a metronome.
 # It is deliberately a repeat rather than a one-shot: an unattended incident
@@ -153,18 +191,73 @@ _PARKED_STATUS_MEANING = {
     ),
 }
 
+# The two conditional statuses, once the job table has ruled out live work.
+# Both say the quiet part: the status names an activity that is not happening.
+_DEAD_INVESTIGATION_MEANING = {
+    # These land inside an em-dash clause in `refire_message`, so they punctuate
+    # with a colon; a second dash reads as a stutter in the thread.
+    models.IncidentStatus.OPEN: (
+        "*no investigation is queued or running for it*: the one that started "
+        "died before it reached a conclusion, or never started at all"
+    ),
+    models.IncidentStatus.INVESTIGATING: (
+        "it is *labelled* as under investigation but *no investigation job "
+        "exists*: the run died without recording an outcome, so the label is "
+        "stale"
+    ),
+}
 
-def refire_message(*, alertname: str, status: Any, title: str) -> str:
+
+async def _parked_meaning(
+    db: AsyncSession, incident: models.Incident, *, now: datetime
+) -> Optional[str]:
+    """Why this incident is going nowhere, or None if something is working it.
+
+    Returning None is the safe answer: it means the alert is silently deduped,
+    which is correct whenever a run really is in flight and merely noisy to get
+    wrong in the other direction. So every uncertainty here — a failed lookup,
+    a missing timestamp — resolves to None rather than to a loud claim that
+    nobody is on it.
+    """
+    status = incident.status
+    if status in _PARKED_INCIDENT_STATUSES:
+        return _PARKED_STATUS_MEANING.get(
+            status, "no work is in progress on it and nobody has been asked anything"
+        )
+    if status not in _CONDITIONALLY_PARKED_STATUSES:
+        return None
+
+    if status == models.IncidentStatus.OPEN:
+        created = getattr(incident, "created_at", None)
+        if created is None:
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if now - created < timedelta(seconds=_INVESTIGATION_START_GRACE_SECONDS):
+            return None
+
+    try:
+        if await job_store.has_live_investigation_job(db, incident.id):
+            return None
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning(
+            "refire notice: live-job lookup failed for %s: %s", incident.id, exc
+        )
+        return None
+    return _DEAD_INVESTIGATION_MEANING[status]
+
+
+def refire_message(*, status: Any, title: str, meaning: str) -> str:
     """The Slack notice for an alert that re-fired onto a parked incident.
 
-    `title` is `[service] AlertName`, so it already contains `alertname` —
+    `title` is `[service] AlertName`, so it already contains the alert name —
     naming both reads as a stutter ("`CheckoutMemoryApproachingLimit` fired
     again. It belongs to *[checkout-service] CheckoutMemoryApproachingLimit*"),
     which is how the first live notice read. The title alone carries both.
+
+    `meaning` comes from `_parked_meaning` rather than from `status`, because
+    for `open` and `investigating` the status name and the truth disagree.
     """
-    meaning = _PARKED_STATUS_MEANING.get(
-        status, "no work is in progress on it and nobody has been asked anything"
-    )
     return (
         ":rotating_light: *Still firing, and nothing is working on it*\n"
         f"*{title}* is firing again, and its incident is sitting at "
@@ -214,7 +307,8 @@ async def _announce_refire_on_parked_incident(
     worse than losing the notice.
     """
     now = now or datetime.now(timezone.utc)
-    if incident.status not in _PARKED_INCIDENT_STATUSES:
+    meaning = await _parked_meaning(db, incident, now=now)
+    if meaning is None:
         return False
     try:
         if await _recently_announced_refire(db, incident.id, now=now):
@@ -226,9 +320,9 @@ async def _announce_refire_on_parked_incident(
         return False
 
     message = refire_message(
-        alertname=alert["alertname"],
         status=incident.status,
         title=incident.title,
+        meaning=meaning,
     )
 
     # Written before the post so the cooldown holds even if Slack is down —
@@ -242,12 +336,14 @@ async def _announce_refire_on_parked_incident(
             title="Alert fired again on a parked incident",
             content=(
                 f"{alert['alertname']} is firing again while this incident sits "
-                f"at {_status_str(incident.status)}. No investigation or "
-                "remediation is in progress and no approval is outstanding."
+                f"at {_status_str(incident.status)} — {_plain(meaning)}. No "
+                "investigation or remediation is in progress and no approval "
+                "is outstanding."
             ),
             payload={
                 "alertname": alert["alertname"],
                 "incident_status": _status_str(incident.status),
+                "parked_reason": _plain(meaning),
                 "labels": alert.get("labels") or {},
             },
         )
@@ -579,8 +675,8 @@ async def receive_alertmanager_webhook(
             await db.commit()
             # Done after the commit so the dedup lock is not held across a
             # Slack round trip. Most dedups land on an incident that is being
-            # worked and say nothing; see _PARKED_INCIDENT_STATUSES for the
-            # ones that do.
+            # worked and say nothing; see `_parked_meaning` for the ones that
+            # do, including the `open`/`investigating` ones whose status lies.
             await _announce_refire_on_parked_incident(db, existing, alert)
             continue
 
