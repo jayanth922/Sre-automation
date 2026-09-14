@@ -561,6 +561,7 @@ async def _act_gate_node(
                 verification_outcome=verification,
                 live_results=live_results,
                 incident_status=incident_status,
+                human_approved=human_approved,
             )
             if learning.get("proposed_skills"):
                 report_payload["proposed_skills"] = learning["proposed_skills"]
@@ -590,6 +591,7 @@ async def _act_gate_node(
                     verification_outcome=report_payload.get("verification"),
                     live_results=report_payload.get("live_results"),
                     executed=report_payload.get("executed"),
+                    human_approved=human_approved,
                 ).to_dict()
             skill_id = (learning.get("recorded_skill") or {}).get("skill_id")
             rb_input = input_from_act(state, report, skill_id=skill_id)

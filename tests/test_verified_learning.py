@@ -281,3 +281,134 @@ def test_a_verified_run_records_a_skill_rather_than_a_negative_exemplar():
     assert result["recorded_skill"] is not None
     assert result["negative_exemplar"] is None
     assert result["learning_eligibility"]["outcome_class"] == "verified_success"
+
+
+# --- "Blocked, but a human said yes" -----------------------------------------
+# A plan aggregates to `blocked` when *any single action* is blocked by policy,
+# so a five-action plan with one policy-blocked rollback is `blocked` even
+# though a human approved it and the remaining actions fixed the incident. The
+# escape hatch for that case read the approval off the ActReport, which has no
+# `approval` field — it was dead, and every such run was graded `blocked`.
+
+
+def _blocked_plan_with_one_verified_fix():
+    return {
+        "plan_present": True,
+        "aggregate_decision": "blocked",
+        "live_results": [
+            {
+                "status": "EXECUTED",
+                "action_type": "config_change",
+                "target": "payment-service",
+            }
+        ],
+    }
+
+
+def test_a_human_approved_blocked_plan_that_worked_is_a_verified_success():
+    eligibility = vl.assess_learning_eligibility(
+        act_report=_blocked_plan_with_one_verified_fix(),
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+        human_approved=True,
+    )
+    assert eligibility.eligible_for_success
+    assert eligibility.outcome_class == "verified_success"
+
+
+def test_a_blocked_plan_nobody_approved_is_still_blocked():
+    eligibility = vl.assess_learning_eligibility(
+        act_report=_blocked_plan_with_one_verified_fix(),
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+        human_approved=False,
+    )
+    assert not eligibility.eligible_for_success
+    assert eligibility.outcome_class == "blocked"
+
+
+def test_the_approval_the_graph_verified_is_what_reaches_the_gate():
+    """The ActReport the graph hands to learning carries no approval.
+
+    `graph_builder` attaches the approval to `report.to_dict()` and then calls
+    `apply_skill_learning` with the ActReport *object*. Passing the dataclass
+    through the gate must therefore not be how the approval is discovered, or
+    the fact is lost exactly when it matters.
+    """
+    report = ActReport(
+        severity="UNKNOWN",
+        severity_rationale="no measured telemetry",
+        plan_present=True,
+        aggregate_decision="blocked",
+        executed=[],
+        summary="1 blocked by policy, 3 held for approval",
+    )
+    assert not hasattr(report, "approval"), (
+        "if ActReport gains an approval field, the gate may read it directly "
+        "and this plumbing can be simplified"
+    )
+
+    store = skill_store.InMemorySkillStore()
+    state = {
+        "alert_context": _alert(),
+        "incident_id": "inc-blocked-approved",
+        "metadata": {},
+    }
+    live = [
+        {
+            "status": "EXECUTED",
+            "action_type": "config_change",
+            "target": "payment-service",
+        }
+    ]
+
+    lost = apply_skill_learning(
+        state, report, store=store,
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+        live_results=live,
+    )
+    assert lost["learning_eligibility"]["outcome_class"] == "blocked"
+
+    passed = apply_skill_learning(
+        state, report, store=skill_store.InMemorySkillStore(),
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+        live_results=live,
+        human_approved=True,
+    )
+    assert passed["recorded_skill"] is not None
+    assert passed["negative_exemplar"] is None
+    assert passed["learning_eligibility"]["outcome_class"] == "verified_success"
+
+
+def test_the_durable_approval_record_is_the_fallback():
+    """With no explicit boolean, `state["metadata"]["approval"]` is consulted —
+    the record the approval flow actually persists."""
+    report = ActReport(
+        severity="UNKNOWN",
+        severity_rationale="no measured telemetry",
+        plan_present=True,
+        aggregate_decision="blocked",
+        executed=[],
+        summary="blocked plan",
+    )
+    state = {
+        "alert_context": _alert(),
+        "incident_id": "inc-metadata-approval",
+        "metadata": {"approval": {"status": "approved", "action_hash": "abc"}},
+    }
+
+    result = apply_skill_learning(
+        state, report, store=skill_store.InMemorySkillStore(),
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+        live_results=[
+            {
+                "status": "EXECUTED",
+                "action_type": "config_change",
+                "target": "payment-service",
+            }
+        ],
+    )
+    assert result["learning_eligibility"]["outcome_class"] == "verified_success"

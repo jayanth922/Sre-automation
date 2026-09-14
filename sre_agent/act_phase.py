@@ -806,6 +806,7 @@ def apply_skill_learning(
     reviewer_id: Optional[str] = None,
     run_manifest_sha256: Optional[str] = None,
     config_fingerprint: Optional[str] = None,
+    human_approved: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Self-improving loop: propose prior skills; record only verified successes.
 
@@ -846,12 +847,17 @@ def apply_skill_learning(
     proposed = propose_skills(
         store, alert, organization_id=organization_id, cluster_id=cluster_id
     )
+    if human_approved is None:
+        # Only the graph verifies the approval's action_hash against the plan
+        # it ran; without that boolean, fall back to the durable record.
+        human_approved = _get(metadata.get("approval") or {}, "status") == "approved"
     eligibility = assess_learning_eligibility(
         act_report=report,
         verification_outcome=verification,
         incident_status=incident_status,
         live_results=live_results,
         executed=getattr(report, "executed", None) or [],
+        human_approved=human_approved,
     )
     recorded = None
     negative = None

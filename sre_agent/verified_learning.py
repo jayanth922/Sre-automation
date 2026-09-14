@@ -175,8 +175,17 @@ def assess_learning_eligibility(
     incident_status: Any = None,
     live_results: Any = None,
     executed: Any = None,
+    human_approved: Optional[bool] = None,
 ) -> LearningEligibility:
-    """Decide whether an investigation may become a successful exemplar."""
+    """Decide whether an investigation may become a successful exemplar.
+
+    ``human_approved`` is the caller's already-verified answer to "did a person
+    authorize this plan?". `graph_builder` computes it by comparing the stored
+    approval's `action_hash` against the plan it is about to run, in constant
+    time, and that boolean is the only trustworthy form of the fact — so it is
+    passed in rather than re-derived here. When it is not supplied the report
+    is consulted, which is what non-graph callers (and the tests) rely on.
+    """
     reasons: list[str] = []
     verification = _status(verification_outcome)
     if verification is None and act_report is not None:
@@ -199,8 +208,23 @@ def assess_learning_eligibility(
         )
     ]
     aggregate = str(_get(act_report, "aggregate_decision", "") or "").lower()
-    approval = _get(act_report, "approval", {}) or {}
-    human_approved = _get(approval, "status") == "approved"
+    # An `ActReport` has no `approval` field, so reading the approval off the
+    # report alone made `human_approved` permanently False: the escape hatch
+    # below — "blocked, but a human said yes" — was dead code. `graph_builder`
+    # attaches the approval to the report *payload* (a dict) and passes the
+    # ActReport *object* to the learning step, so the fact never arrived.
+    #
+    # A plan is aggregated as `blocked` when any single action is blocked by
+    # policy, so this is not an edge case: the live run on 2026-09-14 had one
+    # policy-blocked `rollback` among five actions, a human approved in Slack,
+    # 1/1 mutating action EXECUTED, verification RESOLVED — and the outcome
+    # was still graded `blocked`, writing a negative runbook for a fix that
+    # worked.
+    if human_approved is None:
+        approval = _get(act_report, "approval", {}) or {}
+        human_approved = _get(approval, "status") == "approved"
+    else:
+        human_approved = bool(human_approved)
     plan_present = bool(_get(act_report, "plan_present", True))
     status_name = None
     if incident_status is not None:
