@@ -358,6 +358,41 @@ _PREDICTED_EVENTS = (
     "saturation",
 )
 
+# ...but the same word can be a prediction or an observation, and only the
+# prediction is a claim. `CheckoutMemoryApproachingLimit` says "an OOMKill is
+# imminent": nothing has happened, the author is guessing. `PodOOMKilled`
+# says "was OOMKilled by the kubelet": its expression reads the kill out of
+# `kube_pod_container_status_last_terminated_reason`, so the alert *is* the
+# measurement.
+#
+# Live on de223870, the first real OOMKill this cluster has ever produced
+# (exit 137, confirmed by kube-state-metrics), the caveat told the on-call
+# that the kill was "carried over from the alert text, not measured" — the
+# hardest fact in the incident, marked as doubtful. A caveat that fires on
+# observations is a caveat people learn to skip.
+_PREDICTION_RE = re.compile(
+    r"\b(?:imminent(?:ly)?|will|would|unless|likely|risks?|risking|"
+    r"expects?|expected|approaching|about\s+to|may|might|could|soon|"
+    r"going\s+to|threatens?|threatening|anticipated|projected|"
+    r"in\s+danger|heading\s+for)\b",
+    re.IGNORECASE,
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+
+def _is_predicted(event: str, prose: str) -> bool:
+    """True when the alert frames `event` as expected rather than measured.
+
+    Scoped to the sentence the event appears in: an alert may well predict
+    one thing and report another, and a marker three sentences away says
+    nothing about this mention.
+    """
+    for sentence in _SENTENCE_SPLIT_RE.split(prose):
+        if event in _squash(sentence) and _PREDICTION_RE.search(sentence):
+            return True
+    return False
+
 
 def _squash(text: str) -> str:
     """Lowercase, strip everything but digits/letters/dots.
@@ -415,9 +450,12 @@ def _echoed_alert_claims(
             echoed.append(figure)
     squashed_prose = _squash(prose)
     for event in _PREDICTED_EVENTS:
-        if event in squashed_prose and event in findings and event not in seen:
-            seen.add(event)
-            echoed.append(_as_written(event, prose))
+        if event not in squashed_prose or event not in findings:
+            continue
+        if event in seen or not _is_predicted(event, prose):
+            continue
+        seen.add(event)
+        echoed.append(_as_written(event, prose))
     return echoed[:8]
 
 

@@ -216,6 +216,75 @@ def test_a_measured_value_with_no_capacity_word_is_not_an_echo():
     assert echoed == []
 
 
+# The other half of the same word. `CheckoutMemoryApproachingLimit` guesses
+# that an OOMKill is coming; `PodOOMKilled` reads one out of
+# `kube_pod_container_status_last_terminated_reason`. Only the guess is a
+# claim. Live on de223870 — the first real OOMKill this cluster produced,
+# exit 137 — the caveat flagged the observed kill as "not measured", which
+# is the one thing in that incident that unambiguously was.
+DE223870_ANNOTATIONS = {
+    "summary": "receipt-renderer was OOMKilled by the kubelet",
+    "description": (
+        "The kubelet killed container receipt-renderer in pod "
+        "receipt-renderer-74c7dcc57f-grr7c (namespace meridian) for "
+        "exceeding its memory limit. This is an observed kill, not a "
+        "prediction. The limit it exceeded is whatever the live deployment "
+        "spec says — read it from the cluster, this alert does not assert "
+        "one."
+    ),
+}
+
+DE223870_METRICS_FINDING = (
+    "Confirmed via kube-state-metrics: receipt-renderer "
+    "(receipt-renderer-74c7dcc57f-grr7c, ns meridian) got OOMKilled — "
+    "kube_pod_container_status_last_terminated_reason shows OOMKilled "
+    "across the whole alert window. Limit is 64Mi, request 32Mi."
+)
+
+
+def test_an_observed_kill_the_alert_reports_is_not_an_echo():
+    echoed = narrative._echoed_alert_claims(
+        _alert(annotations=DE223870_ANNOTATIONS),
+        {"metrics_agent": DE223870_METRICS_FINDING},
+    )
+    assert echoed == []
+
+
+def test_a_predicted_kill_is_still_an_echo():
+    """The distinction must cut one way only — d3ca5138 stays flagged."""
+    echoed = narrative._echoed_alert_claims(
+        _alert(), {"metrics_agent": D3CA5138_METRICS_FINDING}
+    )
+    assert any(narrative._squash(item) == "oomkill" for item in echoed)
+
+
+def test_prediction_is_judged_in_the_sentence_the_event_appears_in():
+    """An alert can predict one thing and report another. A hedge about the
+    node says nothing about whether the kill happened."""
+    echoed = narrative._echoed_alert_claims(
+        _alert(
+            annotations={
+                "description": (
+                    "The container was OOMKilled at 12:06. The node may "
+                    "come under memory pressure if this continues."
+                )
+            }
+        ),
+        {"metrics_agent": "lastState.terminated.reason is OOMKilled, exit 137"},
+    )
+    assert echoed == []
+
+
+def test_a_capacity_figure_is_flagged_whether_or_not_it_is_predicted():
+    """Framing changes nothing for a hand-typed limit. "the pod limit is
+    256Mi" is stated flatly and is still wrong — that is the whole point."""
+    echoed = narrative._echoed_alert_claims(
+        _alert(annotations={"description": "The pod limit is 256Mi."}),
+        {"metrics_agent": "sat well past the 256Mi pod limit"},
+    )
+    assert any(narrative._squash(item) == "256mi" for item in echoed)
+
+
 def test_restart_counts_are_never_treated_as_echoes():
     """A restart count is measurable, so "restart" is not in the vocabulary
     even when the alert's prose predicts one."""
