@@ -172,5 +172,54 @@ def test_notify_only_escalation_does_not_require_calibration():
     assert d.decision is AutonomyDecision.AUTONOMOUS
 
 
+# --- Read-only actions ---------------------------------------------------
+# Inspection writes nothing, so no severity, telemetry gap or calibration
+# argument can make it unsafe. Gating it was how diagnostics ended up disguised
+# as `config_change`, burning a human approval on a step that changes nothing.
+
+
+def test_inspect_is_read_only():
+    assert classify_reversibility(FakeAction("inspect")) is Reversibility.READ_ONLY
+
+
+@pytest.mark.parametrize("level", [Severity.SEV1, Severity.SEV2, Severity.SEV4])
+def test_inspect_is_autonomous_at_every_severity(level):
+    d = decide(FakeAction("inspect"), sev(level), evaluate_fn=ALLOW)
+    assert d.decision is AutonomyDecision.AUTONOMOUS
+    assert "mutates nothing" in d.reason
+
+
+def test_inspect_is_autonomous_with_unknown_telemetry():
+    d = decide(FakeAction("inspect"), sev(Severity.UNKNOWN), evaluate_fn=ALLOW)
+    assert d.decision is AutonomyDecision.AUTONOMOUS
+
+
+def test_inspect_does_not_require_calibration():
+    d = decide(
+        FakeAction("inspect"),
+        sev(Severity.SEV4),
+        evaluate_fn=ALLOW,
+        calibrated_action_probability=0.10,
+        minimum_autonomy_probability=0.95,
+    )
+    assert d.decision is AutonomyDecision.AUTONOMOUS
+
+
+def test_a_hard_policy_block_still_wins_over_read_only():
+    # Reading another tenant's namespace is still a policy matter.
+    d = decide(FakeAction("inspect"), sev(Severity.SEV4), evaluate_fn=BLOCK)
+    assert d.decision is AutonomyDecision.BLOCKED
+
+
+def test_read_only_action_types_match_the_executor():
+    # The gate keeps its own literal set to stay off the executor's import
+    # chain; if the two ever drift, a read-only action added in one place would
+    # be gated (or ungated) in the other.
+    from sre_agent.executor import READ_ONLY_ACTIONS
+    from sre_agent.policy_gate import _READ_ONLY_ACTION_TYPES
+
+    assert set(_READ_ONLY_ACTION_TYPES) == set(READ_ONLY_ACTIONS)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

@@ -15,6 +15,7 @@ COPY mcp_servers/k8s_real/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
+COPY mcp_servers/k8s_real/spec_view.py .
 COPY mcp_servers/k8s_real/server.py .
 COPY mcp_auth.py .
 COPY relay_credentials.py .

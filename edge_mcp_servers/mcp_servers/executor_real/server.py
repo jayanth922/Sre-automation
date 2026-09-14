@@ -4,8 +4,15 @@ Executor MCP Server — the ACT phase's hands (Phase 1).
 
 This is the WRITE counterpart to the read-only k8s_real server. It exposes a
 narrow, allow-listed set of remediation tools that mutate the target cluster:
-restart, scale, patch resource limits, and rollback. It is the boundary where
-the agent's decisions finally become real `kubectl`-equivalent operations.
+restart, scale, patch resource limits, patch deployment env, recreate pod, and
+rollback. It is the boundary where the agent's decisions finally become real
+`kubectl`-equivalent operations.
+
+One tool here reads rather than writes — ``get_deployment_config``. It lives on
+this server, not on k8s_real, because it is the diagnostic half of
+``patch_deployment_env``: a plan inspects what a config value currently is
+through the same connection that would change it, and inspection stays modelled
+as the read it is instead of borrowing a mutation's approval requirements.
 
 Safety model (defense in depth):
 - Every tool defaults to ``dry_run=True``. Dry-run maps to the Kubernetes API's
@@ -243,6 +250,171 @@ async def patch_resource_limits(
     except ApiException as e:
         return json.dumps({"tool": "patch_resource_limits", "status": "ERROR",
                            "kubectl_equivalent": kubectl, "code": e.status, "reason": e.reason}, separators=(",", ":"))
+
+
+def _container_spec(deployment, container: str):
+    """Find a named container in a deployment, or None."""
+    for spec in (deployment.spec.template.spec.containers or []):
+        if spec.name == container:
+            return spec
+    return None
+
+
+def _env_as_dict(container_spec) -> dict:
+    """The container's literal env vars, name → value.
+
+    Entries sourced from a ConfigMap or Secret (``valueFrom``) have no literal
+    value; they are reported as null rather than omitted, so a caller can tell
+    "not set" apart from "set, but indirected through a reference we are not
+    reading".
+    """
+    out = {}
+    for var in (getattr(container_spec, "env", None) or []):
+        out[var.name] = var.value if var.value is not None else None
+    return out
+
+
+@mcp.tool()
+async def get_deployment_config(
+    name: str, container: Optional[str] = None, namespace: str = "demo-app",
+) -> str:
+    """Read a deployment's runtime configuration: env vars, resources, image.
+
+    Read-only — the diagnostic counterpart to patch_deployment_env. Exists so a
+    plan can inspect what a config value *currently is* before proposing to
+    change it, without that inspection being modelled as a mutation and gated
+    behind a human approval it does not need.
+    """
+    allowed, reason = guardrail_check("get_deployment_config", namespace)
+    if not allowed:
+        return _refused("get_deployment_config", namespace, reason)
+
+    api = _apps_api()
+    if not api:
+        return _refused("get_deployment_config", namespace, "Kubernetes client unavailable")
+
+    kubectl = f"kubectl get deployment/{name} -n {namespace} -o yaml"
+    try:
+        dep = await asyncio.to_thread(api.read_namespaced_deployment, name, namespace)
+    except ApiException as e:
+        return json.dumps({"tool": "get_deployment_config", "status": "ERROR",
+                           "kubectl_equivalent": kubectl, "code": e.status,
+                           "reason": e.reason}, separators=(",", ":"))
+
+    containers = []
+    for spec in (dep.spec.template.spec.containers or []):
+        if container and spec.name != container:
+            continue
+        limits, requests = {}, {}
+        if spec.resources:
+            limits = dict(spec.resources.limits or {})
+            requests = dict(spec.resources.requests or {})
+        containers.append({
+            "container": spec.name,
+            "image": spec.image,
+            "env": _env_as_dict(spec),
+            "limits": limits,
+            "requests": requests,
+        })
+    if container and not containers:
+        return _refused("get_deployment_config", namespace,
+                        f"container '{container}' not found in deployment '{name}'")
+
+    return json.dumps({
+        "tool": "get_deployment_config", "name": name, "namespace": namespace,
+        "replicas": dep.spec.replicas, "containers": containers,
+        "mutated": False, "kubectl_equivalent": kubectl, "status": "OK",
+    }, separators=(",", ":"))
+
+
+@mcp.tool()
+async def patch_deployment_env(
+    name: str, container: str, env: dict, namespace: str = "demo-app", dry_run: bool = True,
+) -> str:
+    """Set environment variables on a deployment's container (runtime config).
+
+    The write counterpart to get_deployment_config, and the tool behind a
+    `config_change` that is not a resource-limit change: feature flags,
+    fault-injection toggles, log levels, timeouts.
+
+    Two things this deliberately does not do. It does not send a bare env patch
+    — a strategic-merge patch on `env` *replaces the whole list*, so patching
+    one variable would silently delete every other one; it reads the current
+    list and upserts into it instead. And it does not touch Secret- or
+    ConfigMap-sourced entries (`valueFrom`): those are owned elsewhere, and
+    overwriting one with a literal would quietly detach it from its source.
+    """
+    allowed, reason = guardrail_check("patch_deployment_env", namespace, {"env": env})
+    if not allowed:
+        return _refused("patch_deployment_env", namespace, reason)
+
+    api = _apps_api()
+    if not api:
+        return _refused("patch_deployment_env", namespace, "Kubernetes client unavailable")
+
+    desired = {str(k): (None if v is None else str(v)) for k, v in env.items()}
+    kubectl = (
+        f"kubectl set env deployment/{name} -c {container} "
+        + " ".join(f"{k}={v}" for k, v in desired.items())
+        + f" -n {namespace}"
+    )
+
+    try:
+        dep = await asyncio.to_thread(api.read_namespaced_deployment, name, namespace)
+    except ApiException as e:
+        return json.dumps({"tool": "patch_deployment_env", "status": "ERROR",
+                           "kubectl_equivalent": kubectl, "code": e.status,
+                           "reason": e.reason}, separators=(",", ":"))
+
+    spec = _container_spec(dep, container)
+    if spec is None:
+        return _refused("patch_deployment_env", namespace,
+                        f"container '{container}' not found in deployment '{name}'")
+
+    current = list(getattr(spec, "env", None) or [])
+    by_name = {var.name: var for var in current}
+
+    # Refuse rather than silently clobber an indirected value.
+    indirected = [k for k in desired if k in by_name and by_name[k].value is None
+                  and getattr(by_name[k], "value_from", None) is not None]
+    if indirected:
+        return _refused("patch_deployment_env", namespace, (
+            f"env var(s) {sorted(indirected)} are sourced from a ConfigMap/Secret "
+            "(valueFrom); the executor will not overwrite them with a literal"
+        ))
+
+    # Exact prior state for the keys being touched, so the audit trail carries a
+    # real restore and not just "roll the whole deployment back". A key that is
+    # absent today is reported null — restoring means removing it, not setting "".
+    prior_env = {k: (by_name[k].value if k in by_name else None) for k in desired}
+
+    merged = [{"name": v.name, "value": v.value} if getattr(v, "value_from", None) is None
+              else {"name": v.name, "valueFrom": api.api_client.sanitize_for_serialization(v.value_from)}
+              for v in current]
+    index = {entry["name"]: i for i, entry in enumerate(merged)}
+    for key, value in desired.items():
+        if key in index:
+            merged[index[key]] = {"name": key, "value": value}
+        else:
+            merged.append({"name": key, "value": value})
+
+    body = {"spec": {"template": {"spec": {"containers": [
+        {"name": container, "env": merged}
+    ]}}}}
+    try:
+        await asyncio.to_thread(
+            api.patch_namespaced_deployment, name, namespace, body, **_dry_run_kwarg(dry_run)
+        )
+        return json.dumps({
+            "tool": "patch_deployment_env", "name": name, "namespace": namespace,
+            "container": container, "env": desired, "prior_env": prior_env,
+            "dry_run": dry_run, "applied": not dry_run,
+            "kubectl_equivalent": kubectl, "status": "OK",
+        }, separators=(",", ":"))
+    except ApiException as e:
+        return json.dumps({"tool": "patch_deployment_env", "status": "ERROR",
+                           "kubectl_equivalent": kubectl, "code": e.status,
+                           "reason": e.reason}, separators=(",", ":"))
 
 
 @mcp.tool()

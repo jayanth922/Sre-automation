@@ -21,6 +21,7 @@ from sre_agent.act_phase import (  # noqa: E402
     build_act_report,
     execute_autonomous_live,
     extract_incident_signals,
+    live_outcome_summary,
     verify_live,
 )
 from sre_agent.approval_flow import compute_action_hash  # noqa: E402
@@ -90,6 +91,7 @@ class FakePlan:
 class FakeAlert:
     severity: str
     labels: Dict[str, Any] = field(default_factory=dict)
+    alert_name: str = ""
 
 
 @dataclass
@@ -213,6 +215,41 @@ def test_mixed_plan_executes_autonomous_holds_the_rest():
     assert report.aggregate_decision == "requires_approval"
     assert len(report.executed) == 1
     assert len(report.action_reports) == 2
+
+
+def test_config_change_with_no_capability_is_blocked_in_the_plan_a_human_reads():
+    # The planner's real shape for a runtime toggle: prose intent, no cpu/memory.
+    # Nothing in the stack can apply it, so it must be marked blocked here —
+    # before an operator approves it — not refused after they did.
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    plan = FakePlan([
+        FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
+        FakeAction("config_change", "inventory-service", {
+            "namespace": "demo-app",
+            "intent": "Set SLOW_QUERY_RATE back to 0 via /admin/config.",
+        }),
+    ])
+    report = _build(_state(alert, plan))
+    blocked = [r for r in report.action_reports if r["action_type"] == "config_change"]
+    assert len(blocked) == 1
+    assert blocked[0]["decision"] == "blocked"
+    assert "no automation capability" in blocked[0]["reason"]
+    # No fabricated dry-run transcript for a command that cannot be issued.
+    assert "command" not in blocked[0]
+    assert all(r["action_type"] != "config_change" for r in report.executed)
+    assert "no automation capability" in report.summary
+
+
+def test_config_change_carrying_a_resource_limit_is_still_planned_normally():
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    plan = FakePlan([
+        FakeAction("config_change", "inventory-service", {
+            "namespace": "demo-app",
+            "memory": "1Gi",
+        }),
+    ])
+    report = _build(_state(alert, plan))
+    assert report.action_reports[0]["decision"] != "blocked"
 
 
 def test_extract_signals_from_critical_revenue_service_without_fabricating_rates():
@@ -449,6 +486,67 @@ def test_execute_autonomous_live_routes_code_change_to_github():
         assert results[0]["status"] == "EXECUTED"
 
 
+def test_escalate_pages_on_call_instead_of_being_refused(monkeypatch):
+    """`escalate` is notify-only by design, not an unsupported mutation.
+
+    It has no MCP tool, so routing it through the mutation gateway rejected it
+    as `unsupported_action` — a plan whose last step was "get a human" reported
+    a refusal and paged nobody.
+    """
+    import sre_agent.incident_timeline as incident_timeline
+
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    plan = FakePlan([FakeAction("escalate", "checkout-service")])
+    state = _state(alert, plan)
+    state["incident_id"] = "33333333-3333-3333-3333-333333333333"
+    report = _build(state)
+
+    emitted = {}
+
+    async def fake_emit(incident_id, **kwargs):
+        emitted.update(kwargs, incident_id=incident_id)
+        return object()  # the created timeline event
+
+    monkeypatch.setattr(incident_timeline, "emit_timeline_event", fake_emit)
+
+    async def infra_caller(tool, args):  # pragma: no cover - must not be reached
+        raise AssertionError("escalate must not touch the infra backend")
+
+    results = asyncio.run(
+        execute_autonomous_live(
+            state, report, infra_caller, approved=True, context=LIVE_CONTEXT
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "EXECUTED"
+    assert results[0]["action_type"] == "escalate"
+    # "act" is one of war_room._SURFACED, so this reaches the Slack thread.
+    assert emitted["event_type"] == "act"
+    assert emitted["incident_id"] == "33333333-3333-3333-3333-333333333333"
+    assert "checkout-service" in emitted["content"]
+
+
+def test_escalate_without_an_incident_thread_is_honest(monkeypatch):
+    """No thread means no on-call was reached — say so, do not claim success."""
+    alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
+    plan = FakePlan([FakeAction("escalate", "checkout-service")])
+    state = _state(alert, plan)  # _state leaves incident_id None
+    report = _build(state)
+
+    async def infra_caller(tool, args):  # pragma: no cover - must not be reached
+        raise AssertionError("escalate must not touch the infra backend")
+
+    results = asyncio.run(
+        execute_autonomous_live(
+            state, report, infra_caller, approved=True, context=LIVE_CONTEXT
+        )
+    )
+
+    assert results[0]["status"] == "SKIPPED"
+    assert "no incident thread" in results[0]["detail"].lower()
+
+
 def test_verify_live_builds_query_and_evaluates():
     alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
     state = _state(alert)
@@ -462,6 +560,149 @@ def test_verify_live_builds_query_and_evaluates():
     out = asyncio.run(verify_live(state, caller))
     assert 'http_errors_total{service="checkout-service"}' in captured["query"]
     assert out["status"] == "RESOLVED"
+    assert out["signal"] == "error_rate"
+
+
+def test_verify_live_checks_the_alert_that_opened_the_incident():
+    """A latency alert graded on the error rate can be called "resolved" while
+    queries are still slow. When the incident carries an alert name, that alert
+    is the signal."""
+    alert = FakeAlert(
+        "warning",
+        {"service": "inventory-service", "namespace": "demo-app"},
+        alert_name="InventorySlowQueries",
+    )
+    state = _state(alert)
+    captured = {}
+
+    async def caller(tool, args):
+        captured["query"] = args["query"]
+        return '{"result":[],"series_total":0}'  # alert no longer firing
+
+    out = asyncio.run(verify_live(state, caller))
+    assert captured["query"] == (
+        'ALERTS{alertname="InventorySlowQueries",alertstate="firing",'
+        'service="inventory-service"}'
+    )
+    assert out["status"] == "RESOLVED"
+    assert out["signal"] == "alert_state"
+    assert out["alert_name"] == "InventorySlowQueries"
+
+
+# The longest averaging window in the shipped alert rules (`rate(...[5m])`).
+# A correct fix cannot clear such an alert any sooner than this.
+ALERT_AVERAGING_WINDOW_SECONDS = 300
+
+
+def test_the_default_verification_budget_outlasts_the_alerts_own_window(monkeypatch):
+    """A default budget no longer than the alert's window grades good fixes FAILED.
+
+    The alert rules poll `rate(...[5m])` with `for: 3m`, so the window still
+    contains the fault for five minutes after the pod is replaced. When the
+    budget equalled that window, a live slow-query remediation that genuinely
+    worked was recorded as FAILED and the incident moved to
+    REMEDIATION_FAILED — the alert cleared 40 seconds later. The default has
+    to leave room for the window *plus* a rollout.
+    """
+    monkeypatch.delenv("VERIFY_ALERT_TIMEOUT_SECONDS", raising=False)
+    alert = FakeAlert(
+        "warning",
+        {"service": "inventory-service", "namespace": "demo-app"},
+        alert_name="InventorySlowQueries",
+    )
+    state = _state(alert)
+    captured: Dict[str, Any] = {}
+
+    from sre_agent import verification as verification_module
+
+    real_verify = verification_module.verify_alert_cleared
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(verification_module, "verify_alert_cleared", spy)
+
+    async def caller(tool, args):
+        return '{"result":[],"series_total":0}'
+
+    asyncio.run(verify_live(state, caller))
+    assert captured["timeout_seconds"] > ALERT_AVERAGING_WINDOW_SECONDS
+
+
+def test_the_verification_budget_is_still_operator_overridable(monkeypatch):
+    """The default is a floor for correctness, not a hardcode."""
+    monkeypatch.setenv("VERIFY_ALERT_TIMEOUT_SECONDS", "45")
+    alert = FakeAlert(
+        "warning",
+        {"service": "inventory-service", "namespace": "demo-app"},
+        alert_name="InventorySlowQueries",
+    )
+    state = _state(alert)
+    captured: Dict[str, Any] = {}
+
+    from sre_agent import verification as verification_module
+
+    real_verify = verification_module.verify_alert_cleared
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(verification_module, "verify_alert_cleared", spy)
+
+    async def caller(tool, args):
+        return '{"result":[],"series_total":0}'
+
+    asyncio.run(verify_live(state, caller))
+    assert captured["timeout_seconds"] == 45
+
+
+# ── the message a human reads after approving ────────────────────────────────
+
+
+def _live_payload(**overrides):
+    payload = {
+        "severity": "HIGH",
+        "summary": "HIGH: 1/4 dry-run-executed, 3 held for approval/blocked",
+        "live_results": [
+            {"action_type": "patch_deployment_env", "status": "EXECUTED"},
+            {"action_type": "restart_pod", "status": "EXECUTED"},
+            {"action_type": "inspect", "status": "EXECUTED"},
+            {"action_type": "escalate", "status": "EXECUTED"},
+        ],
+        "verification": {"status": "RESOLVED", "detail": "alert X is no longer firing after 60s"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_live_outcome_summary_reports_what_ran_not_what_was_planned():
+    text = live_outcome_summary(_live_payload())
+    assert "held for approval" not in text  # the plan-time lie this replaces
+    assert "2/2 mutating action(s) EXECUTED" in text
+    assert "2 notification/read-only action(s) delivered" in text
+    assert "Verification: RESOLVED" in text
+
+
+def test_live_outcome_summary_surfaces_failures_and_live_errors():
+    payload = _live_payload(
+        live_results=[
+            {"action_type": "patch_deployment_env", "status": "EXECUTED"},
+            {"action_type": "restart_pod", "status": "FAILED"},
+        ],
+        verification={"status": "FAILED", "detail": "alert X still firing after 300s"},
+        live_error="executor lost the cluster connection",
+    )
+    text = live_outcome_summary(payload)
+    assert "1/2 mutating action(s) EXECUTED" in text
+    assert "[FAILED]" in text
+    assert "Live error: executor lost the cluster connection" in text
+
+
+def test_live_outcome_summary_falls_back_when_nothing_ran_live():
+    payload = _live_payload(live_results=[])
+    assert live_outcome_summary(payload) == payload["summary"]
 
 
 if __name__ == "__main__":

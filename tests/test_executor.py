@@ -17,6 +17,7 @@ from sre_agent.executor import (  # noqa: E402
     build_command,
     build_rollback_command,
     classify_live_response,
+    live_tool_for_action,
 )
 
 
@@ -285,6 +286,244 @@ def test_infra_action_still_uses_infra_caller():
     res = asyncio.run(ex._aexecute_unchecked(FakeAction("restart"), "autonomous", dry_run=False,
                                              tool_caller=infra_caller, github_caller=github_caller))
     assert res.status == "EXECUTED"
+
+
+# --- Capability routing -------------------------------------------------
+# `patch`/`config_change` map to patch_resource_limits, which changes nothing
+# but cpu/memory limits. Routing on the action's *name* made the platform claim
+# it could apply any config change, then refuse at the MCP server with "provide
+# at least one of memory/cpu" — blaming the planner for a missing capability.
+
+
+def test_config_change_with_a_memory_limit_is_executable():
+    action = FakeAction("config_change", parameters={"namespace": "meridian", "memory": "512Mi"})
+    assert live_tool_for_action(action) == "patch_resource_limits"
+
+
+def test_config_change_with_a_nested_cpu_limit_is_executable():
+    action = FakeAction(
+        "config_change",
+        parameters={"namespace": "meridian", "resources": {"limits": {"cpu": "500m"}}},
+    )
+    assert live_tool_for_action(action) == "patch_resource_limits"
+
+
+def test_env_var_config_change_has_no_live_tool():
+    # The shape the planner actually emits for a runtime toggle: prose intent,
+    # no cpu/memory anywhere. There is no executor tool that can do this.
+    action = FakeAction(
+        "config_change",
+        target="deployment/inventory-service",
+        parameters={
+            "namespace": "meridian",
+            "intent": "Set SLOW_QUERY_RATE back to 0 via /admin/config and mirror it into the deployment env.",
+            "blast_radius": "inventory-service pods only",
+        },
+    )
+    assert live_tool_for_action(action) is None
+
+
+def test_inspect_only_config_change_has_no_live_tool():
+    action = FakeAction(
+        "config_change",
+        parameters={"namespace": "meridian", "mode": "inspect_only", "intent": "dump /admin/config"},
+    )
+    assert live_tool_for_action(action) is None
+
+
+def test_patch_without_resource_limits_has_no_live_tool():
+    action = FakeAction("patch", parameters={"namespace": "meridian", "patch": {"spec": {"paused": True}}})
+    assert live_tool_for_action(action) is None
+
+
+def test_actions_backed_by_their_own_tool_are_unaffected():
+    assert live_tool_for_action(FakeAction("restart")) == "restart_deployment"
+    assert live_tool_for_action(FakeAction("scale", parameters={"replicas": 3})) == "scale_deployment"
+    assert live_tool_for_action(FakeAction("rollback")) == "rollback_deployment"
+    assert live_tool_for_action(FakeAction("recreate_pod")) == "recreate_pod"
+    # Notify-only and code-change actions are other dispatch families entirely.
+    assert live_tool_for_action(FakeAction("escalate")) is None
+    assert live_tool_for_action(FakeAction("revert_commit")) is None
+
+
+def test_uncapable_config_change_is_refused_by_name_not_sent_to_the_tool():
+    async def fail_caller(tool_name, args):
+        raise AssertionError(f"no tool should be called; got {tool_name}({args})")
+
+    ex = Executor()
+    action = FakeAction("config_change", parameters={"namespace": "meridian", "intent": "flip a feature flag"})
+    res = asyncio.run(
+        ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=fail_caller)
+    )
+    assert res.status == "REFUSED"
+    assert "no automation capability" in res.detail
+    # The old failure blamed a missing parameter for a missing capability.
+    assert "provide at least one of memory/cpu" not in res.detail
+
+
+def test_capable_config_change_still_reaches_the_resource_tool():
+    seen: Dict[str, Any] = {}
+
+    async def caller(tool_name, args):
+        seen["tool"], seen["args"] = tool_name, args
+        return {"status": "OK", "applied": True}
+
+    ex = Executor()
+    action = FakeAction("config_change", parameters={"namespace": "meridian", "memory": "1Gi"})
+    res = asyncio.run(
+        ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=caller)
+    )
+    assert res.status == "EXECUTED"
+    assert seen["tool"] == "patch_resource_limits"
+    assert seen["args"]["memory"] == "1Gi"
+
+
+# --- Env-var config changes ---------------------------------------------
+# The second executable configuration surface. A runtime toggle (feature flag,
+# fault-injection rate, log level) is the config change the planner actually
+# proposes most often, and before patch_deployment_env existed it was the
+# capability gap the routing above had to report.
+
+
+def test_env_config_change_routes_to_the_env_tool():
+    action = FakeAction(
+        "config_change",
+        parameters={"namespace": "meridian", "env": {"SLOW_QUERY_RATE": "0"}},
+    )
+    assert live_tool_for_action(action) == "patch_deployment_env"
+
+
+def test_nested_and_aliased_env_maps_are_found():
+    for params in (
+        {"env_vars": {"LOG_LEVEL": "debug"}},
+        {"spec": {"environment_variables": {"LOG_LEVEL": "debug"}}},
+        {"changes": [{"env": {"LOG_LEVEL": "debug"}}]},
+    ):
+        assert live_tool_for_action(FakeAction("config_change", parameters=params)) == (
+            "patch_deployment_env"
+        ), params
+
+
+def test_an_environment_name_is_not_an_env_map():
+    # "environment: production" is the deployment's environment, not a variable
+    # to set. Treating it as one would patch a container with ENVIRONMENT=... .
+    action = FakeAction("config_change", parameters={"environment": "production"})
+    assert live_tool_for_action(action) is None
+
+
+def test_a_resource_limit_wins_over_env_when_both_are_present():
+    # One action, one tool. The resource tool is the narrower, better-understood
+    # mutation, and _live_args deliberately omits env when limits are present.
+    action = FakeAction(
+        "config_change",
+        parameters={"memory": "512Mi", "env": {"LOG_LEVEL": "debug"}},
+    )
+    assert live_tool_for_action(action) == "patch_resource_limits"
+    assert "env" not in _live_args(action)
+
+
+def test_env_config_change_reaches_the_env_tool_with_container_and_values():
+    seen: Dict[str, Any] = {}
+
+    async def caller(tool_name, args):
+        seen["tool"], seen["args"] = tool_name, args
+        return {"status": "OK", "applied": True}
+
+    ex = Executor()
+    action = FakeAction(
+        "config_change",
+        target="inventory-service",
+        parameters={
+            "namespace": "meridian",
+            "container": "inventory-service",
+            "env": {"SLOW_QUERY_RATE": "0"},
+        },
+    )
+    res = asyncio.run(
+        ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=caller)
+    )
+    assert res.status == "EXECUTED"
+    assert seen["tool"] == "patch_deployment_env"
+    assert seen["args"]["env"] == {"SLOW_QUERY_RATE": "0"}
+    assert seen["args"]["container"] == "inventory-service"
+    assert seen["args"]["namespace"] == "meridian"
+
+
+def test_env_build_command_is_the_kubectl_a_human_would_run():
+    cmd = build_command(
+        FakeAction(
+            "config_change",
+            target="inventory-service",
+            parameters={
+                "namespace": "meridian",
+                "env": {"SLOW_QUERY_RATE": "0"},
+            },
+        )
+    )
+    assert "kubectl set env deployment/inventory-service" in cmd
+    assert "SLOW_QUERY_RATE=0" in cmd
+    assert "-n meridian" in cmd
+
+
+def test_a_credential_named_env_value_never_reaches_the_transcript():
+    # The edge refuses the write, but the rendered command is persisted in the
+    # audit trail and echoed to Slack — the refusal must not be what logs it.
+    cmd = build_command(
+        FakeAction(
+            "config_change",
+            parameters={"env": {"DATABASE_PASSWORD": "hunter2", "LOG_LEVEL": "debug"}},
+        )
+    )
+    assert "hunter2" not in cmd
+    assert "DATABASE_PASSWORD=[REDACTED]" in cmd
+    # A genuine flag is still legible: redaction keys off the name, not the value.
+    assert "LOG_LEVEL=debug" in cmd
+
+
+def test_unexecutable_config_change_does_not_print_a_command_nothing_runs():
+    cmd = build_command(
+        FakeAction("config_change", parameters={"intent": "re-apply the ConfigMap"})
+    )
+    assert "kubectl apply -f" not in cmd
+    assert "no executable config change" in cmd
+
+
+# --- Read-only inspection ------------------------------------------------
+
+
+def test_inspect_routes_to_the_read_only_tool():
+    assert live_tool_for_action(FakeAction("inspect")) == "get_deployment_config"
+
+
+def test_inspect_args_carry_no_dry_run():
+    # There is nothing to not-do on a read; the tool takes no such parameter.
+    args = _live_args(FakeAction("inspect", parameters={"namespace": "meridian"}))
+    assert "dry_run" not in args
+    assert args["namespace"] == "meridian"
+
+
+def test_inspect_command_is_a_read():
+    cmd = build_command(FakeAction("inspect", parameters={"namespace": "meridian"}))
+    assert cmd.startswith("kubectl get deployment/checkout-service")
+    assert "read-only" in cmd
+
+
+def test_inspect_reaches_the_config_dump_tool():
+    seen: Dict[str, Any] = {}
+
+    async def caller(tool_name, args):
+        seen["tool"], seen["args"] = tool_name, args
+        return {"status": "OK", "mutated": False, "replicas": 2}
+
+    ex = Executor()
+    action = FakeAction(
+        "inspect", target="inventory-service", parameters={"namespace": "meridian"}
+    )
+    res = asyncio.run(
+        ex._aexecute_unchecked(action, "autonomous", dry_run=False, tool_caller=caller)
+    )
+    assert res.status == "EXECUTED"
+    assert seen["tool"] == "get_deployment_config"
 
 
 if __name__ == "__main__":

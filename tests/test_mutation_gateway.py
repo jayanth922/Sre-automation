@@ -322,3 +322,58 @@ def test_live_executor_has_no_direct_application_bypass():
         if "._aexecute_unchecked(" in path.read_text(encoding="utf-8"):
             offenders.append(str(path.relative_to(source_root)))
     assert offenders == []
+
+
+def test_config_change_without_a_resource_limit_is_rejected_as_unsupported(monkeypatch):
+    """The authorization boundary names the capability gap, not a parameter gap.
+
+    `config_change` maps to `patch_resource_limits`, the only config surface
+    Sentinel has. An env-var or feature-flag change reaches no tool at all, so
+    it must be rejected here — never dispatched to the resource tool, which
+    would refuse it with a message blaming the planner for missing memory/cpu.
+    """
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *args, **kwargs: _fresh())
+    action = FakeAction(
+        action_type="config_change",
+        parameters={"namespace": "demo-app", "intent": "disable SLOW_QUERY_RATE"},
+    )
+
+    def fail_caller(*args, **kwargs):
+        raise AssertionError("no tool should be called for an unsupported action")
+
+    with pytest.raises(MutationRejected, match="unsupported_action") as exc:
+        asyncio.run(
+            authorize_and_execute(
+                action, _planned(), CONTEXT, fail_caller, None, "no-capability"
+            )
+        )
+    assert "no automation capability" in exc.value.detail
+    assert store.claims == set()
+
+
+def test_config_change_with_a_resource_limit_is_authorized_normally(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *args, **kwargs: _fresh())
+    monkeypatch.setattr(gateway, "_persist_audit_event", _no_audit)
+    calls = []
+
+    async def caller(tool_name, args):
+        calls.append((tool_name, args))
+        return {"status": "OK", "applied": True}
+
+    action = FakeAction(
+        action_type="config_change",
+        parameters={"namespace": "demo-app", "memory": "1Gi"},
+    )
+    result = asyncio.run(
+        authorize_and_execute(action, _planned(), CONTEXT, caller, None, "capable")
+    )
+    assert result.status == "EXECUTED"
+    assert calls[0][0] == "patch_resource_limits"

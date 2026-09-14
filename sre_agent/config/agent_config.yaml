@@ -16,6 +16,7 @@ agents:
       - get_service_endpoints
       - get_pod_logs
       - get_deployment_status
+      - get_deployment_spec
       - get_node_status
 
   logs_agent:

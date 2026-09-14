@@ -24,6 +24,8 @@ from .executor import (
     Executor,
     build_command,
     build_rollback_command,
+    live_tool_for_action,
+    missing_capability_reason,
 )
 from .policy_gate import AutonomyDecision, decide
 from .redis_state_store import get_state_store
@@ -153,6 +155,12 @@ def _verify_scope(action: Any, context: ExecutionContext) -> None:
         raise MutationRejected("scope_mismatch", "Action target is required")
 
     if action_type in EXECUTOR_TOOL_MAP:
+        # Capability before scope: a namespace complaint about a step nothing
+        # can execute anyway sends the operator chasing the wrong problem.
+        if live_tool_for_action(action) is None:
+            raise MutationRejected(
+                "unsupported_action", missing_capability_reason(action_type)
+            )
         try:
             assert_action_namespace(action, context)
         except NamespaceScopeError as exc:

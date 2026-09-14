@@ -19,6 +19,8 @@ from kubernetes.client.rest import ApiException
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+from spec_view import format_container_spec
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -438,6 +440,15 @@ class GetDeploymentStatusParams(BaseModel):
     namespace: str = Field(default="default", description="Kubernetes namespace")
 
 
+class GetDeploymentSpecParams(BaseModel):
+    """Parameters for get_deployment_spec tool."""
+    deployment_name: str = Field(..., description="Name of the deployment")
+    namespace: str = Field(default="default", description="Kubernetes namespace")
+    container: Optional[str] = Field(
+        None, description="Only report this container (default: all containers)"
+    )
+
+
 class GetNodeStatusParams(BaseModel):
     """Parameters for get_node_status tool."""
     node_name: Optional[str] = Field(None, description="Specific node name (optional)")
@@ -626,6 +637,66 @@ async def handle_get_deployment_status(params: GetDeploymentStatusParams) -> str
     except Exception as e:
         logger.error(f"Error getting deployment status: {e}")
         return f"Error getting deployment status: {e}"
+
+
+async def handle_get_deployment_spec(params: GetDeploymentSpecParams) -> str:
+    """Read what a deployment is configured to run: image, env, resources."""
+    logger.info(
+        f"Getting deployment spec: {params.deployment_name} in namespace {params.namespace}"
+    )
+
+    apps_v1 = get_apps_v1_api()
+    if not apps_v1:
+        return "Error: Kubernetes client not initialized."
+
+    try:
+        deployment = await asyncio.to_thread(
+            apps_v1.read_namespaced_deployment,
+            params.deployment_name,
+            params.namespace,
+        )
+    except Exception as e:
+        logger.error(f"Error getting deployment spec: {e}")
+        return f"Error getting deployment spec: {e}"
+
+    template_spec = deployment.spec.template.spec
+    containers = [
+        format_container_spec(spec)
+        for spec in (template_spec.containers or [])
+        if not params.container or spec.name == params.container
+    ]
+    if params.container and not containers:
+        return (
+            f"Error: container '{params.container}' not found in deployment "
+            f"'{params.deployment_name}'"
+        )
+
+    annotations = dict(deployment.metadata.annotations or {})
+    # The Progressing condition's lastUpdateTime is the closest thing to "when
+    # was this spec last changed", which is what correlates a config cause with
+    # an alert's onset.
+    last_rollout = None
+    for condition in (deployment.status.conditions or []):
+        if condition.type == "Progressing" and condition.last_update_time:
+            last_rollout = condition.last_update_time
+
+    result = {
+        "name": deployment.metadata.name,
+        "namespace": deployment.metadata.namespace,
+        "replicas": deployment.spec.replicas,
+        "revision": annotations.get("deployment.kubernetes.io/revision"),
+        "last_rollout": last_rollout,
+        "containers": containers,
+        "init_containers": [
+            format_container_spec(spec)
+            for spec in (template_spec.init_containers or [])
+        ],
+        "kubectl_equivalent": (
+            f"kubectl get deployment/{params.deployment_name} "
+            f"-n {params.namespace} -o yaml"
+        ),
+    }
+    return json.dumps(result, separators=(",", ":"), default=str)
 
 
 async def handle_get_node_status(params: GetNodeStatusParams) -> str:
@@ -1015,6 +1086,24 @@ async def get_deployment_status(deployment_name: str, namespace: str = "default"
     """Get the status of a Kubernetes deployment."""
     return await handle_get_deployment_status(
         GetDeploymentStatusParams(deployment_name=deployment_name, namespace=namespace)
+    )
+
+
+@mcp.tool()
+async def get_deployment_spec(
+    deployment_name: str, namespace: str = "default", container: str = None
+) -> str:
+    """Read a deployment's declared configuration: image, env vars, resource limits.
+
+    Use this to answer "what is this service actually configured to run?" —
+    the question `get_deployment_status` (replica counts) cannot. Env values
+    whose names look like credentials are redacted; Secret/ConfigMap-sourced
+    entries are reported by source, never resolved.
+    """
+    return await handle_get_deployment_spec(
+        GetDeploymentSpecParams(
+            deployment_name=deployment_name, namespace=namespace, container=container
+        )
     )
 
 

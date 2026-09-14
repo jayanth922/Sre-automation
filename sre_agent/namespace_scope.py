@@ -20,6 +20,7 @@ _NAMESPACE_ARG_TOOLS = frozenset(
         "get_service_endpoints",
         "get_pod_logs",
         "get_deployment_status",
+        "get_deployment_spec",
         "restart_deployment",
         "scale_deployment",
         "rollback_deployment",

@@ -54,6 +54,9 @@ class Reversibility(str, Enum):
     REVERSIBLE = "reversible"  # trivially undone (restart, rollback, revert)
     RISKY = "risky"  # undoable only with a plan (config/patch/scale)
     IRREVERSIBLE = "irreversible"  # cannot be safely undone (scale-to-0, destructive)
+    # Nothing was changed, so there is nothing to undo. Distinct from
+    # REVERSIBLE, which asserts a mutation happened and can be walked back.
+    READ_ONLY = "read_only"
 
 
 # Baseline reversibility per action_type (from RemediationAction's action_type
@@ -70,7 +73,15 @@ _BASE_REVERSIBILITY: dict[str, Reversibility] = {
     "scale": Reversibility.RISKY,  # reversible unless scaling to 0
     "config_change": Reversibility.RISKY,
     "patch": Reversibility.RISKY,
+    "inspect": Reversibility.READ_ONLY,  # reads config; mutates nothing
 }
+
+# Kept literal rather than imported from ``executor.READ_ONLY_ACTIONS`` so this
+# module stays free of the executor's import chain, as the rest of it is
+# deliberately dependency-light. ``tests/test_policy_gate.py`` asserts the two
+# agree, so adding a read-only action in one place cannot silently skip the
+# gate in the other.
+_READ_ONLY_ACTION_TYPES: frozenset = frozenset({"inspect"})
 
 
 @dataclass
@@ -161,6 +172,24 @@ def decide(
         )
 
     reversibility = classify_reversibility(action)
+    action_type = str(getattr(action, "action_type", "")).lower()
+
+    # 1b. A read-only action mutates nothing. No severity, telemetry gap or
+    # calibration argument can make *looking* unsafe, and every gate below this
+    # point reasons about the cost of a change that will not happen. Holding a
+    # config dump for human approval is how diagnostics ended up disguised as
+    # `config_change` in the first place: the planner had no read-only action
+    # type to reach for, so inspection borrowed a mutation's risk profile and
+    # burned an approval on a step that writes nothing. Hard policy above still
+    # applies — a policy block stays final.
+    if action_type in _READ_ONLY_ACTION_TYPES:
+        return GateDecision(
+            decision=AutonomyDecision.AUTONOMOUS,
+            severity=severity,
+            reversibility=reversibility,
+            allowed_by_policy=True,
+            reason=f"{severity.name}: read-only action mutates nothing → autonomous",
+        )
 
     # Unknown telemetry never grants autonomy — escalate to human approval.
     if severity is Severity.UNKNOWN or getattr(
@@ -178,7 +207,6 @@ def decide(
         )
 
     low_sev = is_low_severity(severity)
-    action_type = str(getattr(action, "action_type", "")).lower()
 
     # 2. A model's self-reported confidence is not authorization. Mutation
     # autonomy requires a task-specific calibration artifact with a measured

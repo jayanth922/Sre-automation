@@ -35,7 +35,14 @@ from .confidence_calibration import (
     load_calibration_artifact,
 )
 from .execution_context import ExecutionContext
-from .executor import EXECUTOR_TOOL_MAP, Executor
+from .executor import (
+    EXECUTOR_TOOL_MAP,
+    NON_MUTATING_ACTIONS,
+    NOTIFY_ONLY_ACTIONS,
+    Executor,
+    live_tool_for_action,
+    missing_capability_reason,
+)
 from .mutation_gateway import MutationGateContext, MutationRejected, authorize_and_execute
 from .policy_gate import AutonomyDecision, decide_plan
 from .severity_engine import (
@@ -479,6 +486,7 @@ def build_act_report(
     action_reports: List[Dict[str, Any]] = []
     executed: List[Dict[str, Any]] = []
     blocked_out_of_scope = 0
+    blocked_no_capability = 0
 
     for action, gd in zip(actions, per_action):
         params = getattr(action, "parameters", None)
@@ -517,6 +525,21 @@ def build_act_report(
             "calibrated_action_probability": gd.calibrated_action_probability,
             "minimum_autonomy_probability": gd.minimum_autonomy_probability,
         }
+        # A live-mutating action Sentinel has no tool for belongs in the plan a
+        # human reads, not in the execution log after they approved it. The
+        # `config_change`/`patch` pair is what bites: the only tool behind them
+        # changes container cpu/memory limits, so a change to an env var,
+        # ConfigMap or feature flag — what "config change" usually means, and
+        # what the planner emits — has nothing behind it. Dry-running it would
+        # print a `kubectl apply -f <rendered-config>` placeholder as if it were
+        # a command, which is the same lie one step earlier.
+        if rep["action_type"].lower() in EXECUTOR_TOOL_MAP and live_tool_for_action(action) is None:
+            blocked_no_capability += 1
+            rep["decision"] = AutonomyDecision.BLOCKED.value
+            rep["reason"] = missing_capability_reason(rep["action_type"].lower())
+            action_reports.append(rep)
+            continue
+
         if gd.decision is AutonomyDecision.AUTONOMOUS:
             result = executor.execute(action, gd.decision.value, dry_run=dry_run)
             rep["command"] = result.command
@@ -530,10 +553,19 @@ def build_act_report(
         if blocked_out_of_scope
         else ""
     )
+    # Named separately from the out-of-namespace block: one is this cluster
+    # refusing a target, the other is Sentinel having no tool at all. Collapsing
+    # them into "blocked" hides a capability gap as if it were a policy call.
+    capability_note = (
+        f", {blocked_no_capability} blocked (no automation capability)"
+        if blocked_no_capability
+        else ""
+    )
     summary = (
         f"{assessment.severity.name}: plan {aggregate.value}; "
         f"{len(executed)}/{len(actions)} action(s) dry-run-executed, "
-        f"{len(actions) - len(executed)} held for approval/blocked{scope_note}."
+        f"{len(actions) - len(executed)} held for approval/blocked"
+        f"{scope_note}{capability_note}."
     )
     logger.info(f"⚙️  ACT: {summary}")
 
@@ -554,6 +586,82 @@ def build_act_report(
         calibration_artifact_version=artifact_version,
         calibration_artifact_sha256=artifact_sha256,
     )
+
+
+async def _execute_notify_only(
+    action: Any,
+    action_payload: Dict[str, Any],
+    incident_id: Optional[str],
+) -> Dict[str, Any]:
+    """Deliver a notify-only action by paging the humans in the incident thread.
+
+    Slack is this platform's only communication channel, so an escalation goes
+    out the way every other agent message does: as a surfaced ``act`` timeline
+    event, which ``war_room.forward_events`` streams into the incident's Slack
+    thread (and ``live_events`` mirrors to the dashboard).
+
+    Honest about its failure case — with no incident thread there is no on-call
+    to reach, and the result says so instead of reporting a page that never
+    went out.
+    """
+    from .executor import build_command
+
+    action_type = str(action_payload.get("action_type") or "").lower()
+    target = str(action_payload.get("target") or "")
+    command = build_command(action)
+
+    def _result(status: str, detail: str) -> Dict[str, Any]:
+        return {
+            "action_type": action_type,
+            "target": target,
+            "status": status,
+            "command": command,
+            "detail": detail,
+        }
+
+    if not incident_id:
+        return _result("SKIPPED", "No incident thread to escalate into.")
+
+    params = action_payload.get("parameters") or {}
+    why = str(
+        params.get("reason")
+        or params.get("details")
+        or _get(action, "safety_check", "")
+        or ""
+    ).strip()
+    body = "\n".join(
+        line
+        for line in (
+            f"This remediation plan needs a human on *{target}*.",
+            why,
+            "Reply in this thread to take it over.",
+        )
+        if line
+    )
+    try:
+        from .incident_timeline import emit_timeline_event
+
+        event = await emit_timeline_event(
+            incident_id,
+            event_type="act",
+            speaker_role="executor",
+            title="🚨 Escalation to on-call",
+            content=body,
+            payload={
+                "source": "act_phase",
+                "action_type": action_type,
+                "target": target,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - emission is itself guarded
+        logger.warning("Escalation notice for %s failed: %s", incident_id, exc)
+        return _result("ERROR", f"Escalation notice failed: {exc}")
+    if event is None:
+        return _result(
+            "ERROR", "Escalation notice could not be posted to the incident thread."
+        )
+    logger.info("📣 ACT: escalated '%s' to on-call in the incident thread", target)
+    return _result("EXECUTED", f"Paged on-call in the incident thread about '{target}'.")
 
 
 async def execute_autonomous_live(
@@ -614,6 +722,14 @@ async def execute_autonomous_live(
             "parameters": _get(action, "parameters", {}) or {},
             "approval_hash": approval_hash,
         }
+        # Notify-only actions never reach the mutation gateway: they mutate
+        # nothing, so there is no namespace to scope-check and no idempotency
+        # key to dedupe, and the gateway would reject them outright.
+        if str(action_payload["action_type"]).lower() in NOTIFY_ONLY_ACTIONS:
+            results.append(
+                await _execute_notify_only(action, action_payload, incident_id)
+            )
+            continue
         idempotency_key = hashlib.sha256(
             json.dumps(
                 action_payload,
@@ -782,21 +898,108 @@ def apply_skill_learning(
     }
 
 
+def live_outcome_summary(report_payload: Dict[str, Any]) -> str:
+    """One line saying what actually ran, for the message a human reads after
+    approving.
+
+    ``ActReport.summary`` is written at plan time — "1/4 dry-run-executed, 3
+    held for approval/blocked" — and stops being true the moment someone
+    approves. Posting it unchanged into the Slack thread after a live run told
+    the on-call that nothing had run while four actions were executing against
+    their cluster. Mutations are counted apart from pages and reads, for the
+    same reason verification excludes them: a page is not a fix.
+    """
+    live_results = [
+        item for item in (report_payload.get("live_results") or []) if isinstance(item, dict)
+    ]
+    if not live_results:
+        return str(report_payload.get("summary") or "")
+
+    severity = str(report_payload.get("severity") or "UNKNOWN")
+    mutating = [
+        item
+        for item in live_results
+        if str(item.get("action_type", "")).lower() not in NON_MUTATING_ACTIONS
+    ]
+    other = len(live_results) - len(mutating)
+    executed = sum(1 for item in mutating if str(item.get("status")) == "EXECUTED")
+
+    parts = [
+        f"{severity}: approved plan executed live — "
+        f"{executed}/{len(mutating)} mutating action(s) EXECUTED"
+    ]
+    failures = sorted(
+        {
+            str(item.get("status"))
+            for item in live_results
+            if str(item.get("status")) not in {"EXECUTED", "None"}
+        }
+    )
+    if failures:
+        parts.append(f" [{', '.join(failures)}]")
+    if other:
+        parts.append(f", {other} notification/read-only action(s) delivered")
+    verification = report_payload.get("verification") or {}
+    if verification:
+        parts.append(
+            f". Verification: {verification.get('status', 'UNKNOWN')}"
+            f" ({verification.get('detail', 'no detail')})"
+        )
+    else:
+        parts.append(". Verification: not run (nothing mutating executed)")
+    if report_payload.get("live_error"):
+        parts.append(f". Live error: {report_payload['live_error']}")
+    return "".join(parts)
+
+
 async def verify_live(
     state: Any, tool_caller: Any, wait_seconds: int = 0
 ) -> Dict[str, Any]:
-    """Confirm a remediation worked by re-checking the incident's error rate.
+    """Confirm a remediation worked by waiting for the incident's alert to clear.
 
-    Builds an error-rate PromQL for the affected service, re-queries it through
-    the injected Prometheus tool_caller, and evaluates RESOLVED/FAILED against a
-    configurable threshold. Injected caller → testable without a live cluster.
+    The alert that opened the incident is the objective a human would watch to
+    call it over, and the only threshold here that isn't invented — so that is
+    what gets re-checked, polled until it clears or the budget runs out.
+    Incidents with no alert behind them (a manually opened one) fall back to the
+    service's error rate. Injected caller → testable without a live cluster.
     """
     from .nl_query import QueryIntent, build_promql
     from .skill_store import signature_from_alert
-    from .verification import verify_remediation
+    from .verification import alert_state_promql, verify_alert_cleared, verify_remediation
 
     alert = _get(state, "alert_context")
     service = signature_from_alert(alert).service
+    alert_name = str(_get(alert, "alert_name", "") or "").strip()
+
+    if alert_name:
+        outcome = await verify_alert_cleared(
+            alert_name,
+            service,
+            tool_caller,
+            settle_seconds=wait_seconds,
+            # The budget has to outlast the alert's own averaging window, not
+            # just the rollout. Typical rules here read
+            # `rate(...[5m]) ... for: 3m`, so a *correct* fix cannot clear the
+            # alert for ~5 minutes afterwards no matter how fast the new pod
+            # comes up. At 300s a live slow-query remediation that worked was
+            # graded FAILED and the incident moved to REMEDIATION_FAILED — the
+            # alert cleared 40s later. Grading a working fix as broken is the
+            # expensive direction of this error, so the default now covers the
+            # window plus a rollout.
+            timeout_seconds=int(os.getenv("VERIFY_ALERT_TIMEOUT_SECONDS", "600")),
+            poll_seconds=int(os.getenv("VERIFY_ALERT_POLL_SECONDS", "30")),
+        )
+        return {
+            "status": outcome.status,
+            "current_value": outcome.current_value,
+            "threshold": outcome.threshold,
+            "improvement_pct": outcome.improvement_pct,
+            "detail": outcome.detail,
+            "promql": alert_state_promql(alert_name, service),
+            "signal": "alert_state",
+            "alert_name": alert_name,
+        }
+
     promql = build_promql(
         QueryIntent("error_rate", None if service == "unknown" else service, "5m")
     )
@@ -812,4 +1015,5 @@ async def verify_live(
         "improvement_pct": outcome.improvement_pct,
         "detail": outcome.detail,
         "promql": promql,
+        "signal": "error_rate",
     }

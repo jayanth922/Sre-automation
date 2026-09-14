@@ -36,6 +36,9 @@ from .execution_context import (
 logger = logging.getLogger(__name__)
 
 # Infra remediation → executor MCP server tools. (escalate = notify-only, absent.)
+# The value is the action's *default* tool; `patch`/`config_change` resolve to
+# one of two tools depending on what the action carries — see
+# `live_tool_for_action`, which is the authority.
 EXECUTOR_TOOL_MAP: Dict[str, str] = {
     "restart": "restart_deployment",
     "scale": "scale_deployment",
@@ -43,7 +46,27 @@ EXECUTOR_TOOL_MAP: Dict[str, str] = {
     "patch": "patch_resource_limits",
     "config_change": "patch_resource_limits",
     "recreate_pod": "recreate_pod",
+    "inspect": "get_deployment_config",
 }
+
+# The third dispatch family, alongside the two tool maps below: action types
+# that reach a *human* rather than an MCP server. They mutate nothing, so they
+# deliberately have no tool — but that also means every "is this a known
+# action?" check written as "in one of the tool maps" silently misclassifies
+# them as unsupported. Keep them here so those checks can be explicit instead.
+NOTIFY_ONLY_ACTIONS: frozenset = frozenset({"escalate"})
+
+# The fourth family: actions that reach the cluster but only *read* it. They
+# have a tool and a namespace worth scope-checking, so unlike notify-only they
+# take the normal dispatch path — but nothing about severity, telemetry
+# completeness or calibration can make looking unsafe, so the policy gate lets
+# them run without approval (see `policy_gate.decide`).
+READ_ONLY_ACTIONS: frozenset = frozenset({"inspect"})
+
+# "Did this action actually change anything?" Verification and skill learning
+# both need this: a page and a config dump are EXECUTED too, and grading an
+# incident on either would call it resolved before anyone touched the system.
+NON_MUTATING_ACTIONS: frozenset = NOTIFY_ONLY_ACTIONS | READ_ONLY_ACTIONS
 
 # Code-change remediation → github-exec MCP server tools. This is what makes an
 # LLM-suggested code fix (revert the bad deploy) actually execute, not just be
@@ -64,6 +87,53 @@ SANDBOX_TOOL_MAP: Dict[str, str] = {
     "logs": "sandbox_logs",
     "teardown": "sandbox_teardown",
 }
+
+# Action types that name an *intent* ("change some config") rather than a tool.
+# Two tools serve them — `patch_resource_limits` for a cpu/memory change,
+# `patch_deployment_env` for a runtime env var — and which one applies is
+# decided by what the action carries, never by its name. Routing on the name
+# was the original defect: it claimed a capability that did not exist, so a
+# human approved a step nothing could run and the refusal then blamed the
+# planner ("provide at least one of memory/cpu") for a missing tool.
+_CONFIG_INTENT_ACTIONS: frozenset = frozenset({"patch", "config_change"})
+
+
+def live_tool_for_action(action: Any) -> Optional[str]:
+    """The executor-MCP tool that can really carry out this action, or None.
+
+    The canonical answer to "can Sentinel actually execute this?" for infra
+    actions. Membership in ``EXECUTOR_TOOL_MAP`` is necessary but not
+    sufficient: ``patch``/``config_change`` resolve to the resource tool when
+    the action carries a cpu/memory limit, to the env tool when it carries env
+    vars, and to nothing at all otherwise — a ConfigMap rewrite or a change
+    described only in prose still has no tool behind it, and naming that as a
+    capability gap is the honest failure.
+    """
+    action_type = str(getattr(action, "action_type", "")).lower()
+    tool_name = EXECUTOR_TOOL_MAP.get(action_type)
+    if tool_name is None:
+        return None
+    if action_type in _CONFIG_INTENT_ACTIONS:
+        params = getattr(action, "parameters", None) or {}
+        if not isinstance(params, dict):
+            return None
+        if _find_resource_field(params, "memory") or _find_resource_field(params, "cpu"):
+            return "patch_resource_limits"
+        if _find_env_map(params):
+            return "patch_deployment_env"
+        return None
+    return tool_name
+
+
+def missing_capability_reason(action_type: str) -> str:
+    """Why a known-but-unexecutable action cannot run, in the operator's terms."""
+    return (
+        f"no automation capability: '{action_type}' names neither a cpu/memory "
+        "limit (parameters.memory / parameters.cpu) nor environment variables "
+        "(parameters.env), which are the two configuration surfaces Sentinel "
+        "can mutate. A ConfigMap, a Helm value or a change described only in "
+        "prose needs a human."
+    )
 
 
 class ExecutionMode(str):
@@ -101,6 +171,21 @@ def _replicas(action: Any, default: int = 1) -> int:
     return default
 
 
+# Mirrors the executor MCP server's guardrail denylist. The edge refuses to
+# *write* a credential-named env var; this keeps its value out of the rendered
+# command, which is persisted verbatim in the audit trail and shown in Slack.
+# A refusal must not be the thing that logs the secret.
+_CREDENTIAL_KEY_RE = re.compile(
+    r"(SECRET|PASSWORD|PASSWD|TOKEN|CREDENTIAL|PRIVATE_KEY|API_?KEY|_KEY$|^KEY$|AUTH|SESSION|SALT|CERT)",
+    re.IGNORECASE,
+)
+
+
+def _redact_env_value(key: str, value: Any) -> str:
+    """The value as it should appear in a transcript: hidden if the name is a secret."""
+    return "[REDACTED]" if _CREDENTIAL_KEY_RE.search(str(key)) else str(value)
+
+
 def build_command(action: Any) -> str:
     """Translate a remediation action into the concrete command it maps to.
 
@@ -123,12 +208,22 @@ def build_command(action: Any) -> str:
         return f"kubectl patch deployment/{target} -n {ns} --type merge -p '{patch}'"
     if action_type == "config_change":
         params = getattr(action, "parameters", None) or {}
-        memory = _find_resource_field(params, "memory") if isinstance(params, dict) else None
-        cpu = _find_resource_field(params, "cpu") if isinstance(params, dict) else None
+        if not isinstance(params, dict):
+            params = {}
+        memory = _find_resource_field(params, "memory")
+        cpu = _find_resource_field(params, "cpu")
         if memory or cpu:
             limits = ",".join(f"{k}={v}" for k, v in (("memory", memory), ("cpu", cpu)) if v)
             return f"kubectl set resources deployment/{target} -c {target} --limits={limits} -n {ns}"
-        return f"kubectl apply -f <rendered-config for {target}> -n {ns}"
+        env = _find_env_map(params)
+        if env:
+            container = params.get("container", target)
+            pairs = " ".join(f"{k}={_redact_env_value(k, v)}" for k, v in env.items())
+            return f"kubectl set env deployment/{target} -c {container} {pairs} -n {ns}"
+        # No tool can issue this; `live_tool_for_action` blocks it upstream.
+        return f"# no executable config change for '{target}' (no resource limit, no env vars)"
+    if action_type == "inspect":
+        return f"kubectl get deployment/{target} -n {ns} -o yaml  # read-only"
     if action_type == "recreate_pod":
         return f"kubectl delete pod/{target} -n {ns}"
     if action_type == "revert_commit":
@@ -146,9 +241,15 @@ def build_rollback_command(action: Any) -> Optional[str]:
     target = str(getattr(action, "target", "")) or "<unknown-target>"
     ns = _namespace(action)
     if action_type in ("rollback", "restart", "config_change", "patch"):
+        # `kubectl set env` and `set resources` both cut a new ReplicaSet
+        # revision, so rollout undo is a true inverse for them as well. The
+        # executor MCP additionally returns the exact prior values it
+        # overwrote (`prior_env`), which the audit trail keeps.
         return f"kubectl rollout undo deployment/{target} -n {ns}"
     if action_type == "scale":
         return f"kubectl scale deployment/{target} --replicas=<previous> -n {ns}"
+    # A read has no inverse; returning a command here would imply it changed
+    # something. (`recreate_pod` likewise — the controller recreates the pod.)
     return None
 
 
@@ -216,6 +317,54 @@ def _find_resource_field(params: Dict[str, Any], field: str) -> Optional[str]:
     return None
 
 
+_ENV_FIELD_ALIASES = ("env", "env_vars", "environment", "environment_variables")
+# A k8s env var name (C_IDENTIFIER). Used to tell a genuine env map apart from
+# some other nested dict that happens to sit under a key called "environment"
+# — "production" is an environment; {"SLOW_QUERY_RATE": "0"} is env vars.
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _find_env_map(params: Dict[str, Any]) -> Dict[str, str]:
+    """Find environment variables to set anywhere in planner-produced parameters.
+
+    Mirrors ``_find_resource_field``'s tolerance for shape drift: the planner
+    may emit ``{"env": {...}}``, ``{"env_vars": {...}}``, or bury either under
+    a nested object. A match must look like env vars — every key a valid
+    variable name, every value a scalar — so ``{"environment": "production"}``
+    is not mistaken for one.
+    """
+    found: Dict[str, str] = {}
+
+    def looks_like_env(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and bool(value)
+            and all(
+                isinstance(k, str)
+                and _ENV_KEY_RE.match(k)
+                and not isinstance(v, (dict, list))
+                for k, v in value.items()
+            )
+        )
+
+    def walk(node: Any) -> None:
+        if found or not isinstance(node, (dict, list)):
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        for key, value in node.items():
+            if str(key).lower() in _ENV_FIELD_ALIASES and looks_like_env(value):
+                found.update({str(k): "" if v is None else str(v) for k, v in value.items()})
+                return
+        for value in node.values():
+            walk(value)
+
+    walk(params)
+    return found
+
+
 def _live_args(action: Any) -> Dict[str, Any]:
     """Build the executor-MCP tool arguments for a live (real) execution."""
     params = getattr(action, "parameters", None) or {}
@@ -236,14 +385,25 @@ def _live_args(action: Any) -> Dict[str, Any]:
             args["replicas"] = int(raw)
         except (TypeError, ValueError):
             args["replicas"] = 1
-    if action_type in ("patch", "config_change"):
+    if action_type in _CONFIG_INTENT_ACTIONS:
         args["container"] = params.get("container", resource_name)
         memory = _find_resource_field(params, "memory")
         cpu = _find_resource_field(params, "cpu")
-        if memory:
-            args["memory"] = memory
-        if cpu:
-            args["cpu"] = cpu
+        if memory or cpu:
+            if memory:
+                args["memory"] = memory
+            if cpu:
+                args["cpu"] = cpu
+        else:
+            # Only when there is no resource change: `live_tool_for_action`
+            # prefers the resource tool, and sending env to it would be ignored.
+            args["env"] = _find_env_map(params)
+    if action_type in READ_ONLY_ACTIONS:
+        # A read takes no dry_run: there is nothing to not-do.
+        args.pop("dry_run", None)
+        container = params.get("container")
+        if container:
+            args["container"] = str(container)
     return args
 
 
@@ -284,6 +444,22 @@ def _structured_payload(value: Any) -> Optional[Dict[str, Any]]:
         return None
     text = getattr(value, "text", None)
     return _structured_payload(text) if text is not None else None
+
+
+def _mark_trace(level: str, message: str) -> None:
+    """Surface a non-EXECUTED live action on the enclosing Langfuse observation.
+
+    Same honesty rule as ``classify_live_response`` below, applied to the
+    trace: a remediation that was refused must not read as a clean run. Lazy
+    import keeps this module importable without the tracing stack, and
+    tracing is never load-bearing for execution.
+    """
+    try:
+        from sre_agent.tracing import mark_current_observation
+
+        mark_current_observation(level, message)
+    except Exception:  # pragma: no cover - never let tracing break execution
+        pass
 
 
 def classify_live_response(response: Any) -> tuple[str, str]:
@@ -407,11 +583,17 @@ class Executor:
                 rollback_command=rollback, detail=detail,
             )
 
-        # Route to the right backend by action type.
+        # Route to the right backend by what the action can actually do, not by
+        # its name: a `config_change` with no cpu/memory limit has no tool.
+        executor_tool = live_tool_for_action(action)
         if atype in GITHUB_EXEC_TOOL_MAP:
             caller, tool_name, args, backend = github_caller, GITHUB_EXEC_TOOL_MAP[atype], _github_args(action), "github-exec"
+        elif executor_tool is not None:
+            caller, tool_name, args, backend = tool_caller, executor_tool, _live_args(action), "executor"
         elif atype in EXECUTOR_TOOL_MAP:
-            caller, tool_name, args, backend = tool_caller, EXECUTOR_TOOL_MAP[atype], _live_args(action), "executor"
+            detail = missing_capability_reason(atype)
+            _mark_trace("WARNING", f"{atype} → REFUSED: {detail}")
+            return _result("REFUSED", detail)
         else:
             return _result("SKIPPED", f"No MCP tool maps to action_type '{atype}'.")
 
@@ -429,9 +611,14 @@ class Executor:
                 logger.warning(
                     f"⛔ Executor[live/{backend}]: {tool_name} → {status.lower()}: {detail}"
                 )
+                _mark_trace(
+                    "ERROR" if status == "ERROR" else "WARNING",
+                    f"{tool_name} → {status}: {detail}",
+                )
             return _result(status, detail)
         except Exception as e:
             logger.error(f"❌ Executor[live/{backend}]: {tool_name} failed: {e}")
+            _mark_trace("ERROR", f"{tool_name} raised: {e}")
             return _result("ERROR", f"{backend} MCP call failed: {e}")
 
 

@@ -57,6 +57,11 @@ For each action the gate returns **AUTONOMOUS**, **REQUIRES_APPROVAL**, or
    (e.g. never scale-to-0 in prod). A block here is final.
 2. **Severity gate** — autonomy only offered for low-severity incidents.
 3. **Reversibility floor** — the defensibility keystone:
+   - *Read-only* (inspect): autonomous at any severity, short-circuited before
+     the severity and calibration gates — nothing about telemetry gaps or model
+     confidence can make *looking* unsafe, and holding a config dump for
+     approval is what pushed diagnostics into masquerading as `config_change`.
+     A hard policy block above still wins.
    - *Reversible* (restart, rollback, revert_commit, escalate): autonomous if
      low severity.
    - *Risky* (scale-up, config_change, patch): autonomous only if low severity
@@ -76,10 +81,16 @@ action.
 - **Live (`aexecute`, async):** calls the **Executor MCP server**
   (`edge_mcp_servers/mcp_servers/executor_real`, port 4005) through an injected
   async `tool_caller` (built by `build_executor_tool_caller`, which speaks MCP
-  to `MCP_EXECUTOR_URI`). Action types map to server tools via
-  `EXECUTOR_TOOL_MAP` (restart/scale/rollback/patch); `escalate`/`revert_commit`
-  are skipped (not infra mutations). The MCP server applies its own guardrails
-  and server-side dry-run — defense in depth.
+  to `MCP_EXECUTOR_URI`). `live_tool_for_action()` — not the action's name — is
+  the authority on which server tool, if any, can carry an action out:
+  restart/scale/rollback/recreate_pod map one-to-one, `inspect` reads config,
+  and `patch`/`config_change` resolve *by their parameters* to
+  `patch_resource_limits` or `patch_deployment_env`, or to nothing at all (a
+  stated capability gap, surfaced at plan time). `escalate`/`revert_commit`
+  belong to other dispatch families (a human; the github-exec server). The MCP
+  server applies its own guardrails and server-side dry-run — defense in depth;
+  env writes additionally refuse credential-named keys, cap key count and value
+  length, and never overwrite a `valueFrom` entry.
 
 Live remediation is gated by a **second** flag, `EXECUTOR_LIVE` (default off),
 *and* only runs when the whole plan was gated AUTONOMOUS. So there are three
@@ -142,9 +153,19 @@ each with a mapped remediation and default reversibility:
 | ImagePullBackOff | patch image / rollback | risky |
 | HPA thrashing | patch HPA bounds | risky |
 | High error rate | rollback or restart | reversible |
-| Config drift | config_change (re-apply) | risky |
+| Config drift | config_change (env var / resource limit) | risky |¹
+| Hypothesis confirmation | inspect (read config) | read-only |
 | Resource saturation | scale up | risky |
 | Dependency failure (e.g. payment provider down → checkout cascade) | escalate / restart dependent / rollback | reversible |
+
+¹ Partially implemented. `config_change` has exactly two executable surfaces —
+a cpu/memory limit (`patch_resource_limits`) and environment variables
+(`patch_deployment_env`) — chosen from the action's *parameters*, not its name.
+A ConfigMap rewrite, a Helm value, or a change described only in prose still has
+no tool behind it: those are blocked in the plan with a stated capability gap
+rather than dispatched, so no human approves a step nothing can run. See
+`executor.live_tool_for_action()` and "Live dispatch routes on capability" in
+`docs/ai/DECISIONS.md`.
 
 To surface more of these, `Target_Client` is slated to grow (database, cache,
 a checkout→payment→inventory→DB dependency chain) so failures cascade
