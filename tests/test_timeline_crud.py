@@ -161,3 +161,65 @@ def test_supervisor_summary_flags_conflicting_numeric_facts():
     assert "12.5%" in content
     assert "0.8%" in content
     assert payload["conflicting_numeric_facts"]
+    # The caveat is appended to the synthesis, never substituted for it.
+    assert "Raw draft summary" in content
+
+
+def test_a_conflict_caveat_does_not_delete_the_conclusion():
+    """A wrap-up that says only "reconcile the data" throws away the root
+    cause the specialists agreed on and contradicts the thread above it."""
+    content, payload = build_supervisor_summary_content(
+        "ignored when a narrative exists",
+        {"metrics_agent": "error rate hit 12.5%", "logs_agent": "errors at 0.8%"},
+        query="Investigate checkout errors",
+        narrative="## TL;DR\nFault injection was left enabled on checkout-service.",
+    )
+
+    assert "Fault injection was left enabled on checkout-service." in content
+    assert payload["conflicting_numeric_facts"]["error rate"]
+    assert "Unreconciled figures" in content
+
+
+def test_a_query_window_is_not_a_conflicting_latency_reading():
+    """"p90 latency over the last 10 min" quotes one measurement and one
+    window; counting the window as a second reading buried a correct root
+    cause under "the available facts are inconsistent"."""
+    content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "p90 query latency is 2.179s over the last 10 min",
+            "logs_agent": "Slow DB query warnings throughout the 10 min window",
+        },
+        query="Investigate InventorySlowQueries",
+        narrative="## TL;DR\nFault injection is enabled on inventory-service.",
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+    assert "Unreconciled figures" not in content
+    assert "Fault injection is enabled on inventory-service." in content
+
+
+def test_the_same_latency_spelled_two_ways_is_one_measurement():
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "p99 latency reached 2000ms",
+            "logs_agent": "response time of 2s on the same requests",
+        },
+        query="Investigate latency",
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+
+
+def test_genuinely_different_latency_readings_still_get_flagged():
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "p99 latency reached 2000ms",
+            "logs_agent": "response time of 9.4s on the same requests",
+        },
+        query="Investigate latency",
+    )
+
+    assert payload["conflicting_numeric_facts"]["latency"]

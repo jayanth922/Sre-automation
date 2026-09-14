@@ -299,8 +299,44 @@ async def receive_alertmanager_webhook(
     resolved_reconciled = 0
     reconciliations: List[Dict[str, Any]] = []
 
+    # An Alertmanager group is delivered whole, and a rule that emits one series
+    # per label value (InventorySlowQueries emits seven, one per `query`) clears
+    # those series a few scrape intervals apart. The notification that carries
+    # the first resolved series therefore still carries the ones that are
+    # firing, and both kinds land in this single loop.
+    #
+    # Reconciling a resolved member while a sibling is still firing closes the
+    # incident that is actively tracking the condition, and the next firing
+    # member in the *same payload* then finds nothing to dedup against and opens
+    # a fresh one. Observed live on 2026-09-14T01:38:15 — inside one request:
+    # two members deduped onto incident 030d0ffb, a resolved member closed it,
+    # the next firing member opened b6146c86, a resolved member closed that, and
+    # the last firing member opened 9258aadb. Two orphan war rooms, two durable
+    # investigation jobs, two full LLM investigations, and the real incident
+    # marked resolved while its remediation was still being verified.
+    #
+    # One incident tracks one title, so the condition behind that title is
+    # cleared only when no member of the payload still reports it firing.
+    firing_titles = {
+        _incident_title(alert) for alert in alerts if alert["status"] == "firing"
+    }
+
     for alert in alerts:
         if alert["status"] != "firing":
+            title = _incident_title(alert)
+            if title in firing_titles:
+                logger.info(
+                    "Resolved alert '%s' ignored: another series of '%s' in the "
+                    "same payload is still firing",
+                    alert["alertname"],
+                    title,
+                )
+                reconciliations.append({
+                    "alertname": alert["alertname"],
+                    "matched": False,
+                    "reason": "sibling_series_still_firing",
+                })
+                continue
             result = await _reconcile_resolved_alert(db, cluster, alert)
             reconciliations.append(result)
             if result.get("matched"):
@@ -314,10 +350,27 @@ async def receive_alertmanager_webhook(
         )
         severity = _SEVERITY_MAP.get(alert["severity"], models.IncidentSeverity.MEDIUM)
 
-        # Deduplicate: skip if an open incident with same title exists
+        # Deduplicate: skip if an open incident with same title exists.
+        # Locked first — the lookup and the insert below are a check-then-
+        # create, and concurrent deliveries of the same alert group each found
+        # nothing and opened their own war room (see
+        # crud.lock_incident_dedup). create_incident's commit releases it.
+        await crud.lock_incident_dedup(db, cluster.id, title)
         existing = await crud.find_duplicate_incident(db, cluster.id, title)
         if existing:
             logger.info(f"Dedup: '{title}' already open as incident {existing.id}")
+            # End the transaction so the dedup lock isn't held for the rest of
+            # the request. Commit, not rollback: this transaction only took the
+            # lock and ran a SELECT, and the session is `expire_on_commit=False`
+            # (backend/database.py) while rollback expires every loaded object
+            # unconditionally. Rolling back here expired `cluster`, so the next
+            # alert in the group hit `cluster.id` and SQLAlchemy tried to
+            # refresh it with lazy sync IO — MissingGreenlet, a 500, and
+            # Alertmanager retrying the whole group ten times before giving up.
+            # An Alertmanager group carries every firing series (seven for this
+            # rule), so a payload that is entirely duplicates is the norm, not
+            # the edge case.
+            await db.commit()
             continue
 
         # Create incident

@@ -32,6 +32,7 @@ IncidentStatus = _models.IncidentStatus
 
 _incident_status = _load("incident_status_under_test", "sre_agent/incident_status.py")
 compute_incident_status = _incident_status.compute_incident_status
+resolved_at_for_status = _incident_status.resolved_at_for_status
 
 
 TABLE = [
@@ -85,6 +86,52 @@ TABLE = [
         IncidentStatus.PENDING_ACKNOWLEDGMENT,
         id="approved-executed-and-verified",
     ),
+    # A plan of reads and pages executes cleanly and mutates nothing, so
+    # verification never runs. "Remediation in progress" would then sit on the
+    # incident forever, claiming a fix was landing while the agent had handed
+    # the problem to a human.
+    pytest.param(
+        {
+            "plan_present": True,
+            "aggregate_decision": "requires_approval",
+            "approval": {"status": "approved"},
+            "live_results": [
+                {"status": "EXECUTED", "action_type": "inspect"},
+                {"status": "EXECUTED", "action_type": "escalate"},
+            ],
+        },
+        None,
+        IncidentStatus.INVESTIGATED,
+        id="approved-but-only-reads-and-pages-ran",
+    ),
+    pytest.param(
+        {
+            "plan_present": True,
+            "aggregate_decision": "requires_approval",
+            "approval": {"status": "approved"},
+            "live_results": [
+                {"status": "EXECUTED", "action_type": "escalate"},
+                {"status": "FAILED", "action_type": "patch_deployment_env"},
+            ],
+        },
+        None,
+        IncidentStatus.INVESTIGATED,
+        id="the-only-mutation-failed-so-nothing-is-in-progress",
+    ),
+    pytest.param(
+        {
+            "plan_present": True,
+            "aggregate_decision": "requires_approval",
+            "approval": {"status": "approved"},
+            "live_results": [
+                {"status": "EXECUTED", "action_type": "escalate"},
+                {"status": "EXECUTED", "action_type": "patch_deployment_env"},
+            ],
+        },
+        None,
+        IncidentStatus.REMEDIATION_IN_PROGRESS,
+        id="one-real-mutation-among-pages-is-still-a-remediation",
+    ),
     pytest.param(
         {"plan_present": True, "aggregate_decision": "autonomous"},
         None,
@@ -134,13 +181,31 @@ def test_compute_incident_status(report_payload, verification_outcome, expected)
 
 @pytest.mark.parametrize("report_payload, verification_outcome, expected", TABLE)
 def test_resolved_at_set_iff_resolved(report_payload, verification_outcome, expected):
-    """Mirrors the guard in agent_runtime.py: `resolved_at` must be set
-    exactly when the computed status is RESOLVED, never otherwise."""
+    """`resolved_at` is stamped exactly when the computed status is RESOLVED.
+
+    Calls the helper `agent_runtime` actually uses rather than restating the
+    rule, so the test fails if the write and the decision drift apart.
+    """
     computed_status = compute_incident_status(
         state={}, report_payload=report_payload, verification_outcome=verification_outcome
     )
-    should_set_resolved_at = computed_status == IncidentStatus.RESOLVED
-    assert should_set_resolved_at == (expected == IncidentStatus.RESOLVED)
+    now = object()
+    stamped = resolved_at_for_status(computed_status, now)
+    assert (stamped is now) == (expected == IncidentStatus.RESOLVED)
+
+
+def test_a_failed_remediation_clears_an_earlier_resolved_stamp():
+    """An alert can clear externally mid-verification and stamp the row
+    resolved; if the run then grades the fix FAILED, the stale timestamp has
+    to go. MTTR is `resolved_at - created_at` filtered on NOT NULL, so leaving
+    it counted a failed remediation as a fast resolution."""
+    assert resolved_at_for_status(IncidentStatus.REMEDIATION_FAILED, object()) is None
+
+
+def test_awaiting_a_humans_acknowledgment_is_not_yet_resolved():
+    """A verified fix still needs the on-call to acknowledge it; the
+    acknowledge path stamps the timestamp itself."""
+    assert resolved_at_for_status(IncidentStatus.PENDING_ACKNOWLEDGMENT, object()) is None
 
 
 def test_object_style_report_and_outcome_are_duck_typed():
@@ -158,6 +223,33 @@ def test_object_style_report_and_outcome_are_duck_typed():
         compute_incident_status(state={}, report_payload=Report(), verification_outcome=Outcome())
         == IncidentStatus.PENDING_ACKNOWLEDGMENT
     )
+
+
+def test_every_terminal_status_writer_stamps_resolved_at_through_the_helper():
+    """Three modules end a run by writing the computed status to the incident
+    row — the autonomous path (`agent_runtime`), the Slack approval path
+    (`approval_flow`), and the dashboard approval path (`mission_control`).
+    The first was fixed alone, and the other two kept the
+    `if status == RESOLVED: stamp` shape, so a run approved from Slack still
+    left `remediation_failed` rows carrying a `resolved_at`. Whoever computes
+    the status owns the timestamp that goes with it.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    writers = [
+        root / "sre_agent" / "agent_runtime.py",
+        root / "sre_agent" / "approval_flow.py",
+        root / "sre_agent" / "api" / "v1" / "mission_control.py",
+    ]
+    for path in writers:
+        source = path.read_text()
+        assert "compute_incident_status" in source, f"{path.name} is no longer a writer"
+        assert "resolved_at_for_status" in source, (
+            f"{path.name} computes an incident status but stamps resolved_at "
+            "itself; use incident_status.resolved_at_for_status so a failed "
+            "remediation cannot keep an earlier resolved timestamp"
+        )
 
 
 if __name__ == "__main__":

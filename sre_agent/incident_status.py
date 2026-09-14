@@ -28,6 +28,26 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _mutations_executed(live_results: Any) -> bool:
+    """Did anything that actually ran change the system?
+
+    Reads and pages are EXECUTED like any other action, so counting entries
+    says nothing about whether a remediation happened.
+    """
+    # Absolute, like `backend.models` above: this module is also loaded
+    # straight from source (tests/test_incident_status.py) with no package.
+    from sre_agent.executor import NON_MUTATING_ACTIONS
+
+    for item in live_results or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status")) != "EXECUTED":
+            continue
+        if str(item.get("action_type", "")).lower() not in NON_MUTATING_ACTIONS:
+            return True
+    return False
+
+
 def compute_incident_status(
     state: Any,
     report_payload: Any,
@@ -55,9 +75,19 @@ def compute_incident_status(
         # Any action requires approval, or the plan is fully/partially blocked.
         return IncidentStatus.AWAITING_APPROVAL
 
-    if human_approved and not _get(report_payload, "live_results"):
+    live_results = _get(report_payload, "live_results")
+    if human_approved and not live_results:
         # Authorization was consumed, but no live action was applied (for
         # example EXECUTOR_LIVE is disabled or every action remained blocked).
+        return IncidentStatus.INVESTIGATED
+
+    if live_results and not _mutations_executed(live_results):
+        # Everything that ran was a read or a page to a human. Verification is
+        # deliberately skipped in that case (graph_builder only verifies after a
+        # real mutation), so falling through to REMEDIATION_IN_PROGRESS told the
+        # on-call a fix was landing when the agent had changed nothing and had
+        # handed the incident to them. Nothing is in progress: what happened is
+        # an investigation.
         return IncidentStatus.INVESTIGATED
 
     if verification_outcome is None:
@@ -70,3 +100,23 @@ def compute_incident_status(
     if outcome_status == "FAILED":
         return IncidentStatus.REMEDIATION_FAILED
     return IncidentStatus.VERIFICATION_UNKNOWN
+
+
+def resolved_at_for_status(status: Any, now: Any) -> Any:
+    """The ``resolved_at`` a row must carry alongside ``status`` — ``now`` or ``None``.
+
+    Returned rather than merely "set it when resolved", because the timestamp
+    has to follow the status in *both* directions. An incident can reach the
+    end of a run already stamped resolved — an Alertmanager *resolved* webhook
+    lands while the act phase is still verifying — and then compute
+    REMEDIATION_FAILED. Writing only the status left rows reading
+    ``remediation_failed`` with a ``resolved_at``, and MTTR
+    (``api/v1/analytics.py``, ``api/v1/recommendations.py``) is measured as
+    ``resolved_at - created_at`` filtered on ``resolved_at IS NOT NULL``: a
+    failed remediation was being counted as a fast resolution.
+
+    Note PENDING_ACKNOWLEDGMENT is *not* resolved. A verified fix still waits
+    for a human to acknowledge it, and that path stamps the timestamp itself
+    (``approval_flow.acknowledge_incident_resolution``).
+    """
+    return now if status == IncidentStatus.RESOLVED else None

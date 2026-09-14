@@ -1,11 +1,15 @@
+import hashlib
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func
+from sqlalchemy import func, text
 from backend import auth, crypto, models, schemas
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 async def get_user_by_email(db: AsyncSession, email: str):
@@ -78,6 +82,17 @@ async def set_org_langfuse_config(
     org.langfuse_public_key = public_key
     org.langfuse_secret_key = secret_key
     org.langfuse_host = host
+    # ExecutionContext snapshots these org-level keys into its credentials and
+    # the agent runtime is cached by ``ExecutionContext.fingerprint()``, which
+    # only sees *cluster* versions. Without this bump, entering Langfuse keys
+    # silently does nothing for in-flight traffic until the API restarts.
+    clusters = (
+        (await db.execute(select(models.Cluster).where(models.Cluster.org_id == org_id)))
+        .scalars()
+        .all()
+    )
+    for cluster in clusters:
+        cluster.execution_context_version = (cluster.execution_context_version or 0) + 1
     await db.commit()
     await db.refresh(org)
     return org
@@ -374,6 +389,65 @@ _ACTIVE_INCIDENT_STATUSES = (
     models.IncidentStatus.VERIFICATION_UNKNOWN,
     models.IncidentStatus.PENDING_ACKNOWLEDGMENT,
 )
+
+
+# Namespaces the advisory-lock keyspace so an unrelated feature that also
+# takes advisory locks can never collide with incident dedup.
+_INCIDENT_DEDUP_LOCK_NAMESPACE = b"sentinel.incident_dedup.v1"
+
+
+def incident_dedup_lock_key(cluster_id: Any, title: str) -> int:
+    """A stable signed 64-bit advisory-lock key for one (cluster, alert title).
+
+    Keyed in Python rather than with Postgres' ``hashtext`` so the value is
+    reproducible in a test and does not depend on an undocumented server
+    builtin.
+    """
+    digest = hashlib.blake2b(
+        f"{cluster_id}\x00{title}".encode("utf-8"),
+        key=_INCIDENT_DEDUP_LOCK_NAMESPACE,
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+def _dialect_name(db: AsyncSession) -> str:
+    try:
+        bind = db.get_bind()
+    except Exception:  # a fake/unbound session in a unit test
+        return ""
+    return getattr(getattr(bind, "dialect", None), "name", "") or ""
+
+
+async def lock_incident_dedup(db: AsyncSession, cluster_id: Any, title: str) -> bool:
+    """Serialize "is this alert already open?" against concurrent webhooks.
+
+    ``find_duplicate_incident`` followed by ``create_incident`` is a
+    check-then-create, and Alertmanager can land the same alert group on the
+    API more than once at a time. Sequentially the dedup is airtight; run
+    concurrently, every request's lookup returns nothing before any of them
+    commits, and each opens its own incident. That is how one
+    ``InventorySlowQueries`` firing produced three incidents 330 ms apart —
+    three Slack war rooms, three investigations and three approval prompts for
+    one condition, on a product where Slack is the only channel.
+
+    A transaction-scoped advisory lock closes the window without a schema
+    change or a backfill: it is released by the very commit that makes the new
+    incident visible, so the next waiter's lookup finds it. Call it
+    immediately before the lookup and let ``create_incident``'s commit end it —
+    nothing slow (correlation, job enqueue) should run while it is held.
+
+    Returns True when the lock was really taken. Non-Postgres binds have no
+    advisory locks, so they keep today's best-effort behaviour rather than
+    failing; the caller is told, and must not report a guarantee it lacks.
+    """
+    if _dialect_name(db) != "postgresql":
+        return False
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": incident_dedup_lock_key(cluster_id, title)},
+    )
+    return True
 
 
 async def find_duplicate_incident(

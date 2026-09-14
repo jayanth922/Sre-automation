@@ -204,9 +204,15 @@ def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[Tuple[str, str]]
             r"(?:error rate|errors?)\D{0,24}(\d+(?:\.\d+)?%)",
             r"(\d+(?:\.\d+)?%)\D{0,24}(?:error rate|errors?)",
         ],
+        # Minute-and-above durations are deliberately absent: next to the word
+        # "latency" they are almost always the *window* being described ("p90
+        # latency over the last 10 min"), not a reading. Treating one as a
+        # measurement made a query window conflict with the query's own
+        # duration and buried a correct root cause under "facts are
+        # inconsistent".
         "latency": [
-            r"(?:latency|response time|p95|p99)\D{0,24}(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min|mins|minutes))",
-            r"(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min|mins|minutes))\D{0,24}(?:latency|response time|p95|p99)",
+            r"(?:latency|response time|p50|p90|p95|p99)\D{0,24}(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds))\b",
+            r"(\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds))\b\D{0,24}(?:latency|response time|p50|p90|p95|p99)",
         ],
         "cpu": [
             r"(?:cpu(?: usage| utilization)?|cpu)\D{0,24}(\d+(?:\.\d+)?%)",
@@ -233,6 +239,35 @@ def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[Tuple[str, str]]
     return facts
 
 
+_SECONDS_PER_UNIT = {
+    "ms": 0.001,
+    "s": 1.0,
+    "sec": 1.0,
+    "secs": 1.0,
+    "second": 1.0,
+    "seconds": 1.0,
+}
+_NUMBER_AND_UNIT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([a-z%]*)$")
+
+
+def _canonical_fact_value(label: str, value: str) -> str:
+    """Comparison form of a numeric mention.
+
+    "2000 ms" and "2s" are one measurement spelled two ways, not two
+    conflicting readings; compare on the canonical form and report the
+    spelling the source actually used."""
+    match = _NUMBER_AND_UNIT_RE.match(value.strip().lower())
+    if not match:
+        return value
+    number = float(match.group(1))
+    unit = match.group(2)
+    if label == "latency" and unit in _SECONDS_PER_UNIT:
+        return f"{number * _SECONDS_PER_UNIT[unit]:g}s"
+    if unit == "%":
+        return f"{number:g}%"
+    return value
+
+
 def _detect_conflicting_numeric_facts(texts: Sequence[str]) -> Dict[str, List[str]]:
     """Flag a label as conflicting only when two or more DISTINCT *observed*
     values are seen for it. A runbook-quoted threshold/config value is never
@@ -248,10 +283,13 @@ def _detect_conflicting_numeric_facts(texts: Sequence[str]) -> Dict[str, List[st
 
     conflicts: Dict[str, List[str]] = {}
     for label, mentions in combined.items():
-        observed_values = [value for value, kind in mentions if kind == "observed"]
-        distinct_observed = list(dict.fromkeys(observed_values))
-        if len(distinct_observed) > 1:
-            conflicts[label] = distinct_observed
+        by_canonical: Dict[str, str] = {}
+        for value, kind in mentions:
+            if kind != "observed":
+                continue
+            by_canonical.setdefault(_canonical_fact_value(label, value), value)
+        if len(by_canonical) > 1:
+            conflicts[label] = list(by_canonical.values())
     return conflicts
 
 
@@ -412,12 +450,24 @@ def build_supervisor_summary_content(
 
     The structured payload always lists the specialists that were invoked and
     the cleaned alert text so downstream consumers can render their own views.
+    Internal investigators (the Kubernetes prescan) informed the synthesis but
+    are not chat participants, so they are named in `internal_evidence_sources`
+    rather than rendered as specialist cards — present in the record, absent
+    from the cast.
     """
     objective = _truncate(_clean_public_query(query), 180) if query else "the incident"
     alert_text = _alert_context_to_text(alert_context)
+    visible_results = {
+        name: response
+        for name, response in agent_results.items()
+        if name in VISIBLE_SPECIALIST_ROLES
+    }
+    internal_sources = [
+        name for name in agent_results if name not in VISIBLE_SPECIALIST_ROLES
+    ]
     normalized_findings = [
         _normalize_specialist_finding(agent_name, query, str(response))
-        for agent_name, response in agent_results.items()
+        for agent_name, response in visible_results.items()
         if response
     ]
     conflict_sources = ([alert_text] if alert_text else []) + [
@@ -425,22 +475,7 @@ def build_supervisor_summary_content(
     ]
     conflicts = _detect_conflicting_numeric_facts(conflict_sources)
 
-    if conflicts:
-        conflict_text = ", ".join(
-            f"{label}: {', '.join(values)}" for label, values in conflicts.items()
-        )
-        content = "\n".join(
-            [
-                "## Incident Summary",
-                "",
-                f"**Objective:** {objective}",
-                "",
-                "**Conclusion:** The available facts are inconsistent, so no single settled value should be treated as confirmed yet.",
-                f"**Conflicts:** {conflict_text}.",
-                "**Next step:** Reconcile the conflicting source data before closing the incident.",
-            ]
-        )
-    elif narrative and narrative.strip():
+    if narrative and narrative.strip():
         content = narrative.strip()
     elif final_response and final_response.strip():
         content = final_response.strip()
@@ -451,9 +486,30 @@ def build_supervisor_summary_content(
             "you point me at a specific signal."
         )
 
+    if conflicts:
+        # A disagreement between two quoted numbers is a caveat on the
+        # synthesis, not a reason to delete it. Replacing the whole wrap-up
+        # with a "reconcile the data" stub threw away a correct, evidence-
+        # backed root cause the specialists had already agreed on, and told
+        # the on-call the opposite of what the thread above them said.
+        conflict_text = ", ".join(
+            f"{label}: {', '.join(values)}" for label, values in conflicts.items()
+        )
+        content = "\n".join(
+            [
+                content,
+                "",
+                "---",
+                f"⚠️ **Unreconciled figures — {conflict_text}.** The available "
+                "facts are inconsistent on those values, so treat none of them "
+                "as a settled number until the sources are reconciled.",
+            ]
+        )
+
     payload = {
         "source": "supervisor.aggregate_responses",
-        "specialists_invoked": list(agent_results.keys()),
+        "specialists_invoked": list(visible_results.keys()),
+        "internal_evidence_sources": internal_sources,
         "objective": objective,
         "alert_context": alert_text or None,
         "normalized_findings": normalized_findings,
