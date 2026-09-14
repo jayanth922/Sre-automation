@@ -125,6 +125,115 @@ def live_tool_for_action(action: Any) -> Optional[str]:
     return tool_name
 
 
+# What approving an action actually causes. The four dispatch families answer
+# "where does this go?"; these answer the question a human is really being
+# asked in Slack — "what happens to my systems if I say yes?".
+EFFECT_CLUSTER_CHANGE = "cluster_change"
+EFFECT_REPO_CHANGE = "repo_change"
+EFFECT_NOTIFICATION = "notification"
+EFFECT_READ_ONLY = "read_only"
+EFFECT_NO_CAPABILITY = "no_capability"
+
+# Operator-facing wording, (singular, plural). Deliberately concrete: "a page"
+# is not "a change to the cluster", and an approver who reads one as the other
+# has been misinformed by the one message that gates the whole system. Both
+# forms are spelled out rather than derived, because the head noun is not
+# always the first word ("read-only check").
+EFFECT_LABELS: Dict[str, tuple] = {
+    EFFECT_CLUSTER_CHANGE: ("change to the cluster", "changes to the cluster"),
+    EFFECT_REPO_CHANGE: ("change to the repository", "changes to the repository"),
+    EFFECT_NOTIFICATION: (
+        "notification to a human (no system change)",
+        "notifications to humans (no system change)",
+    ),
+    EFFECT_READ_ONLY: (
+        "read-only check (no system change)",
+        "read-only checks (no system change)",
+    ),
+    EFFECT_NO_CAPABILITY: (
+        "action Sentinel cannot execute (it will be skipped)",
+        "actions Sentinel cannot execute (they will be skipped)",
+    ),
+}
+
+
+def approval_effect(action_type: Any, parameters: Any = None) -> str:
+    """What approving this one action really does, by capability not by name.
+
+    `format_approval_request` used to tell the approver that approving runs N
+    held actions "against the cluster", counted straight off the held list.
+    Two kinds of action make that untrue, and both show up in real plans:
+
+    - `escalate` is notify-only. It pages a human and mutates nothing. A plan
+      whose only held actions are two escalations was described as two cluster
+      writes (live, incident 2c49ac9d on 2026-09-14).
+    - `code_fix` is in no dispatch map at all, so it can never execute; at run
+      time it reports `SKIPPED: No MCP tool maps to action_type 'code_fix'`.
+      It was still counted as something approving would run (live, incident
+      8c925dbd: "Approving runs 3 held actions against the cluster", one of
+      them a `code_fix` that could not run).
+
+    This routes on the same capability logic as dispatch — a `patch` or
+    `config_change` with neither a cpu/memory limit nor env vars has no tool
+    behind it and is reported as such, not as a cluster change.
+    """
+    name = str(action_type or "").lower().strip()
+    if name in NOTIFY_ONLY_ACTIONS:
+        return EFFECT_NOTIFICATION
+    if name in READ_ONLY_ACTIONS:
+        return EFFECT_READ_ONLY
+    if name in GITHUB_EXEC_TOOL_MAP:
+        return EFFECT_REPO_CHANGE
+    if name not in EXECUTOR_TOOL_MAP:
+        return EFFECT_NO_CAPABILITY
+    if name in _CONFIG_INTENT_ACTIONS:
+        params = parameters if isinstance(parameters, dict) else {}
+        if _find_resource_field(params, "memory") or _find_resource_field(params, "cpu"):
+            return EFFECT_CLUSTER_CHANGE
+        if _find_env_map(params):
+            return EFFECT_CLUSTER_CHANGE
+        return EFFECT_NO_CAPABILITY
+    return EFFECT_CLUSTER_CHANGE
+
+
+def describe_approval_effects(action_reports: Any) -> str:
+    """One sentence saying what approving this plan actually does.
+
+    Returns "" when nothing is held, so the caller can omit the line entirely
+    rather than print "Approving runs 0 actions".
+    """
+    held = [
+        rep
+        for rep in (action_reports or [])
+        if isinstance(rep, dict) and str(rep.get("decision")) == "requires_approval"
+    ]
+    if not held:
+        return ""
+    counts: Dict[str, int] = {}
+    for rep in held:
+        effect = approval_effect(rep.get("action_type"), rep.get("parameters"))
+        counts[effect] = counts.get(effect, 0) + 1
+
+    order = [
+        EFFECT_CLUSTER_CHANGE,
+        EFFECT_REPO_CHANGE,
+        EFFECT_NOTIFICATION,
+        EFFECT_READ_ONLY,
+        EFFECT_NO_CAPABILITY,
+    ]
+    parts = []
+    for effect in order:
+        n = counts.get(effect, 0)
+        if not n:
+            continue
+        singular, plural = EFFECT_LABELS[effect]
+        parts.append(f"{n} {singular}" if n == 1 else f"{n} {plural}")
+
+    total = len(held)
+    plural = "" if total == 1 else "s"
+    return f"Approving runs {total} held action{plural}: " + ", ".join(parts) + "."
+
+
 def missing_capability_reason(action_type: str) -> str:
     """Why a known-but-unexecutable action cannot run, in the operator's terms."""
     return (

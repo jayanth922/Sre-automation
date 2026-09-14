@@ -180,10 +180,13 @@ def format_approval_request(
 
     lines.append("")
     if held:
-        held_plural = "" if len(held) == 1 else "s"
-        lines.append(
-            f"Approving runs {len(held)} held action{held_plural} against the cluster."
-        )
+        # Not "N held actions against the cluster": `escalate` only pages a
+        # human, and an action in no dispatch map (`code_fix`) cannot run at
+        # all. Both were being counted as cluster writes in the one message
+        # that gates the entire system. Classify by capability instead.
+        from sre_agent.executor import describe_approval_effects
+
+        lines.append(describe_approval_effects(reports))
     lines.append(
         f"Reply `{APPROVAL_COMMAND}` in this thread to authorize. "
         "No reply means nothing runs."
