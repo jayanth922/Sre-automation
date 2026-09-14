@@ -27,7 +27,7 @@ from sre_agent.api.v1 import clusters, incidents, invitations
 from backend import crud, database, models
 from backend.routers import auth as auth_router
 from backend.models import IncidentStatus, JobStatus
-from .incident_status import compute_incident_status
+from .incident_status import compute_incident_status, resolved_at_for_status
 from .execution_context import ExecutionContext, require_execution_context
 from .runtime_cache import AgentRuntimeCache, RuntimeBundle
 from .ws_auth import event_visible_to_org, org_id_matches, validate_ws_ticket
@@ -589,39 +589,60 @@ async def invoke_agent(request: InvocationRequest):
         logger.info("Starting agent graph execution")
 
         from .checkpointer import thread_config, thread_id_from_state
-        async for event in agent_graph.astream(
-            initial_state,
-            config=thread_config(
-                thread_id_from_state(initial_state),
-                org_langfuse=runtime.context.org_langfuse_credentials(),
-            ),
-        ):
-            for node_name, node_output in event.items():
-                logger.info(f"Processing node: {node_name}")
+        from . import tracing
 
-                # Log key events from each node
-                if node_name == "supervisor":
-                    next_agent = node_output.get("next", "")
-                    metadata = node_output.get("metadata", {})
-                    logger.info(f"Supervisor routing to: {next_agent}")
-                    if metadata.get("routing_reasoning"):
-                        logger.info(
-                            f"Routing reasoning: {metadata['routing_reasoning']}"
-                        )
+        org_langfuse = runtime.context.org_langfuse_credentials()
+        graph_config = thread_config(
+            thread_id_from_state(initial_state),
+            {
+                "metadata": tracing.trace_attributes(
+                    "answer-sre-query",
+                    context=runtime.context,
+                    session_id=session_id or None,
+                    user_id=user_id,
+                    trigger="api",
+                ),
+            },
+            org_langfuse=org_langfuse,
+        )
+        async with tracing.trace_run(
+            "answer-sre-query",
+            org_langfuse=org_langfuse,
+            input={"prompt": user_prompt},
+            metadata={"session_id": session_id} if session_id else None,
+        ) as traced_run:
+            async for event in agent_graph.astream(
+                initial_state,
+                config=graph_config,
+            ):
+                for node_name, node_output in event.items():
+                    logger.info(f"Processing node: {node_name}")
 
-                elif node_name in [
-                    "kubernetes_agent",
-                    "logs_agent",
-                    "metrics_agent",
-                    "runbooks_agent",
-                ]:
-                    agent_results = node_output.get("agent_results", {})
-                    logger.info(f"{node_name} completed with results")
+                    # Log key events from each node
+                    if node_name == "supervisor":
+                        next_agent = node_output.get("next", "")
+                        metadata = node_output.get("metadata", {})
+                        logger.info(f"Supervisor routing to: {next_agent}")
+                        if metadata.get("routing_reasoning"):
+                            logger.info(
+                                f"Routing reasoning: {metadata['routing_reasoning']}"
+                            )
 
-                # Capture final response from aggregate node
-                elif node_name == "aggregate":
-                    final_response = node_output.get("final_response", "")
-                    logger.info("Aggregate node completed, final response captured")
+                    elif node_name in [
+                        "kubernetes_agent",
+                        "logs_agent",
+                        "metrics_agent",
+                        "runbooks_agent",
+                    ]:
+                        agent_results = node_output.get("agent_results", {})
+                        logger.info(f"{node_name} completed with results")
+
+                    # Capture final response from aggregate node
+                    elif node_name == "aggregate":
+                        final_response = node_output.get("final_response", "")
+                        logger.info("Aggregate node completed, final response captured")
+
+            traced_run.set_output({"answer": final_response})
 
         if not final_response:
             logger.warning("No final response received from agent graph")
@@ -845,20 +866,45 @@ async def approve_remediation(session_id: str):
         verification_result = None
         
         from .checkpointer import thread_config, thread_id_from_state
-        async for event in agent_graph.astream(
-            current_state,
-            config=thread_config(
-                thread_id_from_state(current_state),
-                org_langfuse=runtime.context.org_langfuse_credentials(),
-            ),
-        ):
-            for node_name, node_output in event.items():
-                logger.info(f"Resuming execution - Processing node: {node_name}")
-                # ... (rest of logic) ...
-                # Capture final response
-                if node_name == "aggregate":
-                    final_response = node_output.get("final_response", "")
-                    logger.info("Resumed execution completed")
+        from . import tracing
+
+        org_langfuse = runtime.context.org_langfuse_credentials()
+        graph_config = thread_config(
+            thread_id_from_state(current_state),
+            {
+                "metadata": tracing.trace_attributes(
+                    "resume-remediation",
+                    context=runtime.context,
+                    session_id=str(current_state.get("incident_id") or session_id),
+                    trigger="local-approval",
+                    tags=["mode:local"],
+                    metadata={"session_id": session_id},
+                ),
+            },
+            org_langfuse=org_langfuse,
+        )
+        async with tracing.trace_run(
+            "resume-remediation",
+            org_langfuse=org_langfuse,
+            input={
+                "approved_plan": current_state.get("remediation_plan"),
+                "session_id": session_id,
+            },
+            metadata={"session_id": session_id},
+        ) as traced_run:
+            async for event in agent_graph.astream(
+                current_state,
+                config=graph_config,
+            ):
+                for node_name, node_output in event.items():
+                    logger.info(f"Resuming execution - Processing node: {node_name}")
+                    # ... (rest of logic) ...
+                    # Capture final response
+                    if node_name == "aggregate":
+                        final_response = node_output.get("final_response", "")
+                        logger.info("Resumed execution completed")
+
+            traced_run.set_output({"summary": final_response})
 
         return {
             "status": "approved",
@@ -911,39 +957,75 @@ async def run_graph_background(
         callback_handler = RedisLogCallbackHandler(session_id)
         
         from .checkpointer import thread_config, thread_id_from_state
-        async for event in agent_graph.astream(
-            initial_state,
-            config=thread_config(
-                thread_id_from_state(initial_state),
-                {"callbacks": [callback_handler]},
-                org_langfuse=runtime.context.org_langfuse_credentials(),
-            ),
-        ):
-            for node_name, node_output in event.items():
-                logger.info(f"Background processing node: {node_name}")
-                
-                # Add log entry
-                log_entry = f"[{datetime.now(timezone.utc).isoformat()}] Step completed: {node_name}"
-                state_store.append_log(session_id, log_entry)
-                
-                # Merge state — guard against None node_output (failed nodes)
-                if node_output is not None and isinstance(node_output, dict):
-                    current_execution_state = {**current_execution_state, **node_output}
-                elif node_output is not None:
-                    import logging; logging.getLogger(__name__).warning(f"Node returned non-dict: {type(node_output)} — skipping")
-                
-                # Update Redis State (only structural state, not logs)
-                update_data = {
-                    "status": "RUNNING",
-                    # "logs" field removed in favor of atomic list
-                    "current_node": node_name,
-                    "approval_required": False,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    # Store partial state in case of pause
-                    "state": current_execution_state
-                }
+        from . import tracing
 
-                state_store.set(session_id, update_data, ttl=3600)
+        org_langfuse = runtime.context.org_langfuse_credentials()
+        alert_context = initial_state.get("alert_context")
+        # Same trace name as the SaaS path — it is the same operation, and a
+        # name that varied by deployment mode would split every dashboard and
+        # evaluator in two. The mode is a tag instead, so it stays filterable.
+        graph_config = thread_config(
+            thread_id_from_state(initial_state),
+            {
+                "callbacks": [callback_handler],
+                "metadata": tracing.trace_attributes(
+                    "investigate-incident",
+                    context=runtime.context,
+                    session_id=str(initial_state.get("incident_id") or session_id),
+                    user_id=initial_state.get("user_id"),
+                    trigger="alert",
+                    tags=["mode:local"],
+                    metadata={"session_id": session_id, "alert_name": alert_name},
+                ),
+            },
+            org_langfuse=org_langfuse,
+        )
+        async with tracing.trace_run(
+            "investigate-incident",
+            org_langfuse=org_langfuse,
+            input={
+                "alert": alert_name,
+                "labels": dict(getattr(alert_context, "labels", None) or {}),
+                "annotations": dict(getattr(alert_context, "annotations", None) or {}),
+            },
+            metadata={"session_id": session_id},
+        ) as traced_run:
+            async for event in agent_graph.astream(
+                initial_state,
+                config=graph_config,
+            ):
+                for node_name, node_output in event.items():
+                    logger.info(f"Background processing node: {node_name}")
+
+                    # Add log entry
+                    log_entry = f"[{datetime.now(timezone.utc).isoformat()}] Step completed: {node_name}"
+                    state_store.append_log(session_id, log_entry)
+
+                    # Merge state — guard against None node_output (failed nodes)
+                    if node_output is not None and isinstance(node_output, dict):
+                        current_execution_state = {**current_execution_state, **node_output}
+                    elif node_output is not None:
+                        import logging; logging.getLogger(__name__).warning(f"Node returned non-dict: {type(node_output)} — skipping")
+
+                    # Update Redis State (only structural state, not logs)
+                    update_data = {
+                        "status": "RUNNING",
+                        # "logs" field removed in favor of atomic list
+                        "current_node": node_name,
+                        "approval_required": False,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        # Store partial state in case of pause
+                        "state": current_execution_state
+                    }
+
+                    state_store.set(session_id, update_data, ttl=3600)
+
+            traced_run.set_output(
+                {
+                    "summary": current_execution_state.get("final_response"),
+                    "agents_invoked": current_execution_state.get("agents_invoked"),
+                }
+            )
 
         # Completion
         final_response = current_execution_state.get("final_response", "Investigation completed.")
@@ -1344,59 +1426,106 @@ async def _run_graph_impl(
         current_execution_state = initial_state
         
         from .checkpointer import thread_config, thread_id_from_state
+        from . import tracing
+
+        org_langfuse = runtime.context.org_langfuse_credentials()
+        traced_service = effective_labels.get("service") or effective_labels.get("job")
+        # Langfuse trace identity. The name is the *operation*, never the run:
+        # evaluators, dashboards and saved filters all target names, so
+        # "investigate-incident-<uuid>" would make every run its own
+        # un-groupable bucket. Run-specific values go in metadata; the incident
+        # becomes the session id, because one incident produces several traces
+        # (investigate now, resume-remediation after a human approves in Slack,
+        # then any follow-up question) and a session is what ties them together.
         graph_config = thread_config(
             thread_id_from_state(initial_state),
             {
                 "callbacks": [callback_handler],
-                "metadata": {
-                    "run_manifest_id": run_manifest_id,
-                    "root_trace_id": root_trace_id,
-                    "incident_id": str(incident_id),
-                    "job_id": str(job_id),
-                },
+                "metadata": tracing.trace_attributes(
+                    "investigate-incident",
+                    context=runtime.context,
+                    session_id=str(incident_id),
+                    trigger="alert",
+                    tags=[f"service:{traced_service}"] if traced_service else (),
+                    metadata={
+                        "run_manifest_id": run_manifest_id,
+                        "root_trace_id": root_trace_id,
+                        "incident_id": str(incident_id),
+                        "job_id": str(job_id) if job_id else None,
+                        "alert_name": alert_name,
+                        "alert_severity": normalised_severity,
+                    },
+                ),
             },
-            org_langfuse=runtime.context.org_langfuse_credentials(),
+            org_langfuse=org_langfuse,
         )
-        async for event in agent_graph.astream(
-            initial_state,
-            config=graph_config,
-        ):
-            for node_name, node_output in event.items():
-                logger.info(f"SaaS Background processing node: {node_name}")
+        # Root observation with curated I/O. Without it the trace root is
+        # LangGraph's own chain run, whose input/output is the entire graph
+        # state — a JSON blob nobody can read at a glance in the tracing table.
+        async with tracing.trace_run(
+            "investigate-incident",
+            org_langfuse=org_langfuse,
+            input={
+                "alert": alert_name,
+                "severity": normalised_severity,
+                "labels": dict(effective_labels or {}),
+                "annotations": dict(effective_annotations or {}),
+                "namespace": runtime.context.namespace,
+            },
+            metadata={"incident_id": str(incident_id), "job_id": str(job_id)},
+        ) as traced_run:
+            async for event in agent_graph.astream(
+                initial_state,
+                config=graph_config,
+            ):
+                for node_name, node_output in event.items():
+                    logger.info(f"SaaS Background processing node: {node_name}")
                 
-                # Format a clean log line for the UI
-                timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                log_line = f"[{timestamp}] 🤖 AGENT_{node_name.upper()}: Step execution started."
+                    # Format a clean log line for the UI
+                    timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    log_line = f"[{timestamp}] 🤖 AGENT_{node_name.upper()}: Step execution started."
                 
-                if node_name == "investigation_swarm":
-                    log_line = f"[{timestamp}] 🔍 INVESTIGATION: Querying K8s, Metrics, and Logs in parallel..."
-                elif node_name == "reflector":
-                    log_line = f"[{timestamp}] 🧠 REFLECTOR: Correlating findings and forming hypothesis..."
+                    if node_name == "investigation_swarm":
+                        log_line = f"[{timestamp}] 🔍 INVESTIGATION: Querying K8s, Metrics, and Logs in parallel..."
+                    elif node_name == "reflector":
+                        log_line = f"[{timestamp}] 🧠 REFLECTOR: Correlating findings and forming hypothesis..."
                 
-                # Push to Redis for potential low-latency UI needs
-                state_store.append_log(session_id, log_line)
+                    # Push to Redis for potential low-latency UI needs
+                    state_store.append_log(session_id, log_line)
 
-                # CRITICAL: Sync directly to the Job record in Postgres for the Dashboard Terminal
-                if job_id:
-                    try:
-                        async with database.AsyncSessionLocal() as db:
-                            from sqlalchemy import select, update, func
-                            # Use func.concat to append logs atomically in the DB
-                            await db.execute(
-                                update(models.Job)
-                                .where(models.Job.id == job_id)
-                                .values(
-                                    logs=func.concat(func.coalesce(models.Job.logs, ""), log_line + "\n"),
-                                    status=JobStatus.RUNNING
+                    # CRITICAL: Sync directly to the Job record in Postgres for the Dashboard Terminal
+                    if job_id:
+                        try:
+                            async with database.AsyncSessionLocal() as db:
+                                from sqlalchemy import select, update, func
+                                # Use func.concat to append logs atomically in the DB
+                                await db.execute(
+                                    update(models.Job)
+                                    .where(models.Job.id == job_id)
+                                    .values(
+                                        logs=func.concat(func.coalesce(models.Job.logs, ""), log_line + "\n"),
+                                        status=JobStatus.RUNNING
+                                    )
                                 )
-                            )
-                            await db.commit()
-                    except Exception as le:
-                        logger.warning(f"Failed to sync thought log to job: {le}")
+                                await db.commit()
+                        except Exception as le:
+                            logger.warning(f"Failed to sync thought log to job: {le}")
                 
-                # Merge state — guard against None node_output (failed nodes)
-                if node_output is not None and isinstance(node_output, dict):
-                    current_execution_state = {**current_execution_state, **node_output}
+                    # Merge state — guard against None node_output (failed nodes)
+                    if node_output is not None and isinstance(node_output, dict):
+                        current_execution_state = {**current_execution_state, **node_output}
+
+            # Trace-level output: what an on-call reviewer opens the trace for.
+            # Set inside the context manager so it lands on the root observation.
+            traced_run.set_output(
+                {
+                    "summary": current_execution_state.get("final_response"),
+                    "act_report": (current_execution_state.get("metadata") or {}).get(
+                        "act_report"
+                    ),
+                    "agents_invoked": current_execution_state.get("agents_invoked"),
+                }
+            )
 
         from .model_accounting import get_model_accounting_recorder
 
@@ -1530,8 +1659,13 @@ async def _run_graph_impl(
                 "status": computed_status,
                 "summary": final_response,
             }
-            if computed_status == IncidentStatus.RESOLVED:
-                incident_values["resolved_at"] = datetime.now(timezone.utc)
+            # Always written, never only on the resolved branch: a row can
+            # arrive here already stamped by an Alertmanager *resolved*
+            # webhook and then compute REMEDIATION_FAILED (see
+            # incident_status.resolved_at_for_status).
+            incident_values["resolved_at"] = resolved_at_for_status(
+                computed_status, datetime.now(timezone.utc)
+            )
             await db.execute(
                 models.Incident.__table__
                 .update()
@@ -2013,16 +2147,37 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "anthropic") -> st
         # Execute and get final response
         final_response = ""
         from .checkpointer import thread_config, thread_id_from_state
-        async for event in graph.astream(
-            initial_state,
-            config=thread_config(
-                thread_id_from_state(initial_state),
-                org_langfuse=runtime.context.org_langfuse_credentials(),
-            ),
-        ):
-            for node_name, node_output in event.items():
-                if node_name == "aggregate":
-                    final_response = node_output.get("final_response", "")
+        from . import tracing
+
+        org_langfuse = runtime.context.org_langfuse_credentials()
+        graph_config = thread_config(
+            thread_id_from_state(initial_state),
+            {
+                "metadata": tracing.trace_attributes(
+                    "answer-sre-query",
+                    context=runtime.context,
+                    trigger="programmatic",
+                ),
+            },
+            org_langfuse=org_langfuse,
+        )
+        async with tracing.trace_run(
+            "answer-sre-query",
+            org_langfuse=org_langfuse,
+            input={"prompt": prompt},
+        ) as traced_run:
+            async for event in graph.astream(
+                initial_state,
+                config=graph_config,
+            ):
+                for node_name, node_output in event.items():
+                    if node_name == "aggregate":
+                        final_response = node_output.get("final_response", "")
+
+            traced_run.set_output({"answer": final_response})
+        # ``trace_run`` flushes on exit, which matters most here: the sync
+        # wrapper below runs this under ``asyncio.run`` and exits, so an
+        # unflushed export batch would never ship.
 
         return final_response or "I encountered an issue processing your request."
 
