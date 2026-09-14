@@ -1912,11 +1912,19 @@ async def _run_graph_impl(
              await db.execute(stmt_inc)
              await db.commit()
 
+             # Whether this failure ends the investigation. A job that
+             # fail_job() returned to PENDING gets another attempt, so the
+             # on-call is not told anything yet; a dead-lettered one is the
+             # end of the line and has to be announced.
+             terminal_failure = True
+
              if job_id:
                  # Route through job_store.fail_job() so attempt_count vs.
                  # max_attempts is honored (retry to PENDING or DEAD_LETTER)
                  # instead of hard-setting FAILED, which silently disabled
                  # the durable queue's retry machinery.
+                 from backend.models import JobStatus
+
                  from .job_store import DurableJobError, fail_job
 
                  job_row = await db.get(models.Job, job_id)
@@ -1927,9 +1935,21 @@ async def _run_graph_impl(
                          "trace_completeness": failed_trace_completeness,
                      }
                  )
+                 # Decide the fallback on what fail_job() *returned*, not on
+                 # job_row. fail_job() selects the same row in this same
+                 # session, so it hands back the identity-mapped object we
+                 # are holding and nulls `lease_owner` on it. Re-reading that
+                 # attribute after a successful call therefore always looked
+                 # like "no lease", and the fallback below overwrote the
+                 # PENDING status fail_job() had just set — restoring the
+                 # exact hard-FAILED behaviour the routing was added to
+                 # remove. Live on 2026-09-14 three investigations died on a
+                 # transient API error with attempt_count=1 of 3 and none was
+                 # ever retried.
+                 failed_job = None
                  if job_row is not None and job_row.lease_owner:
                      try:
-                         await fail_job(
+                         failed_job = await fail_job(
                              db,
                              job_id,
                              worker_id=job_row.lease_owner,
@@ -1942,11 +1962,8 @@ async def _run_graph_impl(
                              job_id,
                              fail_job_error,
                          )
-                         job_row = None
 
-                 if job_row is None or not job_row.lease_owner:
-                     from backend.models import JobStatus
-
+                 if failed_job is None:
                      await db.execute(
                          models.Job.__table__
                          .update()
@@ -1958,6 +1975,32 @@ async def _run_graph_impl(
                          )
                      )
                      await db.commit()
+                 else:
+                     terminal_failure = failed_job.status != JobStatus.PENDING
+
+        # Slack is the only channel this platform has. An investigation that
+        # dies leaves a thread that says "Incident opened" and then nothing
+        # forever — indistinguishable, to the person reading it, from an
+        # investigation still in progress. The DB knows; the on-call does not.
+        # This is deliberately outside the DB session above and best-effort:
+        # post_to_incident_thread never raises, and a Slack outage must not
+        # mask the original failure.
+        if terminal_failure:
+            try:
+                from .war_room_service import (
+                    investigation_failed_text,
+                    post_to_incident_thread,
+                )
+
+                await post_to_incident_thread(
+                    str(incident_id), investigation_failed_text(str(e))
+                )
+            except Exception as slack_error:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to announce investigation failure in Slack for %s: %s",
+                    incident_id,
+                    slack_error,
+                )
     finally:
         from .audit_context import clear_audit_context as _clear_audit_context
 

@@ -111,6 +111,25 @@ async def post_to_incident_thread(incident_id: str, text: str) -> bool:
         return False
 
 
+def investigation_failed_text(error: str) -> str:
+    """The message a dead investigation leaves in its Slack thread.
+
+    Silence is the wrong default here. A thread that says "Incident opened"
+    and then stops reads, to the person watching it, exactly like an
+    investigation still in progress — so the notice has to say all three
+    things: that it failed, that nothing was diagnosed or remediated, and
+    what went wrong. The error is truncated because provider exceptions
+    arrive with whole JSON bodies in them and Slack is not a log viewer.
+    """
+    detail = error if len(error) <= 500 else error[:500] + "…"
+    return (
+        ":x: *Investigation failed — no findings were produced.*\n"
+        "This incident is still open and nothing has been diagnosed or "
+        "remediated; it needs a human.\n"
+        f"```{detail}```"
+    )
+
+
 def _opening_text(summary: str) -> str:
     """Compose the Slack open message, mentioning on-call when configured."""
     mention = ""
