@@ -63,13 +63,22 @@ and resolved, so `alerts.py` clears a condition only when no member of the
 same payload still reports it firing.
 
 ## Completed or verified work
-Seventeen defects found and fixed by live fire. The recurring pattern, and the
+Eighteen defects found and fixed by live fire. The recurring pattern, and the
 thing to keep testing for: **the system computes the truth, records it, and
 then does not tell the human.** Learning demanded a status the graph cannot
 produce; a stranded remediation stayed silent for 27h; the approval prompt
 counted notifications and unexecutable actions as cluster writes; the
-resolution report dropped the recorded reason a patch was missing. Per-defect
-detail is in git log, not here.
+resolution report dropped the recorded reason a patch was missing; a PROD
+rollback could be authorized only by the planner's own parameters and never by
+the human whose approval the system asks for. Per-defect detail is in git log,
+not here.
+
+**Authorization never comes from model-authored text.** That is stated in
+every agent prompt, enforced by `prompt_guard`, and was still violated by
+`policy_engine` Rule 4 for as long as it existed. Audit any new gate against
+it: the flag must be set by deterministic runtime state, and a hard `(bool,
+reason)` block is unappealable by design — if a human should be able to say
+yes, the hold belongs in `policy_gate.decide`, not the policy engine.
 
 ## Active problem
 Defects #15 (`approval_effect`) and #16 (`planner_namespace_scope`) are
@@ -101,8 +110,6 @@ everything), `graph_builder.py` (planner/swarm prompts),
   credential write and the cluster. `EXECUTOR_ALLOWED_ENV_KEYS` is unset here.
 - **Severity is always `UNKNOWN` for real Meridian alerts** (rules emit no
   impact/urgency annotations), so the autonomous path never engages.
-- **`rollback` was blocked by PolicyEngine** with "Requires explicit approval
-  flag" on PROD *even after* a human approved in Slack. Not yet chased.
 - **Alert rule bug**: `InventoryMemoryApproachingLimit` fires above `1e6`
   bytes while its description says 200MB; `checkout-service`'s real limit is
   now `768Mi`, so both memory descriptions are stale.
