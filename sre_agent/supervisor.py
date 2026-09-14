@@ -1086,6 +1086,13 @@ User's query: {current_query}
                     next_agent = candidate
                     break
 
+            # Plan steps are written for the *visible* queue, so the step
+            # pointer counts only visible specialists. `agents_invoked` also
+            # carries internal ones (the Kubernetes prescan), and indexing
+            # plan.steps by its length would describe step N+1's work while
+            # handing off step N.
+            visible_invoked = len(filter_visible_specialists(agents_invoked))
+
             if not next_agent:
                 # Plan complete
                 supervisor_thought = (
@@ -1118,14 +1125,14 @@ User's query: {current_query}
                     "metadata": {
                         **metadata,
                         "routing_reasoning": "Investigation plan completed. Presenting results.",
-                        "plan_step": len(agents_invoked),
+                        "plan_step": visible_invoked,
                         "specialist_queue": visible_queue,
                     },
                     **state_updates_from_interrupt,
                 }
             else:
                 # Continue with next agent in plan
-                step_description = plan.steps[len(agents_invoked)] if len(agents_invoked) < len(plan.steps) else f"Execute {next_agent}"
+                step_description = plan.steps[visible_invoked] if visible_invoked < len(plan.steps) else f"Execute {next_agent}"
                 supervisor_thought = (
                     f"Good work so far, but we need more data. {visible_specialist_label(next_agent)}, can you take over?"
                 )
@@ -1148,7 +1155,7 @@ User's query: {current_query}
 
                 decision_content, decision_payload = build_supervisor_decision_content(
                     next_agent,
-                    f"Executing plan step {len(agents_invoked) + 1}: {step_description}",
+                    f"Executing plan step {visible_invoked + 1}: {step_description}",
                     remaining_agents,
                     narrative=handoff_narrative,
                 )
@@ -1172,8 +1179,8 @@ User's query: {current_query}
                     },
                     "metadata": {
                         **metadata,
-                        "routing_reasoning": f"Executing plan step {len(agents_invoked) + 1}: {step_description}",
-                        "plan_step": len(agents_invoked),
+                        "routing_reasoning": f"Executing plan step {visible_invoked + 1}: {step_description}",
+                        "plan_step": visible_invoked,
                         "specialist_queue": visible_queue,
                         "current_specialist": next_agent,
                     },
@@ -1308,7 +1315,34 @@ User's query: {current_query}
                 f"assembled the remediation plan with {len(remediation_plan.actions)} action(s)."
             )
 
-            summary_content, summary_payload = build_supervisor_summary_content(final_response, agent_results)
+            # This is the *good* path — the reflector settled on a hypothesis
+            # and a plan — so it is the last place that should fall back to a
+            # templated card. Narrate it like the plain-aggregation path below
+            # does, and pass the query/alert through: without them the wrap-up
+            # the on-call reads in Slack opens "Objective: the incident".
+            plan_narrative = ""
+            try:
+                plan_narrative = await narrate_supervisor_summary(
+                    self.llm,
+                    objective=current_query,
+                    alert_context=alert_context,
+                    agent_results=agent_results,
+                    tool_failures=state.get("agent_tool_failures", {}) or {},
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Remediation-plan summary narration failed, using the "
+                    f"structured card: {e}"
+                )
+
+            summary_content, summary_payload = build_supervisor_summary_content(
+                final_response,
+                agent_results,
+                query=current_query,
+                alert_context=alert_context,
+                narrative=plan_narrative,
+            )
+            summary_payload["narrative"] = plan_narrative or summary_content
             await emit_timeline_event(
                 incident_id,
                 event_type="summary",

@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 INCIDENTS_CHANNEL = "incidents"
 
 # Timeline event types worth surfacing to humans in the thread (the rest is noise).
-_SURFACED = {"plan", "decision", "summary", "act", "assistant_message"}
+# `approval` is not noise by definition: it is the one event the thread exists to
+# carry — the agent asking a human for authorization it cannot grant itself.
+_SURFACED = {"plan", "decision", "summary", "act", "assistant_message", "approval"}
 
 
 @dataclass(frozen=True)
@@ -93,9 +95,17 @@ def _format_result_for_reply(result: Dict[str, Any]) -> str:
     return "Sorry, I couldn't process that."
 
 
-async def _default_handler(text: str, incident_id: str) -> Dict[str, Any]:
+async def _default_handler(
+    text: str, incident_id: str, asker_email: Optional[str] = None
+) -> Dict[str, Any]:
     """Route an in-thread reply through the real, memory-backed conversational
-    endpoint the dashboard already uses — in-process, no HTTP hop."""
+    endpoint the dashboard already uses — in-process, no HTTP hop.
+
+    ``asker_email`` is the replying Slack user's profile email, the only
+    identity bridge Slack gives us (same one the gate commands authorize on).
+    It is resolved to a platform user purely for *attribution* — who asked —
+    so the answer is never withheld when the lookup comes back empty.
+    """
     import uuid as _uuid
 
     from backend import crud, database, models
@@ -106,7 +116,37 @@ async def _default_handler(text: str, incident_id: str) -> Dict[str, Any]:
         if incident is None:
             return {"status": "ignored"}
         cluster = await crud.get_cluster_by_id(db, incident.cluster_id)
-        return await handle_incident_message(db, incident, cluster, text, source="slack")
+        user_id = await _platform_user_id_for_email(db, asker_email, cluster)
+        return await handle_incident_message(
+            db, incident, cluster, text, source="slack", user_id=user_id
+        )
+
+
+async def _platform_user_id_for_email(
+    db: Any, email: Optional[str], cluster: Any
+) -> Optional[str]:
+    """Map a Slack profile email to this org's platform user id, or None.
+
+    Org-scoped on purpose: an email that matches a user in a *different*
+    tenant must not be credited with asking this org's question. Never raises
+    — attribution is metadata, and a question over Slack (the only channel)
+    must still be answered when identity can't be established.
+    """
+    if not email or cluster is None:
+        return None
+    try:
+        from sqlalchemy import select
+
+        from backend import models
+
+        result = await db.execute(select(models.User).where(models.User.email == email))
+        user = result.scalar_one_or_none()
+        if user is None or str(user.org_id) != str(getattr(cluster, "org_id", "")):
+            return None
+        return str(user.id)
+    except Exception as exc:  # pragma: no cover - attribution is best-effort
+        logger.debug("war-room: could not attribute Slack reply to a user: %s", exc)
+        return None
 
 
 async def forward_events(
@@ -165,9 +205,24 @@ GATE_COMMAND_RE = re.compile(
 # in approval_flow.py.
 ACK_COMMAND_RE = re.compile(r"^(?:acknowledge|ack)(?:\s+resolution)?$", re.IGNORECASE)
 
+# The way out for every incident "acknowledge" can't close. Acknowledging only
+# applies to PENDING_ACKNOWLEDGMENT — a verified autonomous fix — so an
+# incident the agent escalated (INVESTIGATED), or one whose verification came
+# back FAILED/UNKNOWN, had no Slack path to resolution at all, and dedup keeps
+# folding the re-firing alert into it while it stays open. Spelled without a
+# Deliberately does not spell "close incident": that reads as GATE_COMMAND_RE's
+# "approve close-incident" Temporal gate, and the two mean different things.
+RESOLVE_COMMAND_RE = re.compile(
+    r"^(?:mark\s+resolved|resolve\s+incident)$", re.IGNORECASE
+)
+
 
 def is_ack_command(text: str) -> bool:
     return bool(ACK_COMMAND_RE.match(_normalize_command_text(text)))
+
+
+def is_resolve_command(text: str) -> bool:
+    return bool(RESOLVE_COMMAND_RE.match(_normalize_command_text(text)))
 
 
 def parse_gate_command(text: str) -> Optional[tuple]:
@@ -458,19 +513,56 @@ async def route_ack_command(
     return result
 
 
-async def _acknowledge_resolution_for_incident(
-    incident_id: str, approver_email: Optional[str]
+async def route_resolve_command(
+    text: str,
+    thread: ThreadRef,
+    registry: WarRoomRegistry,
+    approver_email: Optional[str],
+    poster: Callable[[Optional[ThreadRef], str], Awaitable[Any]],
+) -> Optional[Dict[str, Any]]:
+    """Handle an in-thread "mark resolved" reply closing an incident a human
+    took over — the Slack equivalent of the dashboard's mark-resolved action.
+
+    Distinct from "acknowledge", which only works on a verified autonomous fix
+    (PENDING_ACKNOWLEDGMENT). An incident the agent escalated, or one whose
+    verification failed, could be ended from the dashboard but not from Slack,
+    which is the only channel this design has — and while it stayed open,
+    dedup folded every re-firing alert into it instead of opening a new
+    incident.
+    """
+    if not is_resolve_command(text):
+        return None
+
+    incident_id = registry.incident_for(thread)
+    if not incident_id:
+        return {"mode": "ignored"}
+
+    result = await _mark_resolved_for_incident(incident_id, approver_email)
+    await poster(thread, result["message"])
+    return result
+
+
+async def _authorize_incident_admin(
+    incident_id: str, approver_email: Optional[str], action: str
 ) -> Dict[str, Any]:
+    """Resolve the Slack replier to an admin of the incident's own org.
+
+    Returns ``{"ok": True, "incident": ..., "cluster": ..., "approver": ...}``
+    or a ready-to-post refusal in the same shape the routers return.
+    """
     import uuid as _uuid
 
     from sqlalchemy import select
 
     from backend import crud, database, models
 
-    from .approval_flow import ApprovalValidationError, acknowledge_incident_resolution
-
+    mode = f"{action}_decision"
     if not approver_email:
-        return {"mode": "ack_decision", "status": "denied", "message": "Couldn't verify your Slack identity — no email on file."}
+        return {
+            "mode": mode,
+            "status": "denied",
+            "message": "Couldn't verify your Slack identity — no email on file.",
+        }
 
     async with database.AsyncSessionLocal() as db:
         incident = await db.get(models.Incident, _uuid.UUID(incident_id))
@@ -487,16 +579,65 @@ async def _acknowledge_resolution_for_incident(
 
     if approver is None or str(approver.org_id) != str(cluster.org_id):
         return {
-            "mode": "ack_decision",
+            "mode": mode,
             "status": "denied",
-            "message": f"{approver_email} isn't a member of this organization — can't acknowledge this incident here.",
+            "message": f"{approver_email} isn't a member of this organization — can't {action} this incident here.",
         }
     if approver.role != models.UserRole.ADMIN:
         return {
-            "mode": "ack_decision",
+            "mode": mode,
             "status": "denied",
-            "message": "Only admins can acknowledge an incident's resolution.",
+            "message": f"Only admins can {action} an incident.",
         }
+
+    return {"ok": True, "incident": incident, "cluster": cluster, "approver": approver}
+
+
+async def _mark_resolved_for_incident(
+    incident_id: str, approver_email: Optional[str]
+) -> Dict[str, Any]:
+    from .approval_flow import mark_incident_resolved_by_human
+
+    authorized = await _authorize_incident_admin(incident_id, approver_email, "resolve")
+    if not authorized.get("ok"):
+        return authorized
+
+    incident = authorized["incident"]
+    cluster = authorized["cluster"]
+    approver = authorized["approver"]
+
+    resolved = await mark_incident_resolved_by_human(
+        incident_id=incident_id,
+        organization_id=str(cluster.org_id),
+        cluster_id=str(incident.cluster_id),
+    )
+    if resolved is None:
+        return {"mode": "resolve_decision", "status": "not_found", "message": "Incident not found."}
+
+    return {
+        "mode": "resolve_decision",
+        "status": "ok",
+        "message": (
+            f"✅ Incident marked resolved by {approver.email}. "
+            "The agent did not verify a fix — this is your call that it's handled."
+        ),
+    }
+
+
+async def _acknowledge_resolution_for_incident(
+    incident_id: str, approver_email: Optional[str]
+) -> Dict[str, Any]:
+    from .approval_flow import ApprovalValidationError, acknowledge_incident_resolution
+
+    authorized = await _authorize_incident_admin(
+        incident_id, approver_email, "acknowledge"
+    )
+    if not authorized.get("ok"):
+        return authorized
+
+    incident = authorized["incident"]
+    cluster = authorized["cluster"]
+    approver = authorized["approver"]
 
     try:
         resolved = await acknowledge_incident_resolution(
@@ -508,7 +649,11 @@ async def _acknowledge_resolution_for_incident(
         return {
             "mode": "ack_decision",
             "status": "not_pending",
-            "message": "This incident isn't awaiting acknowledgment right now.",
+            "message": (
+                "This incident isn't awaiting acknowledgment right now — that "
+                "applies only to a fix the agent verified. If you've handled it "
+                "yourself, reply `mark resolved` to close it."
+            ),
         }
 
     if resolved is None:
@@ -526,18 +671,26 @@ async def route_thread_reply(
     thread: ThreadRef,
     registry: WarRoomRegistry,
     poster: Callable[[Optional[ThreadRef], str], Awaitable[Any]],
-    handler: Optional[Callable[[str, str], Awaitable[Dict[str, Any]]]] = None,
+    handler: Optional[
+        Callable[[str, str, Optional[str]], Awaitable[Dict[str, Any]]]
+    ] = None,
+    asker_email: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Route an on-call reply in a war-room thread (inbound) through the real,
     memory-backed conversational handler (`mission_control.handle_incident_message`
     in production; injectable for tests). Ignores replies in threads that
     aren't war rooms.
+
+    `asker_email` carries the replying Slack user's profile email through to
+    the handler, the way the gate commands already carry the approver's: over
+    Slack — the only channel — an unattributed follow-up is a trace with no
+    `userId`, and no way to tell who asked what.
     """
     incident_id = registry.incident_for(thread)
     if not incident_id:
         return {"mode": "ignored"}
 
     handler = handler or _default_handler
-    result = await handler(text, incident_id)
+    result = await handler(text, incident_id, asker_email)
     await poster(thread, _format_result_for_reply(result))
     return result

@@ -84,6 +84,26 @@ class NegativeExemplar:
         return value
 
 
+# Incident statuses that do not contradict a RESOLVED verification.
+#
+# This gate is a cross-check, not a second oracle: by the time it is reached
+# the verification oracle has already returned RESOLVED, and its job is only to
+# reject a run whose incident row says something incompatible
+# (REMEDIATION_FAILED, VERIFICATION_UNKNOWN, AWAITING_APPROVAL...).
+#
+# It used to demand RESOLVED exactly, which no live run can ever present.
+# `incident_status.compute_incident_status` — the caller's only source of this
+# argument (graph_builder, act_phase, mission_control) — returns
+# PENDING_ACKNOWLEDGMENT for a verified fix and never returns RESOLVED at all;
+# only a human's later "acknowledge" advances the row. So every verified
+# success fell through to `incomplete`, `eligible_for_success` was always
+# False, and the self-improving loop could only ever record negative
+# exemplars and write negative runbooks. The live run on 2026-09-14 confirmed
+# it: verification RESOLVED, 1/1 mutation EXECUTED, and still
+# "wrote negative runbook -> ... (incomplete)".
+_VERIFIED_INCIDENT_STATUSES = {"RESOLVED", "PENDING_ACKNOWLEDGMENT", ""}
+
+
 def _get(obj: Any, key: str, default: Any = None) -> Any:
     if obj is None:
         return default
@@ -124,6 +144,11 @@ def live_executed_actions(
     executed: Any = None,
 ) -> list[dict[str, Any]]:
     """Return only actions that actually mutated (or succeeded live), not dry-runs."""
+    try:
+        from .executor import NON_MUTATING_ACTIONS
+    except ImportError:  # this module is also loaded by path, with no package
+        from sre_agent.executor import NON_MUTATING_ACTIONS
+
     selected: list[dict[str, Any]] = []
     for action in _list_actions(live_results, executed):
         status = str(action.get("status", "") or "").upper()
@@ -131,6 +156,12 @@ def live_executed_actions(
         if mode in {"dry_run", "dry-run"}:
             continue
         if status == "DRY_RUN":
+            continue
+        # A successful page is not a successful fix, and neither is a
+        # successful read. Counting either as one would let "escalate to a
+        # human" or "dump the deployment config" be promoted as a verified
+        # remediation the agent should reach for again.
+        if str(action.get("action_type", "") or "").lower() in NON_MUTATING_ACTIONS:
             continue
         if status in _SUCCESS_STATUSES:
             selected.append(action)
@@ -201,8 +232,8 @@ def assess_learning_eligibility(
     elif not live:
         reasons.append("no live executed remediation action is present")
         outcome = "incomplete"
-    elif status_name and status_name not in {"RESOLVED", ""}:
-        reasons.append(f"incident status {status_name} is not RESOLVED")
+    elif status_name and status_name not in _VERIFIED_INCIDENT_STATUSES:
+        reasons.append(f"incident status {status_name} contradicts a verified fix")
         outcome = "incomplete"
     else:
         outcome = "verified_success"

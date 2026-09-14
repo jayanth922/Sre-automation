@@ -172,7 +172,7 @@ def test_message_handler_routes_tracked_war_room_reply():
     async def fake_say(text, thread_ts):
         posted.append((text, thread_ts))
 
-    async def fake_default_handler(text, incident_id):
+    async def fake_default_handler(text, incident_id, asker_email=None):
         assert incident_id == "inc-1"
         assert text == "what's the error rate?"
         return {"status": "RESPONDED", "response": "3%."}
@@ -187,6 +187,51 @@ def test_message_handler_routes_tracked_war_room_reply():
         war_room_mod._default_handler = original_handler
 
     assert posted == [("3%.", "T1")]
+
+
+def test_message_handler_attributes_a_follow_up_to_the_asker():
+    """A follow-up question carries who asked, like the gate commands do.
+
+    Without it the question's Langfuse trace has `userId: null`, and over
+    Slack — the only channel — there is nothing else to attribute it with.
+    """
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+    import sre_agent.war_room as war_room_mod
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+    handler = app.handlers["message"]
+
+    async def fake_users_info(user):
+        assert user == "U42"
+        return {"user": {"profile": {"email": "oncall@example.com"}}}
+
+    app.client = types.SimpleNamespace(users_info=fake_users_info)
+
+    async def fake_say(text, thread_ts):
+        pass
+
+    seen = {}
+
+    async def fake_default_handler(text, incident_id, asker_email=None):
+        seen["asker_email"] = asker_email
+        return {"status": "RESPONDED", "response": "3%."}
+
+    original_handler = war_room_mod._default_handler
+    war_room_mod._default_handler = fake_default_handler
+    try:
+        asyncio.run(
+            handler(
+                {"channel": "C1", "thread_ts": "T1", "user": "U42",
+                 "text": "why does this need approval?"},
+                fake_say,
+            )
+        )
+    finally:
+        war_room_mod._default_handler = original_handler
+
+    assert seen["asker_email"] == "oncall@example.com"
 
 
 def test_message_handler_routes_gate_command_via_resolved_email():

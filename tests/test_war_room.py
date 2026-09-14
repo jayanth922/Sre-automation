@@ -57,6 +57,24 @@ def test_format_surfaces_plan_skips_noise():
     assert format_event_for_slack(insight) is None
 
 
+def test_format_surfaces_the_approval_ask():
+    """Slack is the only channel: an approval the thread never sees is an
+    approval that expires in silence, with the incident stalled on a human who
+    was never asked."""
+    approval = {
+        "type": "timeline",
+        "payload": {
+            "event_type": "approval",
+            "title": "Approval required",
+            "content": "🔒 Approval required — severity *UNKNOWN*.\nReply `approve fix`…",
+        },
+    }
+    text = format_event_for_slack(approval)
+    assert text is not None
+    assert "Approval required" in text
+    assert "approve fix" in text
+
+
 # ── outbound: bus → Slack thread ──────────────────────────────────────────────
 def test_forward_events_posts_surfaced_events():
     async def scenario():
@@ -91,7 +109,7 @@ def test_route_responded_posts_reply_directly():
         posts = []
 
         async def poster(thread, text): posts.append(text)
-        async def handler(text, incident_id):
+        async def handler(text, incident_id, asker_email=None):
             return {"status": "RESPONDED", "incident_id": incident_id, "response": "Error rate is 3%."}
 
         result = await route_thread_reply("what's the error rate?", t, reg, poster, handler=handler)
@@ -110,7 +128,7 @@ def test_route_pending_supervisor_acks_queued():
         posts = []
 
         async def poster(thread, text): posts.append(text)
-        async def handler(text, incident_id): return {"status": "PENDING_SUPERVISOR"}
+        async def handler(text, incident_id, asker_email=None): return {"status": "PENDING_SUPERVISOR"}
 
         await route_thread_reply("restart the pod", t, reg, poster, handler=handler)
         return posts
@@ -127,7 +145,7 @@ def test_route_queued_acks_on_it():
         posts = []
 
         async def poster(thread, text): posts.append(text)
-        async def handler(text, incident_id): return {"status": "QUEUED"}
+        async def handler(text, incident_id, asker_email=None): return {"status": "QUEUED"}
 
         await route_thread_reply("check the payments service too", t, reg, poster, handler=handler)
         return posts
@@ -141,12 +159,91 @@ def test_route_ignores_non_war_room_thread():
         reg = WarRoomRegistry()  # empty
         posts = []
         async def poster(thread, text): posts.append(text)
-        async def handler(text, incident_id): raise AssertionError("should not handle")
+        async def handler(text, incident_id, asker_email=None): raise AssertionError("should not handle")
         res = await route_thread_reply("hello", ThreadRef("C9", "T9"), reg, poster, handler=handler)
         return res, posts
 
     res, posts = asyncio.run(scenario())
     assert res["mode"] == "ignored" and posts == []
+
+
+def test_route_thread_reply_carries_the_asker_identity():
+    """Who asked has to reach the handler — it becomes the trace's userId.
+
+    Slack is the only channel, so an unattributed follow-up is a follow-up
+    nobody can be credited with.
+    """
+    async def scenario():
+        reg = WarRoomRegistry()
+        t = ThreadRef("C1", "T1")
+        reg.open("inc-1", t)
+        seen = {}
+
+        async def poster(thread, text): pass
+
+        async def handler(text, incident_id, asker_email=None):
+            seen["asker_email"] = asker_email
+            return {"status": "RESPONDED", "response": "ok"}
+
+        await route_thread_reply(
+            "why does this need approval?", t, reg, poster,
+            handler=handler, asker_email="oncall@example.com",
+        )
+        return seen
+
+    assert asyncio.run(scenario())["asker_email"] == "oncall@example.com"
+
+
+class _FakeResult:
+    def __init__(self, user): self._user = user
+    def scalar_one_or_none(self): return self._user
+
+
+class _FakeDB:
+    def __init__(self, user): self._user = user
+    async def execute(self, _stmt): return _FakeResult(self._user)
+
+
+class _FakeUser:
+    def __init__(self, user_id, org_id): self.id, self.org_id = user_id, org_id
+
+
+class _FakeCluster:
+    def __init__(self, org_id): self.org_id = org_id
+
+
+def test_slack_email_attributes_to_a_user_in_this_org():
+    from sre_agent.war_room import _platform_user_id_for_email
+
+    user_id = asyncio.run(
+        _platform_user_id_for_email(
+            _FakeDB(_FakeUser("u-1", "org-1")), "oncall@example.com",
+            _FakeCluster("org-1"),
+        )
+    )
+    assert user_id == "u-1"
+
+
+def test_slack_email_matching_another_tenant_attributes_to_nobody():
+    """A matching email in a different org is not this org's asker."""
+    from sre_agent.war_room import _platform_user_id_for_email
+
+    user_id = asyncio.run(
+        _platform_user_id_for_email(
+            _FakeDB(_FakeUser("u-1", "org-2")), "oncall@example.com",
+            _FakeCluster("org-1"),
+        )
+    )
+    assert user_id is None
+
+
+def test_unresolvable_slack_identity_still_answers_unattributed():
+    """No email (missing users:read.email scope) must not block the answer."""
+    from sre_agent.war_room import _platform_user_id_for_email
+
+    assert asyncio.run(
+        _platform_user_id_for_email(_FakeDB(None), None, _FakeCluster("org-1"))
+    ) is None
 
 
 # ── inbound: gate-decision commands (Phase 5D) ───────────────────────────────

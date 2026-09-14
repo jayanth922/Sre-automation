@@ -112,6 +112,107 @@ def test_interrupt_payload_binds_request_thread_report_and_hash():
     }
 
 
+# ── the ask a human actually reads ───────────────────────────────────────────
+# Slack is the only channel, so a persisted approval nobody is told about is an
+# approval that expires in silence. These pin what the message must carry.
+
+APPROVAL_REPORT = {
+    "severity": "UNKNOWN",
+    "aggregate_decision": "requires_approval",
+    "confidence_status": "uncalibrated",
+    "raw_action_confidence": 0.48,
+    "action_reports": [
+        {
+            "action_type": "inspect",
+            "target": "deployment/inventory-service",
+            "namespace": "meridian",
+            "decision": "autonomous",
+            "reversibility": "read_only",
+            "reason": "read-only: mutates nothing",
+        },
+        {
+            "action_type": "config_change",
+            "target": "inventory-service",
+            "namespace": "meridian",
+            "decision": "requires_approval",
+            "reversibility": "risky",
+            "reason": "uncalibrated self-confidence cannot authorize a mutation",
+        },
+        {
+            "action_type": "patch",
+            "target": "payments",
+            "namespace": "kube-system",
+            "decision": "blocked",
+            "reversibility": "risky",
+            "reason": "blocked: targets namespace 'kube-system', outside this cluster's scope",
+        },
+    ],
+}
+
+
+def test_approval_request_message_states_what_would_run_and_how_to_authorize():
+    expires = datetime(2026, 9, 13, 19, 14, 42, tzinfo=timezone.utc)
+    text = approval_flow.format_approval_request(APPROVAL_REPORT, expires)
+
+    # Severity, gate, and the honest confidence label.
+    assert "UNKNOWN" in text
+    assert "requires_approval" in text
+    assert "uncalibrated" in text
+    assert "0.48" in text
+    # Every action, its target and its own decision — not just a count.
+    for fragment in (
+        "inspect",
+        "config_change",
+        "inventory-service",
+        "patch",
+        "kube-system",
+        "blocked",
+        "read_only",
+        "risky",
+    ):
+        assert fragment in text, fragment
+    # Only the held action is what approving would run.
+    assert "runs 1 held action" in text
+    # The exact words that authorize it, and the deadline.
+    assert f"`{approval_flow.APPROVAL_COMMAND}`" in text
+    assert "2026-09-13 19:14:42Z" in text
+
+
+def test_approval_request_message_fits_the_slack_forwarder_budget():
+    """`war_room.format_event_for_slack` truncates content at 1500 chars; the
+    ask must not lose its own instructions to a long plan."""
+    report = {
+        **APPROVAL_REPORT,
+        "action_reports": APPROVAL_REPORT["action_reports"] * 12,
+    }
+    text = approval_flow.format_approval_request(report, datetime.now(timezone.utc))
+
+    assert len(text) <= 1500
+    assert "and 28 more" in text
+    assert f"`{approval_flow.APPROVAL_COMMAND}`" in text
+
+
+def test_approval_request_survives_a_naive_expiry_and_missing_confidence():
+    text = approval_flow.format_approval_request(
+        {"action_reports": []}, datetime(2026, 9, 13, 19, 14, 42)
+    )
+    assert "UNKNOWN" in text
+    assert "uncalibrated" in text
+    assert "2026-09-13 19:14:42Z" in text
+
+
+def test_pending_approval_defaults_to_created_so_reuse_must_be_explicit():
+    pending = approval_flow.PendingApproval(
+        id="request-1",
+        incident_id="incident-1",
+        thread_id="thread-1",
+        action_hash="a" * 64,
+        expires_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
+    )
+    assert pending.created is True
+    assert "created" not in pending.interrupt_payload({})
+
+
 def test_current_interrupt_reads_langgraph_style_snapshot():
     wanted = {"type": "approval_required", "action_hash": "b" * 64}
     snapshot = SimpleNamespace(
@@ -198,8 +299,18 @@ def test_graph_and_api_enforce_verified_synchronous_resume():
         / "[incidentId]"
         / "page.tsx"
     ).read_text()
-    assert "approval_request_id: status.approval.approval_request_id" in dashboard_source
-    assert "action_hash: status.approval.action_hash" in dashboard_source
+    # Slack is the only approval channel by design, so the dashboard's former
+    # "Approve & run" button is gone: the incident page states the pending plan
+    # and points at the thread. It must not grow a second way to authorize a
+    # mutation — one channel is what makes the audit trail complete.
+    assert 'Reply "approve fix" in the incident\'s Slack thread' in dashboard_source
+    assert "/approve" not in dashboard_source
+
+    # And the ask has to reach that thread: the graph's interrupt is silent, so
+    # approval_prepare emits it and the war room forwards that event type.
+    war_room_source = (ROOT / "sre_agent" / "war_room.py").read_text()
+    assert 'event_type="approval"' in graph_source
+    assert '"approval"' in war_room_source.split("_SURFACED = ")[1].split("\n")[0]
 
 
 def test_async_postgres_checkpointer_is_configured_for_api_restart():

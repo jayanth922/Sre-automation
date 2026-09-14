@@ -14,6 +14,7 @@ from langgraph.types import interrupt
 
 from .agent_nodes import (
     create_github_agent,
+    create_kubernetes_agent,
     create_logs_agent,
     create_metrics_agent,
     create_runbooks_agent,
@@ -62,7 +63,11 @@ async def _prepare_approval_node(
 ) -> Dict[str, Any]:
     """Persist an exact remediation proposal before checkpointing its interrupt."""
     from .act_phase import build_act_report
-    from .approval_flow import compute_action_hash, create_or_reuse_pending_approval
+    from .approval_flow import (
+        compute_action_hash,
+        create_or_reuse_pending_approval,
+        format_approval_request,
+    )
     from .checkpointer import durable_checkpointer_configured, thread_id_from_state
 
     report_payload = build_act_report(
@@ -120,6 +125,29 @@ async def _prepare_approval_node(
         action_hash=action_hash,
     )
     metadata["pending_approval"] = pending.interrupt_payload(report_payload)
+    # The gate below only calls `interrupt()` — it pauses the run and tells
+    # nobody. Slack is the sole channel, so without this the approval expires in
+    # silence and the incident stalls with a human who was never asked. Emitted
+    # once per persisted request (node retries reuse the row), and surfaced into
+    # the war room by `war_room.forward_events`.
+    if pending.created:
+        from .incident_timeline import emit_timeline_event
+
+        await emit_timeline_event(
+            str(incident_id),
+            event_type="approval",
+            speaker_role="executor",
+            title="Approval required",
+            content=format_approval_request(report_payload, pending.expires_at),
+            payload={
+                "approval_request_id": pending.id,
+                "action_hash": pending.action_hash,
+                "expires_at": pending.expires_at.isoformat(),
+                "severity": report_payload.get("severity"),
+                "aggregate_decision": report_payload.get("aggregate_decision"),
+                "source": "approval_prepare",
+            },
+        )
     record_span_from_state(
         state,
         span_kind="approval",
@@ -358,15 +386,39 @@ async def _act_gate_node(
                     context=execution_context,
                 )
                 report_payload["live_results"] = live_results
-                logger.info(f"⚙️  ACT: applied {len(live_results)} live remediation(s)")
+                # Count what *succeeded*, not what was attempted. `live_results`
+                # holds one entry per action regardless of outcome, so the old
+                # `len(...)` read "applied 4" for a plan where every action was
+                # refused — the single most misleading line in the log of a run
+                # that did nothing.
+                outcomes: Dict[str, int] = {}
+                for item in live_results:
+                    if isinstance(item, dict):
+                        key = str(item.get("status") or "UNKNOWN")
+                        outcomes[key] = outcomes.get(key, 0) + 1
+                logger.info(
+                    "⚙️  ACT: applied %d of %d live remediation(s) [%s]",
+                    outcomes.get("EXECUTED", 0),
+                    len(live_results),
+                    ", ".join(f"{k}={v}" for k, v in sorted(outcomes.items())) or "none",
+                )
 
                 # Verify the fix worked: re-query the metric and mark RESOLVED/FAILED.
                 try:
                     from .act_phase import verify_live
                     from .executor import build_metrics_tool_caller
 
+                    # Only a real mutation can move the metric. Paging a human
+                    # and reading a deployment's config are EXECUTED actions
+                    # too, and verifying against either would grade the alert on
+                    # a notification or a read and call the incident resolved
+                    # (or failed) before anyone had touched it.
+                    from .executor import NON_MUTATING_ACTIONS
+
                     if any(
                         item.get("status") == "EXECUTED"
+                        and str(item.get("action_type", "")).lower()
+                        not in NON_MUTATING_ACTIONS
                         for item in live_results
                     ):
                         metrics_caller = await build_metrics_tool_caller(
@@ -594,12 +646,16 @@ async def _act_gate_node(
             try:
                 from .incident_timeline import emit_timeline_event
 
+                from .act_phase import live_outcome_summary
+
                 await emit_timeline_event(
                     incident_id,
                     event_type="act",
                     speaker_role="executor",
                     title="Executor" if report_payload.get("live_results") else "Executor (dry-run)",
-                    content=report.summary,
+                    # Not report.summary: that was written before the approval
+                    # and still says the actions are "held for approval".
+                    content=live_outcome_summary(report_payload) or report.summary,
                     payload={"act_report": report_payload, "source": "act_phase"},
                 )
                 # Post the human-readable resolution into the same conversation.
@@ -763,6 +819,54 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
         "thought_traces": {},
         "investigation_count": 0,
     }
+
+
+def _make_infra_prescan_node(kubernetes_agent):
+    """The Kubernetes specialist, run once per investigation before routing.
+
+    The supervisor's prompt has always described a team of five with four
+    *visible* members — "Kubernetes stays internal only and should not appear
+    as a visible participant". The visibility half was implemented (it is
+    absent from `VISIBLE_SPECIALIST_ROLES`, so `BaseAgentNode` emits no
+    timeline finding for it); the running half was not, and the node was
+    dropped from the graph entirely. Every incident was therefore investigated
+    without anyone reading the cluster's own declared state — no image, no env,
+    no resource limits, no events — which is the single most common place an
+    answer actually is. Two live slow-query incidents escalated to a human
+    while the cause sat in the deployment's env the whole time.
+
+    It runs ahead of the supervisor rather than inside its routing queue so
+    that the plan, every visible specialist, and the reflector all see the
+    infrastructure facts, and so the queue the human watches stays the four
+    named specialists.
+    """
+
+    async def _infra_prescan(state: AgentState) -> Dict[str, Any]:
+        from .supervisor import _assistant_mode_enabled
+
+        # A follow-up question in the incident thread re-enters the graph; the
+        # cluster was already read for this incident and re-reading it would
+        # cost a specialist turn per reply.
+        if _assistant_mode_enabled(state):
+            return {}
+        if "kubernetes_agent" in (state.get("agents_invoked") or []):
+            return {}
+
+        logger.info("🔎 Infra prescan: reading cluster state before routing")
+        try:
+            return await kubernetes_agent(state)
+        except Exception as e:
+            # Never block an investigation on the prescan: the visible
+            # specialists still have their own evidence.
+            logger.error(f"Infra prescan failed (non-fatal): {e}")
+            return {
+                "agent_results": {
+                    **(state.get("agent_results", {}) or {}),
+                    "kubernetes_agent": f"Error: {e}",
+                },
+            }
+
+    return _infra_prescan
 
 
 async def _investigation_swarm(state: AgentState, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1408,6 +1512,26 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
        desired fix in plain language. Do NOT invent a diff, patch, or shell
        command yourself — a downstream sandboxed step generates and verifies
        the actual code change from your description.
+    7. A 'config_change' or 'patch' action is executed from its PARAMETERS, not
+       from its prose. Only two forms can actually run:
+       - a resource limit: parameters.memory and/or parameters.cpu (e.g.
+         {{"memory": "512Mi"}}), applied with kubectl set resources;
+       - environment variables: parameters.env as a flat object of
+         NAME: value (e.g. {{"env": {{"LOG_LEVEL": "debug",
+         "FEATURE_X_ENABLED": "false"}}}}), applied with kubectl set env.
+         Values must be scalars, and names that identify a credential
+         (PASSWORD, TOKEN, SECRET, API_KEY, …) are refused at the execution
+         boundary — never propose one.
+       Describing a config change only in the description field, with neither
+       form in parameters, produces a step nothing can execute: it is blocked
+       with a capability gap instead of being run. If the change you need is
+       neither of those two forms, use 'escalate' and say what a human must do.
+    8. To READ state without changing anything — dump a deployment's current
+       image, replicas, env or resource limits to confirm a hypothesis — use
+       action_type='inspect' with target=the deployment name and optional
+       parameters.container. It mutates nothing, so it needs no approval and no
+       rollback plan. Do not disguise an inspection as a 'config_change': that
+       burns a human approval on a step that writes nothing.
 
     Return plan in JSON format matching RemediationPlan schema.
     """
@@ -1576,10 +1700,19 @@ def build_multi_agent_graph(
         llm_router_enabled=llm_router_enabled,
         **llm_kwargs,
     )
+    # Internal (non-visible) specialist — see _make_infra_prescan_node.
+    kubernetes_agent = create_kubernetes_agent(
+        tools,
+        agent_metadata=SREConstants.agents.agents["kubernetes"],
+        llm_provider=llm_provider,
+        llm_router_enabled=llm_router_enabled,
+        **llm_kwargs,
+    )
 
     # Store agents and tools in a way that nodes can access them
     # Add nodes to the graph
     workflow.add_node("prepare", _prepare_initial_state)
+    workflow.add_node("infra_prescan", _make_infra_prescan_node(kubernetes_agent))
     workflow.add_node("supervisor", supervisor.route)
 
     # Visible specialist nodes
@@ -1594,8 +1727,11 @@ def build_multi_agent_graph(
     # Set entry point
     workflow.set_entry_point("prepare")
 
-    # Always route through the supervisor so the transcript includes explicit reasoning.
-    workflow.add_edge("prepare", "supervisor")
+    # Always route through the supervisor so the transcript includes explicit
+    # reasoning — but read the cluster's own state first, so the plan and every
+    # specialist after it are working from what the infrastructure declares.
+    workflow.add_edge("prepare", "infra_prescan")
+    workflow.add_edge("infra_prescan", "supervisor")
 
     # Supervisor routing targets. When the ACT phase is enabled, the supervisor's
     # terminal "aggregate" decision is diverted through the OODA orient/decide

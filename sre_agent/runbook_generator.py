@@ -45,7 +45,11 @@ _KUBECTL = {
     "scale": "kubectl scale deployment/{target} --replicas=<N> -n {ns}",
     "rollback": "kubectl rollout undo deployment/{target} -n {ns}",
     "patch": "kubectl set resources deployment/{target} -c {target} --limits=<...> -n {ns}",
-    "config_change": "kubectl apply -f <rendered-config for {target}> -n {ns}",
+    # config_change is executable only when it carries concrete parameters: a
+    # memory/cpu limit, or an env map. Anything else has no tool behind it, so
+    # do not print a command that nothing would run.
+    "config_change": "kubectl set env deployment/{target} -c {target} KEY=VALUE -n {ns}  # or set resources, per the action parameters",
+    "inspect": "kubectl get deployment/{target} -n {ns} -o yaml  # read-only",
     "revert_commit": "gh pr create --title 'Revert <sha>' (revert the bad commit)",
     "escalate": "notify on-call / page (no infra mutation)",
 }

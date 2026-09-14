@@ -136,10 +136,12 @@ def build_slack_app(registry=None, organization: Any = None):
         is_ack_command,
         is_approval_intent_near_miss,
         is_fix_approval_command,
+        is_resolve_command,
         parse_gate_command,
         route_ack_command,
         route_fix_approval_command,
         route_gate_command,
+        route_resolve_command,
         route_thread_reply,
     )
     from ..multitenant.slack_oauth import resolve_slack_bot_token
@@ -179,6 +181,12 @@ def build_slack_app(registry=None, organization: Any = None):
                 approver_email = await _slack_user_email(app, event.get("user"))
                 await route_ack_command(text, thread, registry, approver_email, poster)
                 return
+            if is_resolve_command(text):
+                approver_email = await _slack_user_email(app, event.get("user"))
+                await route_resolve_command(
+                    text, thread, registry, approver_email, poster
+                )
+                return
             if parse_gate_command(text) is not None:
                 approver_email = await _slack_user_email(app, event.get("user"))
                 await route_gate_command(text, thread, registry, approver_email, poster)
@@ -199,7 +207,14 @@ def build_slack_app(registry=None, organization: Any = None):
                 )
                 return
 
-            await route_thread_reply(text, thread, registry, poster)
+            # Resolve the asker the same way the approval commands resolve the
+            # approver: a follow-up question is the third turn of the incident's
+            # Langfuse session, and without this it lands with userId null —
+            # over Slack, the only channel, that loses who asked.
+            asker_email = await _slack_user_email(app, event.get("user"))
+            await route_thread_reply(
+                text, thread, registry, poster, asker_email=asker_email
+            )
 
     return app
 

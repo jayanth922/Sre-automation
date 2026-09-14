@@ -86,6 +86,28 @@ def test_verified_live_execution_is_eligible():
     assert eligibility.outcome_class == "verified_success"
 
 
+def test_a_successful_page_is_not_a_successful_fix():
+    """`escalate` executes by paging a human — it mutates nothing.
+
+    Counting it as a live execution would let "escalate" be promoted as a
+    verified remediation the agent should reach for again, on an incident a
+    human actually fixed.
+    """
+    eligibility = vl.assess_learning_eligibility(
+        act_report={"plan_present": True, "aggregate_decision": "autonomous"},
+        verification_outcome={"status": "RESOLVED"},
+        live_results=[
+            {
+                "status": "EXECUTED",
+                "action_type": "escalate",
+                "target": "checkout-service",
+            }
+        ],
+    )
+    assert eligibility.live_executed_count == 0
+    assert eligibility.eligible_for_success is False
+
+
 def test_memory_metadata_requires_verified_success():
     eligibility = vl.assess_learning_eligibility(
         verification_outcome={"status": "FAILED"},
@@ -153,3 +175,109 @@ def test_invalidated_skills_are_not_proposed():
     )
     proposed = skill_store.propose_skills(store, _alert())
     assert proposed == []
+
+
+# --- The incident-status cross-check -----------------------------------------
+# The gate below is the one that made the whole positive-learning path dead in
+# production: it demanded the incident row read RESOLVED, a status the graph
+# never computes. See _VERIFIED_INCIDENT_STATUSES in verified_learning.py.
+
+
+def _resolved_autonomous_report():
+    return {
+        "plan_present": True,
+        "aggregate_decision": "autonomous",
+        "live_results": [
+            {
+                "status": "EXECUTED",
+                "action_type": "patch_deployment_env",
+                "target": "inventory-service",
+            }
+        ],
+    }
+
+
+def test_a_verified_fix_awaiting_acknowledgment_can_still_be_promoted():
+    """PENDING_ACKNOWLEDGMENT is what a verified autonomous fix looks like the
+    moment the run ends — the human's acknowledgement comes later, long after
+    the learning step has had its only chance to run."""
+    eligibility = vl.assess_learning_eligibility(
+        act_report=_resolved_autonomous_report(),
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+    )
+    assert eligibility.eligible_for_success
+    assert eligibility.outcome_class == "verified_success"
+
+
+def test_an_incident_status_that_contradicts_the_oracle_still_blocks():
+    eligibility = vl.assess_learning_eligibility(
+        act_report=_resolved_autonomous_report(),
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="remediation_failed",
+    )
+    assert not eligibility.eligible_for_success
+    assert eligibility.outcome_class == "incomplete"
+
+
+def test_the_status_the_graph_really_computes_does_not_block_promotion():
+    """Wires the two modules together instead of restating a status string.
+
+    `graph_builder` computes the incident status with
+    `incident_status.compute_incident_status` and hands the result straight to
+    this gate. Whatever that function returns for a verified fix has to be
+    promotable, or the self-improving loop can only ever learn from failures.
+    """
+    from sre_agent.incident_status import compute_incident_status
+
+    report = _resolved_autonomous_report()
+    verification = {"status": "RESOLVED"}
+    computed = compute_incident_status(
+        state={}, report_payload=report, verification_outcome=verification
+    )
+
+    eligibility = vl.assess_learning_eligibility(
+        act_report=report,
+        verification_outcome=verification,
+        incident_status=computed,
+    )
+    assert eligibility.eligible_for_success, (
+        f"compute_incident_status returns {computed} for a verified fix, which "
+        "assess_learning_eligibility rejects; no live run can ever record a "
+        "successful exemplar"
+    )
+
+
+def test_a_verified_run_records_a_skill_rather_than_a_negative_exemplar():
+    """The same thing again through `apply_skill_learning`, the caller that
+    actually decides between `record_successful_remediation` and
+    `build_negative_exemplar`."""
+    store = skill_store.InMemorySkillStore()
+    state = {"alert_context": _alert(), "incident_id": "inc-ack", "metadata": {}}
+    report = ActReport(
+        severity="SEV3",
+        severity_rationale="test",
+        plan_present=True,
+        aggregate_decision="autonomous",
+        executed=[],
+        summary="fault injection disabled",
+    )
+
+    result = apply_skill_learning(
+        state,
+        report,
+        store=store,
+        verification_outcome={"status": "RESOLVED"},
+        incident_status="pending_acknowledgment",
+        live_results=[
+            {
+                "status": "EXECUTED",
+                "action_type": "patch_deployment_env",
+                "target": "inventory-service",
+            }
+        ],
+    )
+
+    assert result["recorded_skill"] is not None
+    assert result["negative_exemplar"] is None
+    assert result["learning_eligibility"]["outcome_class"] == "verified_success"

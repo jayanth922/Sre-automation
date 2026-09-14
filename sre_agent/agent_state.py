@@ -122,7 +122,7 @@ class RemediationAction(BaseModel):
 
     action_type: Literal[
         "restart", "scale", "rollback", "config_change", "patch", "escalate",
-        "revert_commit", "code_fix", "recreate_pod",
+        "revert_commit", "code_fix", "recreate_pod", "inspect",
     ] = Field(..., description="Type of remediation action")
     target: str = Field(..., description="Target resource (pod, deployment, service)")
     parameters: Dict[str, Any] = Field(

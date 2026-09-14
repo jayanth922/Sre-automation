@@ -1,3 +1,4 @@
+import contextlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import uuid
@@ -154,13 +155,19 @@ async def test_closed_incident_chat_only_message_gets_immediate_reply(monkeypatc
         coro.close()
         return SimpleNamespace()
 
-    async def fake_build_chat_reply(message, incident, cluster):
+    async def fake_build_chat_reply(message, incident, cluster, org_langfuse=None):
         return "You're welcome!"
+
+    async def fake_tracing_context(cluster_id):
+        # This path is traced; resolving a real runtime here would open a DB
+        # session whose cleanup shows up as a scheduled task below.
+        return None
 
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
     monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control.asyncio, "create_task", fake_create_task)
     monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
+    monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
 
     response = await mission_control.send_incident_message(
         str(incident_id),
@@ -177,6 +184,230 @@ async def test_closed_incident_chat_only_message_gets_immediate_reply(monkeypatc
     assert created_events[1]["event_type"] == "assistant_message"
     assert created_events[1]["payload"]["mode"] == "direct_reply"
     assert "coroutine" not in scheduled
+
+
+@pytest.mark.asyncio
+async def test_direct_reply_is_traced_under_the_incident_session(monkeypatch):
+    # Over Slack this is the common Q&A path. It answers without invoking the
+    # graph, so nothing else would open a trace — leaving it untraced hid most
+    # human-in-the-loop turns from Langfuse.
+    incident_id = uuid.uuid4()
+    cluster_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4(), org_id=org_id)
+    incident = SimpleNamespace(
+        id=incident_id,
+        cluster_id=cluster_id,
+        status=models.IncidentStatus.RESOLVED,
+        summary="Recovered.",
+        title="Checkout latency spike",
+        description="Latency spike during checkout",
+        resolved_at=None,
+    )
+    fake_db = FakeDb(incident)
+    traced = {}
+
+    async def fake_create_event(db, created_incident_id, event_type, speaker_role,
+                                content, title=None, payload=None,
+                                pending_supervisor=False, handled_at=None):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_get_cluster_by_id(db, requested_cluster_id):
+        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
+
+    async def fake_build_chat_reply(message, incident, cluster, org_langfuse=None):
+        return "It is still remediating."
+
+    async def fake_tracing_context(cluster_id_arg):
+        return None
+
+    @contextlib.asynccontextmanager
+    async def fake_trace_run(name, **kwargs):
+        traced["name"] = name
+        traced.update(kwargs)
+        handle = SimpleNamespace(set_output=lambda output: traced.__setitem__("output", output))
+        yield handle
+
+    from sre_agent import tracing
+
+    monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
+    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
+    monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
+    monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
+    monkeypatch.setattr(tracing, "trace_run", fake_trace_run)
+
+    response = await mission_control.send_incident_message(
+        str(incident_id),
+        schemas.IncidentMessageRequest(message="What is the status?"),
+        user=user,
+        db=fake_db,
+    )
+
+    assert response["status"] == "RESPONDED"
+    assert traced["name"] == "answer-incident-follow-up"
+    # Same session as investigate-incident and resume-remediation, so the whole
+    # human-in-the-loop workflow reads in order.
+    assert traced["session_id"] == str(incident_id)
+    assert traced["user_id"] == str(user.id)
+    assert "mode:direct-reply" in traced["tags"]
+    assert traced["output"] == {"answer": "It is still remediating."}
+
+
+@pytest.mark.asyncio
+async def test_chat_reply_on_a_running_incident_is_traced_too(monkeypatch):
+    # The other direct-reply branch: the incident has no summary yet, so a
+    # question answered mid-investigation used to return without ever opening
+    # a trace. Over Slack that silently dropped a whole class of turns.
+    incident_id = uuid.uuid4()
+    cluster_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4(), org_id=org_id)
+    incident = SimpleNamespace(
+        id=incident_id,
+        cluster_id=cluster_id,
+        status=models.IncidentStatus.INVESTIGATING,
+        summary=None,
+        title="Checkout latency spike",
+        description="Latency spike during checkout",
+        resolved_at=None,
+    )
+    fake_db = FakeDb(incident)
+    traced = {}
+
+    async def fake_create_event(db, created_incident_id, event_type, speaker_role,
+                                content, title=None, payload=None,
+                                pending_supervisor=False, handled_at=None):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_get_cluster_by_id(db, requested_cluster_id):
+        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
+
+    async def fake_build_chat_reply(message, incident, cluster, org_langfuse=None):
+        return "Still gathering evidence."
+
+    async def fake_tracing_context(cluster_id_arg):
+        return None
+
+    @contextlib.asynccontextmanager
+    async def fake_trace_run(name, **kwargs):
+        traced["name"] = name
+        traced.update(kwargs)
+        yield SimpleNamespace(
+            set_output=lambda output: traced.__setitem__("output", output)
+        )
+
+    from sre_agent import tracing
+
+    monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
+    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
+    monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
+    monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
+    monkeypatch.setattr(tracing, "trace_run", fake_trace_run)
+
+    response = await mission_control.send_incident_message(
+        str(incident_id),
+        schemas.IncidentMessageRequest(message="What is the status?"),
+        user=user,
+        db=fake_db,
+    )
+
+    assert response["status"] == "RESPONDED"
+    assert traced["name"] == "answer-incident-follow-up"
+    assert traced["session_id"] == str(incident_id)
+    assert traced["user_id"] == str(user.id)
+    # The branch that answered is worth knowing: the same question reads
+    # differently mid-investigation than after a summary exists.
+    assert "INVESTIGATING" in traced["metadata"]["incident_status"]
+
+
+@pytest.mark.asyncio
+async def test_narrator_call_carries_the_langfuse_handler(monkeypatch):
+    # Without this the follow-up trace is a root observation and nothing
+    # under it — no model, no token usage, no cost on the most common
+    # human-in-the-loop turn.
+    class FakeLLM:
+        def __init__(self, config=None):
+            self.config = config
+
+        def with_config(self, config):
+            return FakeLLM(config)
+
+    from sre_agent import incident_timeline, model_router, narrative, redis_state_store, tracing
+
+    handler = object()
+    seen = {}
+
+    async def fake_context(incident_id):
+        return {"objective": "keep checkout healthy", "recent_turns": []}
+
+    async def fake_followup(llm, **kwargs):
+        seen["llm"] = llm
+        return "Still gathering evidence."
+
+    monkeypatch.setattr(incident_timeline, "load_incident_chat_context", fake_context)
+    monkeypatch.setattr(model_router, "route_llm", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(narrative, "narrate_followup_answer", fake_followup)
+    monkeypatch.setattr(redis_state_store, "get_state_store", lambda: SimpleNamespace(get=lambda _id: None))
+    monkeypatch.setattr(tracing, "get_langfuse_callback", lambda org_langfuse=None: handler)
+
+    incident = SimpleNamespace(
+        id=uuid.uuid4(),
+        cluster_id=uuid.uuid4(),
+        status=models.IncidentStatus.INVESTIGATING,
+        summary=None,
+        title="Checkout latency spike",
+    )
+    reply = await mission_control._build_chat_reply(
+        "why does this need approval?",
+        incident,
+        SimpleNamespace(id=uuid.uuid4(), name="cluster-a"),
+        org_langfuse={"public_key": "pk", "secret_key": "sk"},
+    )
+
+    assert reply == "Still gathering evidence."
+    assert seen["llm"].config == {"callbacks": [handler]}
+
+
+@pytest.mark.asyncio
+async def test_narrator_still_answers_when_tracing_is_off(monkeypatch):
+    # Tracing must never be what breaks a Slack answer: no handler means an
+    # unbound model, not a swallowed reply.
+    class FakeLLM:
+        def with_config(self, config):  # pragma: no cover - must not be called
+            raise AssertionError("no handler means no binding")
+
+    from sre_agent import incident_timeline, model_router, narrative, redis_state_store, tracing
+
+    seen = {}
+
+    async def fake_context(incident_id):
+        return {"objective": "keep checkout healthy", "recent_turns": []}
+
+    async def fake_followup(llm, **kwargs):
+        seen["llm"] = llm
+        return "Still gathering evidence."
+
+    monkeypatch.setattr(incident_timeline, "load_incident_chat_context", fake_context)
+    monkeypatch.setattr(model_router, "route_llm", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(narrative, "narrate_followup_answer", fake_followup)
+    monkeypatch.setattr(redis_state_store, "get_state_store", lambda: SimpleNamespace(get=lambda _id: None))
+    monkeypatch.setattr(tracing, "get_langfuse_callback", lambda org_langfuse=None: None)
+
+    incident = SimpleNamespace(
+        id=uuid.uuid4(),
+        cluster_id=uuid.uuid4(),
+        status=models.IncidentStatus.INVESTIGATING,
+        summary=None,
+        title="Checkout latency spike",
+    )
+    reply = await mission_control._build_chat_reply(
+        "why does this need approval?",
+        incident,
+        SimpleNamespace(id=uuid.uuid4(), name="cluster-a"),
+    )
+
+    assert reply == "Still gathering evidence."
+    assert isinstance(seen["llm"], FakeLLM)
 
 
 @pytest.mark.asyncio

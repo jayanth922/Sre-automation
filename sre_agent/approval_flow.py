@@ -94,6 +94,10 @@ class PendingApproval:
     thread_id: str
     action_hash: str
     expires_at: datetime
+    # False when this call reused a row that already existed (a node retry, or a
+    # concurrent writer that won the unique index). Announcing an approval is
+    # only honest once: the caller uses this to stay idempotent.
+    created: bool = True
 
     def interrupt_payload(self, report_payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -105,6 +109,93 @@ class PendingApproval:
             "action_hash": self.action_hash,
             "expires_at": self.expires_at.isoformat(),
         }
+
+
+_DECISION_MARK = {
+    "autonomous": "✅",
+    "requires_approval": "⏸️",
+    "blocked": "🚫",
+}
+
+# The exact in-thread reply `war_room.is_fix_approval_command` accepts. Named
+# here so the message that asks for approval and the handler that grants it
+# cannot drift apart.
+APPROVAL_COMMAND = "approve fix"
+
+
+def format_approval_request(
+    report_payload: Dict[str, Any],
+    expires_at: datetime,
+    *,
+    max_actions: int = 8,
+) -> str:
+    """Render the pending remediation as the message a human has to act on.
+
+    Slack is the only channel Sentinel has, so an approval nobody is told about
+    is an approval that expires silently — the graph interrupt pauses the run
+    but says nothing. This text is what makes the gate real: what would run,
+    against what, why a human is needed, the exact words that authorize it, and
+    when the offer lapses.
+    """
+    severity = str(report_payload.get("severity") or "UNKNOWN")
+    decision = str(report_payload.get("aggregate_decision") or "requires_approval")
+    confidence = str(report_payload.get("confidence_status") or "uncalibrated")
+    raw = report_payload.get("raw_action_confidence")
+    confidence_line = f"Confidence: {confidence}"
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        confidence_line += f" (model self-report {float(raw):.2f})"
+
+    reports = [
+        rep
+        for rep in (report_payload.get("action_reports") or [])
+        if isinstance(rep, dict)
+    ]
+    held = [rep for rep in reports if str(rep.get("decision")) == "requires_approval"]
+
+    plural = "" if len(reports) == 1 else "s"
+    lines = [
+        f"🔒 Approval required — severity *{severity}*, plan gated `{decision}`.",
+        confidence_line,
+        "",
+        f"Proposed plan ({len(reports)} action{plural}):",
+    ]
+    for rep in reports[:max_actions]:
+        action_decision = str(rep.get("decision") or "unknown")
+        mark = _DECISION_MARK.get(action_decision, "•")
+        target = str(rep.get("target") or "").strip()
+        namespace = str(rep.get("namespace") or "").strip()
+        where = f" `{target}`" if target else ""
+        if namespace:
+            where += f" (ns `{namespace}`)"
+        reason = " ".join(str(rep.get("reason") or "").split())
+        if len(reason) > 110:
+            reason = reason[:109] + "…"
+        line = (
+            f"{mark} *{rep.get('action_type') or 'action'}*{where}"
+            f" — {action_decision} ({rep.get('reversibility') or 'unknown'})"
+        )
+        lines.append(f"{line}: {reason}" if reason else line)
+    if len(reports) > max_actions:
+        lines.append(f"… and {len(reports) - max_actions} more.")
+
+    lines.append("")
+    if held:
+        held_plural = "" if len(held) == 1 else "s"
+        lines.append(
+            f"Approving runs {len(held)} held action{held_plural} against the cluster."
+        )
+    lines.append(
+        f"Reply `{APPROVAL_COMMAND}` in this thread to authorize. "
+        "No reply means nothing runs."
+    )
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    lines.append(
+        "Expires "
+        + expires_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        + "."
+    )
+    return "\n".join(lines)
 
 
 def current_approval_interrupt(snapshot: Any) -> Optional[Dict[str, Any]]:
@@ -211,6 +302,8 @@ async def create_or_reuse_pending_approval(
             request = result.scalar_one_or_none()
             if request is None:
                 raise
+            # The concurrent writer created it, and announced it.
+            created = False
         await db.refresh(request)
         return PendingApproval(
             id=str(request.id),
@@ -218,6 +311,7 @@ async def create_or_reuse_pending_approval(
             thread_id=request.thread_id,
             action_hash=request.action_hash,
             expires_at=request.expires_at,
+            created=created,
         )
 
 
@@ -473,10 +567,27 @@ async def acknowledge_incident_resolution(
         await db.commit()
         await db.refresh(incident)
 
+    await _fire_resolution_side_effects(incident, organization_id, cluster_id)
+    return incident
+
+
+async def _fire_resolution_side_effects(
+    incident: Any, organization_id: str, cluster_id: str
+) -> None:
+    """Close the war room, publish the lifecycle event and transition Jira.
+
+    Every path that resolves an incident owes the same three side effects —
+    an incident closed without them leaves its Slack thread live and the
+    dashboards showing it open — so they live here once rather than in each
+    caller.
+    """
+    from backend import models
+
+    incident_id = str(incident.id)
     try:
         from .war_room_service import close_war_room
 
-        await close_war_room(str(incident_id))
+        await close_war_room(incident_id)
     except Exception:
         pass
     try:
@@ -484,7 +595,7 @@ async def acknowledge_incident_resolution(
 
         await publish_lifecycle_event(
             "resolved",
-            incident_id=str(incident_id),
+            incident_id=incident_id,
             alert_name=incident.title,
             summary=incident.summary or "",
             org_id=str(organization_id),
@@ -496,11 +607,69 @@ async def acknowledge_incident_resolution(
         from .integrations.jira import transition_jira_issue
 
         await transition_jira_issue(
-            str(incident_id), str(cluster_id), str(models.IncidentStatus.RESOLVED)
+            incident_id, str(cluster_id), str(models.IncidentStatus.RESOLVED)
         )
     except Exception:
         pass
 
+
+async def mark_incident_resolved_by_human(
+    *,
+    incident_id: str,
+    organization_id: str,
+    cluster_id: str,
+) -> Optional[Any]:
+    """Close an incident the pipeline itself can never close.
+
+    ``acknowledge_incident_resolution`` only accepts PENDING_ACKNOWLEDGMENT —
+    the state a verified autonomous fix lands in. Every other terminal state
+    (INVESTIGATED after the agent paged a human, VERIFICATION_UNKNOWN,
+    REMEDIATION_FAILED) has no automated way forward, and dedup keeps
+    collapsing the re-firing alert into that incident for as long as it stays
+    open, so without this an escalated incident suppresses its own alert
+    forever. The authority here is a human who says they handled it, which is
+    why there is deliberately no precondition on the current status — the same
+    rule the dashboard's mark-resolved action has always used.
+
+    Returns None if no incident matches the ownership scope (caller treats
+    that as 404). Already-resolved is a no-op, not an error.
+    """
+    from sqlalchemy import update
+
+    from backend import database, models
+
+    incident_uuid = uuid.UUID(str(incident_id))
+    organization_uuid = uuid.UUID(str(organization_id))
+    cluster_uuid = uuid.UUID(str(cluster_id))
+    now = utc_now()
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, incident_uuid)
+        if incident is None or str(incident.cluster_id) != str(cluster_uuid):
+            return None
+        cluster = await db.get(models.Cluster, cluster_uuid)
+        if cluster is None or str(cluster.org_id) != str(organization_uuid):
+            return None
+        if incident.status == models.IncidentStatus.RESOLVED:
+            return incident
+
+        cas = await db.execute(
+            update(models.Incident)
+            .where(
+                models.Incident.id == incident_uuid,
+                models.Incident.status != models.IncidentStatus.RESOLVED,
+            )
+            .values(status=models.IncidentStatus.RESOLVED, resolved_at=now)
+        )
+        if cas.rowcount != 1:
+            # Someone else resolved it between the read and the write.
+            await db.rollback()
+            await db.refresh(incident)
+            return incident
+        await db.commit()
+        await db.refresh(incident)
+
+    await _fire_resolution_side_effects(incident, organization_id, cluster_id)
     return incident
 
 
@@ -683,8 +852,29 @@ async def decide_action_approval(
         except Exception as exc:
             raise RuntimeError("Agent system unavailable") from exc
         graph = runtime.graph
+        from sre_agent import tracing
+
+        org_langfuse = runtime.context.org_langfuse_credentials()
+        # Same Langfuse session as the investigation that produced this plan
+        # (the incident id), so the tracing UI shows the whole human-in-the-loop
+        # workflow in order: investigate → Slack approval → remediate.
         config = thread_config(
-            pending.thread_id, org_langfuse=runtime.context.org_langfuse_credentials()
+            pending.thread_id,
+            {
+                "metadata": tracing.trace_attributes(
+                    "resume-remediation",
+                    context=runtime.context,
+                    session_id=str(incident_id),
+                    user_id=str(approver_user_id),
+                    trigger="slack-approval",
+                    metadata={
+                        "incident_id": str(incident_id),
+                        "approval_request_id": str(pending.id),
+                        "action_hash": pending.action_hash,
+                    },
+                ),
+            },
+            org_langfuse=org_langfuse,
         )
         configurable = (config or {}).get("configurable", {})
         if configurable.get("thread_id") != pending.thread_id:
@@ -742,43 +932,82 @@ async def decide_action_approval(
     # nodes too, instead of going stale the moment the graph resumes.
     output: Dict[str, Any] = {}
     try:
-        async for event in graph.astream(
-            Command(
-                resume={
-                    "approved": True,
-                    "approval_request_id": str(pending.id),
-                    "action_hash": pending.action_hash,
+        async with tracing.trace_run(
+            "resume-remediation",
+            org_langfuse=org_langfuse,
+            input={
+                "approved_plan": (interrupt_report or {}).get("actions")
+                or interrupt_report,
+                "approved_by": str(approver_user_id),
+                "incident_id": str(incident_id),
+            },
+            metadata={
+                "incident_id": str(incident_id),
+                "approval_request_id": str(pending.id),
+            },
+        ) as traced_run:
+            async for event in graph.astream(
+                Command(
+                    resume={
+                        "approved": True,
+                        "approval_request_id": str(pending.id),
+                        "action_hash": pending.action_hash,
+                    }
+                ),
+                config=config,
+            ):
+                for node_name, node_output in event.items():
+                    if isinstance(node_output, dict):
+                        output = {**output, **node_output}
+                    state_store.set(
+                        session_id,
+                        {
+                            "status": "RUNNING",
+                            "current_node": node_name,
+                            "timestamp": utc_now().isoformat(),
+                        },
+                        ttl=3600,
+                    )
+            traced_run.set_output(
+                {
+                    "act_report": (output.get("metadata") or {}).get("act_report"),
+                    "summary": output.get("final_response"),
                 }
-            ),
-            config=config,
-        ):
-            for node_name, node_output in event.items():
-                if isinstance(node_output, dict):
-                    output = {**output, **node_output}
-                state_store.set(
-                    session_id,
-                    {
-                        "status": "RUNNING",
-                        "current_node": node_name,
-                        "timestamp": utc_now().isoformat(),
-                    },
-                    ttl=3600,
-                )
+            )
     except Exception as exc:
         state_store.set(session_id, {"status": "ERROR", "error": str(exc)}, ttl=3600)
         raise RuntimeError("Approved action failed to resume") from exc
 
+    # Terminal live state. Without this the last thing written is the final
+    # node's "RUNNING", so "what's happening right now" keeps answering with a
+    # node that finished minutes ago until the 3600s TTL expires.
+    state_store.set(
+        session_id,
+        {
+            "status": "COMPLETED",
+            "current_node": None,
+            "timestamp": utc_now().isoformat(),
+        },
+        ttl=3600,
+    )
+
     if not isinstance(output, dict) or not output:
         return None
 
-    from sre_agent.incident_status import compute_incident_status
+    from sre_agent.incident_status import compute_incident_status, resolved_at_for_status
 
     act_report = (output.get("metadata") or {}).get("act_report")
     verification = (act_report or {}).get("verification")
     computed_status = compute_incident_status(output, act_report, verification)
-    incident_values: Dict[str, Any] = {"status": computed_status}
-    if computed_status == models.IncidentStatus.RESOLVED:
-        incident_values["resolved_at"] = utc_now()
+    # Written unconditionally, both directions: an Alertmanager *resolved*
+    # webhook can stamp the row while this approved run is still verifying,
+    # and then the run computes REMEDIATION_FAILED. Setting only the status
+    # left `remediation_failed` rows carrying a `resolved_at`, which MTTR
+    # counts as a fast resolution (see incident_status.resolved_at_for_status).
+    incident_values: Dict[str, Any] = {
+        "status": computed_status,
+        "resolved_at": resolved_at_for_status(computed_status, utc_now()),
+    }
 
     async with database.AsyncSessionLocal() as db:
         await db.execute(

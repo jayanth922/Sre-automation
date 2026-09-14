@@ -39,6 +39,22 @@ SPECIALIST_LABELS: Dict[str, str] = {
     "runbooks_agent": "Runbooks Specialist",
 }
 
+# Agents whose evidence reaches the war room but who are not in it. The
+# Kubernetes specialist runs before the supervisor routes and is deliberately
+# not a chat participant, so its findings are attributed to *what was read*
+# rather than to a teammate: labelling the block with an agent name is all it
+# takes for a narration to write "Kubernetes Agent found ...", introducing to
+# the on-call a colleague who will never answer them, and contradicting the
+# roster the same thread already showed.
+INTERNAL_EVIDENCE_LABELS: Dict[str, str] = {
+    "kubernetes_agent": "Cluster state (deployment config, pods and events, read before routing)",
+}
+_INTERNAL_EVIDENCE_SOURCE_KEYS: Dict[str, str] = {
+    "kubernetes_agent": "cluster_state",
+}
+_DEFAULT_INTERNAL_EVIDENCE_LABEL = "Automated pre-investigation evidence"
+_DEFAULT_INTERNAL_EVIDENCE_SOURCE_KEY = "automated_evidence"
+
 SPECIALIST_SCOPE: Dict[str, str] = {
     "metrics_agent": "metrics, error rates, latency, traffic, saturation, and golden signals",
     "logs_agent": "application and infrastructure logs, error patterns, and stack traces",
@@ -295,17 +311,36 @@ def _format_label_hint_block(alert_context: Any) -> str:
     return ", ".join(hints)
 
 
+def _evidence_source(agent_name: str) -> tuple:
+    """(header label, untrusted-content tag) for one block of evidence.
+
+    Visible specialists are named as the teammates they are. Anything else is
+    named by *what was read*, never by the agent that read it — neither in the
+    header nor in the wrapper tag, because both are prompt text the narrator
+    happily quotes. An unregistered agent falls to the non-teammate side on
+    purpose: inventing a colleague the on-call can never address is the worse
+    failure mode.
+    """
+    if agent_name in SPECIALIST_LABELS:
+        return SPECIALIST_LABELS[agent_name], f"specialist:{agent_name}"
+    label = INTERNAL_EVIDENCE_LABELS.get(agent_name, _DEFAULT_INTERNAL_EVIDENCE_LABEL)
+    key = _INTERNAL_EVIDENCE_SOURCE_KEYS.get(
+        agent_name, _DEFAULT_INTERNAL_EVIDENCE_SOURCE_KEY
+    )
+    return label, f"evidence:{key}"
+
+
 def _format_findings_block(
     agent_results: Dict[str, Any],
     tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
 ) -> str:
     if not agent_results:
-        return "No specialist findings were captured yet."
+        return "No findings were captured yet."
 
     tool_failures = tool_failures or {}
     blocks: List[str] = []
     for agent_name, response in agent_results.items():
-        label = SPECIALIST_LABELS.get(agent_name, agent_name.replace("_", " ").title())
+        label, source_tag = _evidence_source(agent_name)
         body_raw = _safe_text(response)
         body = _truncate(body_raw, 1200)
         # Tool-failure detection is structural (ToolMessage.status == "error",
@@ -325,10 +360,7 @@ def _format_findings_block(
                 f"\n[TOOL FAILURE DETECTED — {failure_desc}; "
                 "treat this as a tooling bug to flag in 'Next steps', not as the root cause]"
             )
-        blocks.append(
-            f"{header}\n"
-            f"{wrap_untrusted(f'specialist:{agent_name}', body)}"
-        )
+        blocks.append(f"{header}\n{wrap_untrusted(source_tag, body)}")
     return "\n\n".join(blocks)
 
 
@@ -476,7 +508,8 @@ async def narrate_supervisor_handoff(
     user = (
         f"Incident objective: {objective}\n\n"
         f"Alert payload:\n{alert_block}\n\n"
-        f"What earlier specialists found so far:\n{findings_block}\n\n"
+        f"Evidence gathered so far (attribute each item to the source named in its "
+        f"heading — do not invent a teammate for a non-specialist source):\n{findings_block}\n\n"
         f"Next specialist: {label} (scope: {scope})\n"
         f"Internal reasoning evidence (do not quote verbatim): {reasoning_block}\n"
     )
@@ -635,7 +668,8 @@ async def narrate_supervisor_summary(
         f"Alert payload:\n{alert_block}\n\n"
         f"Numeric facts already in the alert (proof the pipeline worked): {facts_block}\n"
         f"Actionable label hints from the alert: {label_hints_block}\n\n"
-        f"Specialist findings (raw):\n{findings_block}\n\n"
+        f"Evidence gathered (raw; attribute each item to the source named in its "
+        f"heading):\n{findings_block}\n\n"
         "Now write the wrap-up message."
     )
     out = await _invoke_llm(llm, system, user)
@@ -651,7 +685,7 @@ def _fallback_summary(objective: str, agent_results: Dict[str, Any]) -> str:
         )
     lines = [f"## TL;DR\nHere's what the team came back with on {objective}:", ""]
     for agent_name, response in agent_results.items():
-        label = SPECIALIST_LABELS.get(agent_name, agent_name.replace("_", " ").title())
+        label, _tag = _evidence_source(agent_name)
         snippet = _clean(_safe_text(response))[:240]
         lines.append(f"- **{label}:** {snippet or 'no usable output.'}")
     lines.extend(
@@ -743,7 +777,7 @@ async def narrate_followup_answer(
         f"User's follow-up question: {question}\n\n"
         f"Incident objective: {objective}{status_line}{live_line}\n"
         f"Alert payload:\n{alert_block}\n\n"
-        f"Specialist findings from the original investigation:\n{findings_block}\n\n"
+        f"Evidence gathered in the original investigation:\n{findings_block}\n\n"
         f"My prior wrap-up summary:\n---\n{summary_block}\n---\n\n"
         f"Recent conversation turns (oldest first):\n---\n{turns_block}\n---\n"
     )

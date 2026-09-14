@@ -162,7 +162,60 @@ def _fallback_chat_reply(message: str, incident: models.Incident, cluster: model
     )
 
 
-async def _build_chat_reply(message: str, incident: models.Incident, cluster: models.Cluster) -> str:
+async def _traced_chat_reply(
+    message: str,
+    incident: models.Incident,
+    cluster: models.Cluster,
+    *,
+    source: str,
+    user_id: Optional[str],
+) -> str:
+    """Answer a chat-only message inside its own Langfuse trace.
+
+    Both direct-reply branches — the post-summary one and the one that answers
+    while the incident is still active — go through here, so neither can drift
+    back out of tracing. Over Slack, the only channel, an untraced branch means
+    whole turns of the human conversation simply do not exist in Langfuse.
+
+    The reply answers from context already gathered instead of invoking the
+    graph, so no callback handler runs on its own: ``trace_run`` has to carry
+    the session and user attributes itself, and the narrator's own LLM call is
+    attached inside ``_build_chat_reply`` via the org's handler.
+    """
+    from sre_agent import tracing
+
+    incident_id = str(incident.id)
+    trace_context = await _tracing_context_for_cluster(cluster.id)
+    org_langfuse = trace_context.org_langfuse_credentials() if trace_context else None
+    async with tracing.trace_run(
+        "answer-incident-follow-up",
+        org_langfuse=org_langfuse,
+        input={"question": message, "incident_id": incident_id},
+        metadata={
+            "incident_id": incident_id,
+            "mode": "direct_reply",
+            # Which branch answered: the same question reads differently when
+            # the incident is still running than when it is already summarised.
+            "incident_status": str(getattr(incident, "status", "")),
+        },
+        session_id=incident_id,
+        user_id=str(user_id) if user_id else None,
+        tags=[f"trigger:{source}", "mode:direct-reply"],
+    ) as traced_run:
+        assistant_reply = await _build_chat_reply(
+            message, incident, cluster, org_langfuse=org_langfuse
+        )
+        traced_run.set_output({"answer": assistant_reply})
+    return assistant_reply
+
+
+async def _build_chat_reply(
+    message: str,
+    incident: models.Incident,
+    cluster: models.Cluster,
+    *,
+    org_langfuse: Optional[Dict[str, Optional[str]]] = None,
+) -> str:
     """Generate a context-aware Slack-style reply for casual chat on an active incident.
 
     Loads the live timeline context and asks the narrator for a 1-2 sentence
@@ -182,6 +235,19 @@ async def _build_chat_reply(message: str, incident: models.Incident, cluster: mo
         recent_turns = chat_context.get("recent_turns") or []
 
         llm = route_llm(TaskType.NARRATION, use_fallback=True)
+        # The narrator call is the only LLM call on this path. Without the
+        # Langfuse handler bound to the model the trace is a root observation
+        # with nothing under it: no model, no token usage, no cost on the most
+        # frequent human-in-the-loop turn there is. Bound to the model rather
+        # than threaded through each narrator's signature, so adding a narrator
+        # can't silently lose the generation; the handler nests it under the
+        # trace_run root that _traced_chat_reply opened.
+        if llm is not None and hasattr(llm, "with_config"):
+            from sre_agent import tracing
+
+            handler = tracing.get_langfuse_callback(org_langfuse)
+            if handler is not None:
+                llm = llm.with_config({"callbacks": [handler]})
         normalized = re.sub(r"\s+", " ", message.strip().lower())
         is_greeting = normalized in {
             "hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "cool", "k",
@@ -232,6 +298,22 @@ def _incident_is_active(incident: models.Incident) -> bool:
 
 def _incident_is_closed_for_follow_up(incident: models.Incident) -> bool:
     return incident.status == models.IncidentStatus.RESOLVED or bool(incident.summary)
+
+
+async def _tracing_context_for_cluster(cluster_id: uuid.UUID | str) -> Optional[Any]:
+    """Best-effort execution context (tenant Langfuse keys, cluster, model) for
+    a background turn.
+
+    Tracing must never be what breaks a Slack reply, so a missing cluster, a DB
+    hiccup or an unconfigured org all degrade to "run untraced" rather than
+    propagating out of a fire-and-forget task.
+    """
+    try:
+        from sre_agent.agent_runtime import get_agent_runtime
+
+        return (await get_agent_runtime(cluster_id)).context
+    except Exception:
+        return None
 
 
 async def _run_post_summary_follow_up(
@@ -291,7 +373,38 @@ async def _run_post_summary_follow_up(
         "final_response": None,
     }
 
-    await graph.ainvoke(follow_up_state, config)
+    # Third trace in the incident's Langfuse session, after investigate-incident
+    # and resume-remediation: the on-call's follow-up question. Same session id
+    # (the incident) so the whole human-in-the-loop workflow reads in order, and
+    # the asker becomes the trace's user so per-responder cost/quality is visible.
+    from sre_agent import tracing
+
+    trace_context = await _tracing_context_for_cluster(cluster_id)
+    org_langfuse = trace_context.org_langfuse_credentials() if trace_context else None
+    config = tracing.tracing_callbacks(
+        {
+            **config,
+            "metadata": tracing.trace_attributes(
+                "answer-incident-follow-up",
+                context=trace_context,
+                session_id=str(incident_id),
+                user_id=str(user_id) if user_id else None,
+                trigger="follow-up-question",
+                metadata={"incident_id": str(incident_id)},
+            ),
+        },
+        org_langfuse,
+    )
+
+    async with tracing.trace_run(
+        "answer-incident-follow-up",
+        org_langfuse=org_langfuse,
+        input={"question": message, "incident_id": str(incident_id)},
+        metadata={"incident_id": str(incident_id)},
+    ) as traced_run:
+        result = await graph.ainvoke(follow_up_state, config)
+        if isinstance(result, dict):
+            traced_run.set_output({"answer": result.get("final_response")})
 
 
 def _timeline_event_to_response(event: models.IncidentTimelineEvent) -> schemas.IncidentTimelineEventResponse:
@@ -488,7 +601,9 @@ async def handle_incident_message(
         # full investigation graph, which produces a fresh plan/summary, not
         # an answer to the question actually asked.
         if _is_chat_only_message(message):
-            assistant_reply = await _build_chat_reply(message, incident, cluster)
+            assistant_reply = await _traced_chat_reply(
+                message, incident, cluster, source=source, user_id=user_id
+            )
 
             await crud.create_incident_timeline_event(
                 db,
@@ -582,7 +697,9 @@ async def handle_incident_message(
             payload={"source": source, "mode": "incoming"},
         )
 
-        assistant_reply = await _build_chat_reply(message, incident, cluster)
+        assistant_reply = await _traced_chat_reply(
+            message, incident, cluster, source=source, user_id=user_id
+        )
 
         await crud.create_incident_timeline_event(
             db,
@@ -846,8 +963,31 @@ async def approve_incident_action(
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Agent system unavailable") from exc
     graph = runtime.graph
+    from sre_agent import tracing
+
+    org_langfuse = runtime.context.org_langfuse_credentials()
+    # Same Langfuse session as the investigation that produced this plan (the
+    # incident id), so the tracing UI shows the whole human-in-the-loop
+    # workflow in order. The trace name matches the Slack path's resume because
+    # it is the same operation — only the trigger tag differs, which is exactly
+    # the dimension you'd want to compare dashboard vs. Slack approvals on.
     config = thread_config(
-        pending.thread_id, org_langfuse=runtime.context.org_langfuse_credentials()
+        pending.thread_id,
+        {
+            "metadata": tracing.trace_attributes(
+                "resume-remediation",
+                context=runtime.context,
+                session_id=str(owned_incident.id),
+                user_id=str(user.id),
+                trigger="dashboard-approval",
+                metadata={
+                    "incident_id": str(owned_incident.id),
+                    "approval_request_id": str(pending.id),
+                    "action_hash": pending.action_hash,
+                },
+            ),
+        },
+        org_langfuse=org_langfuse,
     )
     configurable = (config or {}).get("configurable", {})
     if configurable.get("thread_id") != pending.thread_id:
@@ -901,28 +1041,57 @@ async def approve_incident_action(
     await db.commit()
 
     try:
-        output = await graph.ainvoke(
-            Command(
-                resume={
-                    "approved": True,
-                    "approval_request_id": str(pending.id),
-                    "action_hash": pending.action_hash,
-                }
-            ),
-            config=config,
-        )
+        async with tracing.trace_run(
+            "resume-remediation",
+            org_langfuse=org_langfuse,
+            input={
+                "approved_plan": (interrupt_report or {}).get("actions") or interrupt_report,
+                "approved_by": str(user.id),
+                "incident_id": str(owned_incident.id),
+            },
+            metadata={
+                "incident_id": str(owned_incident.id),
+                "approval_request_id": str(pending.id),
+            },
+        ) as traced_run:
+            output = await graph.ainvoke(
+                Command(
+                    resume={
+                        "approved": True,
+                        "approval_request_id": str(pending.id),
+                        "action_hash": pending.action_hash,
+                    }
+                ),
+                config=config,
+            )
+            if isinstance(output, dict):
+                traced_run.set_output(
+                    {
+                        "act_report": (output.get("metadata") or {}).get("act_report"),
+                        "summary": output.get("final_response"),
+                    }
+                )
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Approved action failed to resume") from exc
 
     if isinstance(output, dict):
-        from sre_agent.incident_status import compute_incident_status
+        from sre_agent.incident_status import (
+            compute_incident_status,
+            resolved_at_for_status,
+        )
 
         act_report = (output.get("metadata") or {}).get("act_report")
         verification = (act_report or {}).get("verification")
         computed_status = compute_incident_status(output, act_report, verification)
-        incident_values: Dict[str, Any] = {"status": computed_status}
-        if computed_status == models.IncidentStatus.RESOLVED:
-            incident_values["resolved_at"] = datetime.now(timezone.utc)
+        # Both directions — see incident_status.resolved_at_for_status: a row
+        # already stamped by an Alertmanager resolved webhook must not keep
+        # that timestamp when this run grades the remediation a failure.
+        incident_values: Dict[str, Any] = {
+            "status": computed_status,
+            "resolved_at": resolved_at_for_status(
+                computed_status, datetime.now(timezone.utc)
+            ),
+        }
         await db.execute(
             update(models.Incident)
             .where(models.Incident.id == owned_incident.id)
@@ -951,9 +1120,20 @@ async def mark_incident_resolved(
     with REMEDIATION_FAILED / "needs manual review"). Deliberately no
     automated precondition on the current status: a human who has manually
     checked the system is the authority here, not the pipeline's own state.
+
+    Shares ``mark_incident_resolved_by_human`` with Slack's "mark resolved"
+    reply so both surfaces also close the war room and publish the resolved
+    lifecycle event — resolving here used to write the status and nothing
+    else, leaving the incident's Slack thread live and the dashboards showing
+    it open.
     """
     await require_admin(user)
-    owned_incident.status = models.IncidentStatus.RESOLVED
-    owned_incident.resolved_at = datetime.now(timezone.utc)
-    await db.commit()
+    from sre_agent.approval_flow import mark_incident_resolved_by_human
+
+    await mark_incident_resolved_by_human(
+        incident_id=str(owned_incident.id),
+        organization_id=str(user.org_id),
+        cluster_id=str(owned_incident.cluster_id),
+    )
+    await db.refresh(owned_incident)
     return {"status": "RESOLVED", "incident_id": str(owned_incident.id)}
