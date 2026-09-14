@@ -1243,6 +1243,42 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
+def planner_namespace_scope(cluster_namespace: Any) -> str:
+    """Tell the planner the one namespace its actions are allowed to target.
+
+    `act_phase` hard-blocks every action whose `parameters.namespace` differs
+    from the cluster's namespace — correctly, since a scoped cluster must not
+    reach its neighbours. But the planner was never told what that namespace
+    *is*. The investigation swarm gets a SCOPE clause (see
+    `_investigation_swarm_node`); the node that actually emits the namespaces
+    being scope-checked did not, so the model had to infer one from evidence —
+    runbook snippets full of `kubectl -n demo-app`, MCP tool signatures whose
+    default argument is `namespace="demo-app"` — and every wrong guess became a
+    dead action.
+
+    Observed live on 2026-09-14: incident f8ca9a54 in cluster namespace
+    `meridian` had 3 of its 5 proposed actions blocked as "outside this
+    cluster's scope", among them the `rollback` and the `inspect` — the only
+    two that could have helped. What survived was one `escalate` and one
+    `code_fix` that maps to no tool, and the plan aggregated to `blocked`.
+
+    This is a trusted fact from `state.metadata`, not retrieved evidence, so it
+    is stated plainly rather than wrapped as untrusted.
+    """
+    namespace = str(cluster_namespace or "").strip()
+    if not namespace:
+        return ""
+    return (
+        f"\n    SCOPE (authoritative, not evidence): this cluster is limited to the\n"
+        f"    Kubernetes namespace '{namespace}'. Every action you propose must set\n"
+        f"    parameters.namespace to \"{namespace}\". An action naming any other\n"
+        f"    namespace is rejected before execution and helps nobody — do not copy a\n"
+        f"    namespace out of a runbook, a past incident, or a tool's example\n"
+        f"    arguments. If the fix genuinely requires acting outside '{namespace}',\n"
+        f"    propose 'escalate' and say what a human must do and where.\n"
+    )
+
+
 async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, Any]:
     """
     PlannerNode: Generates structured RemediationPlan based on reflector analysis.
@@ -1458,10 +1494,12 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
         anchor_model=llm_model,
     )
 
+    namespace_scope = planner_namespace_scope((metadata or {}).get("cluster_namespace"))
+
     planning_prompt = f"""
     You are the PlannerNode in an SRE autonomic system. Generate a structured
     remediation plan based on the analysis.
-
+{namespace_scope}
     Reflector evidence:
     {reflector_evidence}
 
