@@ -582,3 +582,63 @@
   regresses a deliberate security control for servers that can write to
   GitHub, execute K8s mutations, and run sandboxed code, in exchange for
   fixing a problem a shared network solves without exposure.
+
+## Live dispatch routes on capability, not on the action's name
+- **Decision:** `executor.live_tool_for_action(action)` is the single answer
+  to "can Sentinel actually execute this?" for infra actions. Membership in
+  `EXECUTOR_TOOL_MAP` is necessary but not sufficient: `patch` and
+  `config_change` resolve to a tool only when the action carries a cpu or
+  memory limit. All three layers consult it — `act_phase` (plan),
+  `mutation_gateway` (authorization), `executor` (dispatch).
+- **Reason:** `EXECUTOR_TOOL_MAP` mapped the *name* `config_change` to
+  `patch_resource_limits`, whose entire surface is container cpu/memory
+  limits. "Config change" in SRE vocabulary means env vars, ConfigMaps and
+  feature flags far more often, and that is what the planner emits. Live on
+  incident `81c3127a`: the planner correctly proposed an `inspect_only`
+  config dump and a runtime `SLOW_QUERY_RATE` toggle; a human approved both;
+  the MCP server then refused each with "provide at least one of memory/cpu",
+  which reads as a planner bug and is really a missing capability. The plan
+  was presented as executable when nothing in the stack could execute it.
+- **Consequences:** an action with no tool behind it is `blocked` in the plan
+  a human reads, with `missing_capability_reason()` as the reason, and is
+  counted separately from out-of-namespace blocks in the ACT summary — a
+  capability gap is not a policy call. It is never dry-run either, so no
+  `kubectl apply -f <rendered-config for X>` placeholder is printed as if it
+  were a command. Adding a real config-change tool later is purely additive:
+  teach `live_tool_for_action` the new tool and the three layers follow.
+- **Rejected alternative:** require the planner to always emit `memory`/`cpu`
+  for `config_change` (prompt or schema constraint). Rejected — it forces the
+  planner to lie about what it intends, and would have produced a *resource
+  limit change* for an incident whose root cause was a runtime feature flag.
+
+## Config changes execute from parameters; inspection is its own action type
+- **Decision:** Two additions close the capability gap the decision above only
+  reported. (1) `patch_deployment_env` on the executor MCP server is the second
+  executable configuration surface: `live_tool_for_action` routes a
+  `patch`/`config_change` to `patch_resource_limits` when the action carries a
+  cpu/memory limit, to `patch_deployment_env` when it carries `parameters.env`,
+  and to nothing otherwise. (2) `inspect` is a first-class read-only action type
+  (`RemediationAction`, `EXECUTOR_TOOL_MAP` → `get_deployment_config`,
+  `Reversibility.READ_ONLY`), short-circuited to AUTONOMOUS in `policy_gate`
+  before the severity, telemetry and calibration gates.
+- **Reason:** the planner encoded both intents as prose inside `config_change`
+  because it had nowhere else to put them — a runtime flag toggle and a config
+  dump. The first had no tool; the second was marked risky, gated, and burned a
+  human approval on a step that writes nothing. The planner prompt now documents
+  both parameter shapes, so intent is structured data rather than prose a
+  downstream layer has to guess at.
+- **Consequences:** live mutation surface now includes arbitrary env vars on a
+  deployment, so the edge guardrails carry the weight: a credential-name
+  denylist that is always on (`PASSWORD|TOKEN|SECRET|API_KEY|…`), an optional
+  operator allow-list (`EXECUTOR_ALLOWED_ENV_KEYS`), caps on key count (10) and
+  value length (1024), refusal to overwrite a `valueFrom` entry, and exact
+  `prior_env` capture for the audit trail. Agent-side, `build_command` redacts
+  credential-named values so a *refused* write is not what writes the secret
+  into the audit record. Env patching is read-modify-write because a k8s
+  strategic merge on `env` replaces the whole list. `NON_MUTATING_ACTIONS`
+  (escalate + inspect) now gates verification and skill learning, so a config
+  dump can never be graded as a fix.
+- **Rejected alternative:** let `inspect` skip the mutation gateway like
+  `escalate` does. Rejected — a read still touches a tenant's cluster, and the
+  gateway is where namespace scope is enforced; reading another tenant's
+  deployment is a data leak, not a harmless no-op.

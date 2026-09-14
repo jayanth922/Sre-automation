@@ -22,37 +22,70 @@ log() { echo "$LOG_PREFIX $(date -Is) $*"; }
 NAMESPACE="${MERIDIAN_NAMESPACE:-meridian}"
 SRE_AGENT_PORT="${SRE_AGENT_PORT:-8080}"
 
-if ! pgrep -f "k3s server" > /dev/null; then
-  # --node-ip is not optional here. k3s persists the node's InternalIP in its
-  # datastore, but the Codespace gets a new eth0 address on most resumes, so
-  # without it k3s starts against the *stored* IP, finds no interface holding
-  # it, and kills itself seconds later with "failed to start networking:
-  # unable to initialize network policy controller: error getting node subnet".
-  # That looks like a crash long after this script has already logged success.
-  HOST_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
-  if [ -n "$HOST_IP" ]; then
-    log "k3s not running, starting it (node-ip $HOST_IP)"
-    NODE_IP_ARG="--node-ip $HOST_IP"
-  else
-    log "k3s not running, starting it (could not detect host IP; letting k3s choose)"
-    NODE_IP_ARG=""
-  fi
-  # setsid is required: a plain `... & disown` still dies when the Codespace's
-  # postStartCommand shell session tears down, since it stays in that session.
-  # shellcheck disable=SC2086  # NODE_IP_ARG must word-split into two args
-  sudo setsid nohup k3s server --docker $NODE_IP_ARG > /tmp/k3s.log 2>&1 < /dev/null &
+# --node-ip is not optional here. k3s persists the node's InternalIP in its
+# datastore, but the Codespace gets a new eth0 address on most resumes, so
+# without it k3s starts against the *stored* IP, finds no interface holding
+# it, and kills itself seconds later with "failed to start networking:
+# unable to initialize network policy controller: error getting node subnet".
+# That looks like a crash long after this script has already logged success.
+HOST_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+if [ -n "$HOST_IP" ]; then
+  NODE_IP_ARG="--node-ip $HOST_IP"
 else
-  log "k3s already running"
+  log "could not detect host IP; letting k3s choose its node IP"
+  NODE_IP_ARG=""
 fi
 
-log "waiting for the k3s API server"
+# How long k3s must keep answering before we believe it. It dies ~15s in when
+# it dies at all, so this has to outlast that.
+K3S_SETTLE_SECONDS="${K3S_SETTLE_SECONDS:-30}"
+
+k3s_api_up() { sudo k3s kubectl get nodes > /dev/null 2>&1; }
+k3s_alive() { pgrep -f "k3s server" > /dev/null; }
+
 ready=false
-for _ in $(seq 1 60); do
-  if sudo k3s kubectl get nodes > /dev/null 2>&1; then
+# Two attempts, because --node-ip only fixes *kubelet*. kube-router (the
+# network policy controller) reads the InternalIP off the **Node object**,
+# which still carries the previous resume's address until kubelet patches it —
+# so the first start after an IP change can serve the API for a few seconds
+# and then exit with the "node subnet" error above. Kubelet patches the node
+# on the way down, so the retry starts against a correct Node and sticks.
+for attempt in 1 2; do
+  if k3s_alive; then
+    log "k3s already running"
+  else
+    log "starting k3s (attempt $attempt${HOST_IP:+, node-ip $HOST_IP})"
+    # setsid is required: a plain `... & disown` still dies when the Codespace's
+    # postStartCommand shell session tears down, since it stays in that session.
+    # shellcheck disable=SC2086  # NODE_IP_ARG must word-split into two args
+    sudo setsid nohup k3s server --docker $NODE_IP_ARG > /tmp/k3s.log 2>&1 < /dev/null &
+  fi
+
+  log "waiting for the k3s API server (attempt $attempt)"
+  for _ in $(seq 1 60); do
+    if k3s_api_up; then
+      break
+    fi
+    sleep 2
+  done
+
+  # One successful probe proves nothing — that is exactly the window in which
+  # k3s answers and then self-terminates. Watch it stay alive instead.
+  log "confirming k3s stays up for ${K3S_SETTLE_SECONDS}s"
+  settled=true
+  for _ in $(seq 1 "$K3S_SETTLE_SECONDS"); do
+    sleep 1
+    if ! k3s_alive; then
+      settled=false
+      break
+    fi
+  done
+
+  if [ "$settled" = true ] && k3s_api_up; then
     ready=true
     break
   fi
-  sleep 2
+  log "k3s did not stay up on attempt $attempt — see /tmp/k3s.log"
 done
 
 if [ "$ready" != true ]; then
@@ -91,8 +124,15 @@ fi
 
 if [ -d /workspaces/Sre-automation/platform ]; then
   log "ensuring platform docker-compose stack is up"
-  (cd /workspaces/Sre-automation/platform && docker compose --env-file ../.env up -d) \
-    >> /tmp/codespace_boot_compose.log 2>&1
+  # Report the failure instead of swallowing it. The redirect is part of what
+  # can fail: run under sudo against a log file the normal user owns and bash
+  # aborts the command before compose ever starts, which previously looked
+  # like a successful boot with no platform stack behind it.
+  COMPOSE_LOG="${COMPOSE_LOG:-/tmp/codespace_boot_compose.log}"
+  if ! (cd /workspaces/Sre-automation/platform && docker compose --env-file ../.env up -d) \
+      >> "$COMPOSE_LOG" 2>&1; then
+    log "WARNING: docker compose up did not succeed — see $COMPOSE_LOG"
+  fi
 fi
 
 # Re-check k3s at the very end rather than trusting the readiness loop above.
