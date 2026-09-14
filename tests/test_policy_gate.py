@@ -119,12 +119,27 @@ def test_hard_policy_block_wins():
 
 
 def test_plan_all_autonomous():
-    actions = [FakeAction("restart"), FakeAction("rollback")]
+    # `recreate_pod` replaces the `rollback` this used to pair with `restart`:
+    # `decide_plan` defaults to environment="production", where a rollback is
+    # now always held for a human. Both of these are REVERSIBLE and stay
+    # autonomous, so the aggregation logic under test is unchanged.
+    actions = [FakeAction("restart"), FakeAction("recreate_pod")]
     agg, per = decide_plan(
         actions, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED
     )
     assert agg is AutonomyDecision.AUTONOMOUS
     assert len(per) == 2
+
+
+def test_plan_with_a_production_rollback_is_downgraded_to_approval():
+    """The pairing the test above gave up, asserted directly."""
+    actions = [FakeAction("restart"), FakeAction("rollback")]
+    agg, per = decide_plan(
+        actions, sev(Severity.SEV4), evaluate_fn=ALLOW, **CALIBRATED
+    )
+    assert agg is AutonomyDecision.REQUIRES_APPROVAL
+    assert per[0].decision is AutonomyDecision.AUTONOMOUS
+    assert per[1].decision is AutonomyDecision.REQUIRES_APPROVAL
 
 
 def test_plan_one_approval_downgrades_whole_plan():

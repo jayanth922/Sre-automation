@@ -141,7 +141,12 @@ def test_critical_alert_maps_to_awaiting_approval():
     plan = _plan("rollback", "checkout-service", risk="high", rollback="redeploy")
     report = asyncio.run(_act_gate_node(_state(plan, alert)))["metadata"]["act_report"]
 
-    assert report["aggregate_decision"] == "blocked"
+    # Was "blocked", which contradicted this test's own name and its
+    # AWAITING_APPROVAL assertion below: `compute_incident_status` mapped the
+    # blocked plan to "awaiting approval" and told the human to go approve
+    # something that no approval could ever unblock. A production rollback is
+    # now held, so the plan and the status finally say the same thing.
+    assert report["aggregate_decision"] == "requires_approval"
     assert report["executed"] == []
 
     payload = dict(report)

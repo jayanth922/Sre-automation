@@ -247,6 +247,26 @@ def decide(
             minimum_autonomy_probability=minimum_autonomy_probability,
         )
 
+    # 2b. A rollback in production is never unattended.
+    #
+    # `rollback` is classified REVERSIBLE, so without this floor a low-severity
+    # calibrated run would walk a production deployment back a revision with
+    # nobody watching. This is the surviving half of the old
+    # ``policy_engine`` Rule 4, moved here because "hold this for a human" is a
+    # decision this gate can express and a ``(bool, reason)`` policy verdict
+    # cannot — the old rule could only hard-block, which no human could appeal.
+    if action_type == "rollback" and str(environment).lower() == "production":
+        return GateDecision(
+            decision=AutonomyDecision.REQUIRES_APPROVAL,
+            severity=severity,
+            reversibility=reversibility,
+            allowed_by_policy=True,
+            reason=f"{severity.name}: rollback in production always needs human approval",
+            confidence_calibrated=confidence_valid,
+            calibrated_action_probability=calibrated_action_probability,
+            minimum_autonomy_probability=minimum_autonomy_probability,
+        )
+
     # 3. Reversibility floor.
     if reversibility is Reversibility.IRREVERSIBLE:
         decision = AutonomyDecision.REQUIRES_APPROVAL

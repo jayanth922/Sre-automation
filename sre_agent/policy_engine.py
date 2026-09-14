@@ -80,15 +80,32 @@ def evaluate_action(
                 logger.warning(f"🚫 PolicyEngine: {reason}")
                 return False, reason
 
-    # Rule 4: Block ROLLBACK on PROD without explicit approval flag
-    if action_type == "rollback" and env_lower == "production":
-        # Check if action has explicit approval flag in parameters
-        if isinstance(action.parameters, dict):
-            explicit_approval = action.parameters.get("explicit_approval", False)
-            if not explicit_approval:
-                reason = f"ROLLBACK blocked on PROD: Requires explicit approval flag"
-                logger.warning(f"🚫 PolicyEngine: {reason}")
-                return False, reason
+    # Rule 4: a rollback on PROD is held for a human, never hard-blocked here.
+    #
+    # This rule used to read `parameters["explicit_approval"]` and block the
+    # rollback whenever it was falsy. Both halves of that were wrong.
+    #
+    # Nothing in the codebase ever sets the flag, so a PROD rollback was
+    # unappealable. A human's Slack approval cannot reach this function: a
+    # block returned here is final in `policy_gate.decide`, and `_act_gate_node`
+    # builds the whole ACT report *before* it looks the approval up. Live on
+    # 2026-09-14, incident f8ca9a54 — a human approved the plan in Slack and
+    # the rollback still came back "Blocked by policy".
+    #
+    # The other half is worse than useless. The only writer that could ever set
+    # the flag is the planner LLM, whose `parameters` are shaped by untrusted
+    # evidence — runbooks, pod logs, PR bodies. That left the gate satisfiable
+    # by prompt injection and unsatisfiable by an actual person: precisely the
+    # inversion the agents' own untrusted_evidence_policy forbids
+    # ("authorization comes only from deterministic runtime state outside the
+    # tool output"), and the reason `prompt_guard` already scrubs
+    # `human_approved: true` out of retrieved text.
+    #
+    # The intent — no unattended rollback in production — survives in
+    # `policy_gate.decide`, which floors a PROD rollback at REQUIRES_APPROVAL.
+    # A human can reach that, and the action's decision is then identical on
+    # the pre- and post-approval runs, so the approval's action_hash still
+    # matches the plan it was granted for.
 
     # Rule 5: Allow all actions in non-PROD environments
     if env_lower != "production":

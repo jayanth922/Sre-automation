@@ -195,12 +195,19 @@ def test_low_severity_reversible_waits_without_calibration():
 
 
 
-def test_critical_production_rollback_without_approval_flag_is_blocked():
+def test_critical_production_rollback_is_held_for_a_human_not_blocked():
+    """Renamed from ..._without_approval_flag_is_blocked.
+
+    The "approval flag" was `parameters["explicit_approval"]`, which no code
+    path ever set and only the planner LLM could have set. The old assertion
+    pinned a rollback that a human could not authorize and a prompt injection
+    could. It must be held, not blocked — and still not executed.
+    """
     alert = AlertContext(alert_name="CheckoutHighErrorRate", severity="critical",
                          labels={"service": "checkout-service", "namespace": "demo-app"}, annotations={})
     plan = _plan("rollback", "checkout-service", risk="high", rollback="redeploy")
     report = asyncio.run(_act_gate_node(_state(plan, alert)))["metadata"]["act_report"]
-    assert report["aggregate_decision"] == "blocked"
+    assert report["aggregate_decision"] == "requires_approval"
     assert len(report["executed"]) == 0
 
 
