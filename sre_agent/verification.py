@@ -190,6 +190,7 @@ async def verify_alert_cleared(
     settle_seconds: int = 0,
     timeout_seconds: int = 300,
     poll_seconds: int = 30,
+    min_clear_seconds: int = 120,
     metric_tool: str = "get_metric",
     sleep: Callable[[float], Any] = asyncio.sleep,
 ) -> VerificationOutcome:
@@ -206,10 +207,27 @@ async def verify_alert_cleared(
     ``kubectl set env`` rolls a new pod, and the alert's own ``rate(...[5m])``
     window still contains the fault for minutes afterwards. Asking once and
     immediately is how a fix that worked gets recorded as UNKNOWN.
+
+    ``min_clear_seconds`` closes the opposite error, which this function was
+    blind to. Patience was applied only to "still firing"; a *clear* reading
+    was believed on the spot, and with the caller's default settle of 0 that
+    first sample lands the instant the write returns. For a pod-scoped alert
+    that is not a weak signal, it is a guaranteed false positive: ``ALERTS``
+    carries the ``pod`` label, so deleting the old pod removes the firing
+    series immediately while the replacement has not had time to fail yet.
+    Live on 2026-09-14 incident ``d2fb7c5d`` was graded "RESOLVED (alert
+    PodCrashLooping is no longer firing after 0s)" — measured before the new
+    pod existed. A rollout would have earned that verdict whether or not the
+    fix worked, and the skill store learns from these. So a clear reading
+    inside the floor is not yet evidence: keep polling, and trust it only
+    once the alert has had a real chance to come back.
     """
     promql = alert_state_promql(alert_name, service)
     deadline_budget = max(0, int(timeout_seconds))
     interval = max(1, int(poll_seconds))
+    # Never let the floor outlive the budget, or a genuinely-clear alert would
+    # poll to the deadline and then be reported FAILED.
+    clear_floor = min(max(0, int(min_clear_seconds)), deadline_budget)
     waited = max(0, int(settle_seconds))
     if waited:
         await sleep(waited)
@@ -227,9 +245,14 @@ async def verify_alert_cleared(
         if series is None:
             last_detail = "alert state unreadable from Prometheus"
         elif not series:
-            detail = f"alert {alert_name} is no longer firing after {waited}s"
-            logger.info(f"✅ Verification: RESOLVED ({detail})")
-            return VerificationOutcome("RESOLVED", 1.0, 0.0, 1.0, 100.0, detail)
+            if waited >= clear_floor:
+                detail = f"alert {alert_name} is no longer firing after {waited}s"
+                logger.info(f"✅ Verification: RESOLVED ({detail})")
+                return VerificationOutcome("RESOLVED", 1.0, 0.0, 1.0, 100.0, detail)
+            last_detail = (
+                f"alert {alert_name} clear at {waited}s, inside the "
+                f"{clear_floor}s settle floor; still watching"
+            )
         else:
             last_detail = f"alert {alert_name} still firing after {waited}s"
 

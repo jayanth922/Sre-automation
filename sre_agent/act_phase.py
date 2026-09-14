@@ -999,6 +999,13 @@ async def verify_live(
             # window plus a rollout.
             timeout_seconds=int(os.getenv("VERIFY_ALERT_TIMEOUT_SECONDS", "600")),
             poll_seconds=int(os.getenv("VERIFY_ALERT_POLL_SECONDS", "30")),
+            # …and the same reasoning bounds the other direction. Every
+            # remediation here rolls a pod, `ALERTS` is labelled by pod, so
+            # the firing series disappears the moment the old pod does —
+            # before the replacement can prove anything. A clear reading is
+            # only evidence once the alert has had its `for:` duration (3m on
+            # these rules) plus a rollout to come back.
+            min_clear_seconds=int(os.getenv("VERIFY_ALERT_MIN_CLEAR_SECONDS", "180")),
         )
         return {
             "status": outcome.status,

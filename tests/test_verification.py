@@ -196,10 +196,18 @@ def test_alert_state_promql_scopes_to_the_firing_alert_and_service():
 
 
 def test_alert_cleared_is_resolved_without_guessing_a_threshold():
+    # The subject here is the *verdict*: the alert rule is the threshold, so a
+    # clear reading needs no guessed comparison value. The settle floor is
+    # turned off to isolate that — how long a clear reading must hold before it
+    # counts is a separate question, owned by test_verification_settle_floor.py.
     caller, calls = _recording_caller(['{"result":[],"series_total":0}'])
-    out = asyncio.run(v.verify_alert_cleared("InventorySlowQueries", "inventory-service", caller))
+    out = asyncio.run(
+        v.verify_alert_cleared(
+            "InventorySlowQueries", "inventory-service", caller, min_clear_seconds=0
+        )
+    )
     assert out.status == "RESOLVED"
-    assert len(calls) == 1  # cleared on the first look: no needless waiting
+    assert len(calls) == 1
     assert "no longer firing" in out.detail
 
 
@@ -225,7 +233,13 @@ def test_still_firing_polls_until_the_budget_runs_out_then_fails():
 def test_a_fix_that_lands_mid_window_resolves_without_waiting_out_the_budget():
     """A rollout takes time and the alert's own rate() window still holds the
     fault, so the first sample is expected to be stale — that is the whole
-    reason this polls instead of asking once."""
+    reason this polls instead of asking once.
+
+    The alert goes quiet at t=60 and stays quiet, so the verdict lands at the
+    settle floor (120s by default) — long before the 300s budget. Early exit is
+    the property under test; the floor only sets how early. Watching to the
+    deadline on an alert that has clearly stopped firing would be the bug.
+    """
     firing = '{"result":[{"value":[1,"1"]}],"series_total":1}'
     responses = [firing, firing, '{"result":[],"series_total":0}']
     slept = []
@@ -242,8 +256,8 @@ def test_a_fix_that_lands_mid_window_resolves_without_waiting_out_the_budget():
         )
     )
     assert out.status == "RESOLVED"
-    assert sum(slept) == 60
-    assert "after 60s" in out.detail
+    assert sum(slept) == 120 < 300
+    assert "after 120s" in out.detail
 
 
 def test_unreachable_prometheus_is_unknown_not_a_verdict():
@@ -266,7 +280,15 @@ def test_settle_delay_is_honoured_before_the_first_sample():
     caller, _ = _recording_caller(['{"result":[],"series_total":0}'])
     out = asyncio.run(
         v.verify_alert_cleared(
-            "X", "svc", caller, settle_seconds=45, timeout_seconds=300, sleep=sleeper
+            "X",
+            "svc",
+            caller,
+            settle_seconds=45,
+            timeout_seconds=300,
+            # Off, so the only sleep left is the settle itself — otherwise the
+            # floor's polling appends to `slept` and buries what's being asserted.
+            min_clear_seconds=0,
+            sleep=sleeper,
         )
     )
     assert slept == [45]
