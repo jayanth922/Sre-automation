@@ -138,6 +138,9 @@ def test_a_parked_incident_is_told_its_alert_came_back(spies, status):
     assert posted_id == str(incident.id)
     assert "CheckoutMemoryApproachingLimit" in message
     assert status.value in message
+    # The title is "[service] AlertName", so naming the alert separately would
+    # print it twice — the stutter the first live notice had.
+    assert message.count("CheckoutMemoryApproachingLimit") == 1
     assert len(spies.events) == 1
     assert spies.events[0]["event_type"] == "alert_refired"
 

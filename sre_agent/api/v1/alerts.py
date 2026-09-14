@@ -155,14 +155,20 @@ _PARKED_STATUS_MEANING = {
 
 
 def refire_message(*, alertname: str, status: Any, title: str) -> str:
-    """The Slack notice for an alert that re-fired onto a parked incident."""
+    """The Slack notice for an alert that re-fired onto a parked incident.
+
+    `title` is `[service] AlertName`, so it already contains `alertname` —
+    naming both reads as a stutter ("`CheckoutMemoryApproachingLimit` fired
+    again. It belongs to *[checkout-service] CheckoutMemoryApproachingLimit*"),
+    which is how the first live notice read. The title alone carries both.
+    """
     meaning = _PARKED_STATUS_MEANING.get(
         status, "no work is in progress on it and nobody has been asked anything"
     )
     return (
         ":rotating_light: *Still firing, and nothing is working on it*\n"
-        f"`{alertname}` fired again just now. It belongs to *{title}*, which is "
-        f"sitting at `{_status_str(status)}` — {meaning}.\n"
+        f"*{title}* is firing again, and its incident is sitting at "
+        f"`{_status_str(status)}` — {meaning}.\n"
         "Sentinel will not open a second incident while this one is here, and "
         "it will not re-investigate on its own — there is no \"investigate "
         "again\" command. This alert has nowhere else to go. Reply "
