@@ -158,6 +158,128 @@ def _walk_metrics(obj: Any) -> Dict[str, Any]:
     return found
 
 
+_TRACE_SUFFIX = "_trace"
+
+
+def _tool_payload(message: Any) -> Any:
+    """One tool result, parsed into something `_walk_metrics` can traverse."""
+    content = _get(message, "content", None)
+    if isinstance(content, (dict, list)):
+        return content
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if not text or text[0] not in "{[":
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def _walk_tool_outputs(state: Any) -> Dict[str, Any]:
+    """Measured metrics from the tool results, not from the model's summary.
+
+    `_walk_metrics(agent_results)` finds nothing in production. `agent_nodes.py`
+    stores `agent_results[agent_key] = agent_response` — the *text* of the
+    specialist's final message — so the walker recurses into a dict of strings
+    and returns `{}` every time. Probed 2026-09-15 with a real metrics
+    narration ("error_rate is 0.24 and the SLO burn rate is 14.2x with 3
+    affected pods"):
+
+        walk(real prose) : {}
+        walk(dict shape) : {'error_rate': 0.24, 'slo_burn_rate': 14.2, ...}
+
+    Only the second shape ever occurs, and only in fixtures. So the comment
+    "Prefer structured metrics from investigation results over labels" was
+    describing a branch that never ran, and every severity decision this
+    platform has made came from alert labels alone.
+
+    The measured numbers were never missing, only in a different place: the
+    specialist's raw tool results are kept in `metadata[f"{agent}_trace"]`, and
+    an MCP server returns JSON. Reading those instead of the prose is also the
+    more defensible source — it is the telemetry itself rather than the
+    model's retelling of it, and it carries real provenance (which agent, which
+    tool).
+
+    Tool messages marked `status == "error"` are skipped: a failed call's
+    content is an error string, and severity must not be computed from one.
+    That status only became trustworthy with the tool-failure contract fix —
+    before it, a dead MCP server was indistinguishable from a working one.
+    """
+    metadata = _get(state, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        return {}
+
+    found: Dict[str, Any] = {}
+    for trace_key, messages in metadata.items():
+        name = str(trace_key)
+        if not name.endswith(_TRACE_SUFFIX) or not isinstance(messages, (list, tuple)):
+            continue
+        agent = name[: -len(_TRACE_SUFFIX)] or "agent"
+        for message in messages:
+            # Tool results only — an AIMessage's prose is exactly what this is
+            # avoiding.
+            if _get(message, "tool_call_id", None) is None:
+                continue
+            if _get(message, "status", "success") == "error":
+                continue
+            payload = _tool_payload(message)
+            if payload is None:
+                continue
+            tool = _get(message, "name", None) or "tool"
+            for metric, (value, path) in _walk_metrics(payload).items():
+                if metric in found:
+                    continue
+                trail = f"{agent}:{tool}"
+                found[metric] = (value, f"{trail}:{path}" if path else trail)
+    return found
+
+
+def _absorb(
+    discovered: Dict[str, Any],
+    measured: Dict[str, Any],
+    links: List[Any],
+    *,
+    source_prefix: str,
+) -> None:
+    """Fold discovered metrics into `measured`, recording where each came from.
+
+    A later source supersedes an earlier one — and takes its evidence link with
+    it. Leaving the old link behind would put a value in the ledger that the
+    gate did not use, which is the same dishonesty this whole fix is about.
+    The disagreement is worth knowing about, so it is logged rather than
+    silently dropped.
+    """
+    for key, (value, path) in discovered.items():
+        if key == "burn_rate":
+            key = "slo_burn_rate"
+        if key == "slo_breached" or key == "still_escalating":
+            parsed = _as_bool(value)
+        elif key in {"affected_pods", "affected_services", "dependency_count"}:
+            parsed = _as_int(value)
+        elif key == "customer_scope":
+            parsed = str(value) if value is not None else None
+        else:
+            parsed = _as_float(value)
+        if parsed is None:
+            continue
+        superseded = [link for link in links if link.field == key and not link.unknown]
+        for link in superseded:
+            if link.value != parsed:
+                logger.info(
+                    "Severity signal %s: %s from %s supersedes %s from %s",
+                    key,
+                    parsed,
+                    f"{source_prefix}:{path}",
+                    link.value,
+                    link.source,
+                )
+            links.remove(link)
+        measured[key] = parsed
+        links.append(evidence(key, parsed, source=f"{source_prefix}:{path}"))
+
+
 def _raw_probability(value: Any) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -307,22 +429,13 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
 
     # Prefer structured metrics from investigation results over labels.
     agent_results = _get(state, "agent_results", {}) or {}
-    discovered = _walk_metrics(agent_results)
-    for key, (value, path) in discovered.items():
-        if key == "burn_rate":
-            key = "slo_burn_rate"
-        if key == "slo_breached" or key == "still_escalating":
-            parsed = _as_bool(value)
-        elif key in {"affected_pods", "affected_services", "dependency_count"}:
-            parsed = _as_int(value)
-        elif key == "customer_scope":
-            parsed = str(value) if value is not None else None
-        else:
-            parsed = _as_float(value)
-        if parsed is None:
-            continue
-        measured[key] = parsed
-        links.append(evidence(key, parsed, source=f"agent_results:{path}"))
+    _absorb(
+        _walk_metrics(agent_results), measured, links, source_prefix="agent_results"
+    )
+    # Then the tool results themselves, which outrank both the alert's labels
+    # and any structured summary: they are the measurement rather than a
+    # report of it. See `_walk_tool_outputs` for why this exists at all.
+    _absorb(_walk_tool_outputs(state), measured, links, source_prefix="tool")
 
     for key, value in measured.items():
         if value is None:
