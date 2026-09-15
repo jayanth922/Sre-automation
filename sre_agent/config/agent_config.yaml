@@ -46,6 +46,15 @@ agents:
       - get_escalation_procedures
       - get_common_resolutions
 
+  # Read-only, like every other specialist. It used to also hold
+  # create_revert_pr, comment_on_pr and revert_pr — real GitHub writes, with
+  # dry_run chosen by the caller (github_exec/server.py), which means the
+  # investigating model could have opened a revert PR on the live repo while
+  # still diagnosing, with no human approval anywhere in the path. The
+  # approved path does not come through here: the executor builds its own
+  # github-exec client (executor.py `build_github_exec_tool_caller`) after the
+  # policy gate and the Slack `approve fix`, so remediation is unaffected.
+  # `investigation_write_guard` enforces this independently of this file.
   github_agent:
     name: "Code Change Intelligence Agent"
     description: "Correlates code changes (commits, PRs) with incidents and identifies bad commits"
@@ -54,9 +63,6 @@ agents:
       - get_commit
       - list_pull_requests
       - get_pull_request
-      - create_revert_pr
-      - comment_on_pr
-      - revert_pr
 
 # Global tools available to all agents
 # Tools are now discovered from MCP servers (K8s, Logs, Metrics, Runbooks, GitHub, Memory)
