@@ -181,7 +181,11 @@ cluster"** and marks each line ✅/❌ with the failure reason, the status is
 REMEDIATION_FAILED, and the learning class is `failed`. `REFUSED` deliberately
 still reads as an investigation — the executor declining to issue a call is
 not a call that failed. Confirmed by replaying the recorded act_report through
-the deployed container.
+the deployed container, **and live in the quiet direction**: `67d81c52` was
+approved at 01:16:30 and ran 4 read-only/notification actions with nothing
+mutating attempted, so the banner correctly stayed off, the heading stayed
+"What the agent did", every line rendered ✅, and the status stayed
+INVESTIGATED. A correction that cannot stay silent is itself a defect.
 
 The five older ones, all committed, none pushed: **#25** retry machinery
 disabled by SQLAlchemy identity-map aliasing — `fail_job()`'s `select()` hands
@@ -274,8 +278,15 @@ three #32 consumers of a live run's outcome).
 - **`ANTHROPIC_MODEL=claude-3-5-sonnet-latest` in the API container 404s**, so
   any `create_llm_with_fallback()` default path runs silently degraded. The
   agent path routes via `ExecutionContext`/`route_llm` and is unaffected.
-- Known app bug: `checkout-service app.py:147` `int(order_id[-1])` — the real
-  cause of `CheckoutHighErrorRate`, correctly root-caused, not agent-fixable.
+- Known app bug: `checkout-service app.py:147` `int(order_id[-1])` — *a* cause
+  of `CheckoutHighErrorRate` (`f8ca9a54`), correctly root-caused, not
+  agent-fixable. **Not the only one**: `67d81c52` (2026-09-15) is the same
+  alert on the same service from a different fault — every inventory-hold
+  call failing and propagating as an unhandled asyncio TaskGroup
+  ExceptionGroup through the ASGI handler (traced to commit `4ed89b29`,
+  "reserve inventory hold before charging payment"). That run explicitly
+  demoted the checksum hypothesis as "not supported by the log signature".
+  One alert name can have two open incidents with two different causes.
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
