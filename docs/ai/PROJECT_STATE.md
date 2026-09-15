@@ -11,8 +11,8 @@ paths: `dc1712ca` via `patch_deployment_env`, and — after #26 — `555a3acb` /
 `d2fb7c5d` via `patch_resource_limits` (**Task #5 complete**, see below).
 Focus is **Slack-only communication robustness** (standing rule: "Slack is
 the only method of all types of communication, so it should be robust").
-Task #40's external-clear lifecycle split is implemented and offline-verified;
-live confirmation is blocked on k3s/Anthropic availability.
+Task #40's external-clear lifecycle split is implemented, deployed, and
+live-confirmed on both sides of the approval boundary.
 
 ## Current architecture and invariants
 Two independent ACT gates (`PolicyEngine.evaluate_action()`,
@@ -504,6 +504,20 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
 `--check` is what CI asserts), `release/v1/{policy.json,ci-matrix.json}`.
 
 ## Verification commands and latest results
+- **Task #40 is live-confirmed** (2026-09-15 21:06Z). Clear-during-run:
+  `0020484e` / job `f2906eaa` resolved at 20:45:25 while the job remained
+  RUNNING with no cancel request, then completed at 20:51:17 without changing
+  `resolved_at`; Slack posted the clear notice before later findings and the
+  final report; ordinary/gate approvals both remained 0. Clear-after-request:
+  `9dfeff72` created pending approval `433dc70b` at 21:05:40; the clear at
+  21:06:25 changed it to EXPIRED with no approver and Slack said the one
+  pending approval was withdrawn. Both incident audits contain only read-only
+  tools, payment deployment `resourceVersion` stayed `76048`, and the
+  monitored repo still has only its original closed PR. Langfuse v2 captured
+  one clean root trace per run (`24f894ea…`: 176 observations, 36 generations;
+  `f6e37ab4…`: 151/32); every generation has model/usage/cost, no observation
+  lacks both input and output, and neither trace has an error observation.
+  Anthropic Opus/Sonnet/Haiku calls all succeeded and no exporter 401 appeared.
 - 2026-09-15, Task #40: `.venv/bin/python -m pytest tests -q
   -p no:cacheprovider` → **1437 passed, 3 skipped** (431.11s); integration →
   **13 passed**; docs truthfulness → **6 passed**; Python quality, eval smoke
@@ -571,13 +585,6 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
   ```
 
 ## Known blockers or risks
-- **The Anthropic API is out of credits** (2026-09-15 01:37). Every new
-  investigation dies in seconds with `litellm.BadRequestError … "Your credit
-  balance is too low"`; `56d78bd6` [checkout-service] failed three times in
-  three seconds. Nothing can be investigated until it is topped up. Slack
-  handled it correctly — the thread says "Investigation failed — no findings
-  were produced … it needs a human" with the raw error, and invents no
-  diagnosis — so this is an account blocker, not a defect.
 - **The cross-service correlation signal is still unvalidated** (#34 acted on
   the same-service half only). Text similarity across two services was wrong
   3 times in 6 because a generic alert template dominates the token overlap.
@@ -653,11 +660,12 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
   `.env.local-backup-20260910` holds live `SECRET_KEY` and
   `CREDENTIAL_ENCRYPTION_KEY`, is untracked, and is **not** matched by
   `.gitignore`'s `.env` pattern — stage explicit paths, never `git add -A`.
-- **k3s is down again** (2026-09-15 14:50): nothing listening on :6443,
-  `connection refused`. Run `scripts/codespace_boot.sh` and verify
-  `sudo k3s kubectl get nodes` before approving anything — an approval
-  executed against a dead API server is how #32 happened. Note `systemctl`
-  does not work in this container; use `service`.
+- **k3s resume remains fragile**, although it was `Ready` after the Task #40
+  runs (2026-09-15 21:07Z). Both resumes required `scripts/codespace_boot.sh`:
+  attempt 1 died after correcting the stale node IP and attempt 2 stayed up.
+  Verify `sudo k3s kubectl get nodes` immediately before every live action —
+  an approval against a dead API server is how #32 happened. `systemctl` does
+  not work in this container; use `service`.
 
 ## Operating the Codespace
 **Run `scripts/codespace_boot.sh` after any resume, and verify k3s before
@@ -686,13 +694,15 @@ container — use `service`. Confirm a column before querying it
 (`information_schema.columns`) rather than guessing from the ORM.
 
 ## Next bounded task
-**Deploy and live-fire #40 once k3s is healthy and Anthropic credits are
-available.** Capture one clear during investigation and one clear while an
-approval is pending; verify the job, approval rows, incident status/timestamp,
-Slack ordering, audit table, and absence of cluster/repository writes. Then
-decide whether crash-resumable post-clear investigation/Slack-forwarder
-rehydration is worth a separate task. A successful live run also unblocks
-#34's fold observation and the remaining live-fire checks below.
+**Build P0 #4: crash-resumable remediation.** First map the actual
+`act_phase` execution/checkpoint boundary against the existing Temporal
+`IncidentRemediationWorkflow`, then write a process-death test proving an
+already-successful action is not replayed before changing the live path.
+Post-clear crash recovery must preserve Task #40's invariant: findings may
+resume, remediation authority may not. Separately, the Task #40 Langfuse
+audit found some subagent observations still named generic `agent`; replace
+that unstable name with the concrete role without disturbing the otherwise
+complete hierarchy.
 
 **Live-fire checks still owed on #35/#37/#38.** `cf58ef6a` ran 39 tool calls,
 all SUCCESS, all terminal, and 246 calls since the deploy left no new orphan
@@ -705,9 +715,10 @@ for a policy refusal (#37), and no PENDING row that never closes (#38). The
 18 historical orphan PENDINGs stay in place as evidence; rewriting audit
 history to tidy a dashboard is the wrong trade.
 
-**Nothing is owed from the human in Slack right now** — 0 incidents are in a
-non-resolved state as of 14:45. That is itself the symptom of #40, not
-health: the queue is empty because every incident closed itself.
+**Nothing is owed from the human in Slack for the Task #40 runs.** Do not
+approve their generated requests: the target approval was withdrawn by the
+external clear, and any secondary alert investigation is test fallout that
+must finish or clear through the normal lifecycle.
 
 **Codex findings not yet acted on**, in descending feasibility: P0 #4
 crash-resumable remediation (`act_phase` has no resume point mid-plan — the

@@ -26,7 +26,7 @@ that matter.
 ## The method that produced the last five fixes
 
 This codebase has been hardened by finding **honesty defects**: places where
-the system reports something it did not actually establish. Thirty-nine are
+the system reports something it did not actually establish. Forty are
 recorded in `PROJECT_STATE.md` under *Completed or verified work*. The
 approach that worked, and that you should keep using:
 
@@ -66,9 +66,10 @@ approach that worked, and that you should keep using:
 - **`.env.local-backup-20260910` is untracked and holds live `SECRET_KEY`
   and `CREDENTIAL_ENCRYPTION_KEY`.** `.gitignore`'s `.env` pattern does
   **not** match it. Always stage explicit paths — **never `git add -A`**.
-- **Push only when the user asks.** `master` is level with `origin/master` at
-  `e263633` as of 2026-09-15, and **CI run `34986611048` on it is fully
-  green** — that is your baseline. If CI is red when you arrive, it is
+- **Push only when the user asks.** Task #40 is pushed at `00d9283` as of
+  2026-09-15; **CI run `34986611048` on the earlier `e263633` baseline was
+  fully green**, and Task #40's complete local suite is recorded in
+  `PROJECT_STATE.md`. If CI is red when you arrive, it is
   something you introduced. Check with `git log master --not origin/master`
   rather than assuming either way.
 - End every commit message with:
@@ -77,7 +78,16 @@ approach that worked, and that you should keep using:
   ```
   Match the existing footer convention in `git log`.
 
-## Task 1 — Defect #40, the largest open defect. Start here.
+## Task 1 — Defect #40. Complete; use as a preserved reference.
+
+Implemented and pushed in `00d9283`, then live-confirmed on 2026-09-15. One
+alert cleared during a running investigation: the job completed, the incident
+stayed resolved, no approval/write appeared, and Slack delivered the clear
+notice before the final findings. A second alert cleared with a real pending
+approval: the exact row became expired immediately, Slack named the withdrawn
+approval, and neither Kubernetes nor GitHub changed. Both runs have clean
+Langfuse v2 traces. Exact IDs/timestamps are in `PROJECT_STATE.md`. Start with
+Task 2 below, not this historical diagnosis.
 
 **A clearing Alertmanager alert cancels the live investigation and throws
 away everything it found.**
@@ -119,7 +129,7 @@ Cancelling is **correct for the two human paths** and wrong for the third.
    posted its approval request at 06:17:52 and was resolved at 06:18:56 — the
    window a human had to approve anything was **64 seconds**.
 
-### Fix shape (proposed, not yet built — validate it before you commit to it)
+### Fix shape (implemented)
 
 Split the resolve paths:
 
@@ -242,8 +252,9 @@ Ask before doing it.
 
 The condensed version:
 
-- **k3s was down as of 2026-09-15 14:50** — nothing on `:6443`. Run
-  `scripts/codespace_boot.sh`, then verify with `sudo k3s kubectl get nodes`.
+- **k3s was healthy after the Task #40 live runs at 2026-09-15 21:07Z, but
+  every Codespace resume can kill it.** Run `scripts/codespace_boot.sh`, then
+  verify with `sudo k3s kubectl get nodes`.
   **Do this before any live approval**: an approval executed against a dead
   API server is exactly how defect #32 happened.
 - `systemctl` **does not work** in the Codespace container — use `service`.
