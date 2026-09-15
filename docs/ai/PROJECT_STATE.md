@@ -77,8 +77,12 @@ keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 on an already-resolved incident, before it opens a war room (#28).
 
 ## Completed or verified work
-Thirty-three defects found by live fire (numbered to #34; #30 was withdrawn on
-evidence). Per-defect detail is in git log. The
+Thirty-eight defects found by live fire and by audit (numbered to #39; #30 was
+withdrawn on evidence). #35–#37 and #39 came from an OpenAI Codex comparison
+against HolmesGPT — each was verified against this code with a probe before
+being believed, and one of Codex's five P0s was rejected in favour of a
+narrower fix. **#38 came from verifying that deploy against the live audit
+table**, not from any list. Per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
 - **Check the sweep, not just the handler** (#19). Of any deadline stated in
@@ -129,6 +133,33 @@ the truth, records it, and then does not tell the human.** Corollaries:
   duplicates. Shadow mode is the right way to *earn* trust in a signal, but
   it has to end: ask of any shadow-mode component what evidence would promote
   it, then go read whether that evidence has already accumulated.
+- **A failure recorded as a success is not a failure anyone can act on**
+  (#35). The retry wrapper *returned* `error.to_agent_response()` — prose —
+  instead of raising, so every layer above it saw a normal call: the circuit
+  breaker's `record_failure` was unreachable and could never open, the audit
+  log wrote SUCCESS with the error text as the result, langgraph never set
+  `status="error"`, and `agent_tool_failures` — which six caveat sites in
+  `supervisor.py` read — was structurally always empty. Ask of any error
+  value: *does anything above this distinguish it from an answer?*
+- **A branch whose input shape never occurs is not a branch** (#36). The
+  severity gate's `_walk_metrics(agent_results)` traverses dicts and lists;
+  `agent_nodes.py` stores a prose string. Every severity decision came from
+  alert labels while a comment claimed telemetry was preferred. Fixture-only
+  shapes are the tell — check what production actually writes into the field,
+  not what the tests pass in.
+- **A tool list in a YAML file enforces nothing** (#37). Config is one line
+  away from growing a write back, and nothing downstream re-checks.
+- **Ask what an exception does to the calls running beside it** (#38), and
+  **`except Exception` does not mean "on any failure"** — `CancelledError` is
+  a `BaseException` and walks straight through it. Both halves were invisible
+  in the code and obvious in the table: a status histogram whose failures all
+  trace to one source, and rows with no terminal status at all.
+- **Certifying that evidence exists is not reading it** (#39). The release
+  gate hashed an artifact, counted its lines, and took the verdict from a
+  summary written beside it. Ask of any check on a file: *does anything here
+  open the contents?* And when a gate has never once blocked honestly, check
+  whether its own thresholds are satisfiable before assuming the evidence was
+  merely lazy — an unreachable policy selects for fabricated evidence.
 - **Re-read the row before blaming the current build** (#30, withdrawn). Five
   jobs at `status=failed, attempt_count=1 of 3` looked like a live retry
   bypass; `last_error` *and* `result` were both set, which only the pre-#25
@@ -198,6 +229,124 @@ approved at 01:16:30 and ran 4 read-only/notification actions with nothing
 mutating attempted, so the banner correctly stayed off, the heading stayed
 "What the agent did", every line rendered ✅, and the status stayed
 INVESTIGATED. A correction that cannot stay silent is itself a defect.
+
+**#35** (fixed, deployed, probe-verified in the container): tool failures were laundered
+into success. `safe_invoke`/`safe_ainvoke` returned the error *text* after
+exhausting retries. Probe: a dead `prometheus_query` produced
+`raised: False, cb failures: {}, audit statuses: ['PENDING', 'SUCCESS']`. Now
+raises `ToolExecutionError` (a `ToolError` inside an exception), and
+`create_react_agent` is handed an explicit
+`ToolNode(tools, handle_tool_errors=handle_tool_execution_error)` — necessary
+because langgraph's `_default_handle_tool_errors` absorbs only
+`ToolInvocationError` and re-raises everything else, which a test caught
+after I had wrongly concluded from a comment that raising was safe. The
+handler deliberately does *not* blanket-catch: a genuine bug still crashes.
+A fifth symptom Codex missed: `reraise=True` made `except RetryError` dead
+code, so every exhausted tool reported `retry_count=1, is_recoverable=True`,
+"failed on first attempt". Re-probe: `raised: True, attempts: 3,
+recoverable: False, cb failures: {'prometheus_query': 1}, audit: ['PENDING',
+'FAILURE']`. `tests/test_tool_failure_contract.py` (22).
+
+**#36** (fixed, deployed, probe-verified in the container): the severity gate could not
+read anything the investigation measured. Fix source is the raw tool output
+already captured in `metadata[f"{agent}_trace"]` (MCP servers return JSON),
+not the prose — deterministic, better provenance
+(`tool:metrics_agent:prometheus_query:data.result[0].error_rate`), and it
+skips messages with `status == "error"`, which only became trustworthy
+because of #35. Codex's proposed typed `EvidenceRecord` refactor was
+**rejected**: the numbers were never missing, only being read from the wrong
+place. Tool output outranks alert labels, and a superseded value is *removed*
+from the evidence ledger rather than left alongside the winner — a link
+naming a value the gate did not use is the same dishonesty in miniature.
+`tests/test_severity_evidence_source.py` (24).
+
+**#37** (fixed, deployed, probe-verified in the container): the investigating
+`github_agent` held `create_revert_pr`, `comment_on_pr` and `revert_pr`.
+`github_exec/server.py` signs them `dry_run: bool = True` — a default the
+model may override — and `guardrail_check` validates repo and argument shape,
+never approval. So a diagnosing agent could have opened a revert PR on the
+live repo with no human anywhere in the path. Two changes, because either
+alone is insufficient: the tools are gone from `agent_config.yaml`, and
+`investigation_write_guard` refuses them even if returned. Its forbidden set
+is *derived* from `executor.py`'s own dispatch maps (minus
+`NON_MUTATING_ACTIONS`), so a remediation tool added tomorrow is covered the
+same day. Refusals audit as **REFUSED**, not FAILURE, and print a 🚫 line to
+the live terminal. Approved remediation is untouched: the executor builds its
+own MCP client (`build_github_exec_tool_caller`) and never passes through
+`wrap_all_tools_with_retry` — a test asserts that separation, so if it ever
+changes, remediation refusing itself shows up there.
+`tests/test_investigation_write_guard.py` (31).
+
+**#38** (fixed, deployed, probe-verified in the container): one refusal
+silently killed the tool calls running beside it, and their audit rows never
+closed. Found by checking the live table after deploying #35–#37 rather than
+by reading code. `agent_audit_logs` read **SUCCESS 2261, PENDING 18,
+FAILURE 8** — and all 8 FAILUREs came from a single source, the
+`list_namespaces` tenant-scope refusal. Across 2,261 successful calls, not one
+FAILURE came from a tool actually breaking, which is not a plausible world.
+The 18 PENDINGs arrived in same-millisecond bursts; in `f643ed9e` the burst
+sits immediately after that refusal while *later* tools in the same
+investigation completed. Two independent causes, each hiding the other:
+a refusal raised inside a `ToolNode` escaped the node and langgraph tore down
+**every sibling tool call in the same parallel batch** (proved with a compiled
+one-node graph — the sibling never finished); and `except Exception` in the
+audit wrappers cannot see `asyncio.CancelledError`, a `BaseException`, so
+those cancelled calls left their row at PENDING forever — reading as *still
+executing* to the dashboard and the audit export. The write guard's own
+refusal text made it sharper: it asks the agent to "diagnose with read-only
+tools" that the refusal had just killed. Fix: `handle_tool_execution_error`
+absorbs the two named policy refusals into a `ToolMessage(status="error")`;
+both wrappers catch `BaseException` and close the row as **CANCELLED** with a
+reason, because `str(CancelledError())` is empty. The refusal types are named
+individually rather than matched on their shared `PermissionError` base — a
+real 403 from a cluster we genuinely lack RBAC for is an environment failure
+the on-call must see as FAILURE, not as our own policy. An unexpected
+exception still crashes the node, on purpose. `AgentAuditLog.status` now has
+five values. `tests/test_tool_outcome_is_always_recorded.py` (22); reverting
+either half turns 6 of them red, one with literally `AssertionError:
+['PENDING']`.
+
+**#39** (fixed, verified by tampering): the release gate certified evidence it
+never read. It checked that each artifact existed, hashed to its declared
+digest, and had N lines — then took the verdict from a `release_decision`
+hand-written in the same bundle. Every line of every shipped fixture read
+`{"fixture": "paired-trials-v1", "record": 1}`, and all four CI-matrix
+fixtures shared **byte-identical** evidence while claiming four different
+verdicts. The decisive probe: patching *only* `candidate.source_digest`
+flipped the gate from BLOCK to `{"reasons": [], "status": "PROMOTE"}`. A
+second half made `records` itself unverifiable — both the strict-JSONL parse
+and the `len(lines) != records` check were gated on `if path.suffix ==
+".jsonl"`, while `records` feeds the load-bearing `>= pair_count * 2` and
+`== adversarial_cases` comparisons, so renaming an artifact turned a count
+into an assertion.
+
+**And the policy was arithmetically unsatisfiable**, which is why no honest
+evidence had ever been produced for it. `_paired_binary_metric` builds its
+conservative interval by subtracting two *independent* Wilson intervals; for
+a flawless arm the Wilson lower bound is `n/(n+z²)`, so at the shipped
+`minimum_pairs: 20` even a perfect candidate gets `[-0.161, +0.161]` — 3.2×
+the policy's own 0.05 non-inferiority margin. Fabricated evidence was not a
+shortcut past this gate; it was the only input the gate would accept.
+`1 - L ≤ margin` gives `n ≥ ceil(z²(1-margin)/margin)` = 73, so the policy
+and fixtures now use **80** pairs, and `_require_reachable_policy` refuses at
+load time any policy no honest run could satisfy.
+
+Fix (same family as #31/#36 — don't ask the artifact for its verdict,
+recompute it): `benchmarks/release_evidence.py` re-derives both reports from
+the records using the validators that already existed —
+`statistical_eval.load_trials`/`compare_candidates` and
+`adversarial_eval.load_observations`/`evaluate`, each of which rejects any row
+whose key set is not the schema — and every claim the bundle makes that
+disagrees with its own records is itself a block reason. Root traces are tied
+to the trials that cite them by digest, span count, artifact, cost and
+identity. `make_release_fixtures.py` writes records *first* and embeds
+whatever the real evaluators return for them, so no fixture can claim a
+verdict its evidence does not support; CI asserts this with `--check`.
+`benchmarks/release/candidate/` was **deleted, not regenerated** — synthetic
+evidence about this repository's real prompts, models and tools is worse than
+none, and CI's honest "protected change lacks release evidence → BLOCK" is
+the truth. `tests/test_release_evidence.py` (22) + `test_release_gate.py`
+(11).
 
 **#34** (fixed): the correlation gate watched the duplicates it was built to
 stop. Exact-title dedup gives one war room per *title*, but one pod running
@@ -304,7 +453,14 @@ reading `command` and never `status` from the same dict. Narration fidelity
 is not only a model problem; audit assembly code for fields it drops.
 
 ## Relevant files
-`sre_agent/`: `agent_state.py` (LLM-facing schemas + container decoding),
+`sre_agent/`: `mcp_tool_wrapper.py` (the #35 tool-failure contract, the #38
+refusal/cancellation contract — `policy_refusals`, `handle_tool_execution_
+error`, `_audit_status_for` — and the wrapper stack, innermost first:
+retry → breaker → namespace → write guard → audit),
+`investigation_write_guard.py` (#37), `agent_nodes.py` (the explicit
+`ToolNode` that makes #35 reach langgraph), `act_phase.py`
+(`_walk_tool_outputs`/`_absorb`, #36),
+`agent_state.py` (LLM-facing schemas + container decoding),
 `graph_builder.py` (planner/swarm prompts, fallback plan), `act_phase.py`,
 `approval_flow.py` (the Slack message that gates everything), `executor.py`,
 `policy_gate.py`, `incident_reconciler.py`, `api/v1/alerts.py` (dedup, and the #34 fold: `_find_fold_target`,
@@ -317,10 +473,28 @@ is not only a model problem; audit assembly code for fields it drops.
 three #32 consumers of a live run's outcome), `war_room.py`
 (`route_fix_approval_command` — every inbound Slack command, and the #33
 receipt seam).
+`benchmarks/`: `release_gate.py` (policy load + reachability guard, bundle
+evaluation, impact/matrix CLI), `release_evidence.py` (#39 — recomputes both
+reports from records, `claim_disagreements`, `verify_root_traces`,
+`resolve_dataset`), `make_release_fixtures.py` (generates the CI fixtures;
+`--check` is what CI asserts), `release/v1/{policy.json,ci-matrix.json}`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1303 passed,
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1402 passed,
   3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
+- **#35–#38 are deployed and behaviourally probed inside `sre-agent-api`**
+  (2026-09-15). All five files md5-match local
+  (`mcp_tool_wrapper.py`, `agent_nodes.py`, `act_phase.py`,
+  `investigation_write_guard.py`, `config/agent_config.yaml`); the container
+  restarted healthy. `$CLAUDE_JOB_DIR/tmp/probe_deploy.py`, run with the
+  container's own langgraph 1.2.11, passes **13/13** against the deployed
+  bytes — including `error_rate=0.42 from
+  tool:metrics_agent:prometheus_query:data.result[0].error_rate` (#36),
+  `raised ToolExecutionError after 2 attempts; audited ['PENDING','FAILURE']`
+  (#35), the 11-tool derived denylist (#37), and for #38 the sibling
+  surviving both refusal types, `['PENDING','CANCELLED']`, and a bare
+  `PermissionError` still grading FAILURE. **Probes are not live fire** — see
+  the next task.
 - **Task #5 done, live**: `555a3acb` [ocr-extractor] 64Mi→512Mi and `d2fb7c5d`
   [thumb-worker] →256Mi+200m, real `kubectl set resources` after a Slack
   `approve fix`, both pods `1/1 Running` 0 restarts. First live exercise of
@@ -345,6 +519,22 @@ receipt seam).
   below.
 - `dc1712ca` remains the reference clean run (`patch_deployment_env`,
   `RESOLVED after 330s`, generative runbook).
+- **#39, all four CI invocations run by hand**: `--check` clean; matrix
+  `{"reasons": [], "status": "PASS"}` with all four fixtures at their expected
+  status; a protected change (`sre_agent/mcp_tool_wrapper.py`) →
+  `{"reasons": ["protected prompt/model/tool change lacks release evidence"],
+  "status": "BLOCK"}`, exit 2; unprotected → `NOT_REQUIRED`, exit 0. Four
+  tampering probes with digests kept honest all blocked for the right reason,
+  including a single flipped boolean giving `statistical report claims
+  candidate.safety_rate=1.0 but its records give 0.9875`. The
+  regressive-model fixture closes a real coverage gap: its records carry no
+  recovery/quality/safety regression, so `compare_candidates` returns PROMOTE
+  and only the gate's own latency/cost ratio checks stop it.
+  ```bash
+  uv run python -m benchmarks.make_release_fixtures --check
+  uv run python benchmarks/release_gate.py matrix \
+    --matrix benchmarks/release/v1/ci-matrix.json --output /tmp/m.json
+  ```
 
 ## Known blockers or risks
 - **The Anthropic API is out of credits** (2026-09-15 01:37). Every new
@@ -366,6 +556,29 @@ receipt seam).
   `alert_cleared_external_verification` while the pod kept OOMKilling:
   CrashLoopBackOff slows the *restart rate* below the rule's threshold, so
   the alert goes quiet on backoff, not recovery.
+- **A clearing alert cancels a live investigation and throws away what it
+  already found** — same root cause as the entry above, but the cost is
+  larger than a premature close. `fire_resolution_side_effects` begins with
+  `job_store.cancel_incident_investigations` (#28's design, correct for a
+  *human* resolve), and the Alertmanager-clear path reaches it too. Measured
+  2026-09-15 05:08: of the last six investigations, **five `cancelled`, one
+  `completed`**, parents auto-resolving within ~2 minutes. One cancelled run
+  had already produced a real finding — that the `InventoryHighErrorRate`
+  rule counts 404s as errors — and it was discarded. This is also why #34's
+  fold has never fired live (0 `correlated_alert_folded` events): nothing
+  stays open long enough to be a fold target. Unfixed; the shape of the fix
+  is to let an in-flight investigation finish and post its findings even when
+  the alert clears, rather than cancelling on a signal that does not mean
+  recovery. **It also throws away pending human approvals, measured
+  2026-09-15**: `cf58ef6a` ([api-gateway] PodOOMKilled) posted its approval
+  request at 06:17:52 and was auto-resolved by `alert_resolved` at 06:18:56 —
+  **64 seconds**, less time than a human takes to read the thread. Approval
+  `31aecbef` is still `pending` against a `resolved` incident, the deployment
+  is untouched at revision 2 / `limits.memory=256Mi`, and the pod is 25
+  restarts deep. The alert cleared because the pod *restarted*, which is the
+  entry above. So the window in which a human can approve anything is bounded
+  by how long the alert happens to keep firing, and the resolve path never
+  asks whether an approval is outstanding.
 - **The planner can emit the same mutating action twice and nothing dedupes
   it.** On `3ed8be00` the plan carried two identical `config_change` actions
   and the executor ran both — byte-identical
@@ -432,13 +645,36 @@ lowercase; `incident_timeline_events.payload_json` is **text**, so cast
 Service ClusterIPs are reachable from the host; `kubectl port-forward` is not.
 
 ## Next bounded task
-**Blocked on Anthropic credits** — no investigation can run until the account
-is topped up, so anything needing a live incident waits. #34 is in and
-deployed but has *not* yet folded a live alert; the first thing to check once
-credits are back is a real `[service] PodCrashLooping` arriving while that
-service's `PodOOMKilled` incident is open, and confirming one thread, a
-`correlated_alert_folded` timeline event, and no second investigation job.
-Code-only work is unaffected: finish Task #4 (below), then audit the **last narration surface** the same way
+**#38 has had its first live-fire run; #35's and #37's refusal paths have
+not.** `cf58ef6a` ([api-gateway] PodOOMKilled, 06:09–06:18) ran **39 tool
+calls, all SUCCESS, all terminal**, and the global histogram stayed at
+PENDING 18 / FAILURE 8 — no new orphan rows, which is exactly what #38
+predicts. But the run issued no `list_namespaces` and nothing died, so the
+refusal→CANCELLED half (#38), the FAILURE-on-dead-tool half (#35) and the
+write-guard REFUSED path (#37) are still unexercised under live fire. The 18
+pre-existing orphan PENDINGs are left in place as evidence; rewriting audit
+history to tidy a dashboard is the wrong trade. What still needs watching on
+the next run: a FAILURE row for any dead tool (#35), a severity evidence link
+whose source starts `tool:` (#36), REFUSED rather than FAILURE for a policy
+refusal (#37). #34's fold still has *not* fired live; its prerequisite is the
+cancel-on-alert-clear blocker above, not #34 itself.
+
+**Owed from the human in Slack right now**: `mark resolved` on `f643ed9e`
+([checkout-service] CheckoutHighErrorRate, parked at `investigated` since
+05:11 while its alert keeps firing ~83%) — until then every re-firing dies in
+dedup and no fresh checkout incident can open.
+
+**Codex findings not yet acted on**, in descending feasibility: P0 #4
+crash-resumable remediation (`act_phase` has no resume point mid-plan — the
+shape of the fix is to route it through the existing Temporal
+`IncidentRemediationWorkflow`); then the four P1s — a dead
+operational-reflection branch (`graph_builder.py:1071-1212, 1806-1849`),
+artifact-backed context, observability semantics, and no single owner of job
+completion. (P0 #5, the release gate, is #39 above — fixed.) Each needs the
+same treatment as #35–#37: probe the live shape first, and be willing to
+reject the proposed remedy for a narrower one.
+
+Then audit the **last narration surface** the same way
 #31 did the chat one: the aggregate wrap-up
 (`build_supervisor_aggregate_content`) still passes model text to Slack with
 no status-derived correction. The question to ask: if the model narrates the

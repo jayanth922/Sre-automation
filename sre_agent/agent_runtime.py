@@ -1205,8 +1205,6 @@ async def record_investigation_job_failure(
        another attempt. So the write is conditional on the row still being
        RUNNING, and if it is not, the row's own status decides what is said.
     """
-    from backend.models import JobStatus
-
     from .job_store import DurableJobError, fail_job
 
     job_row = await db.get(models.Job, job_id)
