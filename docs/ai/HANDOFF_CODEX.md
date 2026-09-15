@@ -66,9 +66,11 @@ approach that worked, and that you should keep using:
 - **`.env.local-backup-20260910` is untracked and holds live `SECRET_KEY`
   and `CREDENTIAL_ENCRYPTION_KEY`.** `.gitignore`'s `.env` pattern does
   **not** match it. Always stage explicit paths — **never `git add -A`**.
-- **Push only when the user asks.** There are currently **6 unpushed commits**
-  on `master` (`d2bef4a`, `d454a33`, `7b428e0`, `f9fb6d6`, `15b8712`,
-  `d6d165d`). Check with `git log master --not origin/master`; do not assume.
+- **Push only when the user asks.** `master` is level with `origin/master` at
+  `e263633` as of 2026-09-15, and **CI run `34986611048` on it is fully
+  green** — that is your baseline. If CI is red when you arrive, it is
+  something you introduced. Check with `git log master --not origin/master`
+  rather than assuming either way.
 - End every commit message with:
   ```
   Co-Authored-By: <your attribution>
@@ -271,7 +273,14 @@ The condensed version:
 .venv/bin/python -m pytest tests/test_docs_truthfulness.py -q  # 6 passed
 bash scripts/check_python_quality.sh                           # ruff + mypy + compileall
 bash scripts/check_eval_smoke.sh                               # 44 invariants
+bash scripts/check_no_static_secrets.sh                        # greps tracked files for credential shapes
 ```
+
+The secret scan runs **early** in CI's `backend-tests` job, so when it fails
+nothing after it executes and the coverage/integration steps silently do not
+run. If you need a credential-shaped string as test data, assemble it at
+import time from parts rather than writing a literal or adding an exclusion
+— see `tests/test_tracing.py` and commit `e263633` for the pattern.
 
 Those numbers are the current baseline. A new fix should move the first one
 up by exactly the number of tests you added, and move nothing else.

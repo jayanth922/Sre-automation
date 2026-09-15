@@ -648,12 +648,21 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **#35–#39 are committed but not pushed** (2026-09-15, on request):
+- **#35–#39 are pushed** (2026-09-15, on request), `9aa669d..e263633`:
   `d2bef4a` #36, `d454a33` #37, `7b428e0` #35+#38 (one commit — both edit
-  `mcp_tool_wrapper.py`), `f9fb6d6` #39, `15b8712` the F811 fix that was
-  failing CI's `python-quality` job. Working tree is otherwise clean. Keep the standing rule: push only when
-  asked, and check `git log master --not origin/master` rather than assuming
-  either way. `.env.local-backup-20260910` holds live `SECRET_KEY` and
+  `mcp_tool_wrapper.py`), `f9fb6d6` #39, `15b8712` the F811 fix, `d6d165d`
+  and `b7eb057` docs, `e263633` the secret-scanner fix. **CI run
+  `34986611048` on `e263633` is fully green** — all ten jobs plus the
+  aggregate gate. Two things that had been failing are now fixed: the
+  `python-quality` job (F811), and the `Secret scan` step of
+  `backend-tests`, which had been failing since `b96a40e` on three
+  credential-shaped redaction fixtures in `tests/test_tracing.py`. Because
+  that step runs early, everything after it in that job — coverage, module
+  reachability, the integration layer — had not executed in CI for some
+  time; `e263633` is the first run to exercise them, and they pass. Keep the
+  standing rule: push only when asked, and check
+  `git log master --not origin/master` rather than assuming either way.
+  `.env.local-backup-20260910` holds live `SECRET_KEY` and
   `CREDENTIAL_ENCRYPTION_KEY`, is untracked, and is **not** matched by
   `.gitignore`'s `.env` pattern — stage explicit paths, never `git add -A`.
 - **k3s is down again** (2026-09-15 14:50): nothing listening on :6443,
