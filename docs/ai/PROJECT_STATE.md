@@ -403,8 +403,13 @@ receipt seam).
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **Nothing has been pushed.** 33 local-only commits on `master`
-  (`git log master --not origin/master`); push only when asked.
+- **`master` is pushed and level with `origin/master`** as of 2026-09-15
+  (`a989845`), on request. It had carried 33 local-only commits. Keep the
+  standing rule: push only when asked, and check
+  `git log master --not origin/master` rather than assuming either way.
+  `.env.local-backup-20260910` holds live `SECRET_KEY` and
+  `CREDENTIAL_ENCRYPTION_KEY`, is untracked, and is **not** matched by
+  `.gitignore`'s `.env` pattern — stage explicit paths, never `git add -A`.
 
 ## Operating the Codespace
 **Run `scripts/codespace_boot.sh` after any resume, and verify k3s before
