@@ -166,3 +166,62 @@ def correlate(
     matches.sort(key=lambda m: m.score, reverse=True)
     best = matches[0]
     return CorrelationResult(decision="bundle", bundle_with=best.incident_id, best_score=best.score, matches=matches)
+
+
+def actionable_bundle(
+    candidate: CorrelationCandidate,
+    open_incidents: Sequence[CorrelationCandidate],
+    *,
+    window_minutes: int = DEFAULT_WINDOW_MINUTES,
+    adjacency: Optional[Dict[str, Sequence[str]]] = None,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+) -> Optional[CorrelationMatch]:
+    """The part of `correlate`'s verdict that is safe to act on: same service.
+
+    `correlate` reports every correlation it can see. Acting on all of them is
+    a different question, and shadow mode (`alerts.py::_record_correlation_shadow`,
+    Phase A) answered it with 18 recorded verdicts:
+
+    * **12 same-service bundles, 12 correct.** `PodCrashLooping` ↔
+      `PodOOMKilled` on one service is one pod failing once;
+      `PaymentServiceHighErrorRate` ↔ `PaymentProviderDown` is one outage seen
+      twice. Every one of these was a real duplicate of an open incident.
+    * **6 cross-service, text-similarity-only bundles, 3 wrong.**
+      `[thumb-worker] PodCrashLooping` ↔ `[ocr-extractor] PodCrashLooping`
+      scored 0.62 and `[pdf-thumbnailer] PodCrashLooping` ↔ `[thumb-worker]
+      PodCrashLooping` scored 0.65 — twice. Those are three separate services,
+      each with its own memory limit and its own fix. They scored high because
+      a generic Kubernetes alert renders the *same boilerplate* whatever it
+      fires on, so text similarity is measuring the alert template, not the
+      incident. The three that were right (`[checkout-service]
+      PaymentFailureSpike` ↔ `[payment-service] PaymentProviderDown`) were
+      right for a reason text similarity cannot distinguish from the wrong
+      ones.
+
+    So this returns only a same-service match. Adjacency is still passed
+    through to `correlate` so the scoring and the shadow record are unchanged;
+    it just does not by itself license an action, because adjacent is not the
+    same, and the cross-service signal has not earned that yet.
+
+    Returns the highest-scoring same-service match, or None.
+    """
+    candidate_service = extract_service(candidate.title)
+    if not candidate_service:
+        return None
+
+    result = correlate(
+        candidate,
+        open_incidents,
+        window_minutes=window_minutes,
+        adjacency=adjacency,
+        similarity_threshold=similarity_threshold,
+    )
+    if result.decision != "bundle":
+        return None
+
+    by_id = {other.incident_id: other for other in open_incidents}
+    for match in result.matches:  # already sorted best-first
+        other = by_id.get(match.incident_id)
+        if other is not None and extract_service(other.title) == candidate_service:
+            return match
+    return None

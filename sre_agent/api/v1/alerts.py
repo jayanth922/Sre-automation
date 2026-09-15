@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import crud, database, models, schemas
 from sre_agent import job_store
 from sre_agent.alert_resolution import reconcile_resolved_alert
-from sre_agent.incident_correlation import CorrelationCandidate, correlate
+from sre_agent.incident_correlation import (
+    CorrelationCandidate,
+    actionable_bundle,
+    correlate,
+    extract_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +455,193 @@ async def _record_correlation_shadow(
     )
 
 
+_FOLD_EVENT_TYPE = "correlated_alert_folded"
+
+# `correlate` wants an incident id to exclude itself from its own pool. The
+# fold decision is made *before* the row exists — that is the whole point, so
+# that a duplicate never becomes a second war room — so it gets a sentinel no
+# real incident can collide with.
+_UNCREATED_INCIDENT_ID = "uncreated"
+
+# `DEFAULT_WINDOW_MINUTES` is 15, and it is the right default for *scoring*:
+# two alerts firing far apart are weak evidence of one fault. It is the wrong
+# bound for *folding*, because the fold pool is already every open incident
+# that something is actively working — being still open and still worked is a
+# stronger recency signal than an age in minutes. Live, `3ed8be00` opened at
+# 01:02 and its duplicate `88fa9ee4` arrived at 01:17: exactly 15 minutes,
+# admitted by a hair. A remediation cycle with human approval and a 180s
+# verification routinely runs longer than that, and the two later
+# pdf-thumbnailer threads fell outside it entirely. Two hours bounds a fold to
+# roughly one on-call's working context without letting the clock alone
+# reintroduce the duplicate threads this exists to stop.
+_FOLD_WINDOW_MINUTES = 120
+
+
+def fold_message(*, folded_title: str, parent_title: str, service: str) -> str:
+    """The Slack notice for an alert folded into an already-open incident.
+
+    States the two things the reader cannot see from the thread: that a second
+    alert is now firing, and that nothing separate will be done about it. The
+    second is the part that has to be said out loud — silently absorbing an
+    alert is the failure mode this whole path has to avoid.
+    """
+    return (
+        ":link: *A second alert on this service — folded in here*\n"
+        f"*{folded_title}* is now firing too. It is the same service "
+        f"(`{service}`) as this incident, which is almost always one fault "
+        "showing up twice — a pod that gets OOMKilled is also a pod that "
+        "crashloops.\n"
+        "So it was folded into this thread instead of opening a second one, "
+        "and *no separate investigation will run for it* — the work already "
+        f"in progress on *{parent_title}* is what covers it.\n"
+        "If it turns out to be its own problem, reply `mark resolved` to "
+        "close this incident; the next firing alert then opens a fresh one "
+        "with its own investigation."
+    )
+
+
+async def _find_fold_target(
+    db: AsyncSession,
+    cluster: models.Cluster,
+    title: str,
+    description: str,
+    *,
+    now: datetime,
+) -> Optional[models.Incident]:
+    """The open incident this alert should fold into, or None to open its own.
+
+    Three conditions, each of which has to hold:
+
+    1. `actionable_bundle` says same service — the only correlation shadow
+       mode validated (12/12; see its docstring for the three cross-service
+       bundles it got wrong).
+    2. Something is actually working the parent. `_parked_meaning` returning
+       non-None means nothing is, and folding onto a parked incident would
+       mean nothing works the *folded* alert either — we would have suppressed
+       the one mechanism that investigates it. A different title is a real
+       choice, unlike exact-title dedup, so it gets made the safe way.
+    3. The parent has a Slack thread. Slack is the only channel this platform
+       talks over; a fold with nowhere to announce itself is an alert that
+       silently disappears.
+    """
+    open_incidents = await crud.list_active_incidents_for_cluster(db, cluster.id)
+    if not open_incidents:
+        return None
+
+    candidate = CorrelationCandidate(
+        incident_id=_UNCREATED_INCIDENT_ID,
+        cluster_id=str(cluster.id),
+        title=title,
+        description=description,
+        created_at=now,
+    )
+    pool = [
+        CorrelationCandidate(
+            incident_id=str(other.id),
+            cluster_id=str(cluster.id),
+            title=other.title,
+            description=other.description or "",
+            created_at=other.created_at,
+        )
+        for other in open_incidents
+    ]
+    match = actionable_bundle(candidate, pool, window_minutes=_FOLD_WINDOW_MINUTES)
+    if match is None:
+        return None
+
+    parent = next((i for i in open_incidents if str(i.id) == match.incident_id), None)
+    if parent is None:  # pragma: no cover - the pool is built from this list
+        return None
+
+    if await _parked_meaning(db, parent, now=now) is not None:
+        logger.info(
+            "Fold declined: '%s' matches parked incident %s (%s); opening its own",
+            title,
+            parent.id,
+            _status_str(parent.status),
+        )
+        return None
+
+    if not (parent.slack_channel and parent.slack_thread_ts):
+        logger.info(
+            "Fold declined: '%s' matches incident %s but it has no Slack thread "
+            "to fold into; opening its own",
+            title,
+            parent.id,
+        )
+        return None
+
+    return parent
+
+
+async def _fold_alert_into_incident(
+    db: AsyncSession,
+    parent: models.Incident,
+    alert: Dict[str, Any],
+    title: str,
+    service: str,
+) -> bool:
+    """Absorb a correlated alert into `parent`. True if it was actually folded.
+
+    The Slack notice is posted *first* and the fold is conditional on it
+    landing. That inverts the usual write-then-notify order on purpose: a fold
+    the on-call cannot see is strictly worse than the extra thread it saves
+    them. The complaint this path answers is "too many incidents and I cannot
+    find them in Slack" — an alert that quietly vanishes answers it the wrong
+    way. If the notice does not land, the caller opens the incident normally
+    and the duplicate thread is the acceptable outcome.
+
+    Never raises: a webhook that 500s makes Alertmanager retry the whole group.
+    """
+    message = fold_message(
+        folded_title=title, parent_title=parent.title, service=service
+    )
+    delivered = False
+    try:
+        from sre_agent.war_room_service import post_to_incident_thread
+
+        delivered = await post_to_incident_thread(str(parent.id), message)
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning("fold: Slack notify failed for %s: %s", parent.id, exc)
+
+    if not delivered:
+        logger.warning(
+            "fold: '%s' correlates with incident %s but the Slack notice did "
+            "not land — opening its own incident instead",
+            title,
+            parent.id,
+        )
+        return False
+
+    try:
+        await crud.create_incident_timeline_event(
+            db,
+            parent.id,
+            event_type=_FOLD_EVENT_TYPE,
+            speaker_role="system",
+            title="Correlated alert folded into this incident",
+            content=(
+                f"{title} started firing on the same service and was folded "
+                f"into this incident. No separate incident, war room, or "
+                f"investigation was created for it."
+            ),
+            payload={
+                "source": "incident_correlation",
+                "mode": "acting",
+                "folded_title": title,
+                "alertname": alert["alertname"],
+                "labels": alert.get("labels") or {},
+            },
+        )
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        # The thread has already been told this alert is folded. Opening an
+        # incident now would contradict a message the on-call can read, so the
+        # fold stands and the audit row is what was lost.
+        logger.warning("fold: timeline write failed for %s: %s", parent.id, exc)
+        await db.rollback()
+    return True
+
+
 async def _reconcile_resolved_alert(
     db: AsyncSession,
     cluster: models.Cluster,
@@ -598,6 +790,7 @@ async def receive_alertmanager_webhook(
         }
 
     incidents_created = 0
+    incidents_folded = 0
     resolved_reconciled = 0
     reconciliations: List[Dict[str, Any]] = []
 
@@ -680,6 +873,53 @@ async def receive_alertmanager_webhook(
             await _announce_refire_on_parked_incident(db, existing, alert)
             continue
 
+        # Exact-title dedup missed, which does not mean this is a new problem.
+        # `[pdf-thumbnailer] PodOOMKilled` and `[pdf-thumbnailer]
+        # PodCrashLooping` are two titles for one pod dying, and each opened
+        # its own incident, war room, investigation and remediation — six
+        # pdf-thumbnailer threads in 75 minutes on 2026-09-15, which is what
+        # "there are too many incidents and i cannot find them correctly in
+        # slack" is describing. The correlation gate ran in shadow mode
+        # through all of it and scored the duplicate at 1.00 without being
+        # allowed to act. It is allowed to act now, on the same-service subset
+        # its own shadow record validated.
+        #
+        # Committed before the Slack round trip for the same reason the dedup
+        # branch above commits: the dedup advisory lock must not be held
+        # across a network call. Nothing has been written since it was taken.
+        try:
+            fold_target = await _find_fold_target(
+                db, cluster, title, description, now=datetime.now(timezone.utc)
+            )
+        except Exception as fold_err:
+            # Fail open, like the shadow check below: a webhook that 500s makes
+            # Alertmanager retry the whole group, and an extra thread is a far
+            # smaller loss than an alert that never arrives.
+            logger.warning(f"Fold lookup failed (non-fatal): {fold_err}")
+            fold_target = None
+        if fold_target is not None:
+            await db.commit()
+            if await _fold_alert_into_incident(
+                db, fold_target, alert, title, extract_service(title)
+            ):
+                logger.info(
+                    "Folded '%s' into incident %s (same service)",
+                    title,
+                    fold_target.id,
+                )
+                incidents_folded += 1
+                reconciliations.append({
+                    "alertname": alert["alertname"],
+                    "matched": True,
+                    "reason": "folded_into_correlated_incident",
+                    "incident_id": str(fold_target.id),
+                })
+                continue
+            # The notice never reached Slack. Fall through and open the
+            # incident — a duplicate thread beats an alert nobody is told
+            # about. Re-take the dedup lock that the commit above released.
+            await crud.lock_incident_dedup(db, cluster.id, title)
+
         # Create incident
         incident_data = schemas.IncidentCreate(
             title=title,
@@ -718,6 +958,7 @@ async def receive_alertmanager_webhook(
     return {
         "received": len(alerts),
         "incidents_created": incidents_created,
+        "incidents_folded": incidents_folded,
         "resolved_reconciled": resolved_reconciled,
         "reconciliations": reconciliations,
     }

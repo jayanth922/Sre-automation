@@ -77,7 +77,7 @@ keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 on an already-resolved incident, before it opens a war room (#28).
 
 ## Completed or verified work
-Thirty-two defects found by live fire (numbered to #33; #30 was withdrawn on
+Thirty-three defects found by live fire (numbered to #34; #30 was withdrawn on
 evidence). Per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
@@ -123,6 +123,12 @@ the truth, records it, and then does not tell the human.** Corollaries:
   remediation first. For any acknowledgement, ask *when* it reaches the human
   relative to the work it describes — and treat silence on the only channel
   as its own failure, because the human re-sends into it.
+- **A signal that is only observed is a signal that is not working** (#34).
+  The correlation gate scored the live duplicate at 1.00 and, by design, did
+  nothing with it for weeks while the user's actual complaint was the
+  duplicates. Shadow mode is the right way to *earn* trust in a signal, but
+  it has to end: ask of any shadow-mode component what evidence would promote
+  it, then go read whether that evidence has already accumulated.
 - **Re-read the row before blaming the current build** (#30, withdrawn). Five
   jobs at `status=failed, attempt_count=1 of 3` looked like a live retry
   bypass; `last_error` *and* `result` were both set, which only the pre-#25
@@ -192,6 +198,43 @@ approved at 01:16:30 and ran 4 read-only/notification actions with nothing
 mutating attempted, so the banner correctly stayed off, the heading stayed
 "What the agent did", every line rendered ✅, and the status stayed
 INVESTIGATED. A correction that cannot stay silent is itself a defect.
+
+**#34** (fixed): the correlation gate watched the duplicates it was built to
+stop. Exact-title dedup gives one war room per *title*, but one pod running
+out of memory emits two titles — `[pdf-thumbnailer] PodOOMKilled` and
+`[pdf-thumbnailer] PodCrashLooping` — so it produced two incidents, two war
+rooms, two investigations and two remediations for one wrong memory limit;
+live that reached six pdf-thumbnailer threads in 75 minutes. The gate scored
+the `88fa9ee4` ↔ `3ed8be00` duplicate at **1.00** and, in Phase A shadow
+mode, only wrote a timeline event about it.
+
+Its own shadow record settled which half of the signal to act on — 18
+verdicts: **same service, 12 of 12 correct** (`PodCrashLooping` ↔
+`PodOOMKilled`; `PaymentServiceHighErrorRate` ↔ `PaymentProviderDown`);
+**cross-service text-similarity-only, 3 of 6 wrong** (`[thumb-worker]
+PodCrashLooping` ↔ `[ocr-extractor] PodCrashLooping` at 0.62), because a
+generic Kubernetes alert renders identical boilerplate whatever it fires on,
+so the text score is measuring the alert template, not the incident. So
+`incident_correlation.actionable_bundle` returns only the same-service match;
+`correlate` and the shadow record are unchanged, and the cross-service signal
+keeps shadowing.
+
+A fold needs three things to be true, each of which is a separate guard:
+the match is same-service; **something is actually working the parent**
+(`_parked_meaning` is None — folding onto a parked incident would mean
+nothing works the folded alert either, and unlike exact-title dedup there is
+a real choice here); and **the parent has a Slack thread**. The Slack notice
+is posted *first* and the fold is conditional on it landing — write-then-
+notify inverted on purpose, because a fold the on-call cannot see is worse
+than the duplicate thread it saves them. An undelivered notice falls through,
+retakes the dedup advisory lock the pre-Slack commit released, and opens the
+incident normally. The fold also uses its own window
+(`_FOLD_WINDOW_MINUTES`, 120) rather than the scorer's 15: the pool is
+already limited to incidents something is actively working, and the live pair
+cleared 15 minutes by a hair (01:02 → 01:17) while the two later
+pdf-thumbnailer threads fell outside it entirely. The notice says the part that has to be said out loud —
+*no separate investigation will run for it* — and offers `mark resolved` as
+the way out if the fold was wrong.
 
 **#33** (fixed, from the first successful live remediation): an `approve fix`
 reply got no answer for three minutes, and the answer it finally got was
@@ -264,7 +307,9 @@ is not only a model problem; audit assembly code for fields it drops.
 `sre_agent/`: `agent_state.py` (LLM-facing schemas + container decoding),
 `graph_builder.py` (planner/swarm prompts, fallback plan), `act_phase.py`,
 `approval_flow.py` (the Slack message that gates everything), `executor.py`,
-`policy_gate.py`, `incident_reconciler.py`, `api/v1/alerts.py` (dedup),
+`policy_gate.py`, `incident_reconciler.py`, `api/v1/alerts.py` (dedup, and the #34 fold: `_find_fold_target`,
+`_fold_alert_into_incident`), `incident_correlation.py`
+(`actionable_bundle` — what the gate is licensed to act on),
 `narrative.py`, `job_store.py`, `war_room_service.py`,
 `narration_grounding.py` (status → phase/command corrections),
 `api/v1/mission_control.py` (`_traced_chat_reply`, the chat-only seam),
@@ -274,7 +319,7 @@ three #32 consumers of a live run's outcome), `war_room.py`
 receipt seam).
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1279 passed,
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1303 passed,
   3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
 - **Task #5 done, live**: `555a3acb` [ocr-extractor] 64Mi→512Mi and `d2fb7c5d`
   [thumb-worker] →256Mi+200m, real `kubectl set resources` after a Slack
@@ -309,15 +354,13 @@ receipt seam).
   handled it correctly — the thread says "Investigation failed — no findings
   were produced … it needs a human" with the raw error, and invents no
   diagnosis — so this is an account blocker, not a defect.
-- **Correlation/dedup is built and switched off.** `_record_correlation_shadow`
-  (`api/v1/alerts.py:377`) scores every new incident against the cluster's
-  open ones and writes only a `correlation_shadow` timeline event; it is
-  Phase A validation data by design and never acts. Live it scored
-  `88fa9ee4` against `3ed8be00` at **1.00** ("same service"). This is the
-  direct cause of the user's standing complaint that there are too many
-  incidents to find the right thread: five pdf-thumbnailer incidents opened
-  in 75 minutes for one broken deployment. Turning the gate on is a bounded,
-  evidence-backed task.
+- **The cross-service correlation signal is still unvalidated** (#34 acted on
+  the same-service half only). Text similarity across two services was wrong
+  3 times in 6 because a generic alert template dominates the token overlap.
+  Shadow recording continues; promoting it needs either a real topology
+  adjacency map in the score or a tokenizer that strips the alert template,
+  plus a fresh shadow record under that change. Not a blocker for the user's
+  complaint — same-service was the whole of the live duplication.
 - **A `PodCrashLooping` alert clearing does not mean the pod recovered.**
   Three pdf-thumbnailer incidents auto-closed on
   `alert_cleared_external_verification` while the pod kept OOMKilling:
@@ -360,7 +403,7 @@ receipt seam).
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **Nothing has been pushed.** 32 local-only commits on `master`
+- **Nothing has been pushed.** 33 local-only commits on `master`
   (`git log master --not origin/master`); push only when asked.
 
 ## Operating the Codespace
@@ -385,11 +428,12 @@ Service ClusterIPs are reachable from the host; `kubectl port-forward` is not.
 
 ## Next bounded task
 **Blocked on Anthropic credits** — no investigation can run until the account
-is topped up, so anything needing a live incident waits. Code-only work is
-unaffected. The highest-value one is turning the correlation gate off shadow
-mode (see blockers): it is the direct fix for "too many incidents, I can't
-find the right thread", and it already scores the real duplicates at 1.00.
-Then finish Task #4 (below), then audit the **last narration surface** the same way
+is topped up, so anything needing a live incident waits. #34 is in and
+deployed but has *not* yet folded a live alert; the first thing to check once
+credits are back is a real `[service] PodCrashLooping` arriving while that
+service's `PodOOMKilled` incident is open, and confirming one thread, a
+`correlated_alert_folded` timeline event, and no second investigation job.
+Code-only work is unaffected: finish Task #4 (below), then audit the **last narration surface** the same way
 #31 did the chat one: the aggregate wrap-up
 (`build_supervisor_aggregate_content`) still passes model text to Slack with
 no status-derived correction. The question to ask: if the model narrates the
