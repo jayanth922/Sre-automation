@@ -100,6 +100,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
+      - name: Check release fixtures were generated, not hand-edited
+        run: uv run python -m benchmarks.make_release_fixtures --check
       - name: Run frozen candidate and regression matrix
         run: >-
           uv run python benchmarks/release_gate.py matrix

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for A09 content-addressed release and rollout gates."""
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -32,6 +33,40 @@ def _rewrite(path: Path, mutate) -> dict:
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return payload
+
+
+def _rewrite_trials(bundle_path: Path, mutate) -> None:
+    """Change the measurements, then make the bundle agree with them again.
+
+    Editing a summary field is no longer how you change what the gate
+    decides — that is the whole of defect #39. A test that wants to exercise
+    a regression has to put the regression in the records and leave the
+    bundle honest about them, exactly as the generator would.
+    """
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in bundle["evidence_artifacts"]
+        if item["kind"] == "paired_trials"
+    )
+    trials_path = bundle_path.parent / entry["path"]
+    rows = [
+        json.loads(line) for line in trials_path.read_text(encoding="utf-8").splitlines()
+    ]
+    for row in rows:
+        if row["candidate_id"] != "baseline":
+            mutate(row)
+    text = "".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows
+    )
+    trials_path.write_text(text, encoding="utf-8")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    entry["sha256"] = digest
+    for artifact in bundle["statistical_report"]["raw_artifacts"]:
+        artifact["sha256"] = digest
+    bundle_path.write_text(
+        json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def test_frozen_matrix_promotes_safe_and_blocks_prompt_model_tool_regressions():
@@ -75,7 +110,7 @@ def test_promoted_bundle_pins_policy_bundle_raw_evidence_and_rollback():
 
 def test_tampered_raw_artifact_is_rejected_before_release_claim(tmp_path):
     policy_path, bundle_path = _fixture_tree(tmp_path)
-    (bundle_path.parent / "evidence" / "trials.jsonl").write_text(
+    (bundle_path.parent / "evidence" / "safe" / "trials.jsonl").write_text(
         '{"tampered":true}\n', encoding="utf-8"
     )
 
@@ -93,6 +128,31 @@ def test_tampered_raw_artifact_is_rejected_before_release_claim(tmp_path):
 def test_approved_latency_and_cost_deltas_are_enforced(
     tmp_path, field, value, expected_reason
 ):
+    """The ratios are measured off the trials, not read off the bundle."""
+    policy_path, bundle_path = _fixture_tree(tmp_path)
+    _rewrite_trials(bundle_path, lambda row: row.__setitem__(field, value))
+    report = release.evaluate_bundle(bundle_path, policy_path)
+
+    assert report["release_decision"]["status"] == "BLOCK"
+    assert any(
+        expected_reason in reason for reason in report["release_decision"]["reasons"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("latency_seconds", 11.1),
+        ("cost_usd", 0.111),
+    ],
+)
+def test_editing_only_the_summary_cannot_change_the_verdict(tmp_path, field, value):
+    """Defect #39 in one assertion.
+
+    Before the gate recomputed anything, this same edit was the only thing
+    the latency and cost checks ever looked at: a number typed into the
+    bundle decided whether the release shipped.
+    """
     policy_path, bundle_path = _fixture_tree(tmp_path)
 
     def mutate(payload):
@@ -100,11 +160,13 @@ def test_approved_latency_and_cost_deltas_are_enforced(
 
     _rewrite(bundle_path, mutate)
     report = release.evaluate_bundle(bundle_path, policy_path)
+    reasons = report["release_decision"]["reasons"]
 
     assert report["release_decision"]["status"] == "BLOCK"
     assert any(
-        expected_reason in reason for reason in report["release_decision"]["reasons"]
-    )
+        f"claims candidate.{field}.mean={value}" in reason for reason in reasons
+    ), reasons
+    assert not any("exceeds approved regression ratio" in r for r in reasons), reasons
 
 
 def test_rollout_cannot_weaken_or_redirect_automatic_rollback(tmp_path):

@@ -7,10 +7,19 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import math
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    from benchmarks import release_evidence
+except ImportError:  # invoked as `python benchmarks/release_gate.py`, as CI does
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from benchmarks import release_evidence
+
 SCHEMA_VERSION = 1
+_ADVERSARIAL_DATASET_ROOT = Path(__file__).resolve().parent / "adversarial"
 _SHA256_LENGTH = 64
 _REQUIRED_EVIDENCE = {
     "paired_trials",
@@ -24,8 +33,68 @@ class ReleaseGateError(ValueError):
     """Release evidence or policy is malformed or cannot support promotion."""
 
 
+# 95% normal quantile, squared. `statistical_eval` builds its conservative
+# paired interval from two independent Wilson intervals at this level.
+_Z_SQUARED = 1.959963984540054**2
+
+
+def _reachable_pairs(margin: float) -> int:
+    """Fewest paired trials at which a flawless candidate could clear `margin`.
+
+    A candidate and baseline that both succeed on every trial still get the
+    interval [-(1-L), +(1-L)] with L = n/(n+z^2), because the evaluator
+    subtracts two independent Wilson intervals rather than pairing them. So
+    the margin is only reachable once 1-L <= margin.
+    """
+    if margin <= 0:
+        raise ReleaseGateError(
+            "policy non-inferiority margin must be positive to be reachable"
+        )
+    return math.ceil(_Z_SQUARED * (1.0 - margin) / margin)
+
+
+def _require_reachable_policy(statistical: dict[str, Any]) -> None:
+    """Refuse a policy no honest evaluation could ever satisfy.
+
+    The shipped policy asked for twenty paired trials and a 0.05 margin. The
+    narrowest interval twenty pairs can produce is +/-0.161, so every real
+    run of the evaluator would have blocked and only a hand-written report
+    could pass — which is precisely what the original fixtures were. A gate
+    whose policy is unsatisfiable does not gate anything; it selects for
+    fabricated evidence.
+    """
+    minimum_pairs = statistical["minimum_pairs"]
+    for key in ("recovery_noninferiority_margin", "quality_noninferiority_margin"):
+        needed = _reachable_pairs(statistical[key])
+        if minimum_pairs < needed:
+            raise ReleaseGateError(
+                f"policy.statistical.{key}={statistical[key]} is unreachable at "
+                f"minimum_pairs={minimum_pairs}; it needs at least {needed} pairs"
+            )
+    widest = 2.0 * _Z_SQUARED / (minimum_pairs + _Z_SQUARED)
+    if widest > statistical["maximum_ci_width"]:
+        raise ReleaseGateError(
+            "policy.statistical.maximum_ci_width="
+            f"{statistical['maximum_ci_width']} is unreachable at "
+            f"minimum_pairs={minimum_pairs}; the narrowest interval is {widest:.3f}"
+        )
+
+
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _recomputed(action, *args: Any, **kwargs: Any) -> Any:
+    """Run an evidence recomputation, reporting a bad artifact as a gate error.
+
+    Evidence that cannot be parsed is the same kind of failure as evidence
+    whose digest does not match: the bundle is unusable, and the caller gets
+    one error type for both rather than a traceback for one of them.
+    """
+    try:
+        return action(*args, **kwargs)
+    except release_evidence.ReleaseEvidenceError as exc:
+        raise ReleaseGateError(str(exc)) from exc
 
 
 def _sha256_value(value: Any, field: str) -> str:
@@ -127,6 +196,7 @@ def load_policy(path: Path) -> tuple[dict[str, Any], str]:
         "policy.statistical",
         exact_keys={
             "minimum_pairs",
+            "maximum_ci_width",
             "recovery_noninferiority_margin",
             "quality_noninferiority_margin",
             "maximum_latency_regression_ratio",
@@ -135,6 +205,14 @@ def load_policy(path: Path) -> tuple[dict[str, Any], str]:
     )
     _integer(
         statistical["minimum_pairs"], "policy.statistical.minimum_pairs", minimum=1
+    )
+    # The evaluator takes a CI width; the policy has to be the one that states
+    # it, or the gate's answer would depend on a library default.
+    _bounded_number(
+        statistical["maximum_ci_width"],
+        "policy.statistical.maximum_ci_width",
+        minimum=0.01,
+        maximum=2.0,
     )
     for key in (
         "recovery_noninferiority_margin",
@@ -145,6 +223,7 @@ def load_policy(path: Path) -> tuple[dict[str, Any], str]:
         _bounded_number(
             statistical[key], f"policy.statistical.{key}", minimum=0.0, maximum=1.0
         )
+    _require_reachable_policy(statistical)
     safety = _object(
         policy["safety"],
         "policy.safety",
@@ -288,21 +367,22 @@ def _artifact_evidence(bundle_path: Path, values: Any) -> list[dict[str, Any]]:
         actual = _sha256(raw)
         if actual != expected:
             raise ReleaseGateError(f"evidence artifact digest mismatch: {kind}")
-        if path.suffix == ".jsonl":
-            try:
-                lines = raw.decode("utf-8").splitlines()
-                if not lines or any(not line.strip() for line in lines):
-                    raise ValueError
-                for line in lines:
-                    json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-                raise ReleaseGateError(
-                    f"evidence artifact is not strict JSONL: {kind}"
-                ) from exc
-            if len(lines) != records:
-                raise ReleaseGateError(
-                    f"evidence artifact record count mismatch: {kind}"
-                )
+        # Unconditional, not gated on the suffix. `records` feeds the
+        # "enough evidence for the claimed trial count" checks below, so
+        # naming the file `trials.json` used to turn it into an unverified
+        # assertion about a file nobody counted.
+        try:
+            lines = raw.decode("utf-8").splitlines()
+            if not lines or any(not line.strip() for line in lines):
+                raise ValueError
+            for line in lines:
+                json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ReleaseGateError(
+                f"evidence artifact is not strict JSONL: {kind}"
+            ) from exc
+        if len(lines) != records:
+            raise ReleaseGateError(f"evidence artifact record count mismatch: {kind}")
         evidence.append(
             {
                 "kind": kind,
@@ -402,19 +482,53 @@ def evaluate_bundle(
         if not condition:
             reasons.append(reason)
 
-    statistical = _object(bundle["statistical_report"], "bundle.statistical_report")
-    if statistical.get("schema_version") != 2:
+    claimed_statistical = _object(
+        bundle["statistical_report"], "bundle.statistical_report"
+    )
+    if claimed_statistical.get("schema_version") != 2:
         raise ReleaseGateError("statistical report must use schema v2")
+    # The bundle's summary is a claim about its records, not a source of
+    # truth: re-derive the comparison from the trial rows and use that. A
+    # marker row never reaches this point — `load_trials` refuses any row
+    # whose key set is not trial schema v2.
+    statistical, trials = _recomputed(
+        release_evidence.recompute_statistical_report,
+        Path(evidence_by_kind["paired_trials"]["path"]),
+        baseline_id=baseline["candidate_id"],
+        candidate_id=candidate["candidate_id"],
+        statistical_policy=policy["statistical"],
+    )
+    reasons.extend(
+        release_evidence.claim_disagreements(
+            claimed_statistical,
+            statistical,
+            label="statistical",
+            paths=(
+                "paired.pair_count",
+                "baseline.runs",
+                "candidate.runs",
+                "candidate.safety_rate",
+                "candidate.structured_complete",
+                "baseline.latency_seconds.mean",
+                "candidate.latency_seconds.mean",
+                "baseline.cost_usd.mean",
+                "candidate.cost_usd.mean",
+                "paired.recovery.conservative_wilson_95",
+                "paired.quality.conservative_wilson_95",
+                "release_decision.status",
+            ),
+        )
+    )
     before = _object(statistical.get("baseline"), "statistical_report.baseline")
     after = _object(statistical.get("candidate"), "statistical_report.candidate")
     require(
-        before.get("candidate_id") == baseline["candidate_id"]
-        and before.get("config_fingerprint") == baseline["config_fingerprint"],
+        release_evidence.trials_fingerprints(trials, baseline["candidate_id"])
+        == baseline["config_fingerprint"],
         "statistical baseline identity does not match bundle",
     )
     require(
-        after.get("candidate_id") == candidate["candidate_id"]
-        and after.get("config_fingerprint") == candidate["config_fingerprint"],
+        release_evidence.trials_fingerprints(trials, candidate["candidate_id"])
+        == candidate["config_fingerprint"],
         "statistical candidate identity does not match bundle",
     )
     paired = _object(statistical.get("paired"), "statistical_report.paired")
@@ -431,6 +545,20 @@ def evaluate_bundle(
     require(
         evidence_by_kind["root_traces"]["records"] >= pair_count,
         "root-trace evidence has fewer records than paired trials",
+    )
+    # The trials name the traces their cost and latency came from. Until this
+    # check existed, `root_traces` was a file the gate counted the lines of.
+    root_traces, _ = _recomputed(
+        release_evidence.load_root_traces,
+        Path(evidence_by_kind["root_traces"]["path"]),
+    )
+    reasons.extend(
+        release_evidence.verify_root_traces(
+            root_traces,
+            trials,
+            baseline_id=baseline["candidate_id"],
+            candidate_id=candidate["candidate_id"],
+        )
     )
     for metric_name, policy_name in (
         ("recovery", "recovery_noninferiority_margin"),
@@ -518,8 +646,12 @@ def evaluate_bundle(
         statistical_decision.get("status") == "PROMOTE",
         "statistical evaluator blocked the candidate",
     )
+    # Asked of the *claimed* report on purpose: the recomputed one names the
+    # artifact it was just read from, so asking it the same question answers
+    # itself. What is still worth knowing is whether the summary the bundle
+    # shipped was written about this artifact at all.
     statistical_raw = _list(
-        statistical.get("raw_artifacts"), "statistical_report.raw_artifacts"
+        claimed_statistical.get("raw_artifacts"), "statistical_report.raw_artifacts"
     )
     require(
         any(
@@ -530,9 +662,40 @@ def evaluate_bundle(
         "statistical report is not linked to paired-trial evidence",
     )
 
-    adversarial = _object(bundle["adversarial_report"], "bundle.adversarial_report")
-    if adversarial.get("schema_version") != 1:
+    claimed_adversarial = _object(
+        bundle["adversarial_report"], "bundle.adversarial_report"
+    )
+    if claimed_adversarial.get("schema_version") != 1:
         raise ReleaseGateError("adversarial report must use schema v1")
+    # Same treatment as the statistical half. `evaluate` re-derives every
+    # violation from the prompt and output text carried in each observation
+    # and from the checked-in cases, so a bundle can no longer claim PASS
+    # over records that never contained a canary to leak.
+    adversarial = _recomputed(
+        release_evidence.recompute_adversarial_report,
+        Path(evidence_by_kind["adversarial_observations"]["path"]),
+        dataset_root=_ADVERSARIAL_DATASET_ROOT,
+        dataset_version=_string(
+            claimed_adversarial.get("dataset_version"),
+            "adversarial_report.dataset_version",
+        ),
+    )
+    reasons.extend(
+        release_evidence.claim_disagreements(
+            claimed_adversarial,
+            adversarial,
+            label="adversarial",
+            paths=(
+                "dataset_version",
+                "dataset_sha256",
+                "config_fingerprint",
+                "cases",
+                "passed",
+                "failed",
+                "release_decision.status",
+            ),
+        )
+    )
     require(
         adversarial.get("config_fingerprint") == candidate["config_fingerprint"],
         "adversarial report fingerprint does not match candidate",
@@ -559,7 +722,7 @@ def evaluate_bundle(
         "adversarial evaluator blocked the candidate",
     )
     adversarial_raw = _list(
-        adversarial.get("raw_artifacts"), "adversarial_report.raw_artifacts"
+        claimed_adversarial.get("raw_artifacts"), "adversarial_report.raw_artifacts"
     )
     require(
         any(

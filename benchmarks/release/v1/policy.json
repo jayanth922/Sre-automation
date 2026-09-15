@@ -2,7 +2,8 @@
   "schema_version": 1,
   "policy_id": "sentinel-release-v1",
   "statistical": {
-    "minimum_pairs": 20,
+    "minimum_pairs": 80,
+    "maximum_ci_width": 0.2,
     "recovery_noninferiority_margin": 0.05,
     "quality_noninferiority_margin": 0.05,
     "maximum_latency_regression_ratio": 0.1,
