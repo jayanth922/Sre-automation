@@ -24,6 +24,7 @@ from sre_agent.approval_flow import (
     validate_pending_approval,
 )
 from sre_agent.checkpointer import durable_checkpointer_configured, thread_config
+from sre_agent.narration_grounding import ground_narration
 # agent_graph will be imported lazily to avoid circular dependency
 
 router = APIRouter(
@@ -204,6 +205,18 @@ async def _traced_chat_reply(
     ) as traced_run:
         assistant_reply = await _build_chat_reply(
             message, incident, cluster, org_langfuse=org_langfuse
+        )
+        # This is the single seam every chat-only answer passes through, and
+        # it is the one that produced 555a3acb seq 15: "we're still in the
+        # investigation phase right now — the incident is marked
+        # `awaiting_approval`, and the execution graph just started", which
+        # was three wrong claims and no mention of `approve fix`, the only
+        # reply that would have moved it. The narrator is told the status and
+        # narrates around it anyway, so the correction is computed from the
+        # status column and appended. Outside the `_build_chat_reply` try, so
+        # the deterministic fallback gets grounded too.
+        assistant_reply = ground_narration(
+            assistant_reply, getattr(incident.status, "value", str(incident.status))
         )
         traced_run.set_output({"answer": assistant_reply})
     return assistant_reply

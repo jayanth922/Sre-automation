@@ -688,6 +688,7 @@ User's query: {current_query}
                     greeting_reply,
                     "Casual follow-up acknowledged in the incident thread.",
                     narrative=greeting_reply,
+                    incident_status=incident_status,
                 )
                 await emit_timeline_event(
                     incident_id,
@@ -804,6 +805,7 @@ User's query: {current_query}
                 direct_answer,
                 "Answered from the existing incident context.",
                 narrative=direct_answer,
+                incident_status=incident_status,
             )
             await emit_timeline_event(
                 incident_id,
@@ -909,6 +911,9 @@ User's query: {current_query}
                     ack_narrative or "Got it — I'll fold this in at the next checkpoint.",
                     human_interrupt["basis"],
                     narrative=ack_narrative,
+                    # This branch only runs mid-graph, so the investigation
+                    # really is in flight whatever the incident row says yet.
+                    incident_status="investigating",
                 )
 
             emitted_event = await emit_timeline_event(
@@ -1239,6 +1244,7 @@ User's query: {current_query}
                     final_followup_text,
                     "Specialist re-ran a probe; supervisor synthesised the answer.",
                     narrative=follow_up_summary,
+                    incident_status=chat_context.get("incident_status", ""),
                 )
                 await emit_timeline_event(
                     incident_id,

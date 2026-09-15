@@ -77,7 +77,8 @@ keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 on an already-resolved incident, before it opens a war room (#28).
 
 ## Completed or verified work
-Twenty-nine defects found by live fire; per-defect detail is in git log. The
+Thirty defects found by live fire (numbered to #31; #30 was withdrawn on
+evidence). Per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
 - **Check the sweep, not just the handler** (#19). Of any deadline stated in
@@ -106,6 +107,11 @@ the truth, records it, and then does not tell the human.** Corollaries:
   writes `open` and a dead worker leaves `investigating` behind. Ask the table
   that actually knows (`jobs`), and classify the ambiguous states rather than
   letting them inherit the happy-path reading.
+- **Compute the correction from the column, don't ask the model for it**
+  (#31, and #23 before it). Being *told* the status does not stop a narrator
+  contradicting it — the live seq-15 answer quoted `awaiting_approval` inside
+  a sentence claiming two other phases. Anything the database already knows
+  is stapled under the model's text, never negotiated with it in a prompt.
 - **Re-read the row before blaming the current build** (#30, withdrawn). Five
   jobs at `status=failed, attempt_count=1 of 3` looked like a live retry
   bypass; `last_error` *and* `result` were both set, which only the pre-#25
@@ -125,6 +131,29 @@ notice, the second firing was correctly suppressed by the 60-minute cooldown,
 and `incidents_created` stayed 0. The fallback in `record_investigation_job_
 failure` (extracted from `_run_graph_impl` to make it testable) also no longer
 hard-writes `FAILED` over a row the lease reaper has already requeued.
+
+**#31** (fixed, live-confirmed): a follow-up answer contradicted its own
+incident and never named the reply that would move it. `555a3acb` seq 15 —
+the first in-thread Slack question this platform answered — was *"we're still
+in the investigation phase right now — the incident is marked
+`awaiting_approval`, and the execution graph just started"*, then a
+walkthrough offer, with no mention of `approve fix`. Investigation was done,
+nothing was executing, a plan was waiting on a human. `narration_grounding`
+maps each `IncidentStatus` to a phase, a plain-English "what is actually
+happening", and the Slack reply that moves it, then appends a `---` block
+under the model's own text: a ⚠️ line naming each contradicted phase claim,
+and a 👉 line naming the exact command. The model's words are never edited.
+Wired at `mission_control._traced_chat_reply` — the single seam both
+chat-only branches pass through, and the one that produced seq 15 (it routes
+around the graph via `_is_chat_only_message`) — and at
+`incident_timeline.build_supervisor_direct_answer_content` for the four
+in-graph call sites. Verified two ways: the recorded seq-15 text re-grounded
+against the live DB now carries both corrections, and **8/8 replays** of
+`_build_chat_reply` against the real model with `555a3acb`'s real context
+never named the command on their own (8/8 correct after grounding) — the
+same 8/8 prompt-only failure rate #23 found. Every command in the map is
+asserted against the war room's own regexes, so the reply told to the reader
+is one the parser accepts.
 
 The five older ones, all committed, none pushed: **#25** retry machinery
 disabled by SQLAlchemy identity-map aliasing — `fail_job()`'s `select()` hands
@@ -172,10 +201,12 @@ correction below the model's text, as `narrative._echoed_alert_claims` does.
 `graph_builder.py` (planner/swarm prompts, fallback plan), `act_phase.py`,
 `approval_flow.py` (the Slack message that gates everything), `executor.py`,
 `policy_gate.py`, `incident_reconciler.py`, `api/v1/alerts.py` (dedup),
-`narrative.py`, `job_store.py`, `war_room_service.py`.
+`narrative.py`, `job_store.py`, `war_room_service.py`,
+`narration_grounding.py` (status → phase/command corrections),
+`api/v1/mission_control.py` (`_traced_chat_reply`, the chat-only seam).
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1233 passed,
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1256 passed,
   3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
 - **Task #5 done, live**: `555a3acb` [ocr-extractor] 64Mi→512Mi and `d2fb7c5d`
   [thumb-worker] →256Mi+200m, real `kubectl set resources` after a Slack
@@ -213,8 +244,8 @@ correction below the model's text, as `narrative._echoed_alert_claims` does.
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **Nothing has been pushed.** Local-only: `416c84f`, `936eefc`, `0eb6ee5`,
-  `50815bd`, `fef1a14`, `3c1cbc7`, `720d361`.
+- **Nothing has been pushed.** 29 local-only commits on `master`
+  (`git log master --not origin/master`); push only when asked.
 
 ## Operating the Codespace
 Run `scripts/codespace_boot.sh` after any resume — nothing else starts k3s,
@@ -231,11 +262,19 @@ lowercase; `incident_timeline_events.payload_json` is **text**, so cast
 Service ClusterIPs are reachable from the host; `kubectl port-forward` is not.
 
 ## Next bounded task
-Fix the narration-fidelity gap deterministically (above): the supervisor's
-Slack answers must not contradict the incident's own recorded status, and any
-message sent while an approval is outstanding must name the `approve fix`
-reply. Verify by replaying `4a0b0254` and `555a3acb` seq 15 evidence against
-the real model — prompt-only fixes have failed this bar before.
+Finish Task #4 (below), then audit the **remaining narration surfaces** the
+same way #31 did the chat one: the aggregate wrap-up
+(`build_supervisor_aggregate_content`) and the resolution report
+(`mode: resolution_report`, e.g. `555a3acb` seq 19) still pass model text to
+Slack with no status-derived correction. The question to ask of each: if the
+model narrates the wrong phase here, does the reader lose a command they
+needed? Reuse `narration_grounding.grounding_footnote`.
+
+Also unexplained, seen while replaying: the Langfuse exporter logs `Failed to
+export span batch code: 401, reason: Unauthorized` on every narrator call
+from inside the API container. Tracing was verified working in Task #8, so
+this is either a stale key in the container env or an org-credential
+regression — worth one look before trusting any Langfuse trace.
 
 Task #4 classes already exercised: slow-query (`dc1712ca`), dependency-down
 (`8c925dbd`, `b5287f11`), client-side false-positive (`2c49ac9d` — correctly
@@ -247,7 +286,10 @@ exercise #20 (`escalate` about ConfigMap `meridian-config` rather than a
 `config_change` on the `valueFrom`-sourced `CHAOS_MODE`).
 
 Cluster cleanup owed: `thumb-worker` and `ocr-extractor` are healthy at raised
-limits; `pdf-thumbnailer` still crashlooping by design. Open incidents:
-`9dfa33d4` (investigating), `3b879513`, `4a0b0254`, `47560f97`; `d3ca5138` and
-`f8ca9a54` investigated; `555a3acb` and `d2fb7c5d` awaiting a human
-`acknowledge`.
+limits; `pdf-thumbnailer` still crashlooping by design. Non-resolved incidents
+(2026-09-15): `f8ca9a54`, `d3ca5138`, `3d4030a0` investigated; `3b879513`
+`open` (its investigation is dead — #29's notice now fires on it);
+`555a3acb` and `d2fb7c5d` `pending_acknowledgment`. Owed from the human in
+Slack: `acknowledge` on `555a3acb` and `d2fb7c5d`, `mark resolved` on
+`d3ca5138` and `f8ca9a54`. No `approval_requests` are pending, so nothing
+needs `approve fix`.

@@ -549,3 +549,80 @@ async def test_investigated_follow_up_uses_durable_investigation_queue(monkeypat
     assert captured["alert_labels"] == {"service": "checkout"}
     assert captured["triggered_by"] == "dashboard_chat"
     assert captured["idempotency_key"].startswith(f"follow-up:{incident_id}:")
+
+
+# ---------------------------------------------------------------------------
+# Narration grounding on the chat-only reply path
+# ---------------------------------------------------------------------------
+
+async def _grounded_chat_reply(monkeypatch, *, status, reply):
+    """Run one chat-only turn through the real `_traced_chat_reply` seam."""
+    incident = SimpleNamespace(
+        id=uuid.uuid4(),
+        cluster_id=uuid.uuid4(),
+        status=status,
+        summary="Recovered.",
+        title="ocr-extractor crash-looping",
+        description="",
+        resolved_at=None,
+    )
+    cluster = SimpleNamespace(id=incident.cluster_id, org_id=uuid.uuid4(), name="cluster-a")
+
+    async def fake_build_chat_reply(message, inc, clus, org_langfuse=None):
+        return reply
+
+    async def fake_tracing_context(cluster_id_arg):
+        return None
+
+    traced = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_trace_run(name, **kwargs):
+        yield SimpleNamespace(set_output=lambda output: traced.__setitem__("output", output))
+
+    from sre_agent import tracing
+
+    monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
+    monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
+    monkeypatch.setattr(tracing, "trace_run", fake_trace_run)
+
+    answer = await mission_control._traced_chat_reply(
+        "what's happening?", incident, cluster, source="slack", user_id=None
+    )
+    return answer, traced
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reply_that_contradicts_the_status_is_corrected(monkeypatch):
+    """`555a3acb` seq 15, the real thing.
+
+    This is the path that produced it — `_is_chat_only_message` sent the
+    question here instead of the graph, and the narrator answered with three
+    claims the status column contradicts and no mention of `approve fix`.
+    """
+    answer, traced = await _grounded_chat_reply(
+        monkeypatch,
+        status=models.IncidentStatus.AWAITING_APPROVAL,
+        reply=(
+            "We're still in the investigation phase right now — the incident "
+            "is marked `awaiting_approval`, and the execution graph just "
+            "started."
+        ),
+    )
+
+    assert "an investigation is still running" in answer
+    assert "a remediation is executing" in answer
+    assert "reply `approve fix`" in answer
+    # The trace has to record what Slack was actually sent, not the draft.
+    assert traced["output"] == {"answer": answer}
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reply_that_agrees_with_the_status_is_untouched(monkeypatch):
+    answer, _ = await _grounded_chat_reply(
+        monkeypatch,
+        status=models.IncidentStatus.INVESTIGATING,
+        reply="Still digging — the logs specialist is running now.",
+    )
+
+    assert answer == "Still digging — the logs specialist is running now."

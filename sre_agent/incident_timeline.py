@@ -12,6 +12,7 @@ from backend import crud, database, models
 
 # Safe at module scope: narrative imports only prompt_guard from this package.
 from .narrative import _echoed_alert_claims
+from .narration_grounding import grounding_footnote
 
 logger = logging.getLogger(__name__)
 
@@ -554,22 +555,37 @@ def build_supervisor_direct_answer_content(
     basis: str,
     *,
     narrative: Optional[str] = None,
+    incident_status: str = "",
 ) -> Tuple[str, Dict[str, Any]]:
     """Build the timeline event for a supervisor direct answer (follow-up Q&A).
 
     `narrative`, when supplied, is the conversational reply that should be
     shown in the chat. Otherwise we fall back to whatever `answer` text the
     caller already produced.
+
+    `incident_status` is the incident's recorded status, and it grounds the
+    reply: see `narration_grounding`. This is the same technique the
+    echoed-alert-claims caveat above uses, for the same reason — the model is
+    told the status and narrates a different one anyway, and in a follow-up
+    answer that is the difference between the on-call replying `approve fix`
+    and the on-call waiting for an automation that is not coming.
     """
     if narrative and narrative.strip():
         content = narrative.strip()
     else:
         content = answer.strip() or "I can answer that directly."
+
+    footnote = grounding_footnote(content, incident_status)
+    if footnote:
+        content = "\n".join([content, "", "---", footnote])
+
     payload = {
         "mode": "direct_answer",
         "question": question,
         "answer": content,
         "basis": basis,
+        "incident_status": incident_status or None,
+        "grounding_footnote": footnote,
     }
     return content, payload
 
