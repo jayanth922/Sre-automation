@@ -4,8 +4,14 @@ MCP Tool Wrapper with Retry Logic and Structured Error Handling.
 
 This module provides reliability hardening for MCP tool calls by:
 1. Adding automatic retries with exponential backoff using tenacity
-2. Returning structured ToolError objects instead of raising exceptions
-3. Enabling graceful degradation when tools are unavailable
+2. Raising `ToolExecutionError` — a structured `ToolError` inside an exception
+   — when a tool is exhausted, so that every layer above (circuit breaker,
+   audit log, langgraph's ToolNode, the supervisor's caveats) can tell a
+   failure from an answer. It used to *return* the error text, which read as
+   success everywhere and is the defect `ToolExecutionError` documents.
+3. Refusing tools that only approved remediation may call
+   (`investigation_write_guard`)
+4. Enabling graceful degradation when tools are unavailable
 """
 
 import asyncio
@@ -27,6 +33,10 @@ from tenacity import (
 )
 
 from .audit_context import get_audit_context, note_audit_write_failure
+from .investigation_write_guard import (
+    ToolNotAuthorizedError,
+    wrap_tool_with_write_guard,
+)
 from backend.models import AgentAuditLog
 # We need a session factory here. For now, we'll do a local import to avoid circular dep
 # or assume the session is handled elsewhere. But for sync logging, we need a session.
@@ -55,8 +65,129 @@ class ToolError(BaseModel):
         )
 
 
+class ToolExecutionError(Exception):
+    """A tool failure that is still a failure by the time anyone reads it.
+
+    The retry wrapper used to `return error.to_agent_response()` — a plain
+    string. Every layer above it is built to notice an exception, so returning
+    made a total outage indistinguishable from a successful call. Probed on
+    2026-09-15 against a tool that raises `ConnectionError` on every attempt:
+
+        returned type : str
+        is_tool_error : False        # the module cannot parse its own output
+        cb failures   : {}           # circuit breaker recorded nothing
+        audit statuses: ['PENDING', 'SUCCESS']
+
+    Four consequences, all of them silent:
+
+    * `record_failure` is unreachable through `wrap_all_tools_with_retry`'s
+      composition, so the circuit breaker can never open and a dead MCP server
+      is re-dialled with full backoff forever.
+    * `AgentAuditLog` — the provenance record — stores the outage as SUCCESS,
+      with the error text filed as the result.
+    * langgraph's `ToolNode` only sets `ToolMessage.status == "error"` when the
+      bound tool *raises*. `agent_nodes.py` calls that "the ONLY reliable
+      signal for 'the tool itself failed'" and keys `tool_failures` off it, so
+      `agent_tool_failures` was structurally always empty and the six places in
+      `supervisor.py` that caveat a conclusion with it never fired. The system
+      could not say "I concluded this with the metrics tool down."
+    * `is_tool_error`/`parse_tool_error` parse JSON; `to_agent_response()`
+      emits prose. The graceful-degradation contract in `ToolError`'s own
+      docstring was broken at both ends.
+
+    Raising is safe for the one production caller, but not for free: these
+    tools are bound into `create_react_agent`, and langgraph's default handler
+    absorbs only `ToolInvocationError` and re-raises the rest, so an unhandled
+    raise here would kill the investigation instead of degrading it. That is
+    why `agent_nodes.py` passes an explicit
+    `ToolNode(tools, handle_tool_errors=handle_tool_execution_error)`: this
+    type — and only this type — becomes a `ToolMessage(status="error")`. The
+    agent still gets a readable explanation and still continues; it just now
+    gets a *typed* one, and so does everybody else on the way up.
+    """
+
+    def __init__(self, error: "ToolError"):
+        super().__init__(error.to_agent_response())
+        self.tool_error = error
+
+
+@functools.lru_cache(maxsize=1)
+def policy_refusals() -> tuple:
+    """The exception types that mean "we decided not to run this".
+
+    Both subclass `PermissionError`, but matching on `PermissionError` itself
+    would sweep in a real 403 from a cluster we genuinely lack RBAC for —
+    an environment failure the on-call needs to see as a failure, not as our
+    own policy. So the two are named.
+    """
+    from .namespace_scope import NamespaceScopeError
+
+    return (ToolNotAuthorizedError, NamespaceScopeError)
+
+
+def handle_tool_execution_error(exc: Exception) -> str:
+    """`handle_tool_errors` hook for the `ToolNode` behind each specialist.
+
+    langgraph's own default only absorbs `ToolInvocationError` (bad arguments)
+    and re-raises everything else, which would turn a dead MCP server into a
+    dead investigation. Verified against the installed version by running a
+    raising tool through a compiled graph: the `ConnectionError` propagated out
+    of the node and killed the run.
+
+    So the node needs to be told about `ToolExecutionError` explicitly. Doing
+    it here rather than with `handle_tool_errors=True` keeps the blanket catch
+    off: a genuinely unexpected exception is still a crash we want to see, not
+    a sentence dropped into the model's context.
+
+    Returning the message makes langgraph emit `ToolMessage(status="error")`,
+    which is the signal `agent_nodes.py` records in `tool_failures`.
+
+    A policy refusal is absorbed for a second reason, which a probe against
+    a compiled graph on 2026-09-15 made concrete: an exception that leaves
+    this node kills the node, and any *sibling* tool call langgraph started
+    in the same parallel batch dies unfinished with it. So a refusal that
+    escaped here would not merely go unread by the model — it would take the
+    read-only calls beside it down too, which is the opposite of what the
+    refusal text asks the agent to do. Both refusal types carry a message
+    written to be read by the model, so returning it is the whole point.
+    """
+    if isinstance(exc, ToolExecutionError):
+        return str(exc)
+    if isinstance(exc, policy_refusals()):
+        return str(exc)
+    from langgraph.prebuilt.tool_node import ToolInvocationError
+
+    if isinstance(exc, ToolInvocationError):
+        return getattr(exc, "message", str(exc))
+    raise exc
+
+
+def _exhausted(tool_name: str, exc: BaseException, attempts: int) -> ToolError:
+    return ToolError(
+        tool_name=tool_name,
+        error_message=str(exc) if exc else "Unknown error after retries",
+        retry_count=attempts,
+        is_recoverable=False,
+        suggestion=f"The {tool_name} tool is unavailable. Proceed with data from other tools.",
+    )
+
+
+def _attempts_made(exc: "RetryError", default: int) -> int:
+    """How many times the tool was actually called.
+
+    The old code reported `retry_count=1` and logged "failed on first attempt"
+    after tenacity had already retried, because `reraise=True` re-raises the
+    *original* exception and the `except RetryError` branch was dead. The audit
+    trail recorded a wrong attempt count for every exhausted tool.
+    """
+    last = getattr(exc, "last_attempt", None)
+    return getattr(last, "attempt_number", default) or default
+
+
 def is_tool_error(result: Any) -> bool:
-    """Check if a result is a ToolError (either object or JSON string)."""
+    """Check if a result is a ToolError (object, raised error, or JSON string)."""
+    if isinstance(result, ToolExecutionError):
+        return True
     if isinstance(result, ToolError):
         return True
     if isinstance(result, str):
@@ -70,6 +201,8 @@ def is_tool_error(result: Any) -> bool:
 
 def parse_tool_error(result: Any) -> Optional[ToolError]:
     """Parse a ToolError from result if present."""
+    if isinstance(result, ToolExecutionError):
+        return result.tool_error
     if isinstance(result, ToolError):
         return result
     if isinstance(result, str):
@@ -107,11 +240,15 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
         return tool
     
     # Create retry decorator with logging
+    # `reraise=False` so tenacity raises RetryError once the attempts are spent.
+    # With reraise=True it re-raised the original exception instead, which made
+    # the `except RetryError` branch below dead code: every exhausted tool fell
+    # into the generic handler and was recorded as a single recoverable failure.
     retry_decorator = retry(
         stop=stop_after_attempt(max_attempts),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True  # We'll catch and handle in wrapper
+        reraise=False,
     )
     
     # Wrap synchronous invoke
@@ -126,15 +263,10 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
             return result
         except RetryError as e:
             last_exception = e.last_attempt.exception() if e.last_attempt else None
-            error = ToolError(
-                tool_name=tool_name,
-                error_message=str(last_exception) if last_exception else "Unknown error after retries",
-                retry_count=max_attempts,
-                is_recoverable=False,
-                suggestion=f"The {tool_name} tool is unavailable. Proceed with data from other tools."
-            )
-            logger.error(f"Tool {tool_name} failed after {max_attempts} retries: {error.error_message}")
-            return error.to_agent_response()
+            attempts = _attempts_made(e, max_attempts)
+            error = _exhausted(tool_name, last_exception, attempts)
+            logger.error(f"Tool {tool_name} failed after {attempts} attempts: {error.error_message}")
+            raise ToolExecutionError(error) from last_exception or e
         except Exception as e:
             error = ToolError(
                 tool_name=tool_name,
@@ -143,8 +275,8 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
                 is_recoverable=True,
                 suggestion=f"Single failure in {tool_name}. Consider retrying manually."
             )
-            logger.warning(f"Tool {tool_name} failed on first attempt: {e}")
-            return error.to_agent_response()
+            logger.warning(f"Tool {tool_name} failed without retrying: {e}")
+            raise ToolExecutionError(error) from e
     
     # Wrap asynchronous ainvoke if present
     if original_ainvoke is not None:
@@ -159,15 +291,10 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
                 return result
             except RetryError as e:
                 last_exception = e.last_attempt.exception() if e.last_attempt else None
-                error = ToolError(
-                    tool_name=tool_name,
-                    error_message=str(last_exception) if last_exception else "Unknown error after retries",
-                    retry_count=max_attempts,
-                    is_recoverable=False,
-                    suggestion=f"The {tool_name} tool is unavailable. Proceed with data from other tools."
-                )
-                logger.error(f"Tool {tool_name} failed after {max_attempts} retries: {error.error_message}")
-                return error.to_agent_response()
+                attempts = _attempts_made(e, max_attempts)
+                error = _exhausted(tool_name, last_exception, attempts)
+                logger.error(f"Tool {tool_name} failed after {attempts} attempts: {error.error_message}")
+                raise ToolExecutionError(error) from last_exception or e
             except Exception as e:
                 error = ToolError(
                     tool_name=tool_name,
@@ -176,8 +303,8 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
                     is_recoverable=True,
                     suggestion=f"Single failure in {tool_name}. Consider retrying manually."
                 )
-                logger.warning(f"Tool {tool_name} failed on first attempt: {e}")
-                return error.to_agent_response()
+                logger.warning(f"Tool {tool_name} failed without retrying: {e}")
+                raise ToolExecutionError(error) from e
         
         object.__setattr__(tool, "ainvoke", safe_ainvoke)
     
@@ -228,6 +355,16 @@ def log_audit_entry(
             elif status == "FAILURE":
                 msg = f"[{timestamp}] ❌ FAILED: {tool_name} error: {error}"
                 state_store.append_log(str(incident_id), msg)
+            elif status == "REFUSED":
+                # Not a failure — nothing was called. An operator needs to see
+                # this one *more* than a failure, not less.
+                msg = f"[{timestamp}] 🚫 REFUSED: {tool_name} — {error}"
+                state_store.append_log(str(incident_id), msg)
+            elif status == "CANCELLED":
+                # The reader's alternative is the 🔧 EXECUTING line above,
+                # still standing, hours after the call was abandoned.
+                msg = f"[{timestamp}] ⏹️ CANCELLED: {tool_name} — {error}"
+                state_store.append_log(str(incident_id), msg)
 
         # Write to PostgreSQL for the Audit Log card
         with SessionLocal() as session:
@@ -266,6 +403,39 @@ def log_audit_entry(
         return audit_id
 
 
+def _audit_status_for(exc: BaseException) -> str:
+    """"The tool broke", "we did not let it run" and "we abandoned it" are
+    three different events.
+
+    All three end in an exception here, and collapsing them into FAILURE
+    would file an attempted unapproved write alongside a flaky Prometheus —
+    and, worse, would still leave the abandoned call with no terminal row at
+    all, because `CancelledError` is a `BaseException` and never reached the
+    old `except Exception`. Live on 2026-09-15: 18 `agent_audit_logs` rows
+    sat at PENDING forever, always in same-millisecond bursts, because one
+    tool in a parallel batch raised and langgraph cancelled its siblings.
+    """
+    if isinstance(exc, policy_refusals()):
+        return "REFUSED"
+    if isinstance(exc, asyncio.CancelledError):
+        return "CANCELLED"
+    return "FAILURE"
+
+
+def _audit_error_text(exc: BaseException) -> str:
+    """`str(CancelledError())` is the empty string, and an audit row whose
+    error column is blank says nothing about why the call ended."""
+    text = str(exc)
+    if text:
+        return text
+    if isinstance(exc, asyncio.CancelledError):
+        return (
+            "Cancelled before it returned — another tool in the same parallel "
+            "batch raised, so langgraph tore down its siblings."
+        )
+    return type(exc).__name__
+
+
 def wrap_tool_with_audit(tool: Any) -> Any:
     """
     Wrap a tool to log execution to AgentAuditLog.
@@ -283,9 +453,15 @@ def wrap_tool_with_audit(tool: Any) -> Any:
                 result = original_invoke(*args, **kwargs)
                 log_audit_entry(tool_name, "SUCCESS", input_data, result=result, audit_id=audit_id)
                 return result
-            except Exception as e:
-                log_audit_entry(tool_name, "FAILURE", input_data, error=str(e), audit_id=audit_id)
-                raise e
+            except BaseException as e:
+                log_audit_entry(
+                    tool_name,
+                    _audit_status_for(e),
+                    input_data,
+                    error=_audit_error_text(e),
+                    audit_id=audit_id,
+                )
+                raise
         # Use object.__setattr__ to bypass Pydantic immutability/validation
         object.__setattr__(tool, "invoke", audit_invoke)
 
@@ -300,9 +476,18 @@ def wrap_tool_with_audit(tool: Any) -> Any:
                 result = await original_ainvoke(*args, **kwargs)
                 log_audit_entry(tool_name, "SUCCESS", input_data, result=result, audit_id=audit_id)
                 return result
-            except Exception as e:
-                log_audit_entry(tool_name, "FAILURE", input_data, error=str(e), audit_id=audit_id)
-                raise e
+            except BaseException as e:
+                # BaseException, not Exception: a sibling tool call cancelled
+                # by langgraph raises CancelledError, which the narrower
+                # clause let past without ever closing the PENDING row.
+                log_audit_entry(
+                    tool_name,
+                    _audit_status_for(e),
+                    input_data,
+                    error=_audit_error_text(e),
+                    audit_id=audit_id,
+                )
+                raise
         object.__setattr__(tool, "ainvoke", audit_ainvoke)
         
     return tool
@@ -440,11 +625,13 @@ def wrap_all_tools_with_retry(
     execution_context: Any = None,
 ) -> list:
     """
-    Wrap all tools in a list with:
-    1. Retry Logic (Inner)
-    2. Circuit Breaker (Middle)
-    3. Audit Logic (Outer)
-    
+    Wrap all tools in a list with, innermost first:
+    1. Retry Logic
+    2. Circuit Breaker
+    3. Namespace Scope (when an execution context is supplied)
+    4. Write Guard — refuses tools only approved remediation may call
+    5. Audit Logic (Outer)
+
     Args:
         tools: List of LangChain BaseTool instances
         max_attempts: Maximum retry attempts per tool call
@@ -464,13 +651,19 @@ def wrap_all_tools_with_retry(
         if execution_context is not None:
             scoped_tool = wrap_tool_with_namespace_scope(cb_tool, execution_context)
 
-        # Audit remains outermost so rejected scope attempts are recorded.
-        audit_tool = wrap_tool_with_audit(scoped_tool)
+        # 3. Refuse remediation-only tools outright. These tools are reachable
+        # only through the approved executor path; a specialist holding one is
+        # a configuration mistake, and calling it would bypass the human.
+        guarded_tool = wrap_tool_with_write_guard(scoped_tool)
+
+        # Audit remains outermost so rejected scope attempts and refused
+        # writes are both recorded.
+        audit_tool = wrap_tool_with_audit(guarded_tool)
         
         wrapped_tools.append(audit_tool)
     
     logger.info(
-        "Wrapped %s tools with Retry + CircuitBreaker + Namespace + Audit",
+        "Wrapped %s tools with Retry + CircuitBreaker + Namespace + WriteGuard + Audit",
         len(wrapped_tools),
     )
     return wrapped_tools

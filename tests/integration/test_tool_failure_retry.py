@@ -42,9 +42,16 @@ def test_transient_tool_failure_retries_then_succeeds(monkeypatch):
 
 
 @pytest.mark.integration
-def test_exhausted_retries_return_structured_tool_error(monkeypatch):
+def test_exhausted_retries_raise_a_structured_tool_error(monkeypatch):
+    """This test used to assert the defect.
+
+    It read "Wrapper returns an agent-facing error payload rather than
+    raising" and passed on a plain string — which is precisely how a dead MCP
+    server reached `AgentAuditLog` as SUCCESS and left `agent_tool_failures`
+    empty. See `tests/test_tool_failure_contract.py` for the full account.
+    """
     tenacity = pytest.importorskip("tenacity")
-    from sre_agent.mcp_tool_wrapper import wrap_tool_with_retry
+    from sre_agent.mcp_tool_wrapper import ToolExecutionError, wrap_tool_with_retry
 
     monkeypatch.setattr(
         "sre_agent.mcp_tool_wrapper.wait_exponential",
@@ -56,8 +63,11 @@ def test_exhausted_retries_return_structured_tool_error(monkeypatch):
         side_effects=[RuntimeError("down"), RuntimeError("down"), RuntimeError("down")],
     )
     wrapped = wrap_tool_with_retry(tool, max_attempts=3)
-    result = wrapped.invoke({})
-    # Wrapper returns an agent-facing error payload rather than raising.
-    text = str(result).lower()
-    assert "loki_query" in text or "unavailable" in text or "error" in text
+
+    with pytest.raises(ToolExecutionError) as caught:
+        wrapped.invoke({})
+
     assert tool.calls >= 3
+    assert caught.value.tool_error.tool_name == "loki_query"
+    assert caught.value.tool_error.retry_count == 3
+    assert "loki_query" in str(caught.value)

@@ -461,7 +461,12 @@ class AgentAuditLog(Base):
     tool_name: Mapped[str] = mapped_column(String, nullable=False)
     tool_args: Mapped[str] = mapped_column(Text)
 
-    status: Mapped[str] = mapped_column(String)  # PENDING, SUCCESS, FAILURE
+    # PENDING, SUCCESS, FAILURE, REFUSED, CANCELLED. The last two are not
+    # failures: REFUSED means the tool was never contacted (it mutates
+    # systems, or reaches outside the tenant's namespace), and CANCELLED
+    # means the call was abandoned when a sibling in the same parallel batch
+    # raised. A row left at PENDING would claim it is still running.
+    status: Mapped[str] = mapped_column(String)
     result: Mapped[Optional[str]] = mapped_column(Text)
     error_message: Mapped[Optional[str]] = mapped_column(Text)
 

@@ -143,8 +143,21 @@ class BaseAgentNode:
 
             agent_tools = cached_tools(self.tools)
 
-        # Create the react agent
-        self.agent = create_react_agent(self.llm, agent_tools)
+        # Create the react agent. The tools go in as an explicit ToolNode so a
+        # ToolExecutionError (an MCP server that stayed down through every
+        # retry) becomes a ToolMessage with status="error" instead of killing
+        # the run — langgraph's default handler re-raises anything that isn't a
+        # bad-arguments error. That status is what `tool_failures` below is
+        # keyed off, so this is the join between a tool being down and the
+        # supervisor being able to say so.
+        from langgraph.prebuilt import ToolNode
+
+        from .mcp_tool_wrapper import handle_tool_execution_error
+
+        self.agent = create_react_agent(
+            self.llm,
+            ToolNode(agent_tools, handle_tool_errors=handle_tool_execution_error),
+        )
 
     def _get_system_prompt(self) -> str:
         """Get system prompt for this agent using prompt loader."""
