@@ -434,7 +434,28 @@ kube-state-metrics + a `cluster-resources` rule group, and a recency guard on
 `PodOOMKilled` (`kube_pod_..._last_terminated_reason` fires forever otherwise).
 
 ## Active problem
-**Narration fidelity is the last open honesty gap, and it recurred twice.** On
+**#40: 73% of this system's investigations are killed mid-flight.** Over the
+12 hours to 2026-09-15 14:45, 15 incidents opened, **all 15 auto-resolved**
+(shortest lifetime 60 seconds), and the jobs behind them ended **11
+`cancelled` to 4 `completed`**. Every one was an Alertmanager clear reaching
+`fire_resolution_side_effects`, whose first act is to cancel the
+investigation. This is larger than anything in the Codex audit, because it
+does not degrade the output — it discards the work entirely after paying for
+it. It has three distinct costs: the diagnosis is thrown away (one cancelled
+run had already root-caused an alert rule); a clearing alert is not recovery
+(a pod *restart* clears `PodOOMKilled`, backoff clears `PodCrashLooping`); and
+it silently discards **pending human approvals** — `cf58ef6a` posted its
+approval request at 06:17:52 and was resolved at 06:18:56, so the window a
+human had to approve anything was 64 seconds. Fix shape: split the resolve
+paths. A human resolve keeps cancelling; an external clear marks the incident
+resolved but lets the in-flight job finish and post its findings, then
+hard-stops at the approval boundary with a message saying the alert cleared
+so no write will be proposed — preserving #28's invariant (no cluster write
+for an alert that stopped firing) without burning the investigation. If an
+approval is already outstanding when the clear arrives, say so in the thread
+rather than closing silently.
+
+**Narration fidelity is the other open honesty gap, and it recurred twice.** On
 `4a0b0254` the supervisor TL;DR claimed "a regression introduced in that
 rollout" and "the Loki Specialist found no error logs", discarding the
 specialist's actual finding (a 150 MiB warm-up cannot fit a 64Mi limit). On
@@ -480,8 +501,17 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
 `--check` is what CI asserts), `release/v1/{policy.json,ci-matrix.json}`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1402 passed,
-  3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1426 passed,
+  3 skipped** (426s), plus `pytest tests/integration -m integration` → 13
+  passed. `bash scripts/check_python_quality.sh` and `check_eval_smoke.sh`
+  both pass. Health is `/ping` on **port 8080** (`/health` 404s).
+- **#38 is live-confirmed** (2026-09-15 14:45). `agent_audit_logs` totals
+  went SUCCESS 2261 → **2507** while PENDING stayed **18** and FAILURE **8**:
+  246 more live tool calls, **zero new orphan rows**. The most recent PENDING
+  and FAILURE are both 05:11, from `f643ed9e` — the pre-fix incident that
+  motivated #38 — so nothing after the deploy left a row unclosed. Still
+  unexercised live: the refusal→CANCELLED path (no CANCELLED row exists yet)
+  and #35's dead-tool FAILURE path (no FAILURE since 05:11).
 - **#35–#38 are deployed and behaviourally probed inside `sre-agent-api`**
   (2026-09-15). All five files md5-match local
   (`mcp_tool_wrapper.py`, `agent_nodes.py`, `act_phase.py`,
@@ -556,13 +586,15 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
   `alert_cleared_external_verification` while the pod kept OOMKilling:
   CrashLoopBackOff slows the *restart rate* below the rule's threshold, so
   the alert goes quiet on backoff, not recovery.
-- **A clearing alert cancels a live investigation and throws away what it
-  already found** — same root cause as the entry above, but the cost is
-  larger than a premature close. `fire_resolution_side_effects` begins with
-  `job_store.cancel_incident_investigations` (#28's design, correct for a
-  *human* resolve), and the Alertmanager-clear path reaches it too. Measured
-  2026-09-15 05:08: of the last six investigations, **five `cancelled`, one
-  `completed`**, parents auto-resolving within ~2 minutes. One cancelled run
+- **#40 — a clearing alert cancels a live investigation and throws away what
+  it already found.** Same root cause as the entry above, but the cost is
+  larger than a premature close, and it is now the **largest single defect in
+  the system** — see Active problem. `fire_resolution_side_effects` begins
+  with `job_store.cancel_incident_investigations` (#28's design, correct for
+  a *human* resolve), and the Alertmanager-clear path
+  (`api/v1/alerts.py:691`) reaches the same function. Measured 2026-09-15
+  14:45 over 12 hours: **15 incidents opened, 15 auto-resolved** (shortest
+  lifetime 60s), jobs **11 `cancelled` / 4 `completed`**. One cancelled run
   had already produced a real finding — that the `InventoryHighErrorRate`
   rule counts 404s as errors — and it was discarded. This is also why #34's
   fold has never fired live (0 `correlated_alert_folded` events): nothing
@@ -616,13 +648,19 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **`master` is pushed and level with `origin/master`** as of 2026-09-15
-  (`a989845`), on request. It had carried 33 local-only commits. Keep the
-  standing rule: push only when asked, and check
-  `git log master --not origin/master` rather than assuming either way.
-  `.env.local-backup-20260910` holds live `SECRET_KEY` and
+- **#35–#39 are committed but not pushed** (2026-09-15, on request):
+  `d2bef4a` #36, `d454a33` #37, `7b428e0` #35+#38 (one commit — both edit
+  `mcp_tool_wrapper.py`), `f9fb6d6` #39, `15b8712` the F811 fix that was
+  failing CI's `python-quality` job. Working tree is otherwise clean. Keep the standing rule: push only when
+  asked, and check `git log master --not origin/master` rather than assuming
+  either way. `.env.local-backup-20260910` holds live `SECRET_KEY` and
   `CREDENTIAL_ENCRYPTION_KEY`, is untracked, and is **not** matched by
   `.gitignore`'s `.env` pattern — stage explicit paths, never `git add -A`.
+- **k3s is down again** (2026-09-15 14:50): nothing listening on :6443,
+  `connection refused`. Run `scripts/codespace_boot.sh` and verify
+  `sudo k3s kubectl get nodes` before approving anything — an approval
+  executed against a dead API server is how #32 happened. Note `systemctl`
+  does not work in this container; use `service`.
 
 ## Operating the Codespace
 **Run `scripts/codespace_boot.sh` after any resume, and verify k3s before
@@ -638,31 +676,42 @@ container is image-baked with no source mount: each change needs base64 →
 **Deploy with `deploy.sh`-style per-chunk `>` writes, never `>>`** — the ssh
 wrapper retries, and a retried append silently duplicated a payload 4×.
 Scripts run as `docker exec -w /app sre-agent-api uv run python …`; SQL pipes
-into `docker exec -i sre-postgres psql`. Incident `status` values are
-lowercase; `incident_timeline_events.payload_json` is **text**, so cast
+into `docker exec -i sre-postgres psql` (user `sre_user`, db `sre_platform`).
+Incident `status` values are lowercase;
+`incident_timeline_events.payload_json` is **text**, so cast
 `(payload_json::jsonb)`. `clusters` has no `organization_id`;
-`approval_requests` has no `action_type`. The only namespace is `meridian`.
-Service ClusterIPs are reachable from the host; `kubectl port-forward` is not.
+`approval_requests` has no `action_type`; `incidents` has no
+`resolution_type`; `agent_audit_logs`' time column is **`timestamp`**, not
+`created_at`. The only namespace is `meridian`. Service ClusterIPs are
+reachable from the host; `kubectl port-forward` is not. There is **no `curl`
+in the API container**, and **`systemctl` does not work** in the Codespace
+container — use `service`. Confirm a column before querying it
+(`information_schema.columns`) rather than guessing from the ORM.
 
 ## Next bounded task
-**#38 has had its first live-fire run; #35's and #37's refusal paths have
-not.** `cf58ef6a` ([api-gateway] PodOOMKilled, 06:09–06:18) ran **39 tool
-calls, all SUCCESS, all terminal**, and the global histogram stayed at
-PENDING 18 / FAILURE 8 — no new orphan rows, which is exactly what #38
-predicts. But the run issued no `list_namespaces` and nothing died, so the
-refusal→CANCELLED half (#38), the FAILURE-on-dead-tool half (#35) and the
-write-guard REFUSED path (#37) are still unexercised under live fire. The 18
-pre-existing orphan PENDINGs are left in place as evidence; rewriting audit
-history to tidy a dashboard is the wrong trade. What still needs watching on
-the next run: a FAILURE row for any dead tool (#35), a severity evidence link
-whose source starts `tool:` (#36), REFUSED rather than FAILURE for a policy
-refusal (#37). #34's fold still has *not* fired live; its prerequisite is the
-cancel-on-alert-clear blocker above, not #34 itself.
+**Fix #40, the cancel-on-alert-clear defect** — design and measurement under
+Active problem. Touch points: `approval_flow.fire_resolution_side_effects`
+(shared by all three resolve paths) and its external caller
+`api/v1/alerts.py:691`, guarded so `act_phase` still refuses to propose a
+write for a cleared alert. Landing it unblocks two things that have never
+been observed live: #34's fold (0 `correlated_alert_folded` events, because
+nothing stays open long enough to be a fold target) and the remaining
+live-fire checks below.
 
-**Owed from the human in Slack right now**: `mark resolved` on `f643ed9e`
-([checkout-service] CheckoutHighErrorRate, parked at `investigated` since
-05:11 while its alert keeps firing ~83%) — until then every re-firing dies in
-dedup and no fresh checkout incident can open.
+**Live-fire checks still owed on #35/#37/#38.** `cf58ef6a` ran 39 tool calls,
+all SUCCESS, all terminal, and 246 calls since the deploy left no new orphan
+rows — so #38's audit half is confirmed. Unexercised: the refusal→CANCELLED
+path (no CANCELLED row exists yet), #35's dead-tool FAILURE path (no FAILURE
+since 05:11, pre-fix), and #37's REFUSED path. What to watch on the next run
+that hits one: a FAILURE row for a genuinely dead tool (#35), a severity
+evidence link whose source starts `tool:` (#36), REFUSED rather than FAILURE
+for a policy refusal (#37), and no PENDING row that never closes (#38). The
+18 historical orphan PENDINGs stay in place as evidence; rewriting audit
+history to tidy a dashboard is the wrong trade.
+
+**Nothing is owed from the human in Slack right now** — 0 incidents are in a
+non-resolved state as of 14:45. That is itself the symptom of #40, not
+health: the queue is empty because every incident closed itself.
 
 **Codex findings not yet acted on**, in descending feasibility: P0 #4
 crash-resumable remediation (`act_phase` has no resume point mid-plan — the
@@ -693,23 +742,20 @@ regression — worth one look before trusting any Langfuse trace.
 Task #4 classes already exercised: slow-query (`dc1712ca`), dependency-down
 (`8c925dbd`, `b5287f11`), client-side false-positive (`2c49ac9d` — correctly
 proposed **zero** mutations), unhandled exception (`f8ca9a54`), memory-leak
-(`d3ca5138`, investigation only), OOM/resource-limit (`555a3acb`,
-`d2fb7c5d`). Task #4 is **blocked on a human** replying `mark resolved` on
-`d3ca5138`'s Slack thread; the next delivery opens a fresh incident that would
-exercise #20 (`escalate` about ConfigMap `meridian-config` rather than a
-`config_change` on the `valueFrom`-sourced `CHAOS_MODE`).
+(`d3ca5138`, investigation only), OOM/resource-limit (`555a3acb`, `d2fb7c5d`,
+`cf58ef6a`), high-error-rate (`f643ed9e`). All are now resolved. Still
+unexercised: a config-drift class that would trigger #20 (`escalate` about
+ConfigMap `meridian-config` rather than a `config_change` on the
+`valueFrom`-sourced `CHAOS_MODE`). Task #4's real blocker is no longer a human
+reply — it is #40: an injected fault clears before the investigation of it
+finishes, so the class gets opened but never fully observed.
 
-Cluster cleanup owed: `thumb-worker` and `ocr-extractor` are healthy at raised
-limits. **`pdf-thumbnailer` is genuinely broken, not by design**: still
-OOMKilled at `limits.memory=64Mi`, 0/1 available, ~68 restarts. Its fix was
-approved and never landed (#32), and its incident `be398969` sits at
-`investigated` — a status the fixed code would no longer produce, left as-is
-because approval state is never patched in the DB by hand. Non-resolved
-incidents (2026-09-15): `f8ca9a54`, `d3ca5138`, `3d4030a0`, `be398969`
-investigated; `3b879513` `open` (its investigation is dead — #29's notice now
-fires on it); `555a3acb` and `d2fb7c5d` `pending_acknowledgment`. Owed from
-the human in Slack: `acknowledge` on `555a3acb` and `d2fb7c5d`, `mark
-resolved` on `f8ca9a54`, `d3ca5138`, `3b879513` and `be398969`.
+Cluster cleanup owed (as of the last live check, before k3s went down):
+`thumb-worker` and `ocr-extractor` healthy at raised limits;
+**`pdf-thumbnailer` genuinely broken, not by design** — OOMKilled at
+`limits.memory=64Mi`, 0/1 available, ~68 restarts. Its fix was approved and
+never landed (#32). Re-verify after k3s is back rather than trusting these
+numbers.
 
 **Gap this exposed, unfixed:** the act-phase live path has no retry. When its
 calls fail there is no Slack command that re-runs the plan — `retry_fix`
