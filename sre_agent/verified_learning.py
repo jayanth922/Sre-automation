@@ -168,6 +168,30 @@ def live_executed_actions(
     return selected
 
 
+def live_failed_actions(live_results: Any = None) -> list[dict[str, Any]]:
+    """Mutating actions the executor issued live that came back an error.
+
+    A run whose every mutating call errored is not a dry run — the plan was
+    approved, the calls went out, and the cluster rejected them. Grading it
+    ``dry_run`` (which is what happened to `be398969` on 2026-09-15, where
+    the dry-run planning pass left two read-only actions in ``executed``
+    while all three live kubectl calls failed) files a real failure under a
+    class that means "nothing was ever attempted", and writes the negative
+    exemplar with the wrong outcome.
+    """
+    try:
+        from .executor import NON_MUTATING_ACTIONS
+    except ImportError:  # loaded by path, with no package
+        from sre_agent.executor import NON_MUTATING_ACTIONS
+
+    return [
+        action
+        for action in _list_actions(live_results)
+        if str(action.get("status", "") or "").upper() == "ERROR"
+        and str(action.get("action_type", "") or "").lower() not in NON_MUTATING_ACTIONS
+    ]
+
+
 def assess_learning_eligibility(
     *,
     act_report: Any = None,
@@ -196,6 +220,7 @@ def assess_learning_eligibility(
         executed = _get(act_report, "executed")
 
     live = live_executed_actions(live_results=live_results, executed=executed)
+    failed_live = live_failed_actions(live_results=live_results)
     dry_run_candidates = [
         action
         for action in _list_actions(executed, live_results)
@@ -238,6 +263,12 @@ def assess_learning_eligibility(
     elif aggregate in {"blocked", "block"} and not human_approved:
         reasons.append("plan was blocked without human approval")
         outcome = "blocked"
+    elif failed_live and not live:
+        # Ordered ahead of the dry-run branch on purpose: the planning pass
+        # leaves read-only actions in `executed` on every run, so a live run
+        # that failed outright still looks like a dry run to the test below.
+        reasons.append("every live mutating action failed")
+        outcome = "failed"
     elif dry_run_candidates and not live:
         reasons.append("only dry-run actions were observed")
         outcome = "dry_run"
@@ -272,7 +303,9 @@ def assess_learning_eligibility(
         verification_status=verification,
         incident_status=status_name,
         live_executed_count=len(live),
-        dry_run_only=bool(dry_run_candidates) and not live,
+        # `failed_live` disqualifies it: calls went out, so nothing about this
+        # run was dry.
+        dry_run_only=bool(dry_run_candidates) and not live and not failed_live,
     )
 
 

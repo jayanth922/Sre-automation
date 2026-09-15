@@ -20,6 +20,17 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# How each live action status renders in the bullet list. An unknown or absent
+# status renders bare, which is what the dry-run `executed` list has always
+# done — the marks exist so a failure can never again be typeset as a success.
+_ACTION_MARKS = {
+    "EXECUTED": "✅",
+    "ERROR": "❌ **failed:**",
+    "REFUSED": "⛔ refused:",
+    "SKIPPED": "⏭️ skipped:",
+    "DRY_RUN": "🧪 dry run:",
+}
+
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
     if obj is None:
@@ -50,6 +61,27 @@ def build_resolution_report(
     severity = act_report.get("severity", "?")
     decision = act_report.get("aggregate_decision", "?")
 
+    # Only `live_results` entries carry a status; `executed` is the dry-run
+    # planning pass and carries none. Both used to render through one loop
+    # that read `action_type` and `command` and never `status`, so an action
+    # that failed was printed identically to one that worked — under the
+    # heading "What the agent did". Live on `be398969` (2026-09-15): k3s was
+    # down, all three kubectl calls returned `connection refused`, and the
+    # thread was told the memory limit had been raised to 256Mi. It had not;
+    # the service was still OOMKilling at 64Mi while the report read like a
+    # fix. See `_ACTION_MARKS`.
+    from sre_agent.executor import NON_MUTATING_ACTIONS
+
+    def _is_mutating(action: Dict[str, Any]) -> bool:
+        return str(action.get("action_type", "")).lower() not in NON_MUTATING_ACTIONS
+
+    mutations_attempted = [a for a in live_results if _is_mutating(a)]
+    mutations_landed = [
+        a for a in mutations_attempted if str(a.get("status", "")).upper() == "EXECUTED"
+    ]
+    failures = [a for a in live_results if str(a.get("status", "")).upper() == "ERROR"]
+    nothing_landed = bool(mutations_attempted) and not mutations_landed
+
     v_status = (verification or {}).get("status")
     resolved = v_status == "RESOLVED"
 
@@ -58,11 +90,26 @@ def build_resolution_report(
     lines.append(f"**Issue:** `{alert_name}` on `{service}` (severity **{severity}**).")
     lines.append(f"**Root cause:** {hypothesis}")
     lines.append("")
-    lines.append("**What the agent did:**")
+    if nothing_landed:
+        # Before the list, not after it: the reader has to hit this before
+        # they read a line that looks like a fix.
+        lines.append(
+            "> ❌ **Nothing was changed on the cluster.** Every action that "
+            "would have changed it failed — the commands below were attempted, "
+            "not applied."
+        )
+        lines.append("")
+    lines.append("**What the agent did:**" if not nothing_landed else "**What was attempted:**")
     if applied:
         for a in applied:
             cmd = a.get("command") or a.get("action_type")
-            lines.append(f"- `{a.get('action_type')}` → {cmd}")
+            mark = _ACTION_MARKS.get(str(a.get("status", "")).upper(), "")
+            prefix = f"{mark} " if mark else ""
+            lines.append(f"- {prefix}`{a.get('action_type')}` → {cmd}")
+            if str(a.get("status", "")).upper() == "ERROR":
+                detail = " ".join(str(a.get("detail") or "").split())
+                if detail:
+                    lines.append(f"  - ↳ {detail[:400]}")
     elif decision == "requires_approval":
         lines.append("- Held for human approval (higher severity); no autonomous action taken.")
     else:
@@ -122,7 +169,26 @@ def build_resolution_report(
                 )
         lines.append("")
 
-    if resolved and have_patch:
+    if nothing_landed:
+        # This branch outranks every other next-step: the alert that opened
+        # the incident is still true, and nobody reading it should be left
+        # thinking a fix is in place. `compute_incident_status` puts this
+        # incident in REMEDIATION_FAILED for the same reason.
+        first = failures[0] if failures else {}
+        why = " ".join(str(first.get("detail") or "").split())
+        if len(why) > 200:
+            # Cut on a word boundary. The full text is already on the `↳`
+            # line above; this is the one-line version for a collapsed Slack
+            # message, and a sentence severed mid-word reads like the report
+            # itself broke.
+            why = why[:200].rsplit(" ", 1)[0] + "…"
+        next_steps = (
+            "**The problem is not fixed and the cluster is untouched.** "
+            + (f"First failure: {why} " if why else "")
+            + "Re-run the remediation once the cause of the failure is "
+            "cleared, or apply the commands above by hand."
+        )
+    elif resolved and have_patch:
         next_steps = (
             "System state is back to normal. Review the suggested code fix above "
             "and apply it to prevent recurrence."

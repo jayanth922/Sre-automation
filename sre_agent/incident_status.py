@@ -48,6 +48,27 @@ def _mutations_executed(live_results: Any) -> bool:
     return False
 
 
+def _mutations_errored(live_results: Any) -> bool:
+    """Did a mutation actually reach the cluster and come back an error?
+
+    Deliberately only ``ERROR``: that status means the executor issued the
+    call and it failed. ``REFUSED`` is the executor declining to issue it at
+    all (policy, or no live tool mapping — ``act_phase._run_live_actions``),
+    which changed nothing and attempted nothing, so it stays an
+    investigation rather than a failed remediation.
+    """
+    from sre_agent.executor import NON_MUTATING_ACTIONS
+
+    for item in live_results or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status")).upper() != "ERROR":
+            continue
+        if str(item.get("action_type", "")).lower() not in NON_MUTATING_ACTIONS:
+            return True
+    return False
+
+
 def compute_incident_status(
     state: Any,
     report_payload: Any,
@@ -82,6 +103,19 @@ def compute_incident_status(
         return IncidentStatus.INVESTIGATED
 
     if live_results and not _mutations_executed(live_results):
+        if _mutations_errored(live_results):
+            # A human approved a change, the executor issued it, and the call
+            # came back an error. That is not an investigation — it is a
+            # remediation that failed, and the difference is load-bearing:
+            # `alert_resolution` refuses to let a clearing alert mark a
+            # REMEDIATION_FAILED incident resolved, and INVESTIGATED carries
+            # no such protection. Live on 2026-09-15, `be398969`: k3s was
+            # down after a Codespace resume, all three kubectl calls came
+            # back `connection refused`, pdf-thumbnailer stayed OOMKilled at
+            # 64Mi — and the incident went to INVESTIGATED, whose whole
+            # meaning is "nothing was changed on the cluster and nothing was
+            # tried".
+            return IncidentStatus.REMEDIATION_FAILED
         # Everything that ran was a read or a page to a human. Verification is
         # deliberately skipped in that case (graph_builder only verifies after a
         # real mutation), so falling through to REMEDIATION_IN_PROGRESS told the

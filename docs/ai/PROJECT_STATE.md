@@ -77,7 +77,7 @@ keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 on an already-resolved incident, before it opens a war room (#28).
 
 ## Completed or verified work
-Thirty defects found by live fire (numbered to #31; #30 was withdrawn on
+Thirty-one defects found by live fire (numbered to #32; #30 was withdrawn on
 evidence). Per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
@@ -112,6 +112,11 @@ the truth, records it, and then does not tell the human.** Corollaries:
   contradicting it — the live seq-15 answer quoted `awaiting_approval` inside
   a sentence claiming two other phases. Anything the database already knows
   is stapled under the model's text, never negotiated with it in a prompt.
+- **A call that errored is not a call that was never made** (#32). Three
+  consumers each read "no mutation succeeded" and inferred "no mutation was
+  attempted" — a status, a report heading, and a learning class. Whenever
+  code branches on success, ask what it does with *attempted-and-failed*, and
+  whether that is the same sentence as *never tried*.
 - **Re-read the row before blaming the current build** (#30, withdrawn). Five
   jobs at `status=failed, attempt_count=1 of 3` looked like a live retry
   bypass; `last_error` *and* `result` were both set, which only the pre-#25
@@ -155,6 +160,29 @@ same 8/8 prompt-only failure rate #23 found. Every command in the map is
 asserted against the war room's own regexes, so the reply told to the reader
 is one the parser accepts.
 
+**#32** (fixed, replay-confirmed on the real payload): an approved remediation
+whose every call failed was described as a fix, an investigation, and a dry
+run — by three different surfaces, none of them the one that got it right.
+`be398969` ([pdf-thumbnailer] PodCrashLooping): a human approved in Slack at
+00:56:51, k3s had died on a Codespace resume, and all three `kubectl` calls
+returned `[Errno 111] Connection refused`. `act_phase.summarise_live_execution`
+recorded it correctly — *"0/2 mutating action(s) EXECUTED [ERROR]"* — and then
+(a) `resolution_report` listed the failed commands under **"What the agent
+did:"** with no status marker, so the thread read as though the limit had been
+raised to 256Mi while the pod stayed OOMKilled at 64Mi, 68 restarts deep; (b)
+`compute_incident_status` returned INVESTIGATED, whose meaning is "nothing was
+changed *and nothing was tried*" — and, unlike REMEDIATION_FAILED, it lets
+`alert_resolution` mark the incident resolved if the alert ever clears on its
+own; (c) `assess_learning_eligibility` graded it `dry_run`, because the
+planning pass always leaves read-only actions in `executed`, filing a real
+failure as "nothing was ever attempted". All three now branch on
+attempted-and-errored: the report leads with **"Nothing was changed on the
+cluster"** and marks each line ✅/❌ with the failure reason, the status is
+REMEDIATION_FAILED, and the learning class is `failed`. `REFUSED` deliberately
+still reads as an investigation — the executor declining to issue a call is
+not a call that failed. Confirmed by replaying the recorded act_report through
+the deployed container.
+
 The five older ones, all committed, none pushed: **#25** retry machinery
 disabled by SQLAlchemy identity-map aliasing — `fail_job()`'s `select()` hands
 back the caller's own object, so only its *return value* distinguishes;
@@ -195,6 +223,11 @@ walkthrough, **never naming the `approve fix` reply that was the one thing
 needed**. Same family as #21–#24, and the Slack-only rule makes it
 load-bearing. Prompt-only fixes do not hold here (8/8 replays): put the
 correction below the model's text, as `narrative._echoed_alert_claims` does.
+**And #32 widened the category**: the worst message this platform has sent —
+a resolution report stating a fix had been applied to a service that was
+still down — had no model in the loop at all. It was a deterministic template
+reading `command` and never `status` from the same dict. Narration fidelity
+is not only a model problem; audit assembly code for fields it drops.
 
 ## Relevant files
 `sre_agent/`: `agent_state.py` (LLM-facing schemas + container decoding),
@@ -203,11 +236,13 @@ correction below the model's text, as `narrative._echoed_alert_claims` does.
 `policy_gate.py`, `incident_reconciler.py`, `api/v1/alerts.py` (dedup),
 `narrative.py`, `job_store.py`, `war_room_service.py`,
 `narration_grounding.py` (status → phase/command corrections),
-`api/v1/mission_control.py` (`_traced_chat_reply`, the chat-only seam).
+`api/v1/mission_control.py` (`_traced_chat_reply`, the chat-only seam),
+`resolution_report.py`, `incident_status.py`, `verified_learning.py` (the
+three #32 consumers of a live run's outcome).
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1256 passed,
-  3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1270 passed,
+  3 skipped** (410s). Health is `/ping` on **port 8080** (`/health` 404s).
 - **Task #5 done, live**: `555a3acb` [ocr-extractor] 64Mi→512Mi and `d2fb7c5d`
   [thumb-worker] →256Mi+200m, real `kubectl set resources` after a Slack
   `approve fix`, both pods `1/1 Running` 0 restarts. First live exercise of
@@ -244,12 +279,18 @@ correction below the model's text, as `narrative._echoed_alert_claims` does.
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **Nothing has been pushed.** 29 local-only commits on `master`
+- **Nothing has been pushed.** 30 local-only commits on `master`
   (`git log master --not origin/master`); push only when asked.
 
 ## Operating the Codespace
-Run `scripts/codespace_boot.sh` after any resume — nothing else starts k3s,
-and it self-heals the Alertmanager webhook when the node IP changes. The API
+**Run `scripts/codespace_boot.sh` after any resume, and verify k3s before
+approving anything.** A resume on 2026-09-15 did not fire `postStartCommand`,
+k3s stayed dead with nothing on :6443, and a human's Slack `approve fix` on
+`be398969` executed against a dead API server — every call refused (that run
+is #32). The check is `sudo k3s kubectl get nodes`. The script's two-attempt
+loop is load-bearing: attempt 1 died and attempt 2 stuck, exactly as its
+comment predicts, because the node IP had changed (10.0.10.101 → 10.0.1.69).
+It also self-heals the Alertmanager webhook when that IP changes. The API
 container is image-baked with no source mount: each change needs base64 →
 `docker cp` into `/app` → md5 → `py_compile` → `docker restart sre-agent-api`.
 **Deploy with `deploy.sh`-style per-chunk `>` writes, never `>>`** — the ssh
@@ -262,13 +303,15 @@ lowercase; `incident_timeline_events.payload_json` is **text**, so cast
 Service ClusterIPs are reachable from the host; `kubectl port-forward` is not.
 
 ## Next bounded task
-Finish Task #4 (below), then audit the **remaining narration surfaces** the
-same way #31 did the chat one: the aggregate wrap-up
-(`build_supervisor_aggregate_content`) and the resolution report
-(`mode: resolution_report`, e.g. `555a3acb` seq 19) still pass model text to
-Slack with no status-derived correction. The question to ask of each: if the
-model narrates the wrong phase here, does the reader lose a command they
-needed? Reuse `narration_grounding.grounding_footnote`.
+Finish Task #4 (below), then audit the **last narration surface** the same way
+#31 did the chat one: the aggregate wrap-up
+(`build_supervisor_aggregate_content`) still passes model text to Slack with
+no status-derived correction. The question to ask: if the model narrates the
+wrong phase here, does the reader lose a command they needed? Reuse
+`narration_grounding.grounding_footnote`. (The resolution report was the other
+half of this task; #32 fixed its *deterministic* half — a report can lie with
+no model involved at all, by rendering a field it never read. Whether it also
+needs a `grounding_footnote` is still open.)
 
 Also unexplained, seen while replaying: the Langfuse exporter logs `Failed to
 export span batch code: 401, reason: Unauthorized` on every narrator call
@@ -286,10 +329,19 @@ exercise #20 (`escalate` about ConfigMap `meridian-config` rather than a
 `config_change` on the `valueFrom`-sourced `CHAOS_MODE`).
 
 Cluster cleanup owed: `thumb-worker` and `ocr-extractor` are healthy at raised
-limits; `pdf-thumbnailer` still crashlooping by design. Non-resolved incidents
-(2026-09-15): `f8ca9a54`, `d3ca5138`, `3d4030a0` investigated; `3b879513`
-`open` (its investigation is dead — #29's notice now fires on it);
-`555a3acb` and `d2fb7c5d` `pending_acknowledgment`. Owed from the human in
-Slack: `acknowledge` on `555a3acb` and `d2fb7c5d`, `mark resolved` on
-`d3ca5138` and `f8ca9a54`. No `approval_requests` are pending, so nothing
-needs `approve fix`.
+limits. **`pdf-thumbnailer` is genuinely broken, not by design**: still
+OOMKilled at `limits.memory=64Mi`, 0/1 available, ~68 restarts. Its fix was
+approved and never landed (#32), and its incident `be398969` sits at
+`investigated` — a status the fixed code would no longer produce, left as-is
+because approval state is never patched in the DB by hand. Non-resolved
+incidents (2026-09-15): `f8ca9a54`, `d3ca5138`, `3d4030a0`, `be398969`
+investigated; `3b879513` `open` (its investigation is dead — #29's notice now
+fires on it); `555a3acb` and `d2fb7c5d` `pending_acknowledgment`. Owed from
+the human in Slack: `acknowledge` on `555a3acb` and `d2fb7c5d`, `mark
+resolved` on `f8ca9a54`, `d3ca5138`, `3b879513` and `be398969`.
+
+**Gap this exposed, unfixed:** the act-phase live path has no retry. When its
+calls fail there is no Slack command that re-runs the plan — `retry_fix`
+exists only in the Temporal `incident_remediation_workflow`, not here — so a
+remediation that failed for a transient reason (a dead cluster) can only be
+closed with `mark resolved` and re-opened by the next alert firing.
