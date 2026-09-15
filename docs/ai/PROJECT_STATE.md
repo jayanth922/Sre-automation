@@ -77,7 +77,7 @@ keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 on an already-resolved incident, before it opens a war room (#28).
 
 ## Completed or verified work
-Thirty-one defects found by live fire (numbered to #32; #30 was withdrawn on
+Thirty-two defects found by live fire (numbered to #33; #30 was withdrawn on
 evidence). Per-defect detail is in git log. The
 recurring pattern, and the thing to keep testing for: **the system computes
 the truth, records it, and then does not tell the human.** Corollaries:
@@ -117,6 +117,12 @@ the truth, records it, and then does not tell the human.** Corollaries:
   attempted" — a status, a report heading, and a learning class. Whenever
   code branches on success, ask what it does with *attempted-and-failed*, and
   whether that is the same sentence as *never tried*.
+- **A confirmation is only true at the moment it is sent** (#33). "Approved —
+  remediation is running" was composed correctly and posted three minutes
+  late, under the finished report, because the call that produced it ran the
+  remediation first. For any acknowledgement, ask *when* it reaches the human
+  relative to the work it describes — and treat silence on the only channel
+  as its own failure, because the human re-sends into it.
 - **Re-read the row before blaming the current build** (#30, withdrawn). Five
   jobs at `status=failed, attempt_count=1 of 3` looked like a live retry
   bypass; `last_error` *and* `result` were both set, which only the pre-#25
@@ -187,6 +193,27 @@ mutating attempted, so the banner correctly stayed off, the heading stayed
 "What the agent did", every line rendered ✅, and the status stayed
 INVESTIGATED. A correction that cannot stay silent is itself a defect.
 
+**#33** (fixed, from the first successful live remediation): an `approve fix`
+reply got no answer for three minutes, and the answer it finally got was
+stale. `3ed8be00` ([pdf-thumbnailer] PodOOMKilled) — the human typed
+`approve fix` at 01:31:23; Slack said nothing until 01:34:27, then posted
+*"✅ Approved — remediation is running"* **underneath** the executor summary
+and the full resolution report for a remediation that had already finished
+and verified. Ordering, not Slack: `route_fix_approval_command` awaited
+`_decide_action_approval_for_incident` → `decide_action_approval`, which
+resumes the graph and runs the remediation *and* its 180s verification inline
+before returning the message to post. Silence on the only channel invites a
+re-send, and did: the same human sent a duplicate `approve fix` on a
+neighbouring thread 15 seconds later. `decide_action_approval` now takes an
+`on_authorized` callback, awaited by `notify_authorized` immediately after
+the CAS commits APPROVED and before the resume — the only claim it makes is
+one the CAS has already made true. `notify_authorized` never raises (a Slack
+outage must not unwind a committed approval) and returns whether the message
+landed, so a receipt that failed to post does not suppress the final one. The
+trailing message is skipped only when the receipt actually reached Slack;
+every refusal path still posts, and a resume that fails *after* authorization
+posts both.
+
 The five older ones, all committed, none pushed: **#25** retry machinery
 disabled by SQLAlchemy identity-map aliasing — `fail_job()`'s `select()` hands
 back the caller's own object, so only its *return value* distinguishes;
@@ -242,11 +269,13 @@ is not only a model problem; audit assembly code for fields it drops.
 `narration_grounding.py` (status → phase/command corrections),
 `api/v1/mission_control.py` (`_traced_chat_reply`, the chat-only seam),
 `resolution_report.py`, `incident_status.py`, `verified_learning.py` (the
-three #32 consumers of a live run's outcome).
+three #32 consumers of a live run's outcome), `war_room.py`
+(`route_fix_approval_command` — every inbound Slack command, and the #33
+receipt seam).
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1270 passed,
-  3 skipped** (410s). Health is `/ping` on **port 8080** (`/health` 404s).
+- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1279 passed,
+  3 skipped** (411s). Health is `/ping` on **port 8080** (`/health` 404s).
 - **Task #5 done, live**: `555a3acb` [ocr-extractor] 64Mi→512Mi and `d2fb7c5d`
   [thumb-worker] →256Mi+200m, real `kubectl set resources` after a Slack
   `approve fix`, both pods `1/1 Running` 0 restarts. First live exercise of
@@ -260,10 +289,51 @@ three #32 consumers of a live run's outcome).
   `attempt_count=3 of 3` and resumed. Before the fix every interrupted job
   died at 1 of 3. (#25b remains unit-tested only —
   `tests/test_investigation_failure_path.py`.)
+- **First end-to-end remediation that both landed and verified, live**:
+  `3ed8be00` [pdf-thumbnailer] PodOOMKilled. Human `approve fix` 01:31:23 →
+  `2/2 mutating action(s) EXECUTED` → new ReplicaSet at 01:31:24 with
+  `limits.memory=256Mi` (was 64Mi, 75 restarts) → pod `1/1 Running`, 0
+  restarts → `Verification: RESOLVED — alert PodOOMKilled no longer firing
+  after 180s` → `pending_acknowledgment`. Also the **#32 code's first live
+  success-direction test**: heading stayed "What the agent did", every line
+  ✅, no false-failure banner. The same run surfaced #33 and the duplicate
+  below.
 - `dc1712ca` remains the reference clean run (`patch_deployment_env`,
   `RESOLVED after 330s`, generative runbook).
 
 ## Known blockers or risks
+- **The Anthropic API is out of credits** (2026-09-15 01:37). Every new
+  investigation dies in seconds with `litellm.BadRequestError … "Your credit
+  balance is too low"`; `56d78bd6` [checkout-service] failed three times in
+  three seconds. Nothing can be investigated until it is topped up. Slack
+  handled it correctly — the thread says "Investigation failed — no findings
+  were produced … it needs a human" with the raw error, and invents no
+  diagnosis — so this is an account blocker, not a defect.
+- **Correlation/dedup is built and switched off.** `_record_correlation_shadow`
+  (`api/v1/alerts.py:377`) scores every new incident against the cluster's
+  open ones and writes only a `correlation_shadow` timeline event; it is
+  Phase A validation data by design and never acts. Live it scored
+  `88fa9ee4` against `3ed8be00` at **1.00** ("same service"). This is the
+  direct cause of the user's standing complaint that there are too many
+  incidents to find the right thread: five pdf-thumbnailer incidents opened
+  in 75 minutes for one broken deployment. Turning the gate on is a bounded,
+  evidence-backed task.
+- **A `PodCrashLooping` alert clearing does not mean the pod recovered.**
+  Three pdf-thumbnailer incidents auto-closed on
+  `alert_cleared_external_verification` while the pod kept OOMKilling:
+  CrashLoopBackOff slows the *restart rate* below the rule's threshold, so
+  the alert goes quiet on backoff, not recovery.
+- **The planner can emit the same mutating action twice and nothing dedupes
+  it.** On `3ed8be00` the plan carried two identical `config_change` actions
+  and the executor ran both — byte-identical
+  `kubectl set resources … --limits=memory=256Mi,cpu=200m`. Harmless because
+  it is idempotent; nothing in `policy_gate` or `act_phase` would stop a
+  non-idempotent duplicate. Unfixed.
+- **A human `mark resolved` writes no timeline event.**
+  `mark_incident_resolved_by_human` (`approval_flow.py`) flips status and
+  fires side effects; the incident's own timeline records nothing, so there
+  is no audit trail of who closed it or that a human did. Every other close
+  path writes one (`alert_resolved`). Unfixed.
 - **Severity is always `UNKNOWN` for real Meridian alerts** (rules emit no
   impact/urgency annotations), so the autonomous path never engages. Missing
   annotation in the locally-owned `cluster-resources` rules, or a platform
@@ -290,7 +360,7 @@ three #32 consumers of a live run's outcome).
 - `.env.local-backup-20260910` (untracked) holds live secrets and is **not**
   matched by `.gitignore`'s `.env` pattern — never commit it; always use
   explicit paths in `git add`.
-- **Nothing has been pushed.** 30 local-only commits on `master`
+- **Nothing has been pushed.** 32 local-only commits on `master`
   (`git log master --not origin/master`); push only when asked.
 
 ## Operating the Codespace
@@ -314,7 +384,12 @@ lowercase; `incident_timeline_events.payload_json` is **text**, so cast
 Service ClusterIPs are reachable from the host; `kubectl port-forward` is not.
 
 ## Next bounded task
-Finish Task #4 (below), then audit the **last narration surface** the same way
+**Blocked on Anthropic credits** — no investigation can run until the account
+is topped up, so anything needing a live incident waits. Code-only work is
+unaffected. The highest-value one is turning the correlation gate off shadow
+mode (see blockers): it is the direct fix for "too many incidents, I can't
+find the right thread", and it already scores the real duplicates at 1.00.
+Then finish Task #4 (below), then audit the **last narration surface** the same way
 #31 did the chat one: the aggregate wrap-up
 (`build_supervisor_aggregate_content`) still passes model text to Slack with
 no status-derived correction. The question to ask: if the model narrates the

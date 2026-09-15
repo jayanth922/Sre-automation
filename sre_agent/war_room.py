@@ -394,13 +394,33 @@ async def route_fix_approval_command(
     if not incident_id:
         return {"mode": "ignored"}
 
-    result = await _decide_action_approval_for_incident(incident_id, approver_email)
-    await poster(thread, result["message"])
+    receipt_posted = False
+
+    async def _acknowledge_receipt() -> None:
+        nonlocal receipt_posted
+        await poster(
+            thread,
+            f"✅ Approved by {approver_email or 'an admin'} — remediation is "
+            "running now. I'll post the result in this thread when it finishes.",
+        )
+        receipt_posted = True
+
+    result = await _decide_action_approval_for_incident(
+        incident_id, approver_email, on_authorized=_acknowledge_receipt
+    )
+    # Only a receipt that actually reached Slack earns the silence.
+    # `notify_authorized` swallows a posting failure so it can't unwind a
+    # committed approval, which means "we tried to ack" is not "they know" —
+    # if the receipt never landed, the human still gets told here.
+    if not (result.get("already_acknowledged") and receipt_posted):
+        await poster(thread, result["message"])
     return result
 
 
 async def _decide_action_approval_for_incident(
-    incident_id: str, approver_email: Optional[str]
+    incident_id: str,
+    approver_email: Optional[str],
+    on_authorized: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     import uuid as _uuid
 
@@ -458,6 +478,7 @@ async def _decide_action_approval_for_incident(
             organization_id=str(cluster.org_id),
             cluster_id=str(incident.cluster_id),
             approver_user_id=str(approver.id),
+            on_authorized=on_authorized,
         )
     except ApprovalValidationError as exc:
         detail = {
@@ -481,6 +502,13 @@ async def _decide_action_approval_for_incident(
         "mode": "action_decision",
         "status": "ok",
         "message": f"✅ Approved — remediation is running. ({approver.email})",
+        # By the time this returns, the remediation has already finished and
+        # posted its own executor summary and resolution report. Re-posting
+        # "remediation is running" underneath them is both stale and out of
+        # order — `on_authorized` said it three minutes earlier, when it was
+        # true. Suppressed only on this success path; every error branch above
+        # carries news the human has not been told yet.
+        "already_acknowledged": on_authorized is not None,
     }
 
 

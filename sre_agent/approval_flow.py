@@ -10,7 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -864,6 +864,32 @@ async def find_latest_pending_action_approval(*, incident_id: str) -> Optional[s
         return str(row_id) if row_id is not None else None
 
 
+async def notify_authorized(
+    on_authorized: Optional[Callable[[], Awaitable[None]]],
+    approval_request_id: Any,
+) -> bool:
+    """Tell the caller's channel the approval is committed. Never raises.
+
+    Returns whether the notification actually went out, so a caller can decide
+    whether it still owes the human a message. The swallow is the point: this
+    runs *after* the CAS has committed APPROVED, so a Slack outage here must
+    not look like — or turn into — a failed approval. The remediation is
+    authorized either way; the only thing at stake is whether the human is
+    told promptly.
+    """
+    if on_authorized is None:
+        return False
+    try:
+        await on_authorized()
+        return True
+    except Exception:
+        logger.exception(
+            "approval %s: authorized-notification failed (approval stands)",
+            approval_request_id,
+        )
+        return False
+
+
 async def decide_action_approval(
     *,
     approval_request_id: str,
@@ -871,6 +897,7 @@ async def decide_action_approval(
     organization_id: str,
     cluster_id: str,
     approver_user_id: str,
+    on_authorized: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Optional[str]:
     """Authorize and synchronously resume the one exact graph action pending
     on this ApprovalRequest — the same CAS-then-resume mission_control's
@@ -880,6 +907,17 @@ async def decide_action_approval(
     ApprovalRequest matches the ownership scope (caller treats that as 404).
     Raises ApprovalValidationError("not_pending" | "expired" | "hash_mismatch")
     for the caller to translate into a user-facing message.
+
+    ``on_authorized`` is awaited once, immediately after the approval is
+    durably committed and before the graph is resumed. The resume below runs
+    the remediation *and* its verification wait inline, which on the live
+    ``3ed8be00`` run took 3 minutes — and Slack's confirmation was posted only
+    after all of it returned, so the thread sat silent and then said
+    "remediation is running" underneath the finished report. A caller that
+    needs to tell a human "your command landed" hooks it here, where the only
+    claim being made is one the CAS has already made true. A failure in the
+    callback is logged and swallowed: notifying is not allowed to undo an
+    approval that is already committed.
     """
     from sqlalchemy import select, update
 
@@ -999,6 +1037,8 @@ async def decide_action_approval(
             await db.rollback()
             raise ApprovalValidationError("not_pending")
         await db.commit()
+
+    await notify_authorized(on_authorized, approval_request_id)
 
     from langgraph.types import Command
     from .redis_state_store import get_state_store
