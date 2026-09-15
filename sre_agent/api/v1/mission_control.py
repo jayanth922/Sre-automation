@@ -931,6 +931,36 @@ async def approve_incident_action(
             detail="A durable checkpointer is required for approvals",
         )
 
+    locked_result = await db.execute(
+        select(models.Incident)
+        .where(
+            models.Incident.id == owned_incident.id,
+            models.Incident.cluster_id == owned_incident.cluster_id,
+        )
+        .with_for_update()
+    )
+    locked_incident = locked_result.scalar_one_or_none()
+    if (
+        locked_incident is not None
+        and locked_incident.status == models.IncidentStatus.RESOLVED
+    ):
+        await db.execute(
+            update(models.ApprovalRequest)
+            .where(
+                models.ApprovalRequest.id == approval.approval_request_id,
+                models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+            )
+            .values(
+                status=models.ApprovalStatus.EXPIRED,
+                decided_at=datetime.now(timezone.utc),
+            )
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="The incident is resolved; this approval was withdrawn",
+        )
+
     result = await db.execute(
         select(models.ApprovalRequest).where(
             models.ApprovalRequest.id == approval.approval_request_id,
@@ -1090,21 +1120,28 @@ async def approve_incident_action(
     if isinstance(output, dict):
         from sre_agent.incident_status import (
             compute_incident_status,
+            effective_status_after_run,
             resolved_at_for_status,
         )
 
         act_report = (output.get("metadata") or {}).get("act_report")
         verification = (act_report or {}).get("verification")
         computed_status = compute_incident_status(output, act_report, verification)
-        # Both directions — see incident_status.resolved_at_for_status: a row
-        # already stamped by an Alertmanager resolved webhook must not keep
-        # that timestamp when this run grades the remediation a failure.
-        incident_values: Dict[str, Any] = {
-            "status": computed_status,
-            "resolved_at": resolved_at_for_status(
-                computed_status, datetime.now(timezone.utc)
-            ),
-        }
+        current_result = await db.execute(
+            select(models.Incident)
+            .where(models.Incident.id == owned_incident.id)
+            .with_for_update()
+        )
+        current_incident = current_result.scalar_one_or_none()
+        current_status = getattr(current_incident, "status", None)
+        effective_status = effective_status_after_run(
+            current_status, computed_status
+        )
+        incident_values: Dict[str, Any] = {"status": effective_status}
+        if current_status != models.IncidentStatus.RESOLVED:
+            incident_values["resolved_at"] = resolved_at_for_status(
+                effective_status, datetime.now(timezone.utc)
+            )
         await db.execute(
             update(models.Incident)
             .where(models.Incident.id == owned_incident.id)

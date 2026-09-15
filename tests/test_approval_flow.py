@@ -4,6 +4,7 @@
 import asyncio
 import importlib.util
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +88,94 @@ def test_decided_approval_replay_is_rejected():
             submitted_action_hash="a" * 64,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
         )
+
+
+def test_resolved_incident_cannot_cross_an_approval_boundary():
+    from backend import models
+
+    incident_id = uuid.uuid4()
+    cluster_id = uuid.uuid4()
+    incident = SimpleNamespace(
+        id=incident_id,
+        cluster_id=cluster_id,
+        status=models.IncidentStatus.RESOLVED,
+    )
+
+    class _Session:
+        statement = ""
+
+        async def execute(self, stmt):
+            self.statement = str(stmt)
+
+            class _Result:
+                @staticmethod
+                def scalar_one_or_none():
+                    return incident
+
+            return _Result()
+
+    session = _Session()
+    with pytest.raises(
+        approval_flow.ApprovalValidationError, match="incident_resolved"
+    ):
+        asyncio.run(
+            approval_flow._lock_incident_for_remediation(
+                session, incident_id, cluster_id
+            )
+        )
+
+    assert "FOR UPDATE" in session.statement
+
+
+def test_external_clear_retires_both_approval_systems_atomically(monkeypatch):
+    from backend import database
+
+    statements = []
+
+    class _Result:
+        def __init__(self, *, rows=(), rowcount=0):
+            self._rows = rows
+            self.rowcount = rowcount
+
+        def all(self):
+            return list(self._rows)
+
+    class _Session:
+        commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def execute(self, stmt):
+            sql = str(stmt)
+            statements.append(sql)
+            if sql.startswith("SELECT"):
+                return _Result(rows=(("workflow-1", "start_fix"),))
+            if "UPDATE approval_requests" in sql:
+                return _Result(rowcount=2)
+            return _Result(rowcount=1)
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+    monkeypatch.setattr(database, "AsyncSessionLocal", lambda: session)
+
+    retired = asyncio.run(
+        approval_flow.retire_pending_remediation_approvals(
+            incident_id=str(uuid.uuid4())
+        )
+    )
+
+    assert retired.action_approvals == 2
+    assert retired.gate_approvals == 1
+    assert retired.total == 3
+    assert retired.gate_workflows == (("workflow-1", "start_fix"),)
+    assert session.commits == 1
+    assert all("status" in statement.lower() for statement in statements)
 
 
 def test_interrupt_payload_binds_request_thread_report_and_hash():
@@ -353,7 +442,8 @@ def test_model_and_migration_include_all_durable_approval_fields():
         assert f'"{field}"' in migration_source
 
     flow_source = (ROOT / "sre_agent" / "approval_flow.py").read_text()
-    assert ".values(status=models.IncidentStatus.AWAITING_APPROVAL)" in flow_source
+    assert "incident.status = models.IncidentStatus.AWAITING_APPROVAL" in flow_source
+    assert "await _lock_incident_for_remediation(" in flow_source
 
 
 if __name__ == "__main__":

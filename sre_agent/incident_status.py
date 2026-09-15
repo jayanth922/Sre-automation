@@ -140,17 +140,29 @@ def resolved_at_for_status(status: Any, now: Any) -> Any:
     """The ``resolved_at`` a row must carry alongside ``status`` — ``now`` or ``None``.
 
     Returned rather than merely "set it when resolved", because the timestamp
-    has to follow the status in *both* directions. An incident can reach the
-    end of a run already stamped resolved — an Alertmanager *resolved* webhook
-    lands while the act phase is still verifying — and then compute
-    REMEDIATION_FAILED. Writing only the status left rows reading
-    ``remediation_failed`` with a ``resolved_at``, and MTTR
-    (``api/v1/analytics.py``, ``api/v1/recommendations.py``) is measured as
-    ``resolved_at - created_at`` filtered on ``resolved_at IS NOT NULL``: a
-    failed remediation was being counted as a fast resolution.
+    has to follow the status in *both* directions. Callers first reconcile a
+    graph-local outcome with durable state through ``effective_status_after_run``;
+    if no external resolution won that race, this helper keeps status and MTTR
+    timestamps consistent in either direction.
 
     Note PENDING_ACKNOWLEDGMENT is *not* resolved. A verified fix still waits
     for a human to acknowledge it, and that path stamps the timestamp itself
     (``approval_flow.acknowledge_incident_resolution``).
     """
     return now if status == IncidentStatus.RESOLVED else None
+
+
+def effective_status_after_run(
+    persisted_status: Any, computed_status: IncidentStatus
+) -> IncidentStatus:
+    """Keep a concurrently resolved incident resolved when a graph finishes.
+
+    Alertmanager may clear an alert while its investigation is still assembling
+    findings. That run is intentionally allowed to finish, but its status
+    calculation describes only the graph's own outcome and must not reopen the
+    incident after the external recovery signal has already closed it.
+    """
+    persisted_value = getattr(persisted_status, "value", persisted_status)
+    if str(persisted_value) == IncidentStatus.RESOLVED.value:
+        return IncidentStatus.RESOLVED
+    return computed_status

@@ -64,9 +64,11 @@ async def _prepare_approval_node(
     """Persist an exact remediation proposal before checkpointing its interrupt."""
     from .act_phase import build_act_report
     from .approval_flow import (
+        ApprovalValidationError,
         compute_action_hash,
         create_or_reuse_pending_approval,
         format_approval_request,
+        incident_is_resolved,
     )
     from .checkpointer import durable_checkpointer_configured, thread_id_from_state
 
@@ -93,6 +95,42 @@ async def _prepare_approval_node(
         **(state.get("metadata", {}) or {}),
         "act_report": report_payload,
     }
+    incident_id = state.get("incident_id") or metadata.get("incident_id")
+    durably_resolved = bool(
+        incident_id
+        and execution_context is not None
+        and await incident_is_resolved(
+            incident_id=str(incident_id),
+            cluster_id=str(execution_context.cluster_id),
+        )
+    )
+    if durably_resolved:
+        suppression = {
+            "reason": "incident_resolved",
+            "source": "approval_prepare",
+        }
+        metadata["remediation_suppressed"] = suppression
+        metadata.pop("pending_approval", None)
+        report_payload["remediation_suppressed"] = suppression
+        report_payload["executed"] = []
+        report_payload["summary"] = (
+            "Alert cleared before remediation; investigation findings may "
+            "complete, but no approval or live write will be proposed."
+        )
+        record_span_from_state(
+            state,
+            span_kind="approval",
+            name="remediation approval",
+            status="not_applicable",
+            attributes={"sentinel.approval.outcome": "incident_resolved"},
+        )
+        return {"metadata": metadata}
+    if incident_id and execution_context is not None:
+        # Checkpoint metadata survives into a later human-requested reopen.
+        # Durable state is authoritative, so an old suppression marker must
+        # not turn a one-run recovery stop into a permanent remediation ban.
+        metadata.pop("remediation_suppressed", None)
+
     if not report_payload.get("plan_present") or report_payload.get("aggregate_decision") in {
         None,
         "autonomous",
@@ -112,18 +150,64 @@ async def _prepare_approval_node(
     if not durable_checkpointer_configured():
         raise RuntimeError("A durable checkpointer is required for approval")
 
-    incident_id = state.get("incident_id") or metadata.get("incident_id")
     if not incident_id:
         raise RuntimeError("Persisted incident_id is required for durable approval")
 
     action_hash = compute_action_hash(report_payload)
-    pending = await create_or_reuse_pending_approval(
+    try:
+        pending = await create_or_reuse_pending_approval(
+            incident_id=str(incident_id),
+            thread_id=thread_id_from_state(state),
+            organization_id=str(execution_context.organization_id),
+            cluster_id=str(execution_context.cluster_id),
+            action_hash=action_hash,
+        )
+    except ApprovalValidationError as exc:
+        if exc.reason != "incident_resolved":
+            raise
+        suppression = {
+            "reason": "incident_resolved",
+            "source": "approval_persist_race",
+        }
+        metadata["remediation_suppressed"] = suppression
+        metadata.pop("pending_approval", None)
+        report_payload["remediation_suppressed"] = suppression
+        report_payload["executed"] = []
+        report_payload["summary"] = (
+            "Alert cleared while the remediation gate was being prepared; "
+            "no approval or live write was proposed."
+        )
+        record_span_from_state(
+            state,
+            span_kind="approval",
+            name="remediation approval",
+            status="not_applicable",
+            attributes={"sentinel.approval.outcome": "incident_resolved"},
+        )
+        return {"metadata": metadata}
+
+    # Approval persistence and Slack announcement are separate durable writes.
+    # Re-check between them so a clear that landed after the row commit cannot
+    # leave a stale approval ask beneath the withdrawal notice. If the ask wins
+    # this ordering, the subsequent external-clear notice explicitly withdraws
+    # it; if the clear wins, no ask is emitted.
+    if await incident_is_resolved(
         incident_id=str(incident_id),
-        thread_id=thread_id_from_state(state),
-        organization_id=str(execution_context.organization_id),
         cluster_id=str(execution_context.cluster_id),
-        action_hash=action_hash,
-    )
+    ):
+        suppression = {
+            "reason": "incident_resolved",
+            "source": "approval_announcement_race",
+        }
+        metadata["remediation_suppressed"] = suppression
+        metadata.pop("pending_approval", None)
+        report_payload["remediation_suppressed"] = suppression
+        report_payload["executed"] = []
+        report_payload["summary"] = (
+            "Alert cleared before the remediation approval was announced; "
+            "no live write will run."
+        )
+        return {"metadata": metadata}
     metadata["pending_approval"] = pending.interrupt_payload(report_payload)
     # The gate below only calls `interrupt()` — it pauses the run and tells
     # nobody. Slack is the sole channel, so without this the approval expires in
@@ -244,8 +328,34 @@ async def _act_gate_node(
         )
         report_payload = report.to_dict()
         incident_id = state.get("incident_id") or (state.get("metadata", {}) or {}).get("incident_id")
+        metadata = state.get("metadata", {}) or {}
+        suppression = None
+        if incident_id and execution_context is not None:
+            from .approval_flow import incident_is_resolved
 
-        approval = (state.get("metadata", {}) or {}).get("approval", {}) or {}
+            if await incident_is_resolved(
+                incident_id=str(incident_id),
+                cluster_id=str(execution_context.cluster_id),
+            ):
+                suppression = metadata.get("remediation_suppressed") or {
+                    "reason": "incident_resolved",
+                    "source": "act_gate",
+                }
+        else:
+            suppression = metadata.get("remediation_suppressed")
+        remediation_suppressed = bool(suppression)
+        if remediation_suppressed:
+            report_payload["remediation_suppressed"] = suppression
+            # ``executed`` contains dry-run previews produced while building
+            # the report. Once recovery is durable they must not render as
+            # work performed or as a still-actionable proposal.
+            report_payload["executed"] = []
+            report_payload["summary"] = (
+                "Alert cleared before remediation; investigation findings are "
+                "complete, but no approval or live write was proposed."
+            )
+
+        approval = metadata.get("approval", {}) or {}
         current_action_hash = compute_action_hash(report_payload)
         human_approved = (
             approval.get("status") == "approved"
@@ -278,7 +388,7 @@ async def _act_gate_node(
         deterministic_pipeline_index: Optional[int] = None
         deterministic_pipeline_params: Dict[str, Any] = {}
         code_action_report: Optional[Dict[str, Any]] = None
-        if incident_id and report.plan_present:
+        if not remediation_suppressed and incident_id and report.plan_present:
             try:
                 from .executor import GITHUB_EXEC_TOOL_MAP
 
@@ -357,7 +467,7 @@ async def _act_gate_node(
         # directly; held actions proceed only when this exact report hash was
         # resumed through the durable approval gate.
         live_on = os.getenv("EXECUTOR_LIVE", "false").lower() in ("true", "1", "yes")
-        if live_on and (
+        if not remediation_suppressed and live_on and (
             execution_report.aggregate_decision == "autonomous" or human_approved
         ) and execution_report.plan_present:
             caller = github_caller = metrics_caller = None
@@ -450,7 +560,7 @@ async def _act_gate_node(
         # Temporal is enabled and sandbox params are complete, or the same
         # INCONCLUSIVE messaging as before otherwise — independent of
         # EXECUTOR_LIVE, since neither path touches a live cluster directly.
-        if code_action_report is not None:
+        if not remediation_suppressed and code_action_report is not None:
             try:
                 params = code_action_report.get("parameters") or {}
                 patch = params.get("patch") or params.get("diff") or ""
@@ -721,12 +831,13 @@ async def _act_gate_node(
             },
         )
 
-        return {
-            "metadata": {
-                **(state.get("metadata", {}) or {}),
-                "act_report": report_payload,
-            }
+        result_metadata = {
+            **metadata,
+            "act_report": report_payload,
         }
+        if not remediation_suppressed:
+            result_metadata.pop("remediation_suppressed", None)
+        return {"metadata": result_metadata}
     except Exception as e:
         logger.error(f"ACT gate node failed (non-fatal): {e}")
         from .trace_evidence import record_span_from_state

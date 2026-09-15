@@ -329,7 +329,11 @@ async def _decide_gate_for_incident(
             approver_label=approver.email,
         )
     except ApprovalValidationError as exc:
-        detail = "already decided" if exc.reason == "not_pending" else "expired"
+        detail = {
+            "not_pending": "already decided",
+            "expired": "expired",
+            "incident_resolved": "withdrawn because the alert already cleared",
+        }.get(exc.reason, exc.reason)
         return {"mode": "gate_decision", "status": exc.reason, "message": f"That gate is {detail}."}
 
     if row is None:
@@ -485,6 +489,7 @@ async def _decide_action_approval_for_incident(
             "not_pending": "already decided",
             "expired": "expired",
             "hash_mismatch": "no longer matches the current plan",
+            "incident_resolved": "withdrawn because the alert already cleared",
         }.get(exc.reason, exc.reason)
         return {"mode": "action_decision", "status": exc.reason, "message": f"That approval is {detail}."}
     except Exception:

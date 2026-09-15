@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A resolved alert has to stop its own investigation.
+"""Resolution source determines whether an investigation should stop.
 
 Live on 2026-09-14 incident bb5d557e's alert cleared at 17:11:15. Alertmanager
 said so, the webhook stamped `resolved_at`, and the investigation carried on
@@ -9,7 +9,12 @@ the retry's unconditional `status=INVESTIGATING` write dragged the row back to
 itself. Left alone it would have ended where every investigation ends, asking a
 human in Slack to approve a cluster write for an alert that had stopped firing.
 
-Two defects, and both need fixing, because either one alone still loses:
+Human resolution is an intentional stop. An Alertmanager clear is only a
+recovery signal: the investigation should finish its findings, but lose all
+authority to propose or execute remediation. The runtime must also prevent a
+finishing investigation from reopening the resolved incident.
+
+The original defects were:
 
   * the handler — nothing called `request_job_cancel`. The cancellation
     machinery was complete and unreachable, its only caller a manual HTTP
@@ -269,6 +274,147 @@ async def test_the_thread_is_told_only_when_work_was_actually_stopped(
         assert "No approval will be requested" in posts[0]
     else:
         assert posts == []
+
+
+@pytest.mark.asyncio
+async def test_external_clear_keeps_investigation_but_withdraws_remediation(
+    monkeypatch,
+):
+    """Alertmanager recovery closes authority, not evidence gathering."""
+    from sre_agent import approval_flow, job_store
+
+    order: list[str] = []
+    posts: list[str] = []
+
+    async def must_not_cancel(*_a, **_kw):
+        raise AssertionError("external recovery must not cancel the investigation")
+
+    async def fake_retire(*, incident_id):
+        order.append("retire")
+        return approval_flow.RetiredRemediationApprovals(
+            action_approvals=1,
+            gate_approvals=1,
+            gate_workflows=(("workflow-1", "start_fix"),),
+        )
+
+    async def fake_signal(workflow_id, signal_name, args):
+        assert workflow_id == "workflow-1"
+        assert signal_name == "decide_start_fix"
+        assert args == [False, "Alertmanager clear"]
+        order.append("signal")
+        return True
+
+    async def fake_post(_incident_id, message):
+        order.append("post")
+        posts.append(message)
+        return True
+
+    async def fake_close(_incident_id):
+        order.append("war_room")
+
+    async def fake_publish(*_a, **_kw):
+        order.append("publish")
+
+    async def fake_jira(*_a, **_kw):
+        order.append("jira")
+
+    monkeypatch.setattr(job_store, "cancel_incident_investigations", must_not_cancel)
+    monkeypatch.setattr(
+        approval_flow, "retire_pending_remediation_approvals", fake_retire
+    )
+    monkeypatch.setattr(
+        "sre_agent.temporal_client.signal_workflow", fake_signal, raising=False
+    )
+    monkeypatch.setattr(
+        "sre_agent.war_room_service.post_to_incident_thread",
+        fake_post,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "sre_agent.war_room_service.close_war_room", fake_close, raising=False
+    )
+    monkeypatch.setattr(
+        "sre_agent.live_events.publish_lifecycle_event",
+        fake_publish,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "sre_agent.integrations.jira.transition_jira_issue",
+        fake_jira,
+        raising=False,
+    )
+
+    class _ExternalIncident:
+        id = uuid.uuid4()
+        title = "InventorySlowQueries"
+        summary = "cleared"
+
+    await approval_flow.fire_external_alert_clear_side_effects(
+        _ExternalIncident(), str(uuid.uuid4()), str(uuid.uuid4())
+    )
+
+    assert order == ["retire", "signal", "post", "war_room", "publish", "jira"]
+    assert len(posts) == 1
+    assert "investigation will finish" in posts[0]
+    assert "approvals were withdrawn" in posts[0]
+    assert "no further cluster or repository write will run" in posts[0]
+
+
+@pytest.mark.asyncio
+async def test_alertmanager_resolution_uses_the_external_clear_contract(monkeypatch):
+    from backend import crud
+    from sre_agent import approval_flow
+    from sre_agent.api.v1 import alerts
+
+    incident = _Incident(models.IncidentStatus.INVESTIGATING)
+    cluster = type(
+        "_Cluster",
+        (),
+        {"id": uuid.uuid4(), "org_id": uuid.uuid4()},
+    )()
+    calls: list[str] = []
+
+    async def find_incident(*_a, **_kw):
+        return incident
+
+    async def external_clear(resolved_incident, organization_id, cluster_id):
+        assert resolved_incident is incident
+        assert organization_id == str(cluster.org_id)
+        assert cluster_id == str(cluster.id)
+        calls.append("external_clear")
+
+    async def timeline(*_a, **_kw):
+        calls.append("timeline")
+
+    class _Db:
+        async def execute(self, _stmt):
+            calls.append("status")
+            return None
+
+        async def commit(self):
+            calls.append("commit")
+
+    monkeypatch.setattr(crud, "find_active_incident_by_title", find_incident)
+    monkeypatch.setattr(crud, "create_incident_timeline_event", timeline)
+    monkeypatch.setattr(
+        approval_flow,
+        "fire_external_alert_clear_side_effects",
+        external_clear,
+    )
+
+    result = await alerts._reconcile_resolved_alert(
+        _Db(),
+        cluster,
+        {
+            "alertname": "InventorySlowQueries",
+            "service": "inventory-service",
+            "labels": {"alertname": "InventorySlowQueries"},
+            "ends_at": "2026-09-15T01:00:00Z",
+        },
+    )
+
+    assert result["matched"] is True
+    assert calls == ["status", "commit", "external_clear", "timeline"]
 
 
 class _GuardSession:

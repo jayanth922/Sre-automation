@@ -391,6 +391,7 @@ async def raise_pr_activity(params: IncidentRemediationInput) -> PrResult:
     AI-generated, sandbox-verified patch instead of a revert.
     """
     from .executor import _structured_payload, build_github_exec_tool_caller
+    from .mutation_gateway import MutationRejected, _incident_mutation_guard
 
     try:
         ctx = await _execution_context_for(params.organization_id, params.cluster_id)
@@ -409,16 +410,29 @@ async def raise_pr_activity(params: IncidentRemediationInput) -> PrResult:
         "this PR was opened."
     )
     try:
-        raw = await github_caller(
-            "create_fix_pr",
-            {
-                "branch_name": branch_name,
-                "patch": params.patch,
-                "title": title,
-                "body": body,
-                "dry_run": False,
-            },
-        )
+        # A PR is a repository write just as a kubectl action is a cluster
+        # write. Use the same incident-row ordering boundary so an external
+        # alert clear that commits first suppresses it, including the narrow
+        # race after gate 2 approval but before the GitHub call starts.
+        async with _incident_mutation_guard(params.incident_id, ctx):
+            raw = await github_caller(
+                "create_fix_pr",
+                {
+                    "branch_name": branch_name,
+                    "patch": params.patch,
+                    "title": title,
+                    "body": body,
+                    "dry_run": False,
+                },
+            )
+    except MutationRejected as exc:
+        if exc.code == "incident_resolved":
+            return PrResult(
+                "PR_SUPPRESSED_ALERT_CLEARED",
+                "The source alert cleared before the repository write began; "
+                "no pull request was created.",
+            )
+        return PrResult("PR_CREATION_FAILED", str(exc))
     except Exception as exc:
         return PrResult("PR_CREATION_FAILED", f"create_fix_pr call raised: {exc}")
 

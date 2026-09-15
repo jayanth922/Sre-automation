@@ -57,7 +57,8 @@ def build_resolution_report(
 
     executed = act_report.get("executed") or []
     live_results = act_report.get("live_results") or []
-    applied = live_results or executed
+    remediation_suppressed = act_report.get("remediation_suppressed")
+    applied = [] if remediation_suppressed else (live_results or executed)
     severity = act_report.get("severity", "?")
     decision = act_report.get("aggregate_decision", "?")
 
@@ -100,7 +101,13 @@ def build_resolution_report(
         )
         lines.append("")
     lines.append("**What the agent did:**" if not nothing_landed else "**What was attempted:**")
-    if applied:
+    if remediation_suppressed:
+        lines.append(
+            "- Completed the investigation and preserved its findings. "
+            "Remediation was suppressed because the source alert had already cleared; "
+            "no approval was requested and no live write ran."
+        )
+    elif applied:
         for a in applied:
             cmd = a.get("command") or a.get("action_type")
             mark = _ACTION_MARKS.get(str(a.get("status", "")).upper(), "")
@@ -169,7 +176,12 @@ def build_resolution_report(
                 )
         lines.append("")
 
-    if nothing_landed:
+    if remediation_suppressed:
+        next_steps = (
+            "The alert has cleared externally. Review the completed findings for "
+            "follow-up or recurrence prevention; Sentinel will not remediate this run."
+        )
+    elif nothing_landed:
         # This branch outranks every other next-step: the alert that opened
         # the incident is still true, and nobody reading it should be left
         # thinking a fix is in place. `compute_incident_status` puts this

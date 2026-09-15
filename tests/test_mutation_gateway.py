@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,6 +147,113 @@ def test_lock_between_plan_and_execute_hard_blocks(monkeypatch):
         )
     assert store.lock_reads == 1
     assert calls == []
+
+
+def test_resolved_incident_blocks_before_idempotency_or_tool_call(monkeypatch):
+    from backend import database, models
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *_a, **_kw: _fresh())
+    calls = []
+    incident_id = uuid.uuid4()
+    incident = SimpleNamespace(
+        id=incident_id,
+        cluster_id=CONTEXT.cluster_id,
+        status=models.IncidentStatus.RESOLVED,
+    )
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def execute(self, _stmt):
+            class _Result:
+                @staticmethod
+                def scalar_one_or_none():
+                    return incident
+
+            return _Result()
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", _Session)
+
+    async def caller(tool, args):
+        calls.append((tool, args))
+
+    gate = MutationGateContext(
+        decision="autonomous",
+        severity=Severity.SEV3,
+        incident_id=str(incident_id),
+    )
+    with pytest.raises(MutationRejected, match="incident_resolved"):
+        asyncio.run(
+            authorize_and_execute(
+                FakeAction(), gate, CONTEXT, caller, None, "resolved-race"
+            )
+        )
+
+    assert calls == []
+    assert store.claims == set()
+
+
+def test_incident_lock_is_held_through_the_external_write(monkeypatch):
+    from backend import database, models
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *_a, **_kw: _fresh())
+    monkeypatch.setattr(gateway, "_persist_audit_event", _no_audit)
+    incident_id = uuid.uuid4()
+    incident = SimpleNamespace(
+        id=incident_id,
+        cluster_id=CONTEXT.cluster_id,
+        status=models.IncidentStatus.INVESTIGATING,
+    )
+
+    class _Session:
+        active = False
+
+        async def __aenter__(self):
+            self.active = True
+            return self
+
+        async def __aexit__(self, *_exc):
+            self.active = False
+            return False
+
+        async def execute(self, _stmt):
+            class _Result:
+                @staticmethod
+                def scalar_one_or_none():
+                    return incident
+
+            return _Result()
+
+    session = _Session()
+    monkeypatch.setattr(database, "AsyncSessionLocal", lambda: session)
+
+    async def caller(_tool, _args):
+        assert session.active is True
+        return {"status": "OK", "applied": True}
+
+    gate = MutationGateContext(
+        decision="autonomous",
+        severity=Severity.SEV3,
+        incident_id=str(incident_id),
+    )
+    result = asyncio.run(
+        authorize_and_execute(
+            FakeAction(), gate, CONTEXT, caller, None, "ordered-against-clear"
+        )
+    )
+
+    assert result.status == "EXECUTED"
+    assert session.active is False
 
 
 def test_policy_mutation_between_plan_and_execute_hard_blocks(monkeypatch):

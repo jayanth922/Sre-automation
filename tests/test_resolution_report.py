@@ -68,6 +68,27 @@ def test_report_high_severity_held_for_approval():
     assert report["resolved"] is False
 
 
+def test_externally_cleared_report_does_not_present_dry_run_as_a_proposal():
+    act_report = {
+        "severity": "SEV2",
+        "aggregate_decision": "requires_approval",
+        "executed": [
+            {
+                "action_type": "restart",
+                "target": "checkout-service",
+                "command": "kubectl rollout restart deployment/checkout-service",
+            }
+        ],
+        "remediation_suppressed": {"reason": "incident_resolved"},
+    }
+
+    report = rr.build_resolution_report(_state(), act_report)
+
+    assert report["actions_applied"] == []
+    assert "no approval was requested and no live write ran" in report["markdown"]
+    assert "Held for human approval" not in report["markdown"]
+
+
 # ---------------------------------------------------------------------------
 # A code fix that produced no patch
 #

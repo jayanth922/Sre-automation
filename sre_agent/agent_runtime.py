@@ -27,7 +27,11 @@ from sre_agent.api.v1 import clusters, incidents, invitations
 from backend import crud, database, models
 from backend.routers import auth as auth_router
 from backend.models import IncidentStatus, JobStatus
-from .incident_status import compute_incident_status, resolved_at_for_status
+from .incident_status import (
+    compute_incident_status,
+    effective_status_after_run,
+    resolved_at_for_status,
+)
 from .execution_context import ExecutionContext, require_execution_context
 from .runtime_cache import AgentRuntimeCache, RuntimeBundle
 from .ws_auth import event_visible_to_org, org_id_matches, validate_ws_ticket
@@ -1865,19 +1869,32 @@ async def _run_graph_impl(
         )
 
         # Update Incident and Job in Postgres with RICH DATA
+        effective_status = computed_status
+        resolution_already_recorded = False
         async with database.AsyncSessionLocal() as db:
+            persisted_result = await db.execute(
+                select(models.Incident)
+                .where(models.Incident.id == incident_id)
+                .with_for_update()
+            )
+            persisted_incident = persisted_result.scalar_one_or_none()
+            persisted_status = getattr(persisted_incident, "status", None)
+            effective_status = effective_status_after_run(
+                persisted_status, computed_status
+            )
+            resolution_already_recorded = (
+                getattr(persisted_status, "value", persisted_status)
+                == IncidentStatus.RESOLVED.value
+            )
             # Update Incident
             incident_values = {
-                "status": computed_status,
+                "status": effective_status,
                 "summary": final_response,
             }
-            # Always written, never only on the resolved branch: a row can
-            # arrive here already stamped by an Alertmanager *resolved*
-            # webhook and then compute REMEDIATION_FAILED (see
-            # incident_status.resolved_at_for_status).
-            incident_values["resolved_at"] = resolved_at_for_status(
-                computed_status, datetime.now(timezone.utc)
-            )
+            if not resolution_already_recorded:
+                incident_values["resolved_at"] = resolved_at_for_status(
+                    effective_status, datetime.now(timezone.utc)
+                )
             await db.execute(
                 models.Incident.__table__
                 .update()
@@ -1939,7 +1956,7 @@ async def _run_graph_impl(
             from sre_agent.integrations.jira import transition_jira_issue
 
             jira_comment = None
-            if computed_status == IncidentStatus.RESOLVED:
+            if effective_status == IncidentStatus.RESOLVED:
                 try:
                     from sre_agent.runbook_generator import generate_runbook_markdown, input_from_act
 
@@ -1948,31 +1965,36 @@ async def _run_graph_impl(
                     )
                 except Exception as postmortem_err:
                     logger.debug(f"jira: postmortem generation skipped: {postmortem_err}")
-            asyncio.create_task(
-                transition_jira_issue(
-                    session_id, str(cluster_id), computed_status.value, jira_comment
+            if not resolution_already_recorded:
+                asyncio.create_task(
+                    transition_jira_issue(
+                        session_id,
+                        str(cluster_id),
+                        effective_status.value,
+                        jira_comment,
+                    )
                 )
-            )
         except Exception as jira_err:
             logger.debug(f"jira transition skipped: {jira_err}")
 
         try:
             from .live_events import publish_lifecycle_event
 
-            await publish_lifecycle_event(
-                "resolved"
-                if computed_status == IncidentStatus.RESOLVED
-                else "status_changed",
-                incident_id=str(incident_id),
-                alert_name=alert_name,
-                summary=final_response,
-                org_id=org_id_for_bus,
-                status=str(computed_status),
-            )
+            if not resolution_already_recorded:
+                await publish_lifecycle_event(
+                    "resolved"
+                    if effective_status == IncidentStatus.RESOLVED
+                    else "status_changed",
+                    incident_id=str(incident_id),
+                    alert_name=alert_name,
+                    summary=final_response,
+                    org_id=org_id_for_bus,
+                    status=str(effective_status),
+                )
         except Exception as bus_err:
             logger.debug(f"incident-lifecycle publish skipped: {bus_err}")
 
-        if computed_status == IncidentStatus.RESOLVED:
+        if effective_status == IncidentStatus.RESOLVED and not resolution_already_recorded:
             try:
                 from .war_room_service import close_war_room
 

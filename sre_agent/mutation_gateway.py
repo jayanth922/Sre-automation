@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,6 +194,54 @@ def _as_uuid(value: str, label: str) -> uuid.UUID:
         raise MutationAuditError(f"Audit {label} must be a UUID") from exc
 
 
+@asynccontextmanager
+async def _incident_mutation_guard(
+    incident_id: Optional[str], context: ExecutionContext
+):
+    """Order a live write atomically against an Alertmanager clear.
+
+    The incident row remains locked through the external write. If recovery
+    committed first, the mutation is refused; if execution acquired the lock
+    first, the clear is serialized after that already-authorized write.
+    """
+    if not incident_id:
+        yield
+        return
+
+    from sqlalchemy import select
+
+    from backend import database, models
+
+    try:
+        incident_uuid = uuid.UUID(str(incident_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise MutationRejected(
+            "invalid_gate_context", "A valid incident id is required"
+        ) from exc
+
+    async with database.AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.Incident)
+            .where(
+                models.Incident.id == incident_uuid,
+                models.Incident.cluster_id
+                == uuid.UUID(str(context.cluster_id)),
+            )
+            .with_for_update()
+        )
+        incident = result.scalar_one_or_none()
+        if incident is None:
+            raise MutationRejected(
+                "scope_mismatch", "Incident does not belong to this cluster"
+            )
+        if incident.status == models.IncidentStatus.RESOLVED:
+            raise MutationRejected(
+                "incident_resolved",
+                "The source alert cleared before this write could start",
+            )
+        yield
+
+
 async def _persist_audit_event(
     context: ExecutionContext,
     result: ExecutionResult,
@@ -281,41 +330,44 @@ async def authorize_and_execute(
         raise MutationRejected("approval_required", fresh.reason)
 
     _verify_scope(action, execution_context)
-    if not idempotency_key or not str(idempotency_key).strip():
-        raise MutationRejected(
-            "invalid_idempotency_key", "A non-empty idempotency key is required"
-        )
-    if not store.set_idempotency(str(idempotency_key), _idempotency_ttl()):
-        if hasattr(store, "is_available") and not store.is_available():
+    async with _incident_mutation_guard(
+        _field(gate_decision, "incident_id"), execution_context
+    ):
+        if not idempotency_key or not str(idempotency_key).strip():
             raise MutationRejected(
-                "state_unavailable", "Redis failed during idempotency claim"
+                "invalid_idempotency_key", "A non-empty idempotency key is required"
             )
-        return ExecutionResult(
-            action_type=str(getattr(action, "action_type", "")).lower(),
-            target=str(getattr(action, "target", "")),
-            command=build_command(action),
-            mode=ExecutionMode.LIVE,
-            status="SKIPPED",
-            rollback_command=build_rollback_command(action),
-            detail="Duplicate mutation short-circuited by its idempotency claim.",
-        )
+        if not store.set_idempotency(str(idempotency_key), _idempotency_ttl()):
+            if hasattr(store, "is_available") and not store.is_available():
+                raise MutationRejected(
+                    "state_unavailable", "Redis failed during idempotency claim"
+                )
+            return ExecutionResult(
+                action_type=str(getattr(action, "action_type", "")).lower(),
+                target=str(getattr(action, "target", "")),
+                command=build_command(action),
+                mode=ExecutionMode.LIVE,
+                status="SKIPPED",
+                rollback_command=build_rollback_command(action),
+                detail="Duplicate mutation short-circuited by its idempotency claim.",
+            )
 
-    executor = Executor(
-        actor=str(_field(gate_decision, "actor", "sre-agent") or "sre-agent"),
-        incident_id=_field(gate_decision, "incident_id"),
-    )
-    result = await executor._aexecute_unchecked(
-        action,
-        "approved" if approved else fresh.decision.value,
-        dry_run=False,
-        tool_caller=tool_caller,
-        github_caller=github_caller,
-    )
-    try:
-        await _persist_audit_event(execution_context, result, approved=approved)
-    except Exception as exc:
-        raise MutationAuditError(
-            "Live execution completed but its AuditEvent could not be persisted; "
-            "the idempotency claim remains active"
-        ) from exc
-    return result
+        executor = Executor(
+            actor=str(_field(gate_decision, "actor", "sre-agent") or "sre-agent"),
+            incident_id=_field(gate_decision, "incident_id"),
+        )
+        result = await executor._aexecute_unchecked(
+            action,
+            "approved" if approved else fresh.decision.value,
+            dry_run=False,
+            tool_caller=tool_caller,
+            github_caller=github_caller,
+        )
+        try:
+            await _persist_audit_event(execution_context, result, approved=approved)
+        except Exception as exc:
+            raise MutationAuditError(
+                "Live execution completed but its AuditEvent could not be persisted; "
+                "the idempotency claim remains active"
+            ) from exc
+        return result

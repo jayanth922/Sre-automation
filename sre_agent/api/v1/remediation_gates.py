@@ -79,6 +79,11 @@ async def decide_remediation_gate(
             approver_label=user.email or str(user.id),
         )
     except ApprovalValidationError as exc:
+        if exc.reason == "incident_resolved":
+            raise HTTPException(
+                status_code=409,
+                detail="The incident is resolved; this gate was withdrawn",
+            ) from exc
         if exc.reason == "not_pending":
             raise HTTPException(
                 status_code=409, detail="Gate approval is no longer pending"

@@ -10,7 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,56 @@ class PendingApproval:
             "action_hash": self.action_hash,
             "expires_at": self.expires_at.isoformat(),
         }
+
+
+@dataclass(frozen=True)
+class RetiredRemediationApprovals:
+    """Approval authority removed when the source alert clears externally."""
+
+    action_approvals: int = 0
+    gate_approvals: int = 0
+    gate_workflows: Tuple[Tuple[str, str], ...] = ()
+
+    @property
+    def total(self) -> int:
+        return self.action_approvals + self.gate_approvals
+
+
+async def incident_is_resolved(*, incident_id: str, cluster_id: str) -> bool:
+    """Read the durable incident state used by graph remediation boundaries."""
+    from backend import database, models
+
+    async with database.AsyncSessionLocal() as db:
+        incident = await db.get(models.Incident, uuid.UUID(str(incident_id)))
+        return bool(
+            incident is not None
+            and str(incident.cluster_id) == str(cluster_id)
+            and incident.status == models.IncidentStatus.RESOLVED
+        )
+
+
+async def _lock_incident_for_remediation(
+    db: Any, incident_id: Any, cluster_id: Any
+) -> Any:
+    """Serialize approval creation/decision against external resolution."""
+    from sqlalchemy import select
+
+    from backend import models
+
+    result = await db.execute(
+        select(models.Incident)
+        .where(
+            models.Incident.id == incident_id,
+            models.Incident.cluster_id == cluster_id,
+        )
+        .with_for_update()
+    )
+    incident = result.scalar_one_or_none()
+    if incident is None:
+        raise ApprovalValidationError("incident_not_found")
+    if incident.status == models.IncidentStatus.RESOLVED:
+        raise ApprovalValidationError("incident_resolved")
+    return incident
 
 
 _DECISION_MARK = {
@@ -259,7 +309,7 @@ async def create_or_reuse_pending_approval(
     The lookup makes node retries idempotent if the process dies after the
     database commit but before LangGraph writes the next checkpoint.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
     from sqlalchemy.exc import IntegrityError
 
     from backend import database, models
@@ -270,6 +320,9 @@ async def create_or_reuse_pending_approval(
     now = utc_now()
 
     async with database.AsyncSessionLocal() as db:
+        incident = await _lock_incident_for_remediation(
+            db, incident_uuid, cluster_uuid
+        )
         result = await db.execute(
             select(models.ApprovalRequest)
             .where(
@@ -303,14 +356,8 @@ async def create_or_reuse_pending_approval(
             )
             db.add(request)
 
-        await db.execute(
-            update(models.Incident)
-            .where(
-                models.Incident.id == incident_uuid,
-                models.Incident.cluster_id == cluster_uuid,
-            )
-            .values(status=models.IncidentStatus.AWAITING_APPROVAL)
-        )
+        incident.status = models.IncidentStatus.AWAITING_APPROVAL
+        incident.resolved_at = None
 
         try:
             await db.commit()
@@ -390,6 +437,7 @@ async def create_or_reuse_pending_gate_approval(
     ttl = timedelta(seconds=max(1, int(ttl_seconds)))
 
     async with database.AsyncSessionLocal() as db:
+        await _lock_incident_for_remediation(db, incident_uuid, cluster_uuid)
         result = await db.execute(
             select(models.RemediationGateApproval)
             .where(
@@ -603,14 +651,13 @@ async def acknowledge_incident_resolution(
 async def fire_resolution_side_effects(
     incident: Any, organization_id: str, cluster_id: str
 ) -> None:
-    """Stop the investigation, close the war room, publish, transition Jira.
+    """Human resolution: stop investigation, close communications, publish.
 
-    Every path that resolves an incident owes the same four side effects —
-    an incident closed without them leaves its Slack thread live, the
-    dashboards showing it open, and its investigation still running — so they
-    live here once rather than in each caller.
+    A human's explicit resolve/acknowledge is an instruction to stop. External
+    alert recovery is intentionally different and uses
+    ``fire_external_alert_clear_side_effects`` below.
     """
-    from backend import database, models
+    from backend import database
 
     incident_id = str(incident.id)
     # First, because it is the only one that stops work still being done. An
@@ -665,12 +712,152 @@ async def fire_resolution_side_effects(
                 "Slack notice was delivered to the thread",
                 incident_id,
             )
+    await _finalize_resolution_integrations(incident, organization_id, cluster_id)
+
+
+async def retire_pending_remediation_approvals(
+    *, incident_id: str
+) -> RetiredRemediationApprovals:
+    """Atomically make every still-pending remediation decision unusable."""
+    from sqlalchemy import select, update
+
+    from backend import database, models
+
+    incident_uuid = uuid.UUID(str(incident_id))
+    now = utc_now()
+    async with database.AsyncSessionLocal() as db:
+        gate_result = await db.execute(
+            select(
+                models.RemediationGateApproval.workflow_id,
+                models.RemediationGateApproval.gate,
+            ).where(
+                models.RemediationGateApproval.incident_id == incident_uuid,
+                models.RemediationGateApproval.status
+                == models.ApprovalStatus.PENDING,
+            )
+        )
+        gate_workflows = tuple(
+            (str(row[0]), str(row[1])) for row in gate_result.all()
+        )
+        action_result = await db.execute(
+            update(models.ApprovalRequest)
+            .where(
+                models.ApprovalRequest.incident_id == incident_uuid,
+                models.ApprovalRequest.status == models.ApprovalStatus.PENDING,
+            )
+            .values(status=models.ApprovalStatus.EXPIRED, decided_at=now)
+        )
+        remediation_result = await db.execute(
+            update(models.RemediationGateApproval)
+            .where(
+                models.RemediationGateApproval.incident_id == incident_uuid,
+                models.RemediationGateApproval.status
+                == models.ApprovalStatus.PENDING,
+            )
+            .values(status=models.ApprovalStatus.EXPIRED, decided_at=now)
+        )
+        await db.commit()
+        return RetiredRemediationApprovals(
+            action_approvals=max(0, int(action_result.rowcount or 0)),
+            gate_approvals=max(0, int(remediation_result.rowcount or 0)),
+            gate_workflows=gate_workflows,
+        )
+
+
+async def fire_external_alert_clear_side_effects(
+    incident: Any, organization_id: str, cluster_id: str
+) -> None:
+    """Resolve externally without cancelling the evidence-gathering job.
+
+    Pending authority is retired first. The graph may continue producing
+    findings, but cannot create another approval or reach a live write after
+    the durable incident state becomes RESOLVED.
+    """
+    incident_id = str(incident.id)
+    retired = RetiredRemediationApprovals()
+    try:
+        retired = await retire_pending_remediation_approvals(
+            incident_id=incident_id
+        )
+    except Exception as retire_err:
+        logger.exception(
+            "Could not retire remediation approvals for externally resolved "
+            "incident %s: %s",
+            incident_id,
+            retire_err,
+        )
+
+    # Wake any Temporal gate waits as denials. The rows are already durable and
+    # unusable even if Temporal is unavailable; a failed signal can only leave
+    # the workflow waiting until its own timeout, never authorize a write.
+    for workflow_id, gate in retired.gate_workflows:
+        signal_name = _GATE_SIGNAL_NAME.get(gate)
+        if signal_name is None:
+            continue
+        try:
+            from .temporal_client import signal_workflow
+
+            await signal_workflow(
+                workflow_id,
+                signal_name,
+                args=[False, "Alertmanager clear"],
+            )
+        except Exception as signal_err:
+            logger.error(
+                "External clear retired gate %s for incident %s but could not "
+                "signal workflow %s: %s",
+                gate,
+                incident_id,
+                workflow_id,
+                signal_err,
+            )
+
+    notified = False
+    try:
+        from .war_room_service import post_to_incident_thread
+
+        withdrawal = (
+            f" {retired.total} pending remediation approval"
+            f"{'s were' if retired.total != 1 else ' was'} withdrawn."
+            if retired.total
+            else ""
+        )
+        notified = await post_to_incident_thread(
+            incident_id,
+            f":white_check_mark: Alertmanager reports `{incident.title}` has "
+            "cleared externally. Any in-flight investigation will finish and "
+            "post its findings here, but Sentinel has stopped at the "
+            f"remediation boundary.{withdrawal} No approval will be requested "
+            "and no further cluster or repository write will run.",
+        )
+    except Exception as notify_err:
+        logger.warning(
+            "External-clear notice failed for incident %s: %s",
+            incident_id,
+            notify_err,
+        )
+    if not notified:
+        logger.error(
+            "Incident %s cleared externally, but NO Slack notice was delivered",
+            incident_id,
+        )
+
+    await _finalize_resolution_integrations(incident, organization_id, cluster_id)
+
+
+async def _finalize_resolution_integrations(
+    incident: Any, organization_id: str, cluster_id: str
+) -> None:
+    """Shared non-job side effects for every successful resolution source."""
+    from backend import models
+
+    incident_id = str(incident.id)
     try:
         from .war_room_service import close_war_room
 
         await close_war_room(incident_id)
-    except Exception:
-        pass
+    except Exception as close_err:
+        logger.warning("Could not close war room for %s: %s", incident_id, close_err)
     try:
         from .live_events import publish_lifecycle_event
 
@@ -682,16 +869,22 @@ async def fire_resolution_side_effects(
             org_id=str(organization_id),
             status=str(models.IncidentStatus.RESOLVED),
         )
-    except Exception:
-        pass
+    except Exception as publish_err:
+        logger.warning(
+            "Could not publish resolved lifecycle for %s: %s",
+            incident_id,
+            publish_err,
+        )
     try:
         from .integrations.jira import transition_jira_issue
 
         await transition_jira_issue(
             incident_id, str(cluster_id), str(models.IncidentStatus.RESOLVED)
         )
-    except Exception:
-        pass
+    except Exception as jira_err:
+        logger.warning(
+            "Could not transition Jira issue for %s: %s", incident_id, jira_err
+        )
 
 
 async def mark_incident_resolved_by_human(
@@ -775,6 +968,9 @@ async def decide_gate_approval(
     from backend import database, models
 
     async with database.AsyncSessionLocal() as db:
+        await _lock_incident_for_remediation(
+            db, uuid.UUID(str(incident_id)), uuid.UUID(str(cluster_id))
+        )
         result = await db.execute(
             select(models.RemediationGateApproval).where(
                 models.RemediationGateApproval.id == uuid.UUID(str(gate_approval_id)),
@@ -928,6 +1124,9 @@ async def decide_action_approval(
         raise RuntimeError("A durable checkpointer is required for approvals")
 
     async with database.AsyncSessionLocal() as db:
+        await _lock_incident_for_remediation(
+            db, uuid.UUID(str(incident_id)), uuid.UUID(str(cluster_id))
+        )
         result = await db.execute(
             select(models.ApprovalRequest).where(
                 models.ApprovalRequest.id == uuid.UUID(str(approval_request_id)),
@@ -1115,22 +1314,36 @@ async def decide_action_approval(
     if not isinstance(output, dict) or not output:
         return None
 
-    from sre_agent.incident_status import compute_incident_status, resolved_at_for_status
+    from sre_agent.incident_status import (
+        compute_incident_status,
+        effective_status_after_run,
+        resolved_at_for_status,
+    )
 
     act_report = (output.get("metadata") or {}).get("act_report")
     verification = (act_report or {}).get("verification")
     computed_status = compute_incident_status(output, act_report, verification)
-    # Written unconditionally, both directions: an Alertmanager *resolved*
-    # webhook can stamp the row while this approved run is still verifying,
-    # and then the run computes REMEDIATION_FAILED. Setting only the status
-    # left `remediation_failed` rows carrying a `resolved_at`, which MTTR
-    # counts as a fast resolution (see incident_status.resolved_at_for_status).
-    incident_values: Dict[str, Any] = {
-        "status": computed_status,
-        "resolved_at": resolved_at_for_status(computed_status, utc_now()),
-    }
-
+    # Lock the final write against Alertmanager recovery. Findings may finish
+    # after recovery, but their graph-local status cannot reopen the incident.
     async with database.AsyncSessionLocal() as db:
+        incident_result = await db.execute(
+            select(models.Incident)
+            .where(models.Incident.id == uuid.UUID(str(incident_id)))
+            .with_for_update()
+        )
+        incident = incident_result.scalar_one_or_none()
+        persisted_status = getattr(incident, "status", None)
+        effective_status = effective_status_after_run(
+            persisted_status, computed_status
+        )
+        incident_values: Dict[str, Any] = {"status": effective_status}
+        if (
+            getattr(persisted_status, "value", persisted_status)
+            != models.IncidentStatus.RESOLVED.value
+        ):
+            incident_values["resolved_at"] = resolved_at_for_status(
+                effective_status, utc_now()
+            )
         await db.execute(
             update(models.Incident)
             .where(models.Incident.id == uuid.UUID(str(incident_id)))
@@ -1138,4 +1351,4 @@ async def decide_action_approval(
         )
         await db.commit()
 
-    return computed_status
+    return effective_status

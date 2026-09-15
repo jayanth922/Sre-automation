@@ -10,8 +10,9 @@ Phase 5 (deterministic remediation pipeline) closed end to end on both write
 paths: `dc1712ca` via `patch_deployment_env`, and — after #26 — `555a3acb` /
 `d2fb7c5d` via `patch_resource_limits` (**Task #5 complete**, see below).
 Focus is **Slack-only communication robustness** (standing rule: "Slack is
-the only method of all types of communication, so it should be robust") and
-Task #4's remaining incident classes.
+the only method of all types of communication, so it should be robust").
+Task #40's external-clear lifecycle split is implemented and offline-verified;
+live confirmation is blocked on k3s/Anthropic availability.
 
 ## Current architecture and invariants
 Two independent ACT gates (`PolicyEngine.evaluate_action()`,
@@ -38,8 +39,10 @@ is unappealable — if a human should be able to say yes, the hold belongs in
 `policy_gate.decide`, which decides *autonomy vs. approval only* and never
 chooses the action.
 
-**Only a human's Slack `acknowledge` resolves an incident.**
-`compute_incident_status` never returns RESOLVED.
+**Only a human's Slack `acknowledge` confirms that Sentinel's fix resolved an
+incident.** `compute_incident_status` never returns RESOLVED. Alertmanager may
+close the incident lifecycle when its source alert clears, but that signal is
+not proof of recovery and grants no remediation authority.
 
 **`incident_reconciler` is the clock this system otherwise lacks**, because
 post-approval remediation has no durable job: `decide_action_approval` drives
@@ -70,14 +73,19 @@ polls past "still firing" *and* past a too-early "clear":
 keep watching. `ALERTS` is pod-labelled, so every rollout clears it instantly
 (#27).
 
-**Resolution is terminal.** Every resolve path — Alertmanager clear, Slack
-`acknowledge`, Slack `mark resolved` — goes through
-`approval_flow.fire_resolution_side_effects`, whose *first* act is
-`job_store.cancel_incident_investigations`. `_run_graph_impl` refuses to start
-on an already-resolved incident, before it opens a war room (#28).
+**Resolution is terminal for remediation, but its source determines what
+happens to investigation work.** Human `acknowledge`/`mark resolved` still use
+`fire_resolution_side_effects` and cancel the job. Alertmanager clear uses
+`fire_external_alert_clear_side_effects`: it leaves an in-process investigation
+alive, expires ordinary and Temporal approvals, signals waiting Temporal gates
+as denied, and posts the distinction directly to Slack. Approval creation,
+approval decisions, ACT, repository writes, and the sole cluster mutation
+gateway all re-read/lock the durable incident state. Finishing runs preserve a
+persisted RESOLVED status and its original `resolved_at`. `_run_graph_impl`
+still refuses a new automatic run for an already-resolved incident (#28/#40).
 
 ## Completed or verified work
-Thirty-eight defects found by live fire and by audit (numbered to #39; #30 was
+Thirty-nine defects found by live fire and by audit (numbered to #40; #30 was
 withdrawn on evidence). #35–#37 and #39 came from an OpenAI Codex comparison
 against HolmesGPT — each was verified against this code with a probe before
 being believed, and one of Codex's five P0s was rejected in favour of a
@@ -417,9 +425,10 @@ parsing (4/4 runs, `actions` arrived as a JSON string), which is why
 own investigation — `bb5d557e` cleared at 17:11:15 and ran 13 more minutes and
 five specialists, was retried after a restart, and ended `investigating` with
 `resolved_at` stamped, heading for an approval request for an alert that had
-stopped firing. Both halves fixed: the resolve paths now cancel, and the
-INVESTIGATING write refuses a resolved incident (automatic triggers only — a
-person replying in the thread may still reopen one). Confirmed live by
+stopped firing. #28 fixed both halves by cancelling on resolution and refusing
+the later INVESTIGATING write. #40 subsequently narrowed cancellation to
+explicit human resolution; external clear now preserves the in-process
+investigation while retaining the no-reopen/no-write guards. Confirmed live by
 re-running the failure: `0b932c9c` was `investigating` with its job `running`
 when the resolved webhook arrived, and 15s later read `resolved` / `cancelled`,
 attempt count not consumed, with the cancellation posted to the Slack thread.
@@ -434,26 +443,17 @@ kube-state-metrics + a `cluster-resources` rule group, and a recency guard on
 `PodOOMKilled` (`kube_pod_..._last_terminated_reason` fires forever otherwise).
 
 ## Active problem
-**#40: 73% of this system's investigations are killed mid-flight.** Over the
-12 hours to 2026-09-15 14:45, 15 incidents opened, **all 15 auto-resolved**
-(shortest lifetime 60 seconds), and the jobs behind them ended **11
-`cancelled` to 4 `completed`**. Every one was an Alertmanager clear reaching
-`fire_resolution_side_effects`, whose first act is to cancel the
-investigation. This is larger than anything in the Codex audit, because it
-does not degrade the output — it discards the work entirely after paying for
-it. It has three distinct costs: the diagnosis is thrown away (one cancelled
-run had already root-caused an alert rule); a clearing alert is not recovery
-(a pod *restart* clears `PodOOMKilled`, backoff clears `PodCrashLooping`); and
-it silently discards **pending human approvals** — `cf58ef6a` posted its
-approval request at 06:17:52 and was resolved at 06:18:56, so the window a
-human had to approve anything was 64 seconds. Fix shape: split the resolve
-paths. A human resolve keeps cancelling; an external clear marks the incident
-resolved but lets the in-flight job finish and post its findings, then
-hard-stops at the approval boundary with a message saying the alert cleared
-so no write will be proposed — preserving #28's invariant (no cluster write
-for an alert that stopped firing) without burning the investigation. If an
-approval is already outstanding when the clear arrives, say so in the thread
-rather than closing silently.
+**#40 is code-complete and awaits live confirmation.** The external-clear path
+no longer calls the human-resolution cancellation helper. It retires all
+pending approval authority, tells Slack that the investigation may finish but
+no write will run, and preserves findings/job completion without allowing the
+graph's final status write to reopen the incident. PostgreSQL row locks define
+clear-vs-approval and clear-vs-write ordering; the lock remains held through
+the external mutation/PR call. Regression coverage exercises the webhook
+wiring, human-vs-external split, approval suppression, deterministic code-fix
+suppression, mutation ordering, report wording, and final status precedence.
+Live proof still needs one alert that clears while its investigation is
+running and one clear with a pending approval.
 
 **Narration fidelity is the other open honesty gap, and it recurred twice.** On
 `4a0b0254` the supervisor TL;DR claimed "a regression introduced in that
@@ -482,8 +482,10 @@ retry → breaker → namespace → write guard → audit),
 `ToolNode` that makes #35 reach langgraph), `act_phase.py`
 (`_walk_tool_outputs`/`_absorb`, #36),
 `agent_state.py` (LLM-facing schemas + container decoding),
-`graph_builder.py` (planner/swarm prompts, fallback plan), `act_phase.py`,
-`approval_flow.py` (the Slack message that gates everything), `executor.py`,
+`graph_builder.py` (planner/swarm prompts, fallback plan, #40 approval/ACT
+stop), `act_phase.py`, `approval_flow.py` (human-vs-external resolution split
+and approval retirement), `mutation_gateway.py` (#40's final row-locked write
+boundary), `executor.py`,
 `policy_gate.py`, `incident_reconciler.py`, `api/v1/alerts.py` (dedup, and the #34 fold: `_find_fold_target`,
 `_fold_alert_into_incident`), `incident_correlation.py`
 (`actionable_bundle` — what the gate is licensed to act on),
@@ -491,7 +493,8 @@ retry → breaker → namespace → write guard → audit),
 `narration_grounding.py` (status → phase/command corrections),
 `api/v1/mission_control.py` (`_traced_chat_reply`, the chat-only seam),
 `resolution_report.py`, `incident_status.py`, `verified_learning.py` (the
-three #32 consumers of a live run's outcome), `war_room.py`
+three #32 consumers of a live run's outcome; the first two also carry #40's
+truthful report/status precedence), `war_room.py`
 (`route_fix_approval_command` — every inbound Slack command, and the #33
 receipt seam).
 `benchmarks/`: `release_gate.py` (policy load + reachability guard, bundle
@@ -501,10 +504,11 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
 `--check` is what CI asserts), `release/v1/{policy.json,ci-matrix.json}`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests -q -p no:cacheprovider` → **1426 passed,
-  3 skipped** (426s), plus `pytest tests/integration -m integration` → 13
-  passed. `bash scripts/check_python_quality.sh` and `check_eval_smoke.sh`
-  both pass. Health is `/ping` on **port 8080** (`/health` 404s).
+- 2026-09-15, Task #40: `.venv/bin/python -m pytest tests -q
+  -p no:cacheprovider` → **1437 passed, 3 skipped** (431.11s); integration →
+  **13 passed**; docs truthfulness → **6 passed**; Python quality, eval smoke
+  (**45 passed**), and static-secret scan all pass. Health is `/ping` on
+  **port 8080** (`/health` 404s).
 - **#38 is live-confirmed** (2026-09-15 14:45). `agent_audit_logs` totals
   went SUCCESS 2261 → **2507** while PENDING stayed **18** and FAILURE **8**:
   246 more live tool calls, **zero new orphan rows**. The most recent PENDING
@@ -586,31 +590,15 @@ reports from records, `claim_disagreements`, `verify_root_traces`,
   `alert_cleared_external_verification` while the pod kept OOMKilling:
   CrashLoopBackOff slows the *restart rate* below the rule's threshold, so
   the alert goes quiet on backoff, not recovery.
-- **#40 — a clearing alert cancels a live investigation and throws away what
-  it already found.** Same root cause as the entry above, but the cost is
-  larger than a premature close, and it is now the **largest single defect in
-  the system** — see Active problem. `fire_resolution_side_effects` begins
-  with `job_store.cancel_incident_investigations` (#28's design, correct for
-  a *human* resolve), and the Alertmanager-clear path
-  (`api/v1/alerts.py:691`) reaches the same function. Measured 2026-09-15
-  14:45 over 12 hours: **15 incidents opened, 15 auto-resolved** (shortest
-  lifetime 60s), jobs **11 `cancelled` / 4 `completed`**. One cancelled run
-  had already produced a real finding — that the `InventoryHighErrorRate`
-  rule counts 404s as errors — and it was discarded. This is also why #34's
-  fold has never fired live (0 `correlated_alert_folded` events): nothing
-  stays open long enough to be a fold target. Unfixed; the shape of the fix
-  is to let an in-flight investigation finish and post its findings even when
-  the alert clears, rather than cancelling on a signal that does not mean
-  recovery. **It also throws away pending human approvals, measured
-  2026-09-15**: `cf58ef6a` ([api-gateway] PodOOMKilled) posted its approval
-  request at 06:17:52 and was auto-resolved by `alert_resolved` at 06:18:56 —
-  **64 seconds**, less time than a human takes to read the thread. Approval
-  `31aecbef` is still `pending` against a `resolved` incident, the deployment
-  is untouched at revision 2 / `limits.memory=256Mi`, and the pod is 25
-  restarts deep. The alert cleared because the pod *restarted*, which is the
-  entry above. So the window in which a human can approve anything is bounded
-  by how long the alert happens to keep firing, and the resolve path never
-  asks whether an approval is outstanding.
+- **#40 is offline-verified, not live-verified.** The measured baseline remains
+  15/15 auto-resolved and 11 cancelled/4 completed over the prior 12-hour
+  window. A live run must now prove the inverse: an alert clear leaves the
+  running job un-cancelled, the thread receives both the clear notice and the
+  completed findings, no approval/write follows, and any already-pending
+  approval becomes non-pending. A process crash *after* the clear is a separate
+  residual: the resolved-incident startup guard rejects an automatic retry, so
+  this patch guarantees completion for the in-process run, not crash-resumable
+  post-clear investigation or Slack-forwarder rehydration.
 - **The planner can emit the same mutating action twice and nothing dedupes
   it.** On `3ed8be00` the plan carried two identical `config_change` actions
   and the executor ran both — byte-identical
@@ -698,14 +686,13 @@ container — use `service`. Confirm a column before querying it
 (`information_schema.columns`) rather than guessing from the ORM.
 
 ## Next bounded task
-**Fix #40, the cancel-on-alert-clear defect** — design and measurement under
-Active problem. Touch points: `approval_flow.fire_resolution_side_effects`
-(shared by all three resolve paths) and its external caller
-`api/v1/alerts.py:691`, guarded so `act_phase` still refuses to propose a
-write for a cleared alert. Landing it unblocks two things that have never
-been observed live: #34's fold (0 `correlated_alert_folded` events, because
-nothing stays open long enough to be a fold target) and the remaining
-live-fire checks below.
+**Deploy and live-fire #40 once k3s is healthy and Anthropic credits are
+available.** Capture one clear during investigation and one clear while an
+approval is pending; verify the job, approval rows, incident status/timestamp,
+Slack ordering, audit table, and absence of cluster/repository writes. Then
+decide whether crash-resumable post-clear investigation/Slack-forwarder
+rehydration is worth a separate task. A successful live run also unblocks
+#34's fold observation and the remaining live-fire checks below.
 
 **Live-fire checks still owed on #35/#37/#38.** `cf58ef6a` ran 39 tool calls,
 all SUCCESS, all terminal, and 246 calls since the deploy left no new orphan
@@ -755,9 +742,9 @@ proposed **zero** mutations), unhandled exception (`f8ca9a54`), memory-leak
 `cf58ef6a`), high-error-rate (`f643ed9e`). All are now resolved. Still
 unexercised: a config-drift class that would trigger #20 (`escalate` about
 ConfigMap `meridian-config` rather than a `config_change` on the
-`valueFrom`-sourced `CHAOS_MODE`). Task #4's real blocker is no longer a human
-reply — it is #40: an injected fault clears before the investigation of it
-finishes, so the class gets opened but never fully observed.
+`valueFrom`-sourced `CHAOS_MODE`). Task #4's next prerequisite is a live #40
+confirmation: previously an injected fault cleared before its investigation
+finished, so the class opened but was never fully observed.
 
 Cluster cleanup owed (as of the last live check, before k3s went down):
 `thumb-worker` and `ocr-extractor` healthy at raised limits;

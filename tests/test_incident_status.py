@@ -32,6 +32,7 @@ IncidentStatus = _models.IncidentStatus
 
 _incident_status = _load("incident_status_under_test", "sre_agent/incident_status.py")
 compute_incident_status = _incident_status.compute_incident_status
+effective_status_after_run = _incident_status.effective_status_after_run
 resolved_at_for_status = _incident_status.resolved_at_for_status
 
 
@@ -194,12 +195,24 @@ def test_resolved_at_set_iff_resolved(report_payload, verification_outcome, expe
     assert (stamped is now) == (expected == IncidentStatus.RESOLVED)
 
 
-def test_a_failed_remediation_clears_an_earlier_resolved_stamp():
-    """An alert can clear externally mid-verification and stamp the row
-    resolved; if the run then grades the fix FAILED, the stale timestamp has
-    to go. MTTR is `resolved_at - created_at` filtered on NOT NULL, so leaving
-    it counted a failed remediation as a fast resolution."""
-    assert resolved_at_for_status(IncidentStatus.REMEDIATION_FAILED, object()) is None
+def test_external_resolution_wins_over_a_later_graph_status():
+    """A finishing investigation may enrich findings, but cannot reopen a
+    source alert that Alertmanager has already reported as recovered."""
+    assert (
+        effective_status_after_run(
+            IncidentStatus.RESOLVED, IncidentStatus.REMEDIATION_FAILED
+        )
+        == IncidentStatus.RESOLVED
+    )
+
+
+def test_unresolved_incident_still_uses_the_graphs_computed_status():
+    assert (
+        effective_status_after_run(
+            IncidentStatus.INVESTIGATING, IncidentStatus.REMEDIATION_FAILED
+        )
+        == IncidentStatus.REMEDIATION_FAILED
+    )
 
 
 def test_awaiting_a_humans_acknowledgment_is_not_yet_resolved():

@@ -642,3 +642,27 @@
   `escalate` does. Rejected — a read still touches a tenant's cluster, and the
   gateway is where namespace scope is enforced; reading another tenant's
   deployment is a data leak, not a harmless no-op.
+
+## External alert recovery closes remediation authority, not investigation
+
+- **Decision:** Human resolution and Alertmanager recovery have separate side
+  effects. Human `acknowledge`/`mark resolved` cancels investigation jobs.
+  Alertmanager clear marks the incident resolved, lets the current in-process
+  investigation finish and post findings, expires every pending graph/Temporal
+  approval, and denies waiting Temporal gates. Durable RESOLVED state is checked
+  at proposal, approval, ACT, PR, and cluster-mutation boundaries; final graph
+  persistence cannot overwrite it.
+- **Reason:** Alert silence is not recovery evidence: a restart clears an OOM
+  alert and backoff can clear a restart-rate alert. Cancelling on that signal
+  discarded paid-for diagnosis, while leaving approvals usable could authorize
+  a write for a condition that had already stopped firing.
+- **Consequences:** PostgreSQL incident-row locks define the order of a racing
+  clear and write and remain held through the external mutation call. Slack
+  explicitly says that findings may continue but no approval/write will follow.
+  A process crash after the clear remains a separate limitation: the existing
+  resolved-incident startup guard refuses automatic retry, so post-clear
+  completion is not yet crash-resumable.
+- **Rejected alternative:** Keep one shared resolution helper that always
+  cancels work. Rejected because human intent and an external telemetry signal
+  have different semantics; preserving the shared behavior loses the evidence
+  the investigation already gathered.

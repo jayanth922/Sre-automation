@@ -15,6 +15,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,7 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     from sre_agent.agent_state import AlertContext, RemediationAction, RemediationPlan
-    from sre_agent.graph_builder import _act_gate_node, _sandbox_params_ready
+    from sre_agent.graph_builder import (
+        _act_gate_node,
+        _prepare_approval_node,
+        _sandbox_params_ready,
+    )
 except Exception as exc:  # pragma: no cover - env-dependent
     pytest.skip(f"full runtime stack unavailable: {exc}", allow_module_level=True)
 
@@ -74,6 +79,91 @@ def test_code_fix_action_deferred_even_when_temporal_disabled(monkeypatch):
     state["incident_id"] = "inc-test-code-fix"
     report = asyncio.run(_act_gate_node(state))["metadata"]["act_report"]
     assert report["action_reports"][0]["decision"] == deferred_sentinel
+
+
+def test_resolved_incident_never_creates_an_approval(monkeypatch):
+    from sre_agent import approval_flow
+
+    async def resolved(**_kwargs):
+        return True
+
+    monkeypatch.setattr(approval_flow, "incident_is_resolved", resolved)
+    alert = AlertContext(
+        alert_name="InventorySlowQueries",
+        severity="warning",
+        labels={"service": "inventory-service", "namespace": "demo-app"},
+        annotations={},
+    )
+    state = _state(_plan("restart", "inventory-service"), alert)
+    state["incident_id"] = "incident-resolved-before-approval"
+    context = SimpleNamespace(
+        environment="production",
+        cluster_id="22222222-2222-2222-2222-222222222222",
+    )
+
+    output = asyncio.run(_prepare_approval_node(state, context))
+
+    assert "pending_approval" not in output["metadata"]
+    report = output["metadata"]["act_report"]
+    assert report["remediation_suppressed"]["reason"] == "incident_resolved"
+    assert "no approval or live write" in report["summary"]
+
+
+def test_resolved_incident_does_not_start_deterministic_code_fix(monkeypatch):
+    from sre_agent import approval_flow
+
+    async def resolved(**_kwargs):
+        return True
+
+    monkeypatch.setattr(approval_flow, "incident_is_resolved", resolved)
+    alert = AlertContext(
+        alert_name="CheckoutNilPointer",
+        severity="warning",
+        labels={"service": "checkout-service", "namespace": "demo-app"},
+        annotations={},
+    )
+    state = _state(_plan("code_fix", "checkout-service"), alert)
+    state["incident_id"] = "incident-resolved-before-act"
+    context = SimpleNamespace(
+        environment="production",
+        cluster_id="22222222-2222-2222-2222-222222222222",
+    )
+
+    report = asyncio.run(_act_gate_node(state, context))["metadata"]["act_report"]
+
+    assert report["remediation_suppressed"]["reason"] == "incident_resolved"
+    assert report["executed"] == []
+    assert "code_fix" not in report
+
+
+def test_human_reopen_clears_checkpointed_suppression(monkeypatch):
+    from sre_agent import approval_flow
+
+    async def unresolved(**_kwargs):
+        return False
+
+    monkeypatch.setattr(approval_flow, "incident_is_resolved", unresolved)
+    alert = AlertContext(
+        alert_name="InventorySlowQueries",
+        severity="warning",
+        labels={"service": "inventory-service", "namespace": "demo-app"},
+        annotations={},
+    )
+    state = _state(None, alert)
+    state["incident_id"] = "human-reopened-incident"
+    state["metadata"] = {
+        "remediation_suppressed": {"reason": "incident_resolved"}
+    }
+    context = SimpleNamespace(
+        environment="production",
+        cluster_id="22222222-2222-2222-2222-222222222222",
+    )
+
+    prepared = asyncio.run(_prepare_approval_node(state, context))
+    acted = asyncio.run(_act_gate_node(state, context))
+
+    assert "remediation_suppressed" not in prepared["metadata"]
+    assert "remediation_suppressed" not in acted["metadata"]
 
 
 def test_remediation_action_accepts_code_fix_type():
