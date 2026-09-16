@@ -49,6 +49,7 @@ from typing import Any, Dict, List, Optional
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 from .sandbox_workflow import CodeFixVerificationInput, CodeFixVerificationWorkflow, VerdictResult
 
@@ -66,6 +67,7 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 1800  # matches the existing ~30min approval-
 ACTIVITY_TIMEOUT = timedelta(minutes=2)
 RETRY_POLICY_ATTEMPTS = 3
 DEFAULT_RETRY_POLICY = RetryPolicy(maximum_attempts=RETRY_POLICY_ATTEMPTS)
+LIVE_ACTION_RETRY_POLICY = RetryPolicy(maximum_attempts=RETRY_POLICY_ATTEMPTS)
 
 # Max end-to-end remediation attempts (generate -> verify) before the
 # workflow gives up and escalates to on-call for a manual close-out. Each
@@ -153,7 +155,7 @@ class LiveRemediationInput:
 
 @dataclass
 class LiveRemediationResult:
-    status: str  # "COMPLETED" | "SUPPRESSED_ALERT_CLEARED"
+    status: str  # "COMPLETED" | "SUPPRESSED_ALERT_CLEARED" | "MANUAL_REVIEW_REQUIRED"
     detail: str
     live_results: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -555,6 +557,8 @@ async def execute_live_action_activity(
         build_github_exec_tool_caller,
     )
     from .multi_agent_langgraph import close_mcp_client
+    from .mutation_gateway import MutationPreDispatchError, MutationRetryUnsafe
+    from temporalio.exceptions import ApplicationError
 
     caller = None
     github_caller = None
@@ -573,42 +577,78 @@ async def execute_live_action_activity(
 
     heartbeat_task = asyncio.create_task(_heartbeat_until_done())
     try:
-        context = await _execution_context_for(
-            params.organization_id, params.cluster_id
-        )
-        if action_type in EXECUTOR_TOOL_MAP:
-            caller = await build_executor_tool_caller(context)
-        elif action_type in GITHUB_EXEC_TOOL_MAP:
-            github_caller = await build_github_exec_tool_caller(context)
-        elif action_type not in NOTIFY_ONLY_ACTIONS:
+        try:
+            context = await _execution_context_for(
+                params.organization_id, params.cluster_id
+            )
+            if action_type in EXECUTOR_TOOL_MAP:
+                caller = await build_executor_tool_caller(context)
+            elif action_type in GITHUB_EXEC_TOOL_MAP:
+                github_caller = await build_github_exec_tool_caller(context)
+            elif action_type not in NOTIFY_ONLY_ACTIONS:
+                return {
+                    "action_type": action_type,
+                    "target": str(action.get("target") or ""),
+                    "status": "REFUSED",
+                    "command": "",
+                    "detail": f"unsupported_action: No live tool maps to '{action_type}'",
+                    "rejection_code": "unsupported_action",
+                }
+        except Exception as exc:
+            # No gateway call, idempotency claim, or external dispatch occurred.
+            raise ApplicationError(
+                "Live action setup failed before dispatch",
+                type="LiveActionPreDispatchError",
+            ) from exc
+
+        try:
+            return await execute_live_action_request(
+                request,
+                caller,
+                github_caller=github_caller,
+                context=context,
+            )
+        except MutationPreDispatchError as exc:
+            raise ApplicationError(
+                str(exc), type="LiveActionPreDispatchError"
+            ) from exc
+        except MutationRetryUnsafe as exc:
+            logger.exception("Live remediation outcome requires manual review: %s", exc)
             return {
                 "action_type": action_type,
                 "target": str(action.get("target") or ""),
-                "status": "REFUSED",
+                "status": "ERROR",
                 "command": "",
-                "detail": f"unsupported_action: No live tool maps to '{action_type}'",
-                "rejection_code": "unsupported_action",
+                "detail": str(exc),
+                "failure_class": "outcome_unknown",
+                "manual_review_required": True,
             }
-        return await execute_live_action_request(
-            request,
-            caller,
-            github_caller=github_caller,
-            context=context,
-        )
-    except Exception as exc:  # activity result must preserve the old per-action contract
-        logger.exception("Live remediation activity failed: %s", exc)
-        return {
-            "action_type": action_type,
-            "target": str(action.get("target") or ""),
-            "status": "ERROR",
-            "command": "",
-            "detail": f"Live remediation activity failed: {exc}",
-        }
+        except Exception as exc:
+            # Once execute_live_action_request is entered, notify-only delivery
+            # or mutation dispatch may have happened. Never replay it blindly.
+            logger.exception("Live remediation outcome is unknown: %s", exc)
+            return {
+                "action_type": action_type,
+                "target": str(action.get("target") or ""),
+                "status": "ERROR",
+                "command": "",
+                "detail": f"Live remediation outcome is unknown: {exc}",
+                "failure_class": "outcome_unknown",
+                "manual_review_required": True,
+            }
     finally:
         stop_heartbeats.set()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
         for tool_caller in (caller, github_caller):
-            await close_mcp_client(getattr(tool_caller, "mcp_client", None))
+            client = getattr(tool_caller, "mcp_client", None)
+            if client is None:
+                continue
+            try:
+                await close_mcp_client(client)
+            except Exception:
+                # Teardown happens after the activity has its business result;
+                # surfacing it would make Temporal replay a successful write.
+                logger.warning("Failed to close live-action MCP client", exc_info=True)
 
 
 ACTIVITIES = [
@@ -642,17 +682,35 @@ class LiveRemediationWorkflow:
         for position, request in enumerate(params.action_requests):
             action_index = int(request.get("action_index", len(results)))
             self._phase = f"EXECUTING_ACTION_{action_index}"
-            result: Dict[str, Any] = await workflow.execute_activity(
-                execute_live_action_activity,
-                args=[params, request],
-                start_to_close_timeout=timedelta(
-                    seconds=max(1, params.activity_timeout_seconds)
-                ),
-                heartbeat_timeout=timedelta(
-                    seconds=max(1, params.heartbeat_timeout_seconds)
-                ),
-                retry_policy=DEFAULT_RETRY_POLICY,
-            )
+            try:
+                result: Dict[str, Any] = await workflow.execute_activity(
+                    execute_live_action_activity,
+                    args=[params, request],
+                    start_to_close_timeout=timedelta(
+                        seconds=max(1, params.activity_timeout_seconds)
+                    ),
+                    heartbeat_timeout=timedelta(
+                        seconds=max(1, params.heartbeat_timeout_seconds)
+                    ),
+                    retry_policy=LIVE_ACTION_RETRY_POLICY,
+                )
+            except ActivityError:
+                result = {
+                    "action_type": str(
+                        (request.get("action") or {}).get("action_type") or ""
+                    ).lower(),
+                    "target": str(
+                        (request.get("action") or {}).get("target") or ""
+                    ),
+                    "status": "ERROR",
+                    "command": "",
+                    "detail": (
+                        "Live action did not complete after bounded pre-dispatch "
+                        "retries; manual review is required."
+                    ),
+                    "failure_class": "pre_dispatch_retries_exhausted",
+                    "manual_review_required": True,
+                }
             results.append(result)
             if result.get("rejection_code") == "incident_resolved":
                 self._phase = "SUPPRESSED_ALERT_CLEARED"
@@ -661,6 +719,16 @@ class LiveRemediationWorkflow:
                     detail=(
                         "The source alert cleared; no later remediation action "
                         "was scheduled."
+                    ),
+                    live_results=results,
+                )
+            if result.get("manual_review_required") or result.get("status") == "ERROR":
+                self._phase = "MANUAL_REVIEW_REQUIRED"
+                return LiveRemediationResult(
+                    status="MANUAL_REVIEW_REQUIRED",
+                    detail=(
+                        "A live action outcome could not be established safely; "
+                        "no later remediation action was scheduled."
                     ),
                     live_results=results,
                 )

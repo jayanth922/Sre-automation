@@ -14,8 +14,11 @@ import pytest
 
 from sre_agent.execution_context import ExecutionContext
 from sre_agent.mutation_gateway import (
+    MutationAuditError,
     MutationGateContext,
+    MutationPreDispatchError,
     MutationRejected,
+    MutationRetryUnsafe,
     _persist_audit_event,
     authorize_and_execute,
 )
@@ -341,6 +344,107 @@ def test_idempotency_short_circuits_second_mutation(monkeypatch):
     assert "idempotency" in duplicate.detail
     assert len(calls) == 1
     assert len(audits) == 1
+
+
+def test_failure_before_claim_is_explicitly_retryable(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    monkeypatch.setattr(
+        gateway,
+        "get_state_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("redis client construction failed")),
+    )
+    calls = []
+
+    async def caller(tool, args):
+        calls.append((tool, args))
+
+    with pytest.raises(MutationPreDispatchError, match="bounded retry is safe"):
+        asyncio.run(
+            authorize_and_execute(
+                FakeAction(), _planned(), CONTEXT, caller, None, "pre-claim"
+            )
+        )
+
+    assert calls == []
+
+
+def test_claim_attempt_failure_is_retry_unsafe(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    class FailingClaimStore(FakeStore):
+        def set_idempotency(self, key, ttl):
+            raise RuntimeError("claim response lost")
+
+    store = FailingClaimStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *args, **kwargs: _fresh())
+    calls = []
+
+    async def caller(tool, args):
+        calls.append((tool, args))
+
+    with pytest.raises(MutationRetryUnsafe, match="automatic retry is unsafe"):
+        asyncio.run(
+            authorize_and_execute(
+                FakeAction(), _planned(), CONTEXT, caller, None, "uncertain-claim"
+            )
+        )
+
+    assert calls == []
+
+
+def test_tool_failure_is_terminal_and_keeps_idempotency_claim(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *args, **kwargs: _fresh())
+    monkeypatch.setattr(gateway, "_persist_audit_event", _no_audit)
+    calls = []
+
+    async def caller(tool, args):
+        calls.append((tool, args))
+        raise RuntimeError("connection lost after dispatch")
+
+    result = asyncio.run(
+        authorize_and_execute(
+            FakeAction(), _planned(), CONTEXT, caller, None, "dispatched-once"
+        )
+    )
+
+    assert result.status == "ERROR"
+    assert len(calls) == 1
+    assert store.claims == {"dispatched-once"}
+
+
+def test_audit_failure_is_retry_unsafe_after_external_success(monkeypatch):
+    import sre_agent.mutation_gateway as gateway
+
+    store = FakeStore()
+    monkeypatch.setattr(gateway, "get_state_store", lambda: store)
+    monkeypatch.setattr(gateway, "decide", lambda *args, **kwargs: _fresh())
+    calls = []
+
+    async def caller(tool, args):
+        calls.append((tool, args))
+        return {"status": "OK", "applied": True}
+
+    async def fail_audit(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(gateway, "_persist_audit_event", fail_audit)
+
+    with pytest.raises(MutationAuditError, match="Live execution completed") as exc:
+        asyncio.run(
+            authorize_and_execute(
+                FakeAction(), _planned(), CONTEXT, caller, None, "audit-failed"
+            )
+        )
+
+    assert isinstance(exc.value, MutationRetryUnsafe)
+    assert len(calls) == 1
+    assert store.claims == {"audit-failed"}
 
 
 def test_namespace_mismatch_blocks_before_idempotency_or_tool_call(monkeypatch):

@@ -959,13 +959,22 @@ async def execute_live_action_request(
             "detail": f"{exc.code}: {exc.detail}",
             "rejection_code": exc.code,
         }
-    return {
+    result = {
         "action_type": res.action_type,
         "target": res.target,
         "status": res.status,
         "command": res.command,
         "detail": res.detail,
     }
+    if res.status == "ERROR":
+        # The external caller was entered after the idempotency claim. Whether
+        # the tool returned an error or raised, replay is unsafe and later plan
+        # actions must wait for a human to establish the real outcome.
+        result.update(
+            failure_class="outcome_unknown",
+            manual_review_required=True,
+        )
+    return result
 
 
 def apply_skill_learning(

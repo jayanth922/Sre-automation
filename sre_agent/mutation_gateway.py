@@ -42,7 +42,19 @@ class MutationRejected(PermissionError):
         super().__init__(f"{code}: {detail}")
 
 
-class MutationAuditError(RuntimeError):
+class MutationPreDispatchError(RuntimeError):
+    """A transient boundary failure happened before any claim or write attempt.
+
+    Temporal may retry this failure because the gateway can prove that neither
+    the idempotency claim nor the external mutation was attempted.
+    """
+
+
+class MutationRetryUnsafe(RuntimeError):
+    """A boundary failure happened after retry safety could no longer be proved."""
+
+
+class MutationAuditError(MutationRetryUnsafe):
     """The mutation result could not be durably recorded after execution."""
 
 
@@ -272,15 +284,16 @@ async def _persist_audit_event(
         await db.commit()
 
 
-async def authorize_and_execute(
+async def _authorize_and_execute_unclassified(
     action: Any,
     gate_decision: Any,
     context: Optional[ExecutionContext],
     tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]],
     github_caller: Optional[Callable[[str, Dict[str, Any]], Any]],
     idempotency_key: str,
+    failure_phase: Dict[str, str],
 ) -> ExecutionResult:
-    """Freshly authorize, atomically claim, execute, and audit one mutation."""
+    """Gateway core that records which side-effect boundary it has reached."""
     execution_context = require_execution_context(context)
     initial_decision = _decision_value(_field(gate_decision, "decision"))
     if initial_decision not in {
@@ -337,6 +350,10 @@ async def authorize_and_execute(
             raise MutationRejected(
                 "invalid_idempotency_key", "A non-empty idempotency key is required"
             )
+        # From this point onward an exception cannot prove whether the atomic
+        # claim was installed. Retrying could therefore turn a missing action
+        # into a misleading duplicate, even before the external call begins.
+        failure_phase["value"] = "claim_started"
         if not store.set_idempotency(str(idempotency_key), _idempotency_ttl()):
             if hasattr(store, "is_available") and not store.is_available():
                 raise MutationRejected(
@@ -356,6 +373,7 @@ async def authorize_and_execute(
             actor=str(_field(gate_decision, "actor", "sre-agent") or "sre-agent"),
             incident_id=_field(gate_decision, "incident_id"),
         )
+        failure_phase["value"] = "dispatch_started"
         result = await executor._aexecute_unchecked(
             action,
             "approved" if approved else fresh.decision.value,
@@ -371,3 +389,41 @@ async def authorize_and_execute(
                 "the idempotency claim remains active"
             ) from exc
         return result
+
+
+async def authorize_and_execute(
+    action: Any,
+    gate_decision: Any,
+    context: Optional[ExecutionContext],
+    tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]],
+    github_caller: Optional[Callable[[str, Dict[str, Any]], Any]],
+    idempotency_key: str,
+) -> ExecutionResult:
+    """Freshly authorize, atomically claim, execute, and audit one mutation.
+
+    Unexpected failures are classified at the last boundary known to have
+    completed. Only failures before the atomic claim begins are retryable.
+    """
+    failure_phase = {"value": "pre_claim"}
+    try:
+        return await _authorize_and_execute_unclassified(
+            action,
+            gate_decision,
+            context,
+            tool_caller,
+            github_caller,
+            idempotency_key,
+            failure_phase,
+        )
+    except (MutationRejected, MutationRetryUnsafe):
+        raise
+    except Exception as exc:
+        if failure_phase["value"] == "pre_claim":
+            raise MutationPreDispatchError(
+                "Live mutation setup failed before its idempotency claim; "
+                "a bounded retry is safe"
+            ) from exc
+        raise MutationRetryUnsafe(
+            "Live mutation failed after its idempotency claim began; "
+            "automatic retry is unsafe"
+        ) from exc

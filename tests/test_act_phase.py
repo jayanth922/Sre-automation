@@ -20,6 +20,7 @@ from sre_agent.act_phase import (  # noqa: E402
     apply_skill_learning,
     build_act_report,
     execute_autonomous_live,
+    execute_live_action_request,
     extract_incident_signals,
     live_outcome_summary,
     verify_live,
@@ -375,6 +376,52 @@ def test_execute_autonomous_live_only_applies_autonomous_actions():
     # Only the restart (autonomous) is applied; the held config_change is not.
     assert applied == ["restart_deployment"]
     assert len(results) == 1 and results[0]["status"] == "EXECUTED"
+
+
+def test_dispatched_error_requires_manual_review(monkeypatch):
+    import sre_agent.act_phase as act_phase
+
+    async def failed_after_dispatch(*args, **kwargs):
+        return type(
+            "Result",
+            (),
+            {
+                "action_type": "restart",
+                "target": "inventory-service",
+                "status": "ERROR",
+                "command": "restart inventory-service",
+                "detail": "connection lost after dispatch",
+            },
+        )()
+
+    monkeypatch.setattr(act_phase, "authorize_and_execute", failed_after_dispatch)
+    result = asyncio.run(
+        execute_live_action_request(
+            {
+                "action_index": 0,
+                "action": {
+                    "action_type": "restart",
+                    "target": "inventory-service",
+                    "parameters": {"namespace": "demo-app"},
+                },
+                "action_payload": {
+                    "action_type": "restart",
+                    "target": "inventory-service",
+                },
+                "gate_context": {
+                    "decision": "autonomous",
+                    "severity": "SEV3",
+                },
+                "idempotency_key": "action-0",
+            },
+            None,
+            context=LIVE_CONTEXT,
+        )
+    )
+
+    assert result["status"] == "ERROR"
+    assert result["failure_class"] == "outcome_unknown"
+    assert result["manual_review_required"] is True
 
 
 def test_approved_live_applies_held_but_never_blocked_actions():

@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("temporalio")
 
 from temporalio import activity  # noqa: E402
+from temporalio.exceptions import ApplicationError  # noqa: E402
 from temporalio.testing import WorkflowEnvironment  # noqa: E402
 from temporalio.worker import Worker  # noqa: E402
 
@@ -126,3 +127,128 @@ async def test_worker_death_does_not_replay_success_and_clear_stops_later_action
     assert ("replacement-worker", 0) not in invocations
     assert ("replacement-worker", 1) in invocations
     assert not any(index == 2 for _, index in invocations)
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_failure_retries_then_mutates_once():
+    attempts = []
+    external_mutations = []
+
+    @activity.defn(name="execute_live_action_activity")
+    async def retryable_activity(params, request):
+        index = int(request["action_index"])
+        attempts.append(index)
+        if len(attempts) == 1:
+            raise ApplicationError(
+                "setup unavailable", type="LiveActionPreDispatchError"
+            )
+        external_mutations.append(index)
+        return {
+            "action_type": "restart",
+            "target": f"service-{index}",
+            "status": "EXECUTED",
+            "command": f"restart service-{index}",
+            "detail": "done",
+        }
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"live-remediation-retry-{uuid.uuid4().hex}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[LiveRemediationWorkflow],
+            activities=[retryable_activity],
+        ):
+            result = await env.client.execute_workflow(
+                LiveRemediationWorkflow.run,
+                LiveRemediationInput(
+                    incident_id="incident-1",
+                    organization_id="org-1",
+                    cluster_id="cluster-1",
+                    action_requests=[_request(0)],
+                ),
+                id=f"wf-{uuid.uuid4().hex}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == "COMPLETED"
+    assert attempts == [0, 0]
+    assert external_mutations == [0]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_outcome_is_not_retried_and_stops_later_actions():
+    invocations = []
+
+    @activity.defn(name="execute_live_action_activity")
+    async def ambiguous_activity(params, request):
+        index = int(request["action_index"])
+        invocations.append(index)
+        return {
+            "action_type": "restart",
+            "target": f"service-{index}",
+            "status": "ERROR",
+            "command": f"restart service-{index}",
+            "detail": "connection lost after dispatch",
+            "failure_class": "outcome_unknown",
+            "manual_review_required": True,
+        }
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"live-remediation-ambiguous-{uuid.uuid4().hex}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[LiveRemediationWorkflow],
+            activities=[ambiguous_activity],
+        ):
+            result = await env.client.execute_workflow(
+                LiveRemediationWorkflow.run,
+                LiveRemediationInput(
+                    incident_id="incident-1",
+                    organization_id="org-1",
+                    cluster_id="cluster-1",
+                    action_requests=[_request(0), _request(1)],
+                ),
+                id=f"wf-{uuid.uuid4().hex}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == "MANUAL_REVIEW_REQUIRED"
+    assert invocations == [0]
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_retries_are_bounded_and_stop_the_plan():
+    attempts = []
+
+    @activity.defn(name="execute_live_action_activity")
+    async def unavailable_activity(params, request):
+        attempts.append(int(request["action_index"]))
+        raise ApplicationError(
+            "setup unavailable", type="LiveActionPreDispatchError"
+        )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"live-remediation-exhausted-{uuid.uuid4().hex}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[LiveRemediationWorkflow],
+            activities=[unavailable_activity],
+        ):
+            result = await env.client.execute_workflow(
+                LiveRemediationWorkflow.run,
+                LiveRemediationInput(
+                    incident_id="incident-1",
+                    organization_id="org-1",
+                    cluster_id="cluster-1",
+                    action_requests=[_request(0), _request(1)],
+                ),
+                id=f"wf-{uuid.uuid4().hex}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == "MANUAL_REVIEW_REQUIRED"
+    assert result.live_results[0]["failure_class"] == "pre_dispatch_retries_exhausted"
+    assert attempts == [0, 0, 0]
