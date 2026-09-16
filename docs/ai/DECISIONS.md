@@ -666,3 +666,25 @@
   cancels work. Rejected because human intent and an external telemetry signal
   have different semantics; preserving the shared behavior loses the evidence
   the investigation already gathered.
+
+## Live ACT remediation checkpoints one action per Temporal activity
+
+- **Decision:** `act_phase` serializes the exact policy-approved action batch,
+  but a dedicated `LiveRemediationWorkflow` executes it one activity at a time.
+  The graph starts or joins a deterministic incident/action-hash workflow ID;
+  the existing mutation gateway remains the only write authorization and
+  idempotency boundary. The existing `IncidentRemediationWorkflow` remains the
+  separate two-gate code-fix/verification/PR state machine.
+- **Reason:** LangGraph checkpoints around ACT, not inside its former action
+  loop. A process death could therefore restart a whole batch after an earlier
+  write succeeded. Temporal activity completions give each successful action a
+  durable resume point without duplicating policy, tenant, or target logic.
+- **Consequences:** A replacement worker resumes at the first incomplete
+  action. It re-reads durable incident state through the mutation gateway; an
+  external clear returns `incident_resolved`, stops all later activities, and
+  preserves already-completed results for truthful reporting. `EXECUTOR_LIVE`
+  now fails closed unless Temporal is enabled and an incident ID is present.
+- **Rejected alternative:** Add checkpoints inside the code-fix workflow.
+  Rejected because infrastructure actions do not share its patch generation,
+  sandbox verification, or two human approval gates; combining the contracts
+  would make both workflows harder to reason about.
