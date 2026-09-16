@@ -58,6 +58,7 @@ def build_resolution_report(
     executed = act_report.get("executed") or []
     live_results = act_report.get("live_results") or []
     remediation_suppressed = act_report.get("remediation_suppressed")
+    remediation_halted = act_report.get("remediation_halted")
     applied = [] if remediation_suppressed else (live_results or executed)
     severity = act_report.get("severity", "?")
     decision = act_report.get("aggregate_decision", "?")
@@ -117,6 +118,12 @@ def build_resolution_report(
                 detail = " ".join(str(a.get("detail") or "").split())
                 if detail:
                     lines.append(f"  - ↳ {detail[:400]}")
+        if remediation_halted:
+            lines.append(
+                "- ⚠️ The source alert cleared during execution. Sentinel "
+                "preserved the completed results above and suppressed every "
+                "remaining write."
+            )
     elif decision == "requires_approval":
         lines.append("- Held for human approval (higher severity); no autonomous action taken.")
     else:
@@ -176,7 +183,7 @@ def build_resolution_report(
                 )
         lines.append("")
 
-    if remediation_suppressed:
+    if remediation_suppressed or remediation_halted:
         next_steps = (
             "The alert has cleared externally. Review the completed findings for "
             "follow-up or recurrence prevention; Sentinel will not remediate this run."

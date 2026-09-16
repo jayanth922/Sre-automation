@@ -427,11 +427,11 @@ async def _act_gate_node(
                 logger.warning(f"Deterministic pipeline detection failed (non-fatal): {detect_err}")
                 deterministic_pipeline_index = None
 
-        # If a code-fix action was deferred above, execute_autonomous_live
-        # below must run against a *copy* of the report whose one deferred
+        # If a code-fix action was deferred above, the live action batch below
+        # must be built from a *copy* of the report whose one deferred
         # action_report reads DEFERRED_TO_DETERMINISTIC_PIPELINE (a value
-        # outside act_phase's known AutonomyDecision set) so its own
-        # `decision not in allowed_decisions` skip-logic naturally leaves that
+        # outside act_phase's known AutonomyDecision set) so the shared
+        # request builder's decision filter naturally leaves that
         # action for the deterministic pipeline instead of applying it here.
         # report_payload (the API-visible copy) is a separate deep copy from
         # ActReport.to_dict()/dataclasses.asdict, so it needs its own edit.
@@ -470,32 +470,77 @@ async def _act_gate_node(
         if not remediation_suppressed and live_on and (
             execution_report.aggregate_decision == "autonomous" or human_approved
         ) and execution_report.plan_present:
-            caller = github_caller = metrics_caller = None
+            metrics_caller = None
             try:
-                from .executor import build_executor_tool_caller
-                from .act_phase import execute_autonomous_live
+                from .act_phase import build_live_action_requests
+                from .execution_context import require_execution_context
+                from .incident_remediation_workflow import (
+                    LiveRemediationInput,
+                    LiveRemediationWorkflow,
+                )
+                from .temporal_client import (
+                    execute_or_join_workflow,
+                    temporal_enabled,
+                )
 
-                caller = await build_executor_tool_caller(execution_context)
-                # Code-change remediation (revert PR) goes to the github-exec MCP;
-                # best-effort so an infra-only plan still runs if it's not configured.
-                github_caller = None
-                try:
-                    from .executor import build_github_exec_tool_caller
-
-                    github_caller = await build_github_exec_tool_caller(
-                        execution_context
+                if not incident_id:
+                    raise RuntimeError(
+                        "Crash-resumable live remediation requires an incident id"
                     )
-                except Exception:
-                    github_caller = None
-                live_results = await execute_autonomous_live(
+                if not temporal_enabled():
+                    raise RuntimeError(
+                        "Crash-resumable live remediation requires TEMPORAL_ENABLED=true"
+                    )
+
+                ctx = require_execution_context(execution_context)
+                action_requests = build_live_action_requests(
                     state,
                     execution_report,
-                    caller,
-                    github_caller=github_caller,
+                    actor="sre-agent",
                     approved=human_approved,
                     context=execution_context,
                 )
+                workflow_id = (
+                    f"incident-live-remediation-{incident_id}-"
+                    f"{current_action_hash[:12]}"
+                )
+                durable_result = await execute_or_join_workflow(
+                    LiveRemediationWorkflow.run,
+                    [
+                        LiveRemediationInput(
+                            incident_id=str(incident_id),
+                            organization_id=str(ctx.organization_id),
+                            cluster_id=str(ctx.cluster_id),
+                            action_requests=action_requests,
+                        )
+                    ],
+                    workflow_id=workflow_id,
+                )
+                if durable_result is None:
+                    raise RuntimeError(
+                        "Temporal could not start or join the live remediation workflow"
+                    )
+                live_results = list(
+                    durable_result.get("live_results", [])
+                    if isinstance(durable_result, dict)
+                    else getattr(durable_result, "live_results", [])
+                )
                 report_payload["live_results"] = live_results
+                report_payload["live_workflow_id"] = workflow_id
+
+                durable_status = str(
+                    durable_result.get("status", "")
+                    if isinstance(durable_result, dict)
+                    else getattr(durable_result, "status", "")
+                )
+                if durable_status == "SUPPRESSED_ALERT_CLEARED":
+                    halt = {
+                        "reason": "incident_resolved",
+                        "source": "live_remediation_workflow",
+                    }
+                    remediation_suppressed = True
+                    report_payload["remediation_halted"] = halt
+
                 # Count what *succeeded*, not what was attempted. `live_results`
                 # holds one entry per action regardless of outcome, so the old
                 # `len(...)` read "applied 4" for a plan where every action was
@@ -525,7 +570,7 @@ async def _act_gate_node(
                     # (or failed) before anyone had touched it.
                     from .executor import NON_MUTATING_ACTIONS
 
-                    if any(
+                    if not remediation_suppressed and any(
                         item.get("status") == "EXECUTED"
                         and str(item.get("action_type", "")).lower()
                         not in NON_MUTATING_ACTIONS
@@ -548,10 +593,9 @@ async def _act_gate_node(
             finally:
                 from .multi_agent_langgraph import close_mcp_client
 
-                for tool_caller in (caller, github_caller, metrics_caller):
-                    await close_mcp_client(
-                        getattr(tool_caller, "mcp_client", None)
-                    )
+                await close_mcp_client(
+                    getattr(metrics_caller, "mcp_client", None)
+                )
 
         # Code-fix verification: either the full deterministic pipeline
         # (IncidentRemediationWorkflow — gate 1 -> sandbox verify (reordered

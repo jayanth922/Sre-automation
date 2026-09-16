@@ -89,6 +89,40 @@ def test_externally_cleared_report_does_not_present_dry_run_as_a_proposal():
     assert "Held for human approval" not in report["markdown"]
 
 
+def test_clear_after_a_success_preserves_completed_action_and_halts_the_rest():
+    act_report = {
+        "severity": "SEV2",
+        "aggregate_decision": "autonomous",
+        "executed": [],
+        "live_results": [
+            {
+                "action_type": "restart",
+                "target": "checkout-service",
+                "status": "EXECUTED",
+                "command": "kubectl rollout restart deployment/checkout-service",
+                "detail": "done",
+            },
+            {
+                "action_type": "scale",
+                "target": "checkout-service",
+                "status": "REFUSED",
+                "command": "",
+                "detail": "incident_resolved: source alert cleared",
+                "rejection_code": "incident_resolved",
+            },
+        ],
+        "remediation_halted": {"reason": "incident_resolved"},
+    }
+
+    report = rr.build_resolution_report(_state(), act_report)
+    markdown = report["markdown"]
+
+    assert "kubectl rollout restart" in markdown
+    assert "preserved the completed results" in markdown
+    assert "suppressed every remaining write" in markdown
+    assert "no live write ran" not in markdown
+
+
 # ---------------------------------------------------------------------------
 # A code fix that produced no patch
 #

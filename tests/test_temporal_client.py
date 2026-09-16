@@ -87,5 +87,41 @@ async def test_get_client_passes_api_key_and_tls_to_connect(monkeypatch):
     }
 
 
+@pytest.mark.asyncio
+async def test_execute_or_join_attaches_to_existing_workflow(monkeypatch):
+    exceptions = pytest.importorskip("temporalio.exceptions")
+    calls = []
+
+    class Handle:
+        async def result(self):
+            return {"status": "COMPLETED"}
+
+    class Client:
+        async def start_workflow(self, *args, **kwargs):
+            calls.append(("start", kwargs["id"]))
+            raise exceptions.WorkflowAlreadyStartedError(
+                kwargs["id"], "test"
+            )
+
+        def get_workflow_handle(self, workflow_id):
+            calls.append(("join", workflow_id))
+            return Handle()
+
+    async def fake_get_client():
+        return Client()
+
+    monkeypatch.setattr(tc, "get_temporal_client", fake_get_client)
+
+    result = await tc.execute_or_join_workflow(
+        object(), [object()], workflow_id="incident-live-remediation-1"
+    )
+
+    assert result == {"status": "COMPLETED"}
+    assert calls == [
+        ("start", "incident-live-remediation-1"),
+        ("join", "incident-live-remediation-1"),
+    ]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

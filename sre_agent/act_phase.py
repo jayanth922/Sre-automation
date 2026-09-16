@@ -27,6 +27,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass, field, is_dataclass, replace as dataclass_replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .confidence_calibration import (
@@ -797,6 +798,41 @@ async def execute_autonomous_live(
     or after the graph's exact action hash was approved by an administrator.
     Hard-blocked actions are never applied, including after human approval.
     """
+    results: List[Dict[str, Any]] = []
+    for request in build_live_action_requests(
+        state,
+        report,
+        actor=actor,
+        approved=approved,
+        context=context,
+    ):
+        results.append(
+            await execute_live_action_request(
+                request,
+                tool_caller,
+                github_caller=github_caller,
+                context=context,
+            )
+        )
+    return results
+
+
+def build_live_action_requests(
+    state: Any,
+    report: ActReport,
+    *,
+    actor: str = "sre-agent",
+    approved: bool = False,
+    context: Optional[ExecutionContext] = None,
+) -> List[Dict[str, Any]]:
+    """Serialize the exact per-action boundary used for durable execution.
+
+    LangGraph checkpoints only between graph nodes, while ACT used to execute
+    every action inside one node. Temporal therefore needs one payload per
+    action so a completed action is recorded before the next one starts. The
+    direct executor consumes these same payloads, keeping authorization,
+    target canonicalization, and idempotency identical on both paths.
+    """
     plan = _get(state, "remediation_plan")
     actions = _plan_actions(plan)
     incident_id = _get(state, "incident_id") or _get(
@@ -808,20 +844,14 @@ async def execute_autonomous_live(
     environment = str(getattr(context, "environment", "production") or "production")
     risk_score = _plan_risk_score(plan)
 
-    # The Planner's `target` field is free text (a display description, not a
-    # schema-validated k8s object name) and has been observed to contain
-    # colon-suffixed sub-resource descriptors, pod names with random hash
-    # suffixes, and trailing parenthetical clarifications — none of which are
-    # valid k8s resource names. The alert's own `service`/`app` label is the
-    # one canonical, non-LLM-generated resource identifier tied to this
-    # incident, so k8s-mutating actions use it as the live target instead of
-    # trusting the Planner's free text.
+    # The Planner's target is display text. The alert's service/app label is
+    # the canonical resource identifier for cluster actions.
     alert_labels = _get(_get(state, "alert_context"), "labels", {}) or {}
     canonical_service = str(
         alert_labels.get("service") or alert_labels.get("app") or ""
     ).strip()
 
-    results: List[Dict[str, Any]] = []
+    requests: List[Dict[str, Any]] = []
     for index, (action, arep) in enumerate(zip(actions, report.action_reports)):
         allowed_decisions = {AutonomyDecision.AUTONOMOUS.value}
         if approved:
@@ -840,14 +870,6 @@ async def execute_autonomous_live(
             "parameters": _get(action, "parameters", {}) or {},
             "approval_hash": approval_hash,
         }
-        # Notify-only actions never reach the mutation gateway: they mutate
-        # nothing, so there is no namespace to scope-check and no idempotency
-        # key to dedupe, and the gateway would reject them outright.
-        if str(action_payload["action_type"]).lower() in NOTIFY_ONLY_ACTIONS:
-            results.append(
-                await _execute_notify_only(action, action_payload, incident_id)
-            )
-            continue
         idempotency_key = hashlib.sha256(
             json.dumps(
                 action_payload,
@@ -856,61 +878,94 @@ async def execute_autonomous_live(
                 default=str,
             ).encode("utf-8")
         ).hexdigest()
-        gate_context = MutationGateContext(
-            decision=str(arep.get("decision", "")),
-            severity=report.severity,
-            environment=environment,
-            risk_score=risk_score,
-            approved=approved,
-            actor=actor,
-            incident_id=str(incident_id) if incident_id else None,
-            raw_action_confidence=report.raw_action_confidence,
-        )
         live_action = action
         if canonical_service and action_payload["action_type"] in EXECUTOR_TOOL_MAP:
             live_action = _with_target(action, canonical_service)
-        try:
-            res = await authorize_and_execute(
-                live_action,
-                gate_context,
-                context,
-                tool_caller,
-                github_caller,
-                idempotency_key,
-            )
-        except MutationRejected as exc:
-            # A rejection at the authorization boundary (e.g. an action type
-            # with no live tool mapping) is per-action, not systemic — record
-            # it and keep executing the rest of the plan's actions instead of
-            # aborting the whole batch.
-            logger.warning(
-                "Live action %d (%s on %s) rejected: %s: %s",
-                index,
-                action_payload["action_type"],
-                action_payload["target"],
-                exc.code,
-                exc.detail,
-            )
-            results.append(
-                {
-                    "action_type": action_payload["action_type"],
-                    "target": action_payload["target"],
-                    "status": "REFUSED",
-                    "command": "",
-                    "detail": f"{exc.code}: {exc.detail}",
-                }
-            )
-            continue
-        results.append(
+        requests.append(
             {
-                "action_type": res.action_type,
-                "target": res.target,
-                "status": res.status,
-                "command": res.command,
-                "detail": res.detail,
+                "action_index": index,
+                "action": {
+                    "action_type": str(_get(live_action, "action_type", "")),
+                    "target": str(_get(live_action, "target", "")),
+                    "parameters": dict(_get(live_action, "parameters", {}) or {}),
+                    "safety_check": str(_get(live_action, "safety_check", "") or ""),
+                    "rollback_plan": _get(live_action, "rollback_plan"),
+                },
+                "action_payload": action_payload,
+                "idempotency_key": idempotency_key,
+                "gate_context": {
+                    "decision": str(arep.get("decision", "")),
+                    "severity": report.severity,
+                    "environment": environment,
+                    "risk_score": risk_score,
+                    "approved": approved,
+                    "actor": actor,
+                    "incident_id": str(incident_id) if incident_id else None,
+                    "raw_action_confidence": report.raw_action_confidence,
+                },
             }
         )
-    return results
+    return requests
+
+
+async def execute_live_action_request(
+    request: Dict[str, Any],
+    tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]],
+    *,
+    github_caller: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+    context: Optional[ExecutionContext] = None,
+) -> Dict[str, Any]:
+    """Execute one serialized ACT request through the sole mutation gateway."""
+    action_data = dict(request.get("action") or {})
+    action = SimpleNamespace(**action_data)
+    action_payload = dict(request.get("action_payload") or {})
+    incident_id = action_payload.get("incident_id")
+
+    # Notify-only actions never reach the mutation gateway: they mutate
+    # nothing, so there is no namespace to scope-check and no idempotency
+    # claim to make, and the gateway would reject them outright.
+    if str(action_payload.get("action_type") or "").lower() in NOTIFY_ONLY_ACTIONS:
+        return await _execute_notify_only(action, action_payload, incident_id)
+
+    gate_context = MutationGateContext(**dict(request.get("gate_context") or {}))
+    index = int(request.get("action_index", 0))
+    try:
+        res = await authorize_and_execute(
+            action,
+            gate_context,
+            context,
+            tool_caller,
+            github_caller,
+            str(request.get("idempotency_key") or ""),
+        )
+    except MutationRejected as exc:
+        # A rejection at the authorization boundary (including an external
+        # alert clear) is per-action. The durable workflow uses the explicit
+        # code to stop scheduling later mutations after Task #40 withdrew
+        # remediation authority.
+        logger.warning(
+            "Live action %d (%s on %s) rejected: %s: %s",
+            index,
+            action_payload.get("action_type"),
+            action_payload.get("target"),
+            exc.code,
+            exc.detail,
+        )
+        return {
+            "action_type": action_payload.get("action_type"),
+            "target": action_payload.get("target"),
+            "status": "REFUSED",
+            "command": "",
+            "detail": f"{exc.code}: {exc.detail}",
+            "rejection_code": exc.code,
+        }
+    return {
+        "action_type": res.action_type,
+        "target": res.target,
+        "status": res.status,
+        "command": res.command,
+        "detail": res.detail,
+    }
 
 
 def apply_skill_learning(
@@ -1069,10 +1124,16 @@ def live_outcome_summary(report_payload: Dict[str, Any]) -> str:
             f". Verification: {verification.get('status', 'UNKNOWN')}"
             f" ({verification.get('detail', 'no detail')})"
         )
+    elif report_payload.get("remediation_halted"):
+        parts.append(". Verification: skipped after the source alert cleared")
     else:
         parts.append(". Verification: not run (nothing mutating executed)")
     if report_payload.get("live_error"):
         parts.append(f". Live error: {report_payload['live_error']}")
+    if report_payload.get("remediation_halted"):
+        parts.append(
+            ". The source alert cleared; all remaining actions were suppressed"
+        )
     return "".join(parts)
 
 

@@ -31,6 +31,12 @@ Pipeline:
 One workflow instance per incident/bundle (docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md's
 per-issue-isolated-PR requirement) — the caller is responsible for keying
 workflow_id off the incident/bundle, not raw alerts.
+
+This module also owns ``LiveRemediationWorkflow``. Unlike the code-fix state
+machine above, it accepts the already-authorized ACT plan and checkpoints one
+mutation activity at a time. The two workflows deliberately share a worker,
+not a business contract: live infrastructure actions have no patch-generation
+or PR gates, while code fixes retain both human gates.
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field, replace as _dc_replace
 from datetime import timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
@@ -127,6 +133,29 @@ class RemediationVerdict:
     detail: str
     pr_url: Optional[str] = None
     verification_status: Optional[str] = None
+
+
+@dataclass
+class LiveRemediationInput:
+    """One ACT plan split into independently checkpointed action requests."""
+
+    incident_id: str
+    organization_id: str
+    cluster_id: str
+    action_requests: List[Dict[str, Any]] = field(default_factory=list)
+    activity_timeout_seconds: int = int(ACTIVITY_TIMEOUT.total_seconds())
+    heartbeat_timeout_seconds: int = 30
+    # Optional safety pacing between writes. Zero in production by default;
+    # workflow tests use it to hold a deterministic process-death window after
+    # an action's completion has entered history.
+    inter_action_delay_seconds: float = 0.0
+
+
+@dataclass
+class LiveRemediationResult:
+    status: str  # "COMPLETED" | "SUPPRESSED_ALERT_CLEARED"
+    detail: str
+    live_results: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ── Activities ──────────────────────────────────────────────────────────────
@@ -505,6 +534,83 @@ async def mark_incident_needs_manual_review_activity(incident_id: str) -> None:
             await db.commit()
 
 
+@activity.defn
+async def execute_live_action_activity(
+    params: LiveRemediationInput,
+    request: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Execute one live ACT action in a worker-owned activity.
+
+    Each activity completion becomes a Temporal history event before the next
+    action is scheduled. If the API or worker process dies later, replay starts
+    at the first incomplete action. The shared ACT executor still performs the
+    fresh policy, tenant, incident-row, and idempotency checks.
+    """
+    from .act_phase import execute_live_action_request
+    from .executor import (
+        EXECUTOR_TOOL_MAP,
+        GITHUB_EXEC_TOOL_MAP,
+        NOTIFY_ONLY_ACTIONS,
+        build_executor_tool_caller,
+        build_github_exec_tool_caller,
+    )
+    from .multi_agent_langgraph import close_mcp_client
+
+    caller = None
+    github_caller = None
+    stop_heartbeats = asyncio.Event()
+    action = dict(request.get("action") or {})
+    action_type = str(action.get("action_type") or "").lower()
+
+    async def _heartbeat_until_done() -> None:
+        interval = max(0.2, min(10.0, params.heartbeat_timeout_seconds / 3))
+        while not stop_heartbeats.is_set():
+            activity.heartbeat(f"executing action {request.get('action_index', 0)}")
+            try:
+                await asyncio.wait_for(stop_heartbeats.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    heartbeat_task = asyncio.create_task(_heartbeat_until_done())
+    try:
+        context = await _execution_context_for(
+            params.organization_id, params.cluster_id
+        )
+        if action_type in EXECUTOR_TOOL_MAP:
+            caller = await build_executor_tool_caller(context)
+        elif action_type in GITHUB_EXEC_TOOL_MAP:
+            github_caller = await build_github_exec_tool_caller(context)
+        elif action_type not in NOTIFY_ONLY_ACTIONS:
+            return {
+                "action_type": action_type,
+                "target": str(action.get("target") or ""),
+                "status": "REFUSED",
+                "command": "",
+                "detail": f"unsupported_action: No live tool maps to '{action_type}'",
+                "rejection_code": "unsupported_action",
+            }
+        return await execute_live_action_request(
+            request,
+            caller,
+            github_caller=github_caller,
+            context=context,
+        )
+    except Exception as exc:  # activity result must preserve the old per-action contract
+        logger.exception("Live remediation activity failed: %s", exc)
+        return {
+            "action_type": action_type,
+            "target": str(action.get("target") or ""),
+            "status": "ERROR",
+            "command": "",
+            "detail": f"Live remediation activity failed: {exc}",
+        }
+    finally:
+        stop_heartbeats.set()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        for tool_caller in (caller, github_caller):
+            await close_mcp_client(getattr(tool_caller, "mcp_client", None))
+
+
 ACTIVITIES = [
     emit_gate_event_activity,
     generate_patch_activity,
@@ -512,10 +618,65 @@ ACTIVITIES = [
     open_gate_activity,
     expire_gate_approval_activity,
     mark_incident_needs_manual_review_activity,
+    execute_live_action_activity,
 ]
 
 
 # ── Workflow ───────────────────────────────────────────────────────────────
+
+
+@workflow.defn
+class LiveRemediationWorkflow:
+    """Durably execute an ACT plan with one checkpointed activity per action."""
+
+    def __init__(self) -> None:
+        self._phase = "PENDING"
+
+    @workflow.query
+    def phase(self) -> str:
+        return self._phase
+
+    @workflow.run
+    async def run(self, params: LiveRemediationInput) -> LiveRemediationResult:
+        results: List[Dict[str, Any]] = []
+        for position, request in enumerate(params.action_requests):
+            action_index = int(request.get("action_index", len(results)))
+            self._phase = f"EXECUTING_ACTION_{action_index}"
+            result: Dict[str, Any] = await workflow.execute_activity(
+                execute_live_action_activity,
+                args=[params, request],
+                start_to_close_timeout=timedelta(
+                    seconds=max(1, params.activity_timeout_seconds)
+                ),
+                heartbeat_timeout=timedelta(
+                    seconds=max(1, params.heartbeat_timeout_seconds)
+                ),
+                retry_policy=DEFAULT_RETRY_POLICY,
+            )
+            results.append(result)
+            if result.get("rejection_code") == "incident_resolved":
+                self._phase = "SUPPRESSED_ALERT_CLEARED"
+                return LiveRemediationResult(
+                    status="SUPPRESSED_ALERT_CLEARED",
+                    detail=(
+                        "The source alert cleared; no later remediation action "
+                        "was scheduled."
+                    ),
+                    live_results=results,
+                )
+            if position < len(params.action_requests) - 1:
+                self._phase = f"CHECKPOINTED_ACTION_{action_index}"
+                if params.inter_action_delay_seconds > 0:
+                    await workflow.sleep(
+                        timedelta(seconds=params.inter_action_delay_seconds)
+                    )
+
+        self._phase = "COMPLETED"
+        return LiveRemediationResult(
+            status="COMPLETED",
+            detail=f"Completed {len(results)} live action(s).",
+            live_results=results,
+        )
 
 
 @workflow.defn

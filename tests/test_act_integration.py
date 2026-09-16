@@ -256,6 +256,159 @@ def test_low_severity_reversible_runs_autonomously_and_records_skill(monkeypatch
     assert report["executed"][0]["command"].startswith("kubectl rollout restart")
     assert report["recorded_skill"] is not None  # self-improving loop fired
 
+
+def test_live_act_hands_the_exact_action_batch_to_temporal(monkeypatch):
+    """The graph owns policy; Temporal owns the per-action resume boundary."""
+    from sre_agent import act_phase, approval_flow, temporal_client
+    from sre_agent.confidence_calibration import CalibratedConfidence
+
+    def fake_calibrated(raw, task, *args, **kwargs):
+        return CalibratedConfidence(
+            task="diagnosis" if task == "hypothesis" else "remediation",
+            raw_confidence=0.9 if raw is None else raw,
+            calibrated_probability=0.99,
+            artifact_version="mock",
+            artifact_sha256="mock",
+            autonomy_threshold=0.8,
+        )
+
+    async def unresolved(**_kwargs):
+        return False
+
+    captured = {}
+
+    async def execute_or_join(workflow, args, *, workflow_id, **_kwargs):
+        captured["workflow"] = workflow
+        captured["input"] = args[0]
+        captured["workflow_id"] = workflow_id
+        return {
+            "status": "SUPPRESSED_ALERT_CLEARED",
+            "live_results": [
+                {
+                    "action_type": "restart",
+                    "target": "inventory-service",
+                    "status": "EXECUTED",
+                    "command": "restart inventory-service",
+                    "detail": "done",
+                },
+                {
+                    "action_type": "restart",
+                    "target": "inventory-service",
+                    "status": "REFUSED",
+                    "command": "",
+                    "detail": "incident_resolved: source alert cleared",
+                    "rejection_code": "incident_resolved",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(act_phase, "_configured_confidence", fake_calibrated)
+    monkeypatch.setattr(
+        act_phase,
+        "_configured_remediation_confidence",
+        lambda *_args, **_kwargs: (0.9, fake_calibrated(0.9, "remediation")),
+    )
+    monkeypatch.setattr(act_phase, "apply_skill_learning", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(approval_flow, "incident_is_resolved", unresolved)
+    monkeypatch.setattr(temporal_client, "temporal_enabled", lambda: True)
+    monkeypatch.setattr(temporal_client, "execute_or_join_workflow", execute_or_join)
+    monkeypatch.setenv("EXECUTOR_LIVE", "true")
+
+    alert = AlertContext(
+        alert_name="InventorySlowQueries",
+        severity="warning",
+        labels={
+            "service": "inventory-service",
+            "namespace": "demo-app",
+            "error_rate": "0.02",
+            "slo_burn_rate": "0.5",
+            "saturation": "0.1",
+            "affected_services": "1",
+            "affected_pods": "1",
+            "dependency_count": "0",
+            "duration_seconds": "60",
+            "customer_scope": "single",
+            "slo_breached": "false",
+            "still_escalating": "false",
+            "error_rate_slope": "0",
+        },
+        annotations={},
+    )
+    plan = RemediationPlan(
+        plan_id="p-live-temporal",
+        hypothesis="integration test",
+        actions=[
+            RemediationAction(
+                action_type="restart",
+                target="planner prose target",
+                parameters={"namespace": "demo-app"},
+                safety_check="ok",
+            ),
+            RemediationAction(
+                action_type="restart",
+                target="planner prose target",
+                parameters={"namespace": "demo-app"},
+                safety_check="ok",
+            ),
+        ],
+        estimated_duration="2m",
+        risk_level="low",
+        requires_approval=False,
+        verification_metrics=["error_rate"],
+    )
+    state = _state(plan, alert)
+    state["incident_id"] = "incident-live-temporal"
+    state["reflector_analysis"] = {
+        "confidence": 0.9,
+        "confidence_calibrated": True,
+    }
+    context = SimpleNamespace(
+        organization_id="org-1",
+        cluster_id="cluster-1",
+        environment="production",
+    )
+
+    report = asyncio.run(_act_gate_node(state, context))["metadata"]["act_report"]
+
+    assert captured["workflow_id"].startswith(
+        "incident-live-remediation-incident-live-temporal-"
+    )
+    assert len(captured["input"].action_requests) == 2
+    assert captured["input"].action_requests[0]["action"]["target"] == (
+        "inventory-service"
+    )
+    assert report["live_results"][0]["status"] == "EXECUTED"
+    assert report["remediation_halted"]["reason"] == "incident_resolved"
+    assert "verification" not in report
+
+
+def test_live_summary_explains_post_clear_verification_skip():
+    from sre_agent.act_phase import live_outcome_summary
+
+    summary = live_outcome_summary(
+        {
+            "severity": "SEV2",
+            "live_results": [
+                {
+                    "action_type": "scale",
+                    "status": "EXECUTED",
+                    "target": "inventory-service",
+                },
+                {
+                    "action_type": "scale",
+                    "status": "REFUSED",
+                    "target": "inventory-service",
+                    "rejection_code": "incident_resolved",
+                },
+            ],
+            "remediation_halted": {"reason": "incident_resolved"},
+        }
+    )
+
+    assert "1/2 mutating action(s) EXECUTED" in summary
+    assert "Verification: skipped after the source alert cleared" in summary
+    assert "nothing mutating executed" not in summary
+
 def test_low_severity_reversible_waits_without_calibration():
     alert = AlertContext(
         alert_name="InventorySlowQueries",

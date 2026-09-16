@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Temporal client bootstrap for the code-fix verification sandbox.
+Temporal client bootstrap for durable remediation workflows.
 
-Temporal here has exactly one job: run `sandbox_workflow.CodeFixVerificationWorkflow`,
-which replays the log evidence that proved an incident was broken, applies a
-proposed code patch inside an isolated K8s Job, re-runs, and diffs the logs to
-answer "did this actually restore the previous healthy state?" It is not a
-general task queue and nothing else should be scheduled on it.
+Temporal owns the process-death-sensitive parts of remediation: sandboxed code
+fix verification and live ACT action batches. Each live action is a separate
+activity so its completion is durable before the next action begins.
 
 Two ways to run the Temporal server this talks to, picked purely by env vars
 (no code change either way):
@@ -28,6 +26,9 @@ without a Temporal server doesn't break the OODA loop.
 `start_workflow()` is fire-and-forget by design — the ACT phase must never
 block on sandbox verification; the verdict lands later via
 `incident_timeline.emit_timeline_event` from the worker process.
+`execute_or_join_workflow()` is the live-mutation counterpart: a restarted
+caller joins the existing workflow id and reads its durable result instead of
+starting the action batch again.
 """
 
 from __future__ import annotations
@@ -167,6 +168,40 @@ async def start_workflow(
         logger.error("Failed to start Temporal workflow %s: %s", workflow_id, exc)
         return None
     return workflow_id
+
+
+async def execute_or_join_workflow(
+    workflow: Any,
+    args: Sequence[Any],
+    *,
+    workflow_id: str,
+    task_queue_name: Optional[str] = None,
+) -> Optional[Any]:
+    """Start a result-bearing workflow or join its prior durable execution.
+
+    A job-worker restart re-enters the ACT node with the same incident/action
+    hash. Temporal rejects the duplicate start, at which point this helper
+    attaches to that workflow and waits for its recorded result. Returning
+    ``None`` is reserved for a disabled/unavailable non-production runtime;
+    production connectivity failures continue to raise in
+    :func:`get_temporal_client`.
+    """
+    client = await get_temporal_client()
+    if client is None:
+        return None
+
+    try:
+        from temporalio.exceptions import WorkflowAlreadyStartedError
+
+        handle = await client.start_workflow(
+            workflow,
+            args=list(args),
+            id=workflow_id,
+            task_queue=task_queue_name or task_queue(),
+        )
+    except WorkflowAlreadyStartedError:
+        handle = client.get_workflow_handle(workflow_id)
+    return await handle.result()
 
 
 async def signal_workflow(

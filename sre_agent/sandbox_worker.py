@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Entry point for the Temporal worker that runs CodeFixVerificationWorkflow and
-IncidentRemediationWorkflow.
+Entry point for the Temporal worker that runs code verification, deterministic
+code-fix remediation, and checkpointed live ACT remediation workflows.
 
 Run with: python -m sre_agent.sandbox_worker
 
 A dedicated, long-lived process — separate from the API's request/response
 lifecycle — that polls the sandbox task queue and executes the code-fix
-verification pipeline (sre_agent.sandbox_workflow) plus Phase 5's two-gate
-remediation pipeline (sre_agent.incident_remediation_workflow). Both default
-to the same task queue (temporal_client.DEFAULT_TASK_QUEUE), and
+verification pipeline (sre_agent.sandbox_workflow), Phase 5's two-gate
+remediation pipeline, and per-action live remediation
+(sre_agent.incident_remediation_workflow). All default to the same task queue
+(temporal_client.DEFAULT_TASK_QUEUE), and
 IncidentRemediationWorkflow runs CodeFixVerificationWorkflow as a child
 workflow that inherits its parent's queue — so one worker process must serve
 both, or the child (and IncidentRemediationWorkflow itself) never gets
@@ -32,6 +33,7 @@ async def _main() -> None:
     from .incident_remediation_workflow import (
         ACTIVITIES as REMEDIATION_ACTIVITIES,
         IncidentRemediationWorkflow,
+        LiveRemediationWorkflow,
     )
     from .sandbox_workflow import ACTIVITIES as SANDBOX_ACTIVITIES, CodeFixVerificationWorkflow
     from .temporal_client import get_temporal_client, task_queue, temporal_enabled
@@ -49,7 +51,11 @@ async def _main() -> None:
     worker = Worker(
         client,
         task_queue=queue,
-        workflows=[CodeFixVerificationWorkflow, IncidentRemediationWorkflow],
+        workflows=[
+            CodeFixVerificationWorkflow,
+            IncidentRemediationWorkflow,
+            LiveRemediationWorkflow,
+        ],
         activities=[*SANDBOX_ACTIVITIES, *REMEDIATION_ACTIVITIES],
     )
     await worker.run()
