@@ -688,3 +688,24 @@
   Rejected because infrastructure actions do not share its patch generation,
   sandbox verification, or two human approval gates; combining the contracts
   would make both workflows harder to reason about.
+
+## API and Temporal worker share one fingerprinted runtime image
+
+- **Decision:** Build the platform Python source once as `sentinel/api:local`
+  and recreate both API and Temporal-worker entrypoints from that image. The
+  image contains a build-time SHA-256 manifest of all `backend/` and
+  `sre_agent/` Python files. Startup verifies the manifest; the worker also
+  imports every workflow/activity dependency; deployment compares both running
+  code revisions, fingerprints, and file counts.
+- **Reason:** The live crash-resume probe failed before its first mutation
+  because the worker image lacked `executor.NON_MUTATING_ACTIONS` while the API
+  and repository had it. Individually healthy processes do not prove their
+  workflow/activity contracts are compatible.
+- **Consequences:** A partial/manual source copy fails on restart or health
+  check instead of accepting Temporal work. `deploy_agent_runtimes.sh` refuses
+  a dirty tracked tree, builds one committed revision once, force-recreates both
+  entrypoints, and does not succeed until parity is proven.
+- **Rejected alternative:** Compare a few hand-picked module hashes during an
+  incident. Rejected because it detects drift only after deployment, misses new
+  dependencies, and repeats the exact manual procedure that allowed the worker
+  to diverge.
