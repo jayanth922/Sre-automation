@@ -124,7 +124,7 @@ Cancelling is **correct for the two human paths** and wrong for the third.
    `PodOOMKilled`; CrashLoopBackOff slows the restart rate below the rule's
    threshold, so `PodCrashLooping` goes quiet **on backoff, not on health**.
    This is already recorded in `PROJECT_STATE.md` as
-   `alert_cleared_external_verification`.
+   `alert_cleared_external_lifecycle`.
 3. **It silently discards pending human approvals.** Incident `cf58ef6a`
    posted its approval request at 06:17:52 and was resolved at 06:18:56 — the
    window a human had to approve anything was **64 seconds**.

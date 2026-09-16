@@ -11,7 +11,8 @@ deployed. ACT checkpoints each action in Temporal; a real replacement-worker
 run proved completed writes are not replayed and Task #40 still withdraws all
 remaining remediation authority after an external alert clear. Langfuse’s
 generic nested `agent` names are also replaced by stable specialist roles.
-API/Temporal-worker image parity is now fail-closed and live-confirmed.
+API/Temporal-worker image parity is fail-closed and live-confirmed. Missed
+Alertmanager resolved notifications now have a fail-closed recovery path.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -27,6 +28,10 @@ API/Temporal-worker image parity is now fail-closed and live-confirmed.
   closed without Temporal and an incident ID.
 - Langfuse graph keys are unchanged. Only the exact internal chain name `agent`
   becomes `<role>_reasoning` from code-owned, low-cardinality metadata.
+- Lost resolved webhooks are recovered only when the original durable alert job
+  identifies a Prometheus rule that exists and is healthy, and two snapshots at
+  least five minutes apart show no matching active series. The first observation
+  is durable; missing/unhealthy/unreachable source state leaves the incident open.
 - API and Temporal worker are two entrypoints into one `sentinel/api:local`
   image. Docker records a SHA-256 manifest over every Python file in `backend/`
   and `sre_agent/`; both entrypoints verify it before work, the worker also
@@ -47,12 +52,14 @@ API/Temporal-worker image parity is now fail-closed and live-confirmed.
   runtimes. Both are healthy on image ID `e075fdbf…`, revision `373eabe`, runtime
   fingerprint `31f7a253…`, and 146 files. Build-time worker imports, both startup
   checks, the worker liveness check, and `check_runtime_parity.py` all passed.
+- A process-restart regression persists the first healthy absence, recovers on
+  the second, invokes Task #40’s external-clear boundary exactly once, never runs
+  human-resolution semantics, records `remediation_verified=false`, and proves a
+  later sweep cannot replay closure. A CAS prevents late-webhook/reconciler races.
 
 ## Active problem
-If k3s/Alertmanager and the API are unavailable until an alert expires,
-Alertmanager cannot deliver its resolved webhook. The incident remains parked
-despite no active source alert; the Langfuse synthetic incident required a
-same-fingerprint re-fire/clear after resume.
+The missed-clear recovery is locally verified but not yet deployed or exercised
+against a real Prometheus rule after deliberately losing its resolved webhook.
 
 ## Relevant files
 - `sre_agent/runtime_preflight.py`
@@ -61,11 +68,16 @@ same-fingerprint re-fire/clear after resume.
 - `platform/Dockerfile`, `platform/docker-compose.yaml`
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
 - `sre_agent/tracing.py`, `sre_agent/agent_nodes.py`
+- `sre_agent/alert_lifecycle_reconciler.py`, `sre_agent/api/v1/alerts.py`
+- `sre_agent/incident_reconciler.py`, `sre_agent/approval_flow.py`
 - `tests/test_runtime_preflight.py`
 - `tests/test_live_remediation_temporal_workflow.py`
+- `tests/test_alert_lifecycle_reconciler.py`
 
 ## Verification commands and latest results
-- Focused parity/Temporal/tracing/manifest suite: **107 passed**.
+- Focused missed-clear/resolution/reconciler suite: **51 passed**.
+- Full suite: **1,481 passed** in the sandbox; its five Temporal server starts
+  were OS-blocked, then all **5 passed** with local-server permission.
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed; API
@@ -80,7 +92,7 @@ same-fingerprint re-fire/clear after resume.
   durable, but business retries are not implemented.
 
 ## Next bounded task
-Add a deterministic reconciliation test and recovery path for missed
-Alertmanager resolved notifications after control-plane downtime. It must close
-the incident lifecycle without treating alert absence as remediation success or
-restoring approval/write authority.
+Deploy the missed-clear recovery from an exact clean revision, then live-test a
+synthetic alert whose resolved webhook is deliberately unavailable. Prove two
+healthy rule snapshots close the lifecycle exactly once, preserve
+`remediation_verified=false`, and leave no pending approval/write authority.

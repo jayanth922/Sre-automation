@@ -535,8 +535,8 @@ async def test_a_failed_slack_post_is_reported_not_swallowed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_each_sweep_runs_even_when_the_other_one_raises(monkeypatch):
-    """The two sweeps cover different failures; one breaking must not take the
-    other down with it."""
+    """The sweeps cover different failures; one cannot silence the others."""
+    import sre_agent.alert_lifecycle_reconciler as alert_reconciler
     import sre_agent.incident_reconciler as reconciler
 
     ran: list[str] = []
@@ -547,11 +547,18 @@ async def test_each_sweep_runs_even_when_the_other_one_raises(monkeypatch):
 
     async def ok():
         ran.append("lapsed")
+        return []
+
+    async def alerts_ok():
+        ran.append("missed_clear")
         reconciler._STOP.set()  # one pass is enough; let the loop fall out
         return []
 
     monkeypatch.setattr(reconciler, "reconcile_interrupted_remediations", boom)
     monkeypatch.setattr(reconciler, "reconcile_lapsed_approvals", ok)
+    monkeypatch.setattr(
+        alert_reconciler, "reconcile_missed_alert_resolutions", alerts_ok
+    )
     monkeypatch.setattr(reconciler, "sweep_interval", lambda: 30.0)
     reconciler._STOP.clear()
 
@@ -560,7 +567,7 @@ async def test_each_sweep_runs_even_when_the_other_one_raises(monkeypatch):
     finally:
         reconciler._STOP.clear()
 
-    assert ran == ["interrupted", "lapsed"]
+    assert ran == ["interrupted", "lapsed", "missed_clear"]
 
 
 @pytest.mark.asyncio

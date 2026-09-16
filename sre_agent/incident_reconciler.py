@@ -33,6 +33,12 @@ is handled here too. `format_approval_request` ends every gate message with
 (`approval_flow` 722, `mission_control` 954). With nobody trying, the approval
 row stays `pending` forever and the incident stays `AWAITING_APPROVAL` forever.
 
+Alertmanager resolved notifications have a related one-shot delivery gap: if
+the control plane is down until an alert expires, the close webhook is lost.
+The periodic loop also runs the fail-closed Prometheus rule-state reconciler;
+that path requires two healthy snapshots and treats them only as lifecycle
+evidence, never as proof that remediation succeeded.
+
 Observed live on 2026-09-14: five approval requests sat `pending` hours past
 `expires_at` — d3ca5138 among them, whose window closed at 07:51:17Z and which
 was still `awaiting_approval` at 10:39Z with no message after the one telling
@@ -529,6 +535,17 @@ async def reconcile_loop() -> None:
             await reconcile_lapsed_approvals()
         except Exception as exc:
             logger.exception("reconciler: lapsed-approval sweep failed: %s", exc)
+        try:
+            # A successful empty metric query is not enough: the dedicated
+            # reconciler checks rule existence/health twice with a durable
+            # observation between checks before synthesizing a missed clear.
+            from sre_agent.alert_lifecycle_reconciler import (
+                reconcile_missed_alert_resolutions,
+            )
+
+            await reconcile_missed_alert_resolutions()
+        except Exception as exc:
+            logger.exception("reconciler: missed-alert-clear sweep failed: %s", exc)
         try:
             await asyncio.wait_for(_STOP.wait(), timeout=sweep_interval())
         except asyncio.TimeoutError:

@@ -651,7 +651,11 @@
   investigation finish and post findings, expires every pending graph/Temporal
   approval, and denies waiting Temporal gates. Durable RESOLVED state is checked
   at proposal, approval, ACT, PR, and cluster-mutation boundaries; final graph
-  persistence cannot overwrite it.
+  persistence cannot overwrite it. If downtime loses the resolved webhook, a
+  periodic recovery may synthesize that lifecycle clear only after the original
+  durable Alertmanager job identity maps to an existing, healthy Prometheus rule
+  and two rule snapshots separated by a persisted grace interval show no matching
+  active series.
 - **Reason:** Alert silence is not recovery evidence: a restart clears an OOM
   alert and backoff can clear a restart-rate alert. Cancelling on that signal
   discarded paid-for diagnosis, while leaving approvals usable could authorize
@@ -659,13 +663,17 @@
 - **Consequences:** PostgreSQL incident-row locks define the order of a racing
   clear and write and remain held through the external mutation call. Slack
   explicitly says that findings may continue but no approval/write will follow.
-  A process crash after the clear remains a separate limitation: the existing
-  resolved-incident startup guard refuses automatic retry, so post-clear
-  completion is not yet crash-resumable.
+  Missing rules, unhealthy evaluation, malformed responses, and query failures
+  leave the incident open. A compare-and-set permits only one late webhook or
+  recovery replica to publish closure effects. The durable absence observation
+  survives a control-plane restart, but is explicitly not remediation
+  verification.
 - **Rejected alternative:** Keep one shared resolution helper that always
   cancels work. Rejected because human intent and an external telemetry signal
   have different semantics; preserving the shared behavior loses the evidence
-  the investigation already gathered.
+  the investigation already gathered. A single empty `ALERTS` query or an
+  expired `endsAt` was also rejected because either can reflect monitoring
+  failure or stale delivery rather than a cleared condition.
 
 ## Live ACT remediation checkpoints one action per Temporal activity
 

@@ -2,7 +2,8 @@
 """Reconcile Alertmanager *resolved* notifications with open incidents.
 
 Firing alerts create incidents; resolved alerts must not be ignored. External
-clear is treated as verification evidence, but never masks a failed remediation
+clear closes the alert-driven incident lifecycle, but is not evidence that a
+Sentinel remediation succeeded and never masks a failed remediation
 (`REMEDIATION_FAILED` stays failed with a timeline note).
 """
 
@@ -59,7 +60,7 @@ def reconcile_resolved_alert(current_status: Any) -> ResolvedAlertDecision:
     Rules:
     - No active incident → no-op (caller may have nothing to update).
     - ``remediation_failed`` → keep failed; do **not** set resolved.
-    - Any other active status → resolved (alert clear is external verification).
+    - Any other active status → resolved (the source-alert lifecycle ended).
     """
     value = _status_value(current_status)
     if value not in _ACTIVE_VALUES:
@@ -88,5 +89,5 @@ def reconcile_resolved_alert(current_status: Any) -> ResolvedAlertDecision:
         new_status=_RESOLVED,
         mark_resolved=True,
         masked_failed_remediation=False,
-        reason="alert_cleared_external_verification",
+        reason="alert_cleared_external_lifecycle",
     )

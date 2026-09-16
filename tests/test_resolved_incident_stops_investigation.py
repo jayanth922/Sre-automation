@@ -417,6 +417,64 @@ async def test_alertmanager_resolution_uses_the_external_clear_contract(monkeypa
     assert calls == ["status", "commit", "external_clear", "timeline"]
 
 
+@pytest.mark.asyncio
+async def test_only_the_resolved_status_claim_winner_runs_clear_side_effects(
+    monkeypatch,
+):
+    """A late webhook and background recovery can race on separate replicas.
+    The compare-and-set loser must not withdraw or announce twice.
+    """
+    from backend import crud
+    from sre_agent import approval_flow
+    from sre_agent.api.v1 import alerts
+
+    incident = _Incident(models.IncidentStatus.INVESTIGATING)
+    cluster = type(
+        "_Cluster", (), {"id": uuid.uuid4(), "org_id": uuid.uuid4()}
+    )()
+    calls: list[str] = []
+
+    async def find_incident(*_args, **_kwargs):
+        return incident
+
+    async def must_not_run(*_args, **_kwargs):
+        raise AssertionError("the status claim loser cannot publish side effects")
+
+    class _Result:
+        rowcount = 0
+
+    class _Db:
+        async def execute(self, _statement):
+            calls.append("status")
+            return _Result()
+
+        async def commit(self):
+            raise AssertionError("a lost claim cannot commit")
+
+        async def rollback(self):
+            calls.append("rollback")
+
+    monkeypatch.setattr(crud, "find_active_incident_by_title", find_incident)
+    monkeypatch.setattr(crud, "create_incident_timeline_event", must_not_run)
+    monkeypatch.setattr(
+        approval_flow, "fire_external_alert_clear_side_effects", must_not_run
+    )
+
+    result = await alerts._reconcile_resolved_alert(
+        _Db(),
+        cluster,
+        {
+            "alertname": "InventorySlowQueries",
+            "service": "inventory-service",
+            "labels": {"alertname": "InventorySlowQueries"},
+        },
+    )
+
+    assert result["matched"] is False
+    assert result["reason"] == "status_changed_concurrently"
+    assert calls == ["status", "rollback"]
+
+
 class _GuardSession:
     """A session for `_run_graph_impl`'s opening guard.
 

@@ -646,6 +646,8 @@ async def _reconcile_resolved_alert(
     db: AsyncSession,
     cluster: models.Cluster,
     alert: Dict[str, Any],
+    *,
+    reconciliation_source: str = "alertmanager_webhook",
 ) -> Dict[str, Any]:
     """Correlate a resolved alert to an active incident and apply status rules."""
     title = _incident_title(alert)
@@ -670,11 +672,25 @@ async def _reconcile_resolved_alert(
         values["status"] = models.IncidentStatus(decision.new_status)
 
     if values:
-        await db.execute(
+        claimed = await db.execute(
             update(models.Incident)
-            .where(models.Incident.id == incident.id)
+            .where(
+                models.Incident.id == incident.id,
+                models.Incident.status == incident.status,
+            )
             .values(**values)
         )
+        # Two API replicas can receive the same resolved group, and the
+        # background missed-clear sweep can race a late webhook. Only the
+        # compare-and-set winner may withdraw approvals and announce closure.
+        if getattr(claimed, "rowcount", 1) != 1:
+            await db.rollback()
+            return {
+                "alertname": alert["alertname"],
+                "incident_id": str(incident.id),
+                "matched": False,
+                "reason": "status_changed_concurrently",
+            }
         await db.commit()
 
     # External recovery is not a human stop command. Keep the evidence-gathering
@@ -686,9 +702,17 @@ async def _reconcile_resolved_alert(
                 fire_external_alert_clear_side_effects,
             )
 
-            await fire_external_alert_clear_side_effects(
-                incident, str(cluster.org_id), str(cluster.id)
-            )
+            if reconciliation_source == "prometheus_rule_recovery":
+                await fire_external_alert_clear_side_effects(
+                    incident,
+                    str(cluster.org_id),
+                    str(cluster.id),
+                    source_label="Prometheus rule reconciliation",
+                )
+            else:
+                await fire_external_alert_clear_side_effects(
+                    incident, str(cluster.org_id), str(cluster.id)
+                )
         except Exception as side_effect_err:
             logger.warning(
                 "Resolution side effects failed for incident %s: %s",
@@ -701,15 +725,27 @@ async def _reconcile_resolved_alert(
         incident.id,
         event_type="alert_resolved",
         speaker_role="system",
-        title="Alertmanager resolved notification",
+        title=(
+            "Prometheus missed-clear reconciliation"
+            if reconciliation_source == "prometheus_rule_recovery"
+            else "Alertmanager resolved notification"
+        ),
         content=(
-            f"Alert `{alert['alertname']}` cleared externally. "
-            f"{decision.reason}."
+            (
+                f"Two healthy Prometheus rule snapshots confirmed no active "
+                f"series for `{alert['alertname']}` after a missed resolved "
+                "notification. "
+                if reconciliation_source == "prometheus_rule_recovery"
+                else f"Alert `{alert['alertname']}` cleared externally. "
+            )
+            + f"{decision.reason}."
             + (
                 " Remediation failure preserved; incident not marked resolved."
                 if decision.masked_failed_remediation
                 else ""
             )
+            + " This closes the source-alert lifecycle only; it does not prove "
+            "that a Sentinel remediation succeeded."
         ),
         payload={
             "alertname": alert["alertname"],
@@ -719,6 +755,8 @@ async def _reconcile_resolved_alert(
             "masked_failed_remediation": decision.masked_failed_remediation,
             "ends_at": alert.get("ends_at") or None,
             "labels": alert.get("labels") or {},
+            "reconciliation_source": reconciliation_source,
+            "remediation_verified": False,
         },
     )
     logger.info(

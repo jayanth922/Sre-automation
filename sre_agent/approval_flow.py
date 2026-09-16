@@ -765,7 +765,11 @@ async def retire_pending_remediation_approvals(
 
 
 async def fire_external_alert_clear_side_effects(
-    incident: Any, organization_id: str, cluster_id: str
+    incident: Any,
+    organization_id: str,
+    cluster_id: str,
+    *,
+    source_label: str = "Alertmanager",
 ) -> None:
     """Resolve externally without cancelling the evidence-gathering job.
 
@@ -800,7 +804,7 @@ async def fire_external_alert_clear_side_effects(
             await signal_workflow(
                 workflow_id,
                 signal_name,
-                args=[False, "Alertmanager clear"],
+                args=[False, f"{source_label} clear"],
             )
         except Exception as signal_err:
             logger.error(
@@ -824,7 +828,7 @@ async def fire_external_alert_clear_side_effects(
         )
         notified = await post_to_incident_thread(
             incident_id,
-            f":white_check_mark: Alertmanager reports `{incident.title}` has "
+            f":white_check_mark: {source_label} reports `{incident.title}` has "
             "cleared externally. Any in-flight investigation will finish and "
             "post its findings here, but Sentinel has stopped at the "
             f"remediation boundary.{withdrawal} No approval will be requested "
