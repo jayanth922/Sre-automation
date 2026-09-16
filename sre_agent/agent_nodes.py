@@ -31,6 +31,15 @@ from .prompt_loader import prompt_loader
 # Logging will be configured by the main entry point
 logger = logging.getLogger(__name__)
 
+_SPECIALIST_ROLE_METADATA_KEY = "sentinel.specialist_role"
+
+
+def specialist_trace_metadata(agent_type: str) -> Dict[str, str]:
+    """Stable metadata used to name the specialist's internal trace nodes."""
+    return {
+        _SPECIALIST_ROLE_METADATA_KEY: internal_agent_name(agent_type),
+    }
+
 
 @lru_cache(maxsize=1)
 def _load_agent_config() -> Dict[str, Any]:
@@ -157,6 +166,12 @@ class BaseAgentNode:
         self.agent = create_react_agent(
             self.llm,
             ToolNode(agent_tools, handle_tool_errors=handle_tool_execution_error),
+            # LangGraph otherwise names every specialist subgraph `agent`.
+            # Langfuse's Agent Graph keys nodes by this stable name, so the
+            # generic default collapses distinct roles into one unreadable
+            # node. Keep the low-cardinality internal role name instead of a
+            # run-specific value or model name.
+            name=internal_agent_name(self.agent_type),
         )
 
     def _get_system_prompt(self) -> str:
@@ -293,7 +308,8 @@ class BaseAgentNode:
                         f"{self.name} - Executing agent with {isolated_messages}"
                     )
                     async for chunk in self.agent.astream(
-                        {"messages": isolated_messages}
+                        {"messages": isolated_messages},
+                        config={"metadata": specialist_trace_metadata(self.agent_type)},
                     ):
                         chunk_count += 1
                         logger.info(

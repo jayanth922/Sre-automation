@@ -71,6 +71,41 @@ def test_tracing_callbacks_org_without_keys_passes_through(monkeypatch):
     assert result is base
 
 
+class _RunNameHandler:
+    @staticmethod
+    def get_langchain_run_name(serialized, **kwargs):
+        return kwargs.get("name") or (serialized or {}).get("name") or "<unknown>"
+
+
+def test_specialist_role_renames_only_generic_internal_agent_observation():
+    override = tr._specialist_chain_name_override(
+        _RunNameHandler(),
+        {"name": "agent"},
+        {"sentinel.specialist_role": "metrics_agent"},
+        {},
+    )
+    assert override == "metrics_agent_reasoning"
+
+
+@pytest.mark.parametrize(
+    "serialized, metadata",
+    [
+        ({"name": "tools"}, {"sentinel.specialist_role": "metrics_agent"}),
+        ({"name": "agent"}, {}),
+        ({"name": "agent"}, {"sentinel.specialist_role": "run-specific/123"}),
+    ],
+)
+def test_specialist_role_does_not_rename_other_or_dynamic_observations(
+    serialized, metadata
+):
+    assert (
+        tr._specialist_chain_name_override(
+            _RunNameHandler(), serialized, metadata, {}
+        )
+        is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # redact() — the secret/PII scrubber behind the export-stage masking hook
 # ---------------------------------------------------------------------------

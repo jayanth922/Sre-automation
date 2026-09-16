@@ -105,6 +105,32 @@ _DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
 # Langfuse coerces propagated metadata values to strings and caps them at 200
 # characters; truncate here so the cap never silently drops a correlating id.
 _MAX_METADATA_VALUE = 200
+_SPECIALIST_ROLE_METADATA_KEY = "sentinel.specialist_role"
+_STABLE_SPECIALIST_ROLE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _specialist_chain_name_override(
+    handler: Any,
+    serialized: Optional[Dict[str, Any]],
+    metadata: Optional[Dict[str, Any]],
+    kwargs: Dict[str, Any],
+) -> Optional[str]:
+    """Give LangGraph's hard-coded ``agent`` node a concrete trace name.
+
+    ``create_react_agent(name=...)`` names the compiled specialist graph, but
+    LangGraph still calls every internal model-loop node ``agent``. Langfuse
+    consequently renders each reasoning turn as the same generic Agent Graph
+    node. The invocation carries a code-owned, low-cardinality specialist role;
+    use it only for that exact internal node and leave all other framework
+    observation names unchanged.
+    """
+    current = handler.get_langchain_run_name(serialized, **kwargs)
+    if current != "agent" or not metadata:
+        return None
+    role = str(metadata.get(_SPECIALIST_ROLE_METADATA_KEY) or "")
+    if not _STABLE_SPECIALIST_ROLE.fullmatch(role):
+        return None
+    return f"{role}_reasoning"
 
 
 def langfuse_enabled() -> bool:
@@ -392,10 +418,35 @@ def get_langfuse_callback(org_langfuse: Optional[Dict[str, Optional[str]]] = Non
     try:
         from langfuse.langchain import CallbackHandler
 
+        class _RoleAwareCallbackHandler(CallbackHandler):
+            def on_chain_start(
+                self,
+                serialized: Optional[Dict[str, Any]],
+                inputs: Any,
+                *,
+                metadata: Optional[Dict[str, Any]] = None,
+                **kwargs: Any,
+            ) -> Any:
+                override = _specialist_chain_name_override(
+                    self, serialized, metadata, kwargs
+                )
+                if override:
+                    kwargs["name"] = override
+                return super().on_chain_start(
+                    serialized,
+                    inputs,
+                    metadata=metadata,
+                    **kwargs,
+                )
+
         # Always name the key when we have one. With more than one project
         # registered, the SDK's keyless lookup returns a *disabled* client
         # rather than guessing — which would silently drop every span.
-        return CallbackHandler(public_key=public_key) if public_key else CallbackHandler()
+        return (
+            _RoleAwareCallbackHandler(public_key=public_key)
+            if public_key
+            else _RoleAwareCallbackHandler()
+        )
     except Exception as e:  # pragma: no cover - only without langfuse installed
         logger.warning(f"Langfuse tracing requested but unavailable ({e}); skipping.")
         return None
