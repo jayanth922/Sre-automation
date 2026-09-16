@@ -455,6 +455,15 @@ async def _heartbeat_reconcile_loop():
 async def startup_event():
     """Initialize agent on startup."""
     from .provider_config import ProviderConfigError, validate_startup_config
+    from .runtime_preflight import verify_runtime
+
+    runtime_identity = verify_runtime("api")
+    logger.info(
+        "Runtime preflight passed: code_sha=%s fingerprint=%s files=%s",
+        runtime_identity.code_sha,
+        runtime_identity.fingerprint,
+        runtime_identity.file_count,
+    )
 
     try:
         provider = validate_startup_config()

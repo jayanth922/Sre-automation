@@ -1,3 +1,12 @@
+x-sentinel-api-image: &sentinel-api-image
+  platform: linux/amd64
+  image: sentinel/api:local
+  build:
+    context: ../
+    dockerfile: platform/Dockerfile
+    args:
+      SENTINEL_CODE_SHA: ${SENTINEL_CODE_SHA:-unknown}
+
 # =============================================================================
 # SaaS Platform Stack — API, Dashboard, AI Agent, and infrastructure services
 #
@@ -115,12 +124,7 @@ services:
   # ============================================
 
   sre-agent-api:
-    platform: linux/amd64
-    build:
-      context: ../
-      dockerfile: platform/Dockerfile
-      args:
-        SENTINEL_CODE_SHA: ${SENTINEL_CODE_SHA:-unknown}
+    <<: *sentinel-api-image
     container_name: sre-agent-api
     hostname: sre-agent-api
     command: >
@@ -180,12 +184,7 @@ services:
   # as the temporal service itself, since running it makes no sense unless
   # TEMPORAL_ENABLED=true is also set.
   temporal-worker:
-    platform: linux/amd64
-    build:
-      context: ../
-      dockerfile: platform/Dockerfile
-      args:
-        SENTINEL_CODE_SHA: ${SENTINEL_CODE_SHA:-unknown}
+    <<: *sentinel-api-image
     container_name: sre-temporal-worker
     hostname: temporal-worker
     profiles: ["local-temporal"]
@@ -201,8 +200,7 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
     healthcheck:
-      # No ps/pgrep in this slim image — scan /proc directly instead.
-      test: ["CMD", "python3", "-c", "import glob,sys; sys.exit(0 if any(b'sandbox_worker' in open(f,'rb').read() for f in glob.glob('/proc/[0-9]*/cmdline')) else 1)"]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "sre_agent.runtime_preflight", "--role", "worker"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -43,7 +43,13 @@ spec:
             - name: PYTHONUNBUFFERED
               value: "1"
           livenessProbe:
-            exec: { command: ["pgrep", "-f", "sre_agent.sandbox_worker"] }
+            exec:
+              command:
+                - /app/.venv/bin/python
+                - -m
+                - sre_agent.runtime_preflight
+                - --role
+                - worker
             initialDelaySeconds: 15
             periodSeconds: 30
           resources: {{- toYaml .Values.temporal.resources | nindent 12 }}

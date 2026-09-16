@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 
 async def _main() -> None:
+    from .runtime_preflight import verify_runtime
+
+    runtime_identity = verify_runtime("worker")
+    logger.info(
+        "Runtime preflight passed: code_sha=%s fingerprint=%s files=%s",
+        runtime_identity.code_sha,
+        runtime_identity.fingerprint,
+        runtime_identity.file_count,
+    )
+
     from temporalio.worker import Worker
 
     from .incident_remediation_workflow import (

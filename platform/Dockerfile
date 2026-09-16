@@ -41,10 +41,21 @@ COPY sre_agent/ ./sre_agent/
 COPY backend/   ./backend/
 COPY alembic.ini ./
 
+# Freeze the exact Python runtime copied into this image, then prove the
+# shared API/Temporal-worker imports are complete while the image is built.
+# Both entrypoints re-run the same check before accepting work.
+RUN SENTINEL_CODE_SHA="${SENTINEL_CODE_SHA}" \
+    /app/.venv/bin/python -m sre_agent.runtime_preflight \
+    --write-manifest /app/.sentinel-runtime.json
+RUN SENTINEL_CODE_SHA="${SENTINEL_CODE_SHA}" \
+    SENTINEL_RUNTIME_MANIFEST=/app/.sentinel-runtime.json \
+    /app/.venv/bin/python -m sre_agent.runtime_preflight --role worker
+
 ENV PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    SENTINEL_CODE_SHA=${SENTINEL_CODE_SHA}
+    SENTINEL_CODE_SHA=${SENTINEL_CODE_SHA} \
+    SENTINEL_RUNTIME_MANIFEST=/app/.sentinel-runtime.json
 
 LABEL org.opencontainers.image.revision=${SENTINEL_CODE_SHA}
 
