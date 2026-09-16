@@ -12,7 +12,8 @@ run proved completed writes are not replayed and Task #40 still withdraws all
 remaining remediation authority after an external alert clear. Langfuse’s
 generic nested `agent` names are also replaced by stable specialist roles.
 API/Temporal-worker image parity is fail-closed and live-confirmed. Missed
-Alertmanager resolved notifications now have a fail-closed recovery path.
+Alertmanager resolved notifications now have a fail-closed, live-verified
+recovery path deployed from exact revision `e8374f1`.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -56,10 +57,23 @@ Alertmanager resolved notifications now have a fail-closed recovery path.
   the second, invokes Task #40’s external-clear boundary exactly once, never runs
   human-resolution semantics, records `remediation_verified=false`, and proves a
   later sweep cannot replay closure. A CAS prevents late-webhook/reconciler races.
+- Live incident `193c3bf3…` fired from healthy rule
+  `SentinelMissedClearProbeE8374f1`. The API was stopped and Alertmanager’s
+  receiver was unreachable when the same rule became healthy/inactive;
+  Alertmanager exhausted 10 notification attempts and retained no alert. After
+  API recovery, the first absence was persisted; a second independent snapshot
+  moved `investigating → resolved`. A replay sweep returned `[]`; both lifecycle
+  event counts remained one. The completed investigation recorded
+  `remediation_suppressed.reason=incident_resolved`, zero live writes, and zero
+  action/gate approval rows.
+- Pre-test monitoring configs were restored; the rule is absent, Alertmanager
+  routes to port 8080, and every Meridian deployment is available.
 
 ## Active problem
-The missed-clear recovery is locally verified but not yet deployed or exercised
-against a real Prometheus rule after deliberately losing its resolved webhook.
+Temporal makes process loss durable, but ordinary activity/tool transport errors
+are terminal. Blindly retrying is unsafe because a timeout after dispatch has an
+ambiguous mutation outcome; retry policy needs pre-dispatch vs. ambiguous-outcome
+classification rather than treating every exception alike.
 
 ## Relevant files
 - `sre_agent/runtime_preflight.py`
@@ -80,8 +94,9 @@ against a real Prometheus rule after deliberately losing its resolved webhook.
   were OS-blocked, then all **5 passed** with local-server permission.
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Exact-revision Docker build and live `check_runtime_parity.py`: passed; API
-  and worker healthy on the same image ID and fingerprint.
+- Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
+  and worker are healthy on image `09c6c071…`, revision `e8374f1`, fingerprint
+  `ecbf3758…`, and 147 files.
 
 ## Known blockers or risks
 - Codespace k3s often stops after sleep. Run `scripts/codespace_boot.sh` and
@@ -92,7 +107,7 @@ against a real Prometheus rule after deliberately losing its resolved webhook.
   durable, but business retries are not implemented.
 
 ## Next bounded task
-Deploy the missed-clear recovery from an exact clean revision, then live-test a
-synthetic alert whose resolved webhook is deliberately unavailable. Prove two
-healthy rule snapshots close the lifecycle exactly once, preserve
-`remediation_verified=false`, and leave no pending approval/write authority.
+Classify live-action failures at the mutation boundary and add bounded Temporal
+business retries only for failures proven to occur before external dispatch.
+Ambiguous post-dispatch outcomes must remain terminal/manual, successful actions
+must not replay, and an external clear must still stop every later action.
