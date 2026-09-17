@@ -115,6 +115,23 @@
 - **Rejected alternative:** Calling `Executor` from ACT with a cached gate result
   or checking idempotency with separate read and write operations.
 
+## Temporal retries stop at the idempotency-claim boundary
+
+- **Decision:** A live-action activity may retry at most three times only when
+  the mutation gateway proves failure occurred before the idempotency claim was
+  attempted. Claim, dispatch, tool-response, and audit uncertainty is terminal,
+  requires manual review, and stops every later action in the batch.
+- **Reason:** Retrying a failure after external dispatch can repeat a successful
+  mutation; retrying after an uncertain atomic claim can instead misreport an
+  unexecuted action as a duplicate. Neither outcome is safe to automate.
+- **Consequences:** Setup and pre-claim failures use a typed retryable error.
+  Post-claim `ERROR` results remain durable, MCP teardown cannot replace a
+  successful activity result, and exhausted retries return an explicit manual
+  terminal result rather than failing the whole workflow invisibly.
+- **Rejected alternative:** Retrying every transport exception, releasing the
+  idempotency claim after an error, or continuing later actions when an earlier
+  mutation's outcome is unknown.
+
 ## Per-cluster credentials relay over the MCP transport (Phase 4)
 
 - **Decision:** `edge_mcp_servers/*` keep resolving credentials from static

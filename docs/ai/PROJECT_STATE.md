@@ -10,10 +10,11 @@ P0 #4 crash-resumable live remediation is deployed and live-verified. Temporal
 checkpoints each action; a replacement-worker run proved successful writes are
 not replayed and Task #40 still withdraws later remediation authority after an
 external clear. Stable Langfuse specialist names, fail-closed API/worker image
-parity, and missed-clear reconciliation are also deployed at `e8374f1`.
+parity and missed-clear reconciliation are also deployed.
 Live-action transport failures are now classified at the idempotency boundary:
 only proven pre-claim failures receive bounded Temporal retries, while
-claim/dispatch/audit uncertainty stops the plan for manual review.
+claim/dispatch/audit uncertainty stops the plan for manual review. This complete
+runtime is deployed from exact revision `d6a6a1b`.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -62,11 +63,17 @@ claim/dispatch/audit uncertainty stops the plan for manual review.
   ambiguous dispatched outcome runs once and schedules no later action; audit
   and claim uncertainty remain terminal; cleanup failure preserves success.
   The original replacement-worker/post-clear regression still passes.
+- Live no-mutation workflow `live-retry-safe-probe-d6a6a1b` used an unmapped
+  action and nonexistent cluster. History recorded retry maximum 3, final
+  activity attempt 3, `LiveActionPreDispatchError`, and
+  `MANUAL_REVIEW_REQUIRED/pre_dispatch_retries_exhausted`. Redis had no claim
+  and the executor edge had no matching call. API/worker remained healthy.
 
 ## Active problem
-The retry classification is locally complete and verified but not yet deployed.
-Production parity and controlled live behavior still need confirmation from an
-exact clean revision.
+P0 #4 is complete. The next audit item is the P1 operational-reflection branch:
+comments and state shape suggest a deeper-investigation loop, but graph wiring
+always routes reflector directly to planner. It must be made truthful by either
+wiring the bounded loop or deleting the unreachable branch.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -83,19 +90,17 @@ exact clean revision.
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `09c6c071…`, revision `e8374f1`, fingerprint
-  `ecbf3758…`, and 147 files.
+  and worker are healthy on image `d8bcafd7…`, revision `d6a6a1b`, fingerprint
+  `42cfe500…`, and 147 files.
 
 ## Known blockers or risks
 - Codespace k3s often stops after sleep. Run `scripts/codespace_boot.sh` and
   verify `kubectl get nodes` before live actions.
 - `.env.local-backup-20260910` is untracked, contains live secrets, and is not
   ignored. Never stage it; avoid `git add -A`.
-- The live runtime is still `e8374f1`; retry classification currently exists
-  only in the unshipped local revision.
 
 ## Next bounded task
-Commit and push the retry boundary, then build/deploy that exact revision to the
-shared API/worker runtime. Verify parity and exercise one controlled live
-pre-dispatch retry without replay, while retaining the existing post-clear and
-ambiguous-outcome stop invariants.
+Map the reflector's claimed deeper-investigation state and conditional paths
+against actual LangGraph edges and tests. Choose the smallest honest outcome:
+wire one bounded, durable loop if all required state already exists; otherwise
+remove dead branch/state and update operator-facing documentation.
