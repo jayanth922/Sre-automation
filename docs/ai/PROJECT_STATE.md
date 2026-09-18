@@ -16,7 +16,7 @@ only proven pre-claim failures receive bounded Temporal retries, while
 claim/dispatch/audit uncertainty stops the plan for manual review. This complete
 runtime is deployed from exact revision `d6a6a1b`.
 The P1 reflector branch is deployed. Artifact-backed specialist context is
-implemented and fully tested locally.
+deployed from exact revision `5c292cd`.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -78,15 +78,12 @@ implemented and fully tested locally.
   failure remains lossless. Duplicate deeper-loop findings were removed.
 
 ## Active problem
-The artifact migration and runtime path are not yet committed or deployed.
+The next P1 is an audit of observability semantics.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
-- `sre_agent/mutation_gateway.py`
-- `sre_agent/alert_lifecycle_reconciler.py`, `sre_agent/api/v1/alerts.py`
+- `sre_agent/mutation_gateway.py`, `sre_agent/alert_lifecycle_reconciler.py`
 - `tests/test_live_remediation_temporal_workflow.py`
-- `tests/test_live_remediation_activity.py`, `tests/test_mutation_gateway.py`
-- `tests/test_alert_lifecycle_reconciler.py`
 - `tests/test_deeper_investigation_loop.py`
 - `sre_agent/evidence_artifacts.py`, `backend/models.py`
 - `tests/test_evidence_artifacts.py`
@@ -95,9 +92,10 @@ The artifact migration and runtime path are not yet committed or deployed.
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Artifact/context focused suite: **51 passed**. Full suite: **1,507 passed**.
+- Live artifact probe wrote, digest-verified, reloaded, and removed one exact row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `f53fec6d…`, revision `202c9f2`, fingerprint
-  `ca76813b…`, and 147 files.
+  and worker are healthy on image `d4f32ad4…`, revision `5c292cd`, fingerprint
+  `b90474be…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
 
 ## Known blockers or risks
 - Codespace k3s often stops after sleep. Run `scripts/codespace_boot.sh` and
@@ -106,6 +104,5 @@ The artifact migration and runtime path are not yet committed or deployed.
   ignored. Never stage it; avoid `git add -A`.
 
 ## Next bounded task
-Commit/push and deploy the artifact-backed context revision; verify the Alembic
-head, API/worker parity, and one real artifact reference. Then audit the next P1:
-observability semantics.
+Audit the next P1, observability semantics: map emitted graph/model/tool/policy
+events to their consumers and correct the smallest misleading or dead surface.
