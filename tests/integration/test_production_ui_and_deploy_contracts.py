@@ -79,3 +79,13 @@ def test_anthropic_runtime_dependency_is_locked():
     assert '"langchain-anthropic>=1.7.2,<1.8.0"' in pyproject
     assert "--extra anthropic" in dockerfile
     assert 'uv pip install --no-cache "langchain-anthropic' not in dockerfile
+
+
+@pytest.mark.integration
+def test_image_installer_matches_pinned_ci_uv_version():
+    dockerfile = (ROOT / "platform" / "Dockerfile").read_text()
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    assert 'UV_VERSION: "0.6.14"' in ci
+    assert 'pip install --no-cache-dir "uv==0.6.14"' in dockerfile
+    assert "pip install --no-cache-dir uv" not in dockerfile

@@ -19,7 +19,7 @@ WORKDIR /app
 # Install system deps (wget for healthcheck, git for pip installs)
 RUN apt-get update && apt-get install -y --no-install-recommends wget \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir uv
+    && pip install --no-cache-dir "uv==0.6.14"
 
 # Copy dependency manifest and install
 COPY pyproject.toml uv.lock ./
