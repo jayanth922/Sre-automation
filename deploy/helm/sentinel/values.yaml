@@ -198,7 +198,7 @@ web:
 # ── Datastores: deploy ours, or bring your own ────────────────────────────────
 postgres:
   deploy: true                 # false → use an external Postgres you already run
-  image: postgres:15-alpine
+  image: postgres:15.19-alpine@sha256:a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd
   user: sentinel
   database: sentinel
   storage: 5Gi
@@ -213,7 +213,7 @@ postgres:
 
 redis:
   deploy: true                 # false → set external.url
-  image: redis:7-alpine
+  image: redis:7.4.11-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7
   # Durable AOF + PVC so restarts keep bus/cache state. Set persistence.enabled
   # false only for ephemeral disposable clusters.
   persistence:

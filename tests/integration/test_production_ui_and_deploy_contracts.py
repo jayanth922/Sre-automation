@@ -60,6 +60,25 @@ def test_qdrant_client_and_server_versions_stay_compatible():
 
 
 @pytest.mark.integration
+def test_postgres_and_redis_images_are_version_and_digest_pinned():
+    manifests = [
+        ROOT / "platform" / "docker-compose.yaml",
+        ROOT / "deploy" / "helm" / "sentinel" / "values.yaml",
+        ROOT / "deploy" / "k8s" / "datastores.yaml",
+    ]
+    expected = (
+        "postgres:15.19-alpine@sha256:"
+        "a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd",
+        "redis:7.4.11-alpine@sha256:"
+        "520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7",
+    )
+    for manifest in manifests:
+        text = manifest.read_text()
+        for image in expected:
+            assert image in text, manifest
+
+
+@pytest.mark.integration
 def test_temporal_server_and_sdk_are_pinned():
     pyproject = (ROOT / "pyproject.toml").read_text()
     dockerfile = (ROOT / "platform" / "Dockerfile").read_text()
