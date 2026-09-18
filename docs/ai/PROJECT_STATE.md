@@ -80,23 +80,23 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: deploy the digest-pinned base image and verify parity.
+Next: digest-pin Qdrant and Temporal service images.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- `platform/Dockerfile`, deployment tests
+- Compose/deployment manifests and deployment tests
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Full suite: **1,518 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `ab7843ad…`, revision `9426971`, fingerprint
+  and worker are healthy on image `82305738…`, revision `cf76a94`, fingerprint
   `13db9184…`, and 151 inputs. Alembic is at `e5f6a7b8c9d0` (head).
 
 ## Known blockers or risks
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Build and deploy from the pinned Python digest, then verify both entrypoints
-remain healthy and report identical runtime identities.
+Replace Qdrant and Temporal's version-only image references with tested manifest
+digests; preserve readable versions and multi-architecture pulls.
