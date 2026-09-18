@@ -80,23 +80,23 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: deploy manifest schema v2 and verify exact parity.
+Next: pin the image's `uv` installer/runtime version.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- `sre_agent/runtime_preflight.py`, `tests/test_runtime_preflight.py`
+- `platform/Dockerfile`, deployment tests
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Full suite: **1,516 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `0134900e…`, revision `0d71536`, fingerprint
-  `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
+  and worker are healthy on image `84c91bb3…`, revision `ac9bdc2`, fingerprint
+  `13db9184…`, and 151 inputs. Alembic is at `e5f6a7b8c9d0` (head).
 
 ## Known blockers or risks
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Build and deploy manifest schema v2, then verify both entrypoints report the
-new 151-file source/dependency fingerprint and remain healthy.
+Replace the Dockerfile's unbounded `pip install uv` with a tested exact version;
+preserve the frozen install and shared-image parity gates.
