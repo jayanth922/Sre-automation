@@ -14,10 +14,10 @@ benchmark dataset v2 at 22 scenarios (#20), cost-derived autonomy thresholds
 with enforced evidence provenance (#21), the ablation harness (#22), the typed
 `EvidenceRecord` contract (#23), the swarm→specialist rename in operator-facing
 text (#24), striking the unmeasurable model-routing cost claim (#25), and the
-cross-corpus scenario-mix accounting (#26). What remains is not code: none of
-#16-#26 has been deployed, and the ablation arms have never been run against a
-live cluster, so the three architectural claims are measurable but not yet
-measured.
+cross-corpus scenario-mix accounting (#26). All of it is now **deployed and
+live-verified** on the Codespace k3s cluster at revision `5956c80`. What
+remains is the measurement itself: the four ablation arms have still never
+been run, so the three architectural claims are measurable but not measured.
 
 Prior milestone, deployed and live-verified: P0 #4 crash-resumable live
 remediation, with stable Langfuse names, fail-closed image parity,
@@ -109,13 +109,30 @@ missed-clear reconciliation, and bounded pre-claim retries.
   untrusted), and the single investigator writes where the reflector reads.
 - Qdrant 1.19.1, PostgreSQL 15.19, Redis 7.4.11, Temporal CLI 1.8.3, Anthropic
   1.7.2 digest-pinned; Temporal SDK 1.32.0.
+- **Live fire, 2026-09-18, Codespace k3s at `5956c80`.** Runtime parity passed
+  on both containers (`fingerprint=e7af89b2…`, 155 files). One webhook alert ran
+  the whole loop to `awaiting_approval` in ~35 min: specialists → reflector
+  (confidence 0.72, 8 discrepancies) → two bounded re-investigation rounds →
+  planner → approval gate. Its run manifest is `comparable: true` with no
+  reasons, `provenance.code_sha=5956c809…`, `working_tree_dirty: false`,
+  Anthropic-only routes, and `runtime.ablation_arm="full"` with
+  `ablation_experiment: false` — unset really does report as production. The
+  diagnosis measured 82.5% 5xx itself and refused to treat the alert text's
+  "revision 5956c80" as a real revision, which is the untrusted-evidence
+  boundary working on live input.
 
 ## Active problem
-Nothing in #16-#26 has run against a live cluster. The ablation harness can now
-answer whether the specialist split, the reflector and learned memory earn
-their cost, but until the four arms are actually run the HolmesGPT comparison
-still rests on design description. The same live-run dependency blocks the
-confidence calibration artifact.
+The four ablation arms have not been run. Deploying removed every obstacle but
+the clock: the arms are ~12h of wall time at one run per scenario, because a
+live incident takes 10-30 minutes. Until they run, the HolmesGPT comparison
+still rests on design description, and the same run is the only source of a
+real confidence calibration artifact.
+
+Before the first arm, set `ACT_PHASE_ENABLED=true` in the Codespace `.env`.
+It is `false` today, so no `act_report` is produced and the benchmark's
+remediation, severity and safety columns — and the confidence observations —
+have nothing to read. `EXECUTOR_LIVE` is already `true`; with no calibration
+artifact the gate still fails closed onto human approval.
 
 Deferred, unrelated: digest-pin the Helm Temporal server image.
 
@@ -153,15 +170,27 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
 - `bash scripts/check_python_quality.sh`: passed.
 - Deployment-template gate and secret scan: passed;
   `helm template --set llm.provider=gemini` fails at render time as intended.
-- Not re-verified since #16: the exact-revision Docker build and live
-  `check_runtime_parity.py`. Last known good — image `82305738…`, revision
-  `cf76a94`, fingerprint `13db9184…`, Alembic `e5f6a7b8c9d0` (head).
+- Live, in the Codespace: `python3 scripts/check_runtime_parity.py` →
+  `code_sha=5956c8094b15… fingerprint=e7af89b2… files=155`. Bring the stack up
+  only as `cd platform && docker compose --env-file ../.env up -d`; from the
+  repo root `${POSTGRES_*}` interpolate empty and asyncpg fails as user
+  "root".
 
 ## Known blockers or risks
 - Never stage the untracked secret backup `.env.local-backup-20260910`; the
   `.gitignore` `.env` pattern does not match it. Always use explicit paths in
   `git add`.
-- #16–#26 are committed but not deployed or live-verified.
+- The Meridian checkout baseline is restored **in the working tree only**.
+  Two commits on `origin/master` of `jayanth922/meridian-shop` —
+  `4ed89b2` (hash-slot 503s) and `7a6e223` (`int(order_id[-1])` on
+  letter-suffixed order ids) — held checkout at an 84% 5xx ratio, above the
+  0.45 `checkout_error_ratio` probe threshold, so two v2 dev scenarios could
+  not establish the healthy baseline the oracle demands. The Codespace copy of
+  `services/checkout-service/app.py` is checked out at `c6725b8` and the image
+  rebuilt; measured ratio is now 0.0 at 2.3 rps. Nothing was pushed. See
+  `/workspaces/meridian-shop-deploy/.local-baseline-restore.md`.
+  `scripts/watch_meridian_deploy.sh` does `git reset --hard` when
+  origin/master moves and would silently discard the restore.
 - The evaluation mix is five of six categories. **Missing-data is measured by
   no corpus**: no scenario tests what the agent concludes from absent
   telemetry. v2's splits are frozen and SHA-256 pinned, so closing it needs a
@@ -184,10 +213,25 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-Deploy #16-#26 and run them under live fire. Specifically: build at the exact
-revision, run `check_runtime_parity.py`, then run the four ablation arms back
-to back on the v2 holdout under one `BENCH_EXPERIMENT_ID` and `BENCH_PAIR_SEED`
-per `benchmarks/ablation/README.md`, capture each arm's run manifest, and
-compare with `ablation_eval.py`. The same run produces the first real
-confidence calibration artifact. Until then every architectural claim in the
-HolmesGPT comparison is measurable but unmeasured.
+Run the four ablation arms. Everything they need is in place: Codespace
+`cuddly-winner-659v67gv695hrxjw`, k3s up, Meridian healthy, the stack at
+`5956c80`, and `~/bench.env` holding every `BENCH_*` value (base URL, the
+`bench-runner@example.com` service account created through the sanctioned
+invitation flow, cluster id `bcbd9577-…`, cluster token, and the four fault
+service URLs on `10.0.0.207`).
+
+1. `ACT_PHASE_ENABLED=true` in the Codespace `.env`, then recreate the API and
+   worker with `cd platform && docker compose --env-file ../.env up -d`.
+2. `export BENCH_INCIDENT_TIMEOUT_SEC=2700` (a run needs 10-30 min),
+   `BENCH_RUNS_PER_SCENARIO=1`, `BENCH_DATASET_SPLIT=dev`,
+   `BENCH_FAULT_MODE=automatic`.
+3. The four arms back to back per `benchmarks/ablation/README.md` — one
+   `BENCH_EXPERIMENT_ID`, one `BENCH_PAIR_SEED`, one
+   `BENCH_TRIAL_RESULTS_PATH`, distinct `BENCH_CANDIDATE_ID` and
+   `BENCH_CONFIG_FINGERPRINT`. Budget ~3h per arm.
+4. Capture each arm's manifest from
+   `/api/v1/clusters/$BENCH_CLUSTER_ID/jobs/$JOB_ID/manifest` (verified
+   working: `comparable: true`, arm in `runtime`), then `ablation_eval.py`.
+
+Six pairs per arm will likely report `NOT_DEMONSTRATED` with a non-empty
+`insufficient_evidence` list. Report that as ignorance, not a null.
