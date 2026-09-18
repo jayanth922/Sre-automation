@@ -70,11 +70,11 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   complete node coverage, and `fallback_allowed=false`; the dead provider-
   switch dashboard surface was removed. The worker regression test proves it
   does not issue a second completion after the runtime writes its rich result.
-- Temporal orchestration test drives both approval gates, child verification,
-  and the PR result with 15 passing workflow tests.
+- Time-skipping and live Temporal smoke drive both gates, child verification,
+  and a mocked PR result.
 
 ## Active problem
-Next: live Temporal-server smoke with mocked activities.
+Next: Temporal restart/denial-path coverage.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -95,7 +95,7 @@ Next: live Temporal-server smoke with mocked activities.
 - Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `79acf4e8…`, revision `50873ae`, fingerprint
+  and worker are healthy on image `033ea434…`, revision `2d1f65c`, fingerprint
   `1fe2ecb7…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
 - Live `/agent/metrics` is fail-closed: the stack returned `403`
   because `.env` has no `INTERNAL_API_TOKEN`; schema remains covered by tests.
@@ -105,5 +105,4 @@ Next: live Temporal-server smoke with mocked activities.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Run Temporal-server smoke with restart/denial paths; keep writes and PRs
-out of scope.
+Add Temporal restart/denial-path coverage; keep writes and PRs out of scope.
