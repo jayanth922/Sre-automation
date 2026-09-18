@@ -80,7 +80,7 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: pin the Python base image by digest.
+Next: deploy the digest-pinned base image and verify parity.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
@@ -89,7 +89,7 @@ Next: pin the Python base image by digest.
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,517 passed** with zero warnings.
+- Full suite: **1,518 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `ab7843ad…`, revision `9426971`, fingerprint
   `13db9184…`, and 151 inputs. Alembic is at `e5f6a7b8c9d0` (head).
@@ -98,5 +98,5 @@ Next: pin the Python base image by digest.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Pin `python:3.12-slim-bookworm` to its tested digest and add a deployment
-contract preventing a tag-only base; preserve image build and parity gates.
+Build and deploy from the pinned Python digest, then verify both entrypoints
+remain healthy and report identical runtime identities.

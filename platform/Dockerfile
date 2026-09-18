@@ -8,7 +8,7 @@
 #   docker build -f platform/Dockerfile -t sre-platform-api .
 # =============================================================================
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 
 # Release builders pass the source revision. An omitted/unknown value is kept
 # explicit so run manifests become non-comparable instead of inventing a SHA.
