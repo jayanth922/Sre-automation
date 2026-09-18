@@ -62,7 +62,7 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:v1.19.1
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     container_name: sre-qdrant
     hostname: qdrant
     ports:
@@ -89,7 +89,7 @@ services:
   # ============================================
 
   temporal:
-    image: temporalio/temporal:1.8.3
+    image: temporalio/temporal:1.8.3@sha256:cea463d98a8d6def4420f903ea5c3fcd0d85c8d10fbcc2770a50c12fff2eb26d
     container_name: sre-temporal
     hostname: temporal
     profiles: ["local-temporal"]

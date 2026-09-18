@@ -75,12 +75,12 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   and serialization remain covered. FastAPI startup/shutdown now run through
   one deployed lifespan context with cleanup regression coverage (`12facc3`).
 - Deployed Anthropic 1.7.2 now comes from the frozen image graph.
-- Qdrant client/server and all manifests are deployed at 1.19.1; a deployment
+- Qdrant client/server and all manifests are digest-pinned at 1.19.1; a deployment
   contract prevents version drift and reintroduction of `latest`. Temporal's
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: digest-pin Qdrant and Temporal service images.
+Next: digest-pin PostgreSQL and Redis service images.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
@@ -98,5 +98,5 @@ Next: digest-pin Qdrant and Temporal service images.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Replace Qdrant and Temporal's version-only image references with tested manifest
-digests; preserve readable versions and multi-architecture pulls.
+Replace PostgreSQL and Redis's floating image references with tested versioned
+manifest digests across Compose, Helm, and Kubernetes.
