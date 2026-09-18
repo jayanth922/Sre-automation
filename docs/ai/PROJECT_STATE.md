@@ -17,6 +17,7 @@ claim/dispatch/audit uncertainty stops the plan for manual review. This complete
 runtime is deployed from exact revision `d6a6a1b`.
 The P1 reflector branch is deployed. Artifact-backed specialist context is
 deployed from exact revision `5c292cd`.
+Observability semantics are corrected and fully tested locally.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -40,6 +41,9 @@ deployed from exact revision `5c292cd`.
   incident-owned, content-addressed PostgreSQL artifacts. Checkpoints keep only
   references, policy measurements, and bounded response context; storage
   failure retains the legacy trace rather than losing evidence.
+- The local recorder measures every top-level graph node. Failed calls count as
+  runs and latency; Langfuse separately owns model/tool/token/cost semantics.
+  No surface claims unobserved cross-provider fallback.
 - Lost resolved webhooks are recovered only when the original durable alert job
   identifies a Prometheus rule that exists and is healthy, and two snapshots at
   least five minutes apart show no matching active series. The first observation
@@ -57,15 +61,6 @@ deployed from exact revision `5c292cd`.
 - A process-restart regression recovers after two healthy absences, invokes
   Task #40 once, records `remediation_verified=false`, and cannot replay closure.
   A CAS prevents late-webhook/reconciler races.
-- Live incident `193c3bf3…` lost its resolved webhook while the API/receiver
-  were unavailable. Two healthy Prometheus snapshots recovered it exactly once;
-  the run recorded `remediation_suppressed.reason=incident_resolved`, zero live
-  writes, and zero action/gate approvals.
-- Boundary tests prove: one transient pre-dispatch failure yields two activity
-  attempts but one external mutation; exhaustion stops after three; an
-  ambiguous dispatched outcome runs once and schedules no later action; audit
-  and claim uncertainty remain terminal; cleanup failure preserves success.
-  The original replacement-worker/post-clear regression still passes.
 - Reflector re-investigation now validates model recommendations against four
   evidence agents, keeps callables outside checkpoint state, reruns only the
   selected agents, increments a durable depth counter, and conditionally loops
@@ -76,9 +71,12 @@ deployed from exact revision `5c292cd`.
   a fresh session can reload the artifact, large raw tool output is absent from
   successful checkpoints, severity retains exact tool provenance, and storage
   failure remains lossless. Duplicate deeper-loop findings were removed.
+- All 14 graph nodes now feed local metrics. Tests pin failed-run denominators,
+  complete node coverage, and `fallback_allowed=false`; the dead provider-
+  switch dashboard surface was removed.
 
 ## Active problem
-The next P1 is an audit of observability semantics.
+The observability correction is not yet committed or deployed.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -87,11 +85,14 @@ The next P1 is an audit of observability semantics.
 - `tests/test_deeper_investigation_loop.py`
 - `sre_agent/evidence_artifacts.py`, `backend/models.py`
 - `tests/test_evidence_artifacts.py`
+- `sre_agent/observability.py`, `sre_agent/model_router.py`
+- `tests/test_observability.py`, `tests/test_model_accounting.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Artifact/context focused suite: **51 passed**. Full suite: **1,507 passed**.
+- Observability-focused suite: **130 passed**. Full suite: **1,507 passed**.
+- Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one exact row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `d4f32ad4…`, revision `5c292cd`, fingerprint
@@ -104,5 +105,5 @@ The next P1 is an audit of observability semantics.
   ignored. Never stage it; avoid `git add -A`.
 
 ## Next bounded task
-Audit the next P1, observability semantics: map emitted graph/model/tool/policy
-events to their consumers and correct the smallest misleading or dead surface.
+Commit/push and deploy the observability correction, verify parity and live node
+metrics, then audit the last P1: no single owner of job completion.

@@ -219,8 +219,8 @@ def test_model_router_attaches_required_accounting(monkeypatch):
 
     routed = model_router.route_llm(
         model_router.TaskType.PLANNING,
-        provider="groq",
-        use_fallback=False,
+        provider="anthropic",
+        use_fallback=True,
     )
 
     assert routed is model
@@ -228,3 +228,9 @@ def test_model_router_attaches_required_accounting(monkeypatch):
         type(callback).__name__ == "ModelAccountingCallback"
         for callback in model.callbacks
     )
+    callback = next(
+        callback
+        for callback in model.callbacks
+        if type(callback).__name__ == "ModelAccountingCallback"
+    )
+    assert callback.identity.fallback_allowed is False

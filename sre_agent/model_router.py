@@ -27,8 +27,8 @@ Design
 ------
 ``select_model()`` is pure logic (no LLM imports) so it is trivially unit-tested.
 ``route_llm()`` performs the same selection and then lazily delegates to the
-existing ``create_llm_with_error_handling`` / ``create_llm_with_fallback``
-machinery to actually construct the LLM.
+existing provider constructors. Provider/model identity is explicit; Sentinel
+does not silently cross a tenant's configured provider boundary.
 """
 
 from __future__ import annotations
@@ -431,9 +431,9 @@ def route_llm(
     """Select a model for ``task_type`` and build the LLM instance.
 
     Delegates construction to the existing ``llm_utils`` helpers (imported lazily
-    so importing this module has no heavy dependencies). When ``use_fallback`` is
-    True the router still benefits from the provider fallback chain, so a routed
-    provider being unavailable degrades gracefully instead of failing hard.
+    so importing this module has no heavy dependencies). ``use_fallback`` is a
+    backward-compatible constructor selector; neither path silently changes the
+    configured provider, so accounting records fallback as disallowed.
 
     Raises:
         ModelRouterBlocked: if the request is off-policy or the budget is exhausted.
@@ -463,12 +463,12 @@ def route_llm(
             tier=decision.tier.value,
             requested_provider=decision.provider,
             requested_model=decision.model_id,
-            fallback_allowed=use_fallback,
+            fallback_allowed=False,
         )
 
-    # LiteLLM backend (optional): our tier decides the model; LiteLLM does the
-    # multi-provider/cost/fallback plumbing. Falls through to the provider path
-    # if not enabled, no tier model configured, or LiteLLM is unavailable.
+    # LiteLLM backend (optional): our tier decides one explicit model and
+    # LiteLLM provides the compatible transport. Falls through to the provider
+    # path if not enabled, no tier model is configured, or LiteLLM is unavailable.
     from .litellm_backend import build_litellm_llm, litellm_enabled, tier_litellm_model
 
     if litellm_enabled():

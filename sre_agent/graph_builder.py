@@ -1937,18 +1937,23 @@ def build_multi_agent_graph(
 
     # Store agents and tools in a way that nodes can access them
     # Add nodes to the graph
-    workflow.add_node("prepare", _prepare_initial_state)
-    workflow.add_node("infra_prescan", _make_infra_prescan_node(kubernetes_agent))
-    workflow.add_node("supervisor", supervisor.route)
+    workflow.add_node("prepare", _observed("prepare", _prepare_initial_state))
+    workflow.add_node(
+        "infra_prescan",
+        _observed("infra_prescan", _make_infra_prescan_node(kubernetes_agent)),
+    )
+    workflow.add_node("supervisor", _observed("supervisor", supervisor.route))
 
     # Visible specialist nodes
-    workflow.add_node("logs_agent", logs_agent)
-    workflow.add_node("metrics_agent", metrics_agent)
-    workflow.add_node("github_agent", github_agent)
-    workflow.add_node("runbooks_agent", runbooks_agent)
+    workflow.add_node("logs_agent", _observed("logs_agent", logs_agent))
+    workflow.add_node("metrics_agent", _observed("metrics_agent", metrics_agent))
+    workflow.add_node("github_agent", _observed("github_agent", github_agent))
+    workflow.add_node("runbooks_agent", _observed("runbooks_agent", runbooks_agent))
 
     # Aggregation node
-    workflow.add_node("aggregate", supervisor.aggregate_responses)
+    workflow.add_node(
+        "aggregate", _observed("aggregate", supervisor.aggregate_responses)
+    )
 
     # Set entry point
     workflow.set_entry_point("prepare")

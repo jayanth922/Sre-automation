@@ -276,15 +276,14 @@ async def ws_incidents(websocket: WebSocket):
 
 @app.get("/agent/metrics", dependencies=[Depends(require_internal_token)])
 async def agent_metrics():
-    """Agent self-observability: per-node run counts, avg latency, errors, and
-    provider switches, plus whether full distributed tracing is active."""
+    """Graph-node runs, latency and exceptions plus tracing availability."""
     from .observability import get_recorder
     from .tracing import langfuse_enabled
 
     summary = get_recorder().summary()
     summary["tracing"] = {
         "langfuse": langfuse_enabled(),
-        "note": "LLM/tool/chain spans (tokens, cost, latency) exported to Langfuse when enabled.",
+        "note": "Model/tool spans, tokens, cost, and routing are exported to Langfuse when enabled.",
     }
     return summary
 

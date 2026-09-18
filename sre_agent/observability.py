@@ -3,10 +3,10 @@
 Agent observability (interview Q5: how do you observe agents?).
 
 Web-era observability (Datadog/Prometheus/Grafana) watches services; agents need
-a different lens — per-node timings, where the reasoning failed, which model
-provider served each step, and when the runtime fell back to another provider.
-This module records structured agent events and rolls them into a summary you can
-surface on a dashboard or ship to an LLM-observability backend.
+a different lens — per-node timings and where graph execution failed. Model,
+tool, token, and cost semantics belong to Langfuse and are not inferred here.
+This module records structured graph-node events and rolls them into a summary
+for the internal dashboard.
 
 Pure/stdlib and testable; the `track` context manager wraps a node to capture its
 duration and any exception (as a failure trace) without changing the node's logic.
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentEvent:
     node: str
-    event: str                     # start | end | error | provider_switch | tool_call
+    event: str                     # start | end | error
     incident_id: Optional[str] = None
     duration_ms: Optional[float] = None
     detail: str = ""
@@ -47,19 +47,14 @@ class ObservabilityRecorder:
         if len(self._events) > self._max:
             self._events = self._events[-self._max :]
 
-    def record_provider_switch(self, node: str, from_provider: str, to_provider: str, incident_id: Optional[str] = None) -> None:
-        self.record(AgentEvent(node, "provider_switch", incident_id, detail=f"{from_provider}→{to_provider}"))
-
     def events(self) -> List[AgentEvent]:
         return list(self._events)
 
     def summary(self, incident_id: Optional[str] = None) -> Dict[str, Any]:
         """Roll up recorded events. Pass an incident_id to scope the rollup to a
-        single investigation (per-node timings, steps, provider switches, errors)."""
+        single investigation (per-node attempts, timings, and exceptions)."""
         nodes: Dict[str, Dict[str, Any]] = {}
         failures: List[Dict[str, Any]] = []
-        switches: List[Dict[str, Any]] = []
-
         source = [e for e in self._events if e.incident_id == incident_id] if incident_id else self._events
         for ev in source:
             n = nodes.setdefault(ev.node, {"runs": 0, "errors": 0, "total_ms": 0.0})
@@ -67,10 +62,13 @@ class ObservabilityRecorder:
                 n["runs"] += 1
                 n["total_ms"] += ev.duration_ms or 0.0
             elif ev.event == "error":
+                # A failed invocation is still a run and consumed wall time.
+                # Excluding it made the denominator "successful runs", so one
+                # success plus two failures reported a 200% error rate.
+                n["runs"] += 1
                 n["errors"] += 1
+                n["total_ms"] += ev.duration_ms or 0.0
                 failures.append({"node": ev.node, "incident_id": ev.incident_id, "detail": ev.detail, "at": ev.timestamp})
-            elif ev.event == "provider_switch":
-                switches.append({"node": ev.node, "detail": ev.detail, "at": ev.timestamp})
 
         for n in nodes.values():
             n["total_ms"] = round(n["total_ms"], 1)
@@ -82,7 +80,6 @@ class ObservabilityRecorder:
         return {
             "nodes": nodes,
             "failures": failures,
-            "provider_switches": switches,
             "total_runs": total_runs,
             "total_errors": total_errors,
             "total_ms": total_ms,

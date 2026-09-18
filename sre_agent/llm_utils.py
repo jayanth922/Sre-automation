@@ -187,50 +187,30 @@ def validate_provider_access(provider: str = DEFAULT_PROVIDER, **kwargs) -> bool
 
 
 def create_llm_with_fallback(primary_provider: str | None = None, **kwargs):
-    """Create LLM with automatic fallback: primary → other supported providers.
+    """Create the configured LLM without an implicit cross-provider switch.
+
+    The legacy function name is retained for callers, but tenant credentials
+    authorize exactly one configured provider. Silently trying a different
+    provider would cross that authority boundary and make model provenance
+    false. Runtime request fallback within that provider is handled by its SDK.
 
     Args:
         primary_provider: Provider to try first; defaults to LLM_PROVIDER or anthropic
         **kwargs: Additional configuration overrides
 
     Returns:
-        LLM instance from the first successful provider
+        LLM instance from the configured provider
 
     Raises:
-        LLMProviderError: If all providers fail
+        LLMProviderError: If the configured provider fails
     """
     if primary_provider is None:
         primary_provider = os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER)
 
     primary_provider = require_supported_provider(primary_provider)
 
-    ordered = [primary_provider]
-
-    last_error = None
-    for provider in ordered:
-        try:
-            llm = create_llm_with_error_handling(provider, **kwargs)
-            if provider != primary_provider:
-                logger.warning(
-                    f"Fell back to provider '{provider}' (primary '{primary_provider}' failed)"
-                )
-            else:
-                logger.info(f"Using provider '{provider}'")
-            return llm
-        except (LLMAuthenticationError, LLMAccessError) as e:
-            logger.warning(f"Provider '{provider}' unavailable ({type(e).__name__}), trying next...")
-            last_error = e
-        except LLMProviderError as e:
-            logger.warning(f"Provider '{provider}' failed ({e}), trying next...")
-            last_error = e
-        except Exception as e:
-            logger.warning(f"Provider '{provider}' unexpected error ({e}), trying next...")
-            last_error = e
-
-    raise LLMProviderError(
-        f"All LLM providers exhausted. Last error: {last_error}\n"
-        "Check your API key: ANTHROPIC_API_KEY."
-    )
+    logger.info("Using configured provider '%s'", primary_provider)
+    return create_llm_with_error_handling(primary_provider, **kwargs)
 
 
 def get_recommended_provider() -> str:

@@ -2,6 +2,8 @@
 """Unit tests for agent observability (interview Q5)."""
 
 import importlib.util
+import inspect
+import re
 import sys
 from pathlib import Path
 
@@ -30,16 +32,10 @@ def test_track_captures_failure_trace_and_reraises():
             raise ValueError("boom")
     summary = rec.summary()
     assert summary["nodes"]["planner"]["errors"] == 1
+    assert summary["nodes"]["planner"]["runs"] == 1
     assert summary["total_errors"] == 1
     assert summary["failures"][0]["node"] == "planner"
     assert "boom" in summary["failures"][0]["detail"]
-
-
-def test_provider_switch_recorded():
-    rec = obs.ObservabilityRecorder()
-    rec.record_provider_switch("supervisor", "groq", "ollama", "inc-3")
-    switches = rec.summary()["provider_switches"]
-    assert switches and "groq→ollama" in switches[0]["detail"]
 
 
 def test_error_rate_computed():
@@ -52,9 +48,34 @@ def test_error_rate_computed():
     except RuntimeError:
         pass
     s = rec.summary()
-    # 1 successful end + 1 error → runs=1, errors=1 → error_rate 1.0
+    # A failure is a run too: 1 success + 1 failure = 2 runs, 50% error rate.
     assert s["nodes"]["n"]["errors"] == 1
-    assert s["nodes"]["n"]["runs"] == 1
+    assert s["nodes"]["n"]["runs"] == 2
+    assert s["error_rate"] == 0.5
+    assert "provider_switches" not in s
+
+
+def test_every_top_level_graph_node_is_locally_observed():
+    from sre_agent import graph_builder
+
+    source = inspect.getsource(graph_builder.build_multi_agent_graph)
+    for node in (
+        "prepare",
+        "infra_prescan",
+        "supervisor",
+        "logs_agent",
+        "metrics_agent",
+        "github_agent",
+        "runbooks_agent",
+        "aggregate",
+        "reflector",
+        "investigation_swarm",
+        "planner",
+        "approval_prepare",
+        "approval_gate",
+        "act_gate",
+    ):
+        assert re.search(rf'_observed\(\s*"{node}"', source)
 
 
 def test_ring_buffer_caps_events():

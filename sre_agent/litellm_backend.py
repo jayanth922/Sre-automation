@@ -3,10 +3,10 @@
 LiteLLM backend for the model router (competitive-audit upgrade #3).
 
 Our router decides the *tier* (fast/balanced/strong) by task; LiteLLM is the
-industry-standard layer that actually talks to 100+ providers and does the
-cost/budget/fallback plumbing. When enabled, the router builds its LLM via
+provider-compatible transport layer. When enabled, the router builds its LLM via
 LiteLLM (through LangChain's ``ChatLiteLLM``, so ``.with_structured_output`` /
-``.ainvoke`` still work), keeping our SRE tier policy on top of LiteLLM's routing.
+``.ainvoke`` still work), keeping our SRE tier policy and one explicit model on
+top. This adapter does not configure a hidden fallback model.
 
 Enabled with ``MODEL_ROUTER_BACKEND=litellm``. Per-tier model via
 ``MODEL_ROUTER_<TIER>_LITELLM_MODEL`` (LiteLLM model strings, e.g.

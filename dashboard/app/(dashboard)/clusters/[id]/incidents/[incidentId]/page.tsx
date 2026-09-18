@@ -92,7 +92,6 @@ const GATE_LABEL: Record<GateApproval["gate"], string> = {
 
 interface AgentMetrics {
   nodes: Record<string, { runs: number; errors: number; total_ms: number; avg_ms: number }>
-  provider_switches: { node: string; detail: string }[]
   total_runs: number
   total_errors: number
   total_ms: number
@@ -526,8 +525,8 @@ export default function IncidentConsolePage() {
           {agent && agent.total_runs > 0 && (
             <div className="sx-remedy">
               <div className="h">◆ Agent run</div>
-              <div className="sx-kv"><span className="k">Total agent time</span><span className="v">{(agent.total_ms / 1000).toFixed(1)}s</span></div>
-              <div className="sx-kv"><span className="k">Reasoning steps</span><span className="v">{agent.total_runs}</span></div>
+              <div className="sx-kv"><span className="k">Recorded node time</span><span className="v">{(agent.total_ms / 1000).toFixed(1)}s</span></div>
+              <div className="sx-kv"><span className="k">Graph node runs</span><span className="v">{agent.total_runs}</span></div>
               {agent.total_errors > 0 && (
                 <div className="sx-kv"><span className="k">Errors</span><span className="v" style={{ color: "var(--crit)" }}>{agent.total_errors}</span></div>
               )}
@@ -540,11 +539,6 @@ export default function IncidentConsolePage() {
                     <span className="v">{n.runs}× · {(n.avg_ms / 1000).toFixed(1)}s avg</span>
                   </div>
                 ))}
-              {agent.provider_switches.length > 0 && (
-                <div className="sx-dry" style={{ textAlign: "left", marginTop: 8 }}>
-                  provider fallback: {agent.provider_switches.map((s) => s.detail).join(", ")}
-                </div>
-              )}
               <div className="sx-dry" style={{ textAlign: "left", marginTop: 8, color: "var(--ink3)" }}>
                 Token &amp; cost accounting in Langfuse when enabled.
               </div>

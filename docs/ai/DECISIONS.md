@@ -773,3 +773,24 @@
 - **Rejected alternative:** Treat Langfuse or local JSONL trace files as the
   artifact store. Rejected because Langfuse is optional and the JSONL file is
   process-local; neither is the durable incident-owned recovery boundary.
+
+## Local node metrics and Langfuse have separate truthful contracts
+
+- **Decision:** The in-process recorder measures every top-level LangGraph node
+  invocation, including failures; failed duration contributes to total/average
+  latency and each failure counts once in the run denominator. Langfuse owns
+  model/tool spans, tokens, cost, and routing provenance. Neither API nor UI
+  claims a provider switch that no production emitter can observe.
+- **Reason:** The partial wrapper omitted prepare, supervisor, specialists, and
+  aggregation. Worse, failed invocations increased errors but not runs, allowing
+  rates above 100%. A dormant `provider_switch` event and dashboard row implied
+  cross-provider failover even though tenant configuration authorizes one
+  provider and the constructor tries only that provider.
+- **Consequences:** `/agent/metrics` is explicitly process-local graph execution
+  telemetry, while Langfuse remains the distributed AI trace. Model accounting
+  records `fallback_allowed=false`; a failure preserves its configured provider
+  identity instead of silently crossing a credential/authority boundary.
+- **Rejected alternative:** Populate the provider-switch UI from requested and
+  actual model-name differences. Rejected because a model alias/version change
+  within one provider is not cross-provider fallback, and relabeling it would
+  manufacture an event rather than observe one.
