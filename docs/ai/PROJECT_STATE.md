@@ -71,24 +71,21 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   and a mocked PR result. A replacement-worker regression preserves the pending
   gate; denial stops without verification or PR activity. Alert-focused tests
   isolate the settle floor and no longer stall the suite.
-- All 11 ORM-backed API response models use Pydantic `ConfigDict`; validation
-  and serialization behavior remains covered by the full suite.
+- ORM-backed API response models use Pydantic `ConfigDict`; validation
+  and serialization remain covered. FastAPI startup/shutdown now run through
+  one lifespan context with cleanup regression coverage.
 
 ## Active problem
-Next: replace deprecated FastAPI startup/shutdown decorators with lifespan.
+Next: deploy the lifespan revision and verify exact runtime parity.
 
 ## Relevant files
-- `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
-- `sre_agent/mutation_gateway.py`, `sre_agent/alert_lifecycle_reconciler.py`
-- `tests/test_live_remediation_temporal_workflow.py`
-- `tests/test_incident_remediation_workflow.py`, `tests/test_act_phase.py`
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
 - `sre_agent/supervisor.py`, `sre_agent/narration_grounding.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,511 passed**; warnings fell from 17 to 6.
+- Full suite: **1,512 passed**; warnings fell from 17 to 2.
 - Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
 - Temporal remediation focused suite: **35 passed**.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
@@ -102,5 +99,5 @@ Next: replace deprecated FastAPI startup/shutdown decorators with lifespan.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Replace `agent_runtime.py` startup/shutdown decorators with a lifespan context;
-preserve Temporal bootstrap, worker cancellation, and tests.
+Deploy API and worker from the revision, then verify health and source parity;
+do not perform external remediation writes.

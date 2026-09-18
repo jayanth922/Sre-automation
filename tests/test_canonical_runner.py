@@ -122,3 +122,24 @@ async def test_canonical_runner_forwards_durable_lease_scope(monkeypatch):
     assert result == "ok"
     assert captured["organization_id"] == "org"
     assert captured["admission_owner"] == "worker-1"
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_lifespan_runs_startup_and_shutdown(monkeypatch):
+    from sre_agent import agent_runtime
+
+    calls = []
+
+    async def fake_startup():
+        calls.append("startup")
+
+    async def fake_shutdown():
+        calls.append("shutdown")
+
+    monkeypatch.setattr(agent_runtime, "startup_event", fake_startup)
+    monkeypatch.setattr(agent_runtime, "shutdown_event", fake_shutdown)
+
+    async with agent_runtime.lifespan(agent_runtime.app):
+        assert calls == ["startup"]
+
+    assert calls == ["startup", "shutdown"]

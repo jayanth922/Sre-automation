@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -65,8 +66,18 @@ uvicorn_logger.addFilter(PingEndpointFilter())
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
+
+
 # Simple FastAPI app
-app = FastAPI(title="SRE Agent Runtime", version="1.0.0")
+app = FastAPI(title="SRE Agent Runtime", version="1.0.0", lifespan=lifespan)
 
 # Add CORS middleware — restrict origins in production via CORS_ORIGINS env var
 _cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
@@ -450,7 +461,6 @@ async def _heartbeat_reconcile_loop():
         await asyncio.sleep(30)
 
 
-@app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
     from .provider_config import ProviderConfigError, validate_startup_config
@@ -543,7 +553,6 @@ async def startup_event():
         logger.info("ℹ️ Running in Control Plane mode without local AI brain.")
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     try:
         from sre_agent.job_worker import stop_job_worker
