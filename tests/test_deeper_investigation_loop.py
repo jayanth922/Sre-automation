@@ -1,7 +1,7 @@
 """The reflector's deeper-investigation decision is a real bounded graph loop."""
 
 import asyncio
-import inspect
+import os
 
 from sre_agent import graph_builder
 from sre_agent.agent_state import ReflectorAnalysis
@@ -122,10 +122,28 @@ def test_reflector_emits_only_validated_checkpoint_safe_agent_names(monkeypatch)
     ]
 
 
-def test_graph_wires_the_reflector_loop_instead_of_claiming_a_dead_branch():
-    source = inspect.getsource(graph_builder.build_multi_agent_graph)
+def test_graph_wires_the_reflector_loop_instead_of_claiming_a_dead_branch(monkeypatch):
+    # Asserted against the compiled graph rather than the builder's source, so
+    # that refactoring the builder cannot break the test while the wiring holds
+    # — or, worse, leave it passing on source text after the wiring changes.
+    monkeypatch.delenv("SENTINEL_ABLATION_ARM", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY", "test"))
+    graph = graph_builder.build_multi_agent_graph(
+        tools=[], llm_provider="anthropic"
+    ).get_graph()
+    nodes = set(graph.nodes)
+    edges = {(edge.source, edge.target) for edge in graph.edges}
 
-    assert 'workflow.add_node(\n            "investigation_swarm"' in source
-    assert 'workflow.add_conditional_edges(\n            "reflector"' in source
-    assert 'workflow.add_edge("investigation_swarm", "reflector")' in source
-    assert 'workflow.add_edge("reflector", "planner")' not in source
+    assert "investigation_swarm" in nodes
+    assert ("investigation_swarm", "reflector") in edges
+    # The reflector reaches the planner only through its conditional router,
+    # never as an unconditional edge that would skip re-investigation.
+    reflector_targets = {
+        target for source, target in edges if source == "reflector"
+    }
+    assert {"investigation_swarm", "planner"} <= reflector_targets
+    assert all(
+        edge.conditional
+        for edge in graph.edges
+        if edge.source == "reflector" and edge.target == "planner"
+    )

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/confidence/v2/artifact.schema.json",
+  "title": "Sentinel task-specific confidence calibration artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_version",
+    "task",
+    "rubric_version",
+    "config_fingerprint",
+    "source_sha256",
+    "sample_count",
+    "bins",
+    "autonomy_threshold",
+    "threshold_support",
+    "threshold_wilson_lower",
+    "required_wilson_lower",
+    "minimum_threshold_support",
+    "cost_model",
+    "threshold_curve",
+    "always_abstain_cost",
+    "always_autonomous_cost",
+    "selected_cost",
+    "evidence_sources",
+    "autonomy_blocked_reason",
+    "selection_rule",
+    "built_at",
+    "artifact_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "artifact_version": {"type": "string", "minLength": 1},
+    "task": {"enum": ["diagnosis", "remediation"]},
+    "rubric_version": {"type": "string", "minLength": 1},
+    "config_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sample_count": {"type": "integer", "minimum": 1},
+    "bins": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "upper_bound",
+          "count",
+          "successes",
+          "calibrated_probability"
+        ],
+        "properties": {
+          "upper_bound": {"type": "number", "minimum": 0, "maximum": 1},
+          "count": {"type": "integer", "minimum": 1},
+          "successes": {"type": "integer", "minimum": 0},
+          "calibrated_probability": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "autonomy_threshold": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "threshold_support": {"type": "integer", "minimum": 0},
+    "threshold_wilson_lower": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "required_wilson_lower": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1
+    },
+    "minimum_threshold_support": {"type": "integer", "minimum": 1},
+    "cost_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["false_autonomy_cost", "abstention_cost"],
+      "description": "Declared relative cost of the two ways to be wrong. Only the ratio matters.",
+      "properties": {
+        "false_autonomy_cost": {"type": "number", "exclusiveMinimum": 0},
+        "abstention_cost": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "threshold_curve": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Every candidate operating point, derived from bins and cost_model.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "threshold",
+          "autonomous",
+          "abstained",
+          "true_autonomy",
+          "false_autonomy",
+          "autonomous_success_rate",
+          "wilson_lower",
+          "coverage",
+          "expected_cost_per_action",
+          "meets_support_floor",
+          "meets_wilson_floor"
+        ],
+        "properties": {
+          "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+          "autonomous": {"type": "integer", "minimum": 1},
+          "abstained": {"type": "integer", "minimum": 0},
+          "true_autonomy": {"type": "integer", "minimum": 0},
+          "false_autonomy": {"type": "integer", "minimum": 0},
+          "autonomous_success_rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "wilson_lower": {"type": "number", "minimum": 0, "maximum": 1},
+          "coverage": {"type": "number", "minimum": 0, "maximum": 1},
+          "expected_cost_per_action": {"type": "number", "minimum": 0},
+          "meets_support_floor": {"type": "boolean"},
+          "meets_wilson_floor": {"type": "boolean"}
+        }
+      }
+    },
+    "always_abstain_cost": {"type": "number", "minimum": 0},
+    "always_autonomous_cost": {"type": "number", "minimum": 0},
+    "selected_cost": {"type": ["number", "null"], "minimum": 0},
+    "evidence_sources": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["live_benchmark", "replay", "synthetic"]}
+    },
+    "autonomy_blocked_reason": {"type": ["string", "null"], "minLength": 1},
+    "selection_rule": {"type": "string", "minLength": 1},
+    "built_at": {"type": "string", "format": "date-time"},
+    "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

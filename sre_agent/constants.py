@@ -208,6 +208,15 @@ class AgentsConstant(BaseModel):
                 description="Correlates code changes (commits, PRs) with incidents and identifies bad commits",
                 agent_type="github",
             ),
+            # Measurement only: the baseline the `single_agent` ablation arm
+            # runs instead of the supervisor-routed specialists. Never built in
+            # production — see sre_agent/ablation.py.
+            "single": AgentMetadata(
+                actor_id="single-agent",
+                display_name="Single Investigator Agent",
+                description="One ReAct loop holding every specialist's read-only tools",
+                agent_type="single",
+            ),
             "supervisor": AgentMetadata(
                 actor_id="supervisor-agent",
                 display_name="Supervisor Agent",

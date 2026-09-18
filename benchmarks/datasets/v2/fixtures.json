@@ -1,0 +1,189 @@
+{
+  "alerts": {
+    "CheckoutHighErrorRate": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: http_errors_total / http_requests_total > 0.10 for 2m)",
+      "service": "checkout-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    },
+    "CheckoutHighLatency": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: p95 http_request_duration_seconds_bucket > 1.5 for 3m)",
+      "service": "checkout-service",
+      "severity": "warning",
+      "source": "prometheus_rule"
+    },
+    "CheckoutMemoryApproachingLimit": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: process_memory_bytes_simulated > 200000000 for 1m)",
+      "service": "checkout-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    },
+    "InventoryHighErrorRate": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: rate(http_errors_total[5m]) > 0.2 for 2m)",
+      "service": "inventory-service",
+      "severity": "warning",
+      "source": "prometheus_rule"
+    },
+    "InventoryMemoryApproachingLimit": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: process_memory_bytes_simulated > 1000000 for 1m); unreachable by any declared knob because inventory lookup analytics plateau near 100KB",
+      "service": "inventory-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    },
+    "InventorySlowQueries": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: p90 db_query_duration_seconds_bucket{job=\"inventory-service\"} > 1.0 for 3m)",
+      "service": "inventory-service",
+      "severity": "warning",
+      "source": "prometheus_rule"
+    },
+    "PaymentFailureSpike": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: rate(payment_failures_total[5m]) > 0.5 for 1m); the rule labels this checkout-service even though payment-service emits the same metric name",
+      "service": "checkout-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    },
+    "PaymentProviderDown": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: payment_provider_up == 0 for 1m)",
+      "service": "payment-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    },
+    "PaymentServiceHighErrorRate": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: http_errors_total / http_requests_total > 0.10 for 2m)",
+      "service": "payment-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    },
+    "PaymentServiceUnhandledErrors": {
+      "reference": "k8s/monitoring/prometheus.yaml (expr: status=~\"5..\" ratio > 0.10 for 2m); no scenario uses it because the declared error_rate knob trips PaymentServiceHighErrorRate on the same series",
+      "service": "payment-service",
+      "severity": "critical",
+      "source": "prometheus_rule"
+    }
+  },
+  "dataset_version": "sentinel-sre-v2",
+  "description": "The fault surface the Meridian reference workload actually exposes: every knob a scenario may set, its type, its bounds and the healthy baseline the adapter verifies before injecting; every alert rule a scenario may fire; every metric a recovery probe may query. A scenario that names anything absent here fails to load.",
+  "metrics": [
+    "http_requests_total",
+    "http_errors_total",
+    "http_request_duration_seconds",
+    "http_active_requests",
+    "db_query_duration_seconds",
+    "payment_failures_total",
+    "payment_provider_up",
+    "process_memory_bytes_simulated",
+    "inventory_stock_level"
+  ],
+  "schema_version": 2,
+  "source": {
+    "name": "meridian-shop reference workload",
+    "reference": "k8s/services.yaml declares the healthy baseline env for every deployment; k8s/monitoring/prometheus.yaml declares the alert rules"
+  },
+  "targets": {
+    "checkout-service": {
+      "adapter": "meridian_admin_config_v1",
+      "knobs": {
+        "chaos_mode": {
+          "baseline": false,
+          "description": "50% of post-payment requests fail with db_connection_refused, db_timeout or db_pool_exhausted",
+          "type": "boolean"
+        },
+        "error_rate": {
+          "baseline": 0.0,
+          "description": "fraction of post-payment requests that fail 500 with a payment-gateway reason and increment payment_failures_total",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "leak_kb_per_request": {
+          "baseline": 1.0,
+          "description": "KB retained per /process call; never freed while the process lives, so only a restart lowers process_memory_bytes_simulated",
+          "maximum": 4096.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "slow_rate": {
+          "baseline": 0.0,
+          "description": "fraction of successful requests that sleep 1.5-3.5s; latency is observed on the success path only",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "path": "/admin/config",
+      "reference": "services/checkout-service/app.py (config dict, set_config, process_checkout)"
+    },
+    "inventory-service": {
+      "adapter": "meridian_admin_config_v1",
+      "knobs": {
+        "slow_query_rate": {
+          "baseline": 0.0,
+          "description": "fraction of simulated DB queries that take 0.8-2.5s",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "path": "/admin/config",
+      "reference": "services/inventory-service/app.py (config dict, simulate_db_query); crash_on_startup is read once at import and is deliberately not declared here because it cannot be set live"
+    },
+    "load-generator": {
+      "adapter": "meridian_admin_config_v1",
+      "knobs": {
+        "burst_duration": {
+          "baseline": 15,
+          "maximum": 120,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "burst_interval": {
+          "baseline": 60,
+          "maximum": 600,
+          "minimum": 10,
+          "type": "integer"
+        },
+        "burst_rps": {
+          "baseline": 20.0,
+          "maximum": 100.0,
+          "minimum": 1.0,
+          "type": "number"
+        },
+        "rps": {
+          "baseline": 5.0,
+          "description": "steady request rate; the mix is 45% checkout, 30% /inventory, 20% /inventory/{id} over six ids of which one does not exist, 5% /reindex",
+          "maximum": 100.0,
+          "minimum": 1.0,
+          "type": "number"
+        }
+      },
+      "path": "/admin/config",
+      "reference": "load-generator/load_gen.py (config dict, set_config, run_request); not scraped by Prometheus, so its faults are only observable through the services it drives"
+    },
+    "payment-service": {
+      "adapter": "meridian_admin_config_v1",
+      "knobs": {
+        "error_rate": {
+          "baseline": 0.0,
+          "description": "fraction of /charge calls that fail 502 with card_declined, insufficient_funds or provider_timeout",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "provider_down": {
+          "baseline": false,
+          "description": "every /charge returns 503 and payment_provider_up drops to 0",
+          "type": "boolean"
+        },
+        "slow_rate": {
+          "baseline": 0.0,
+          "description": "fraction of /charge calls that sleep 1.0-3.0s, which checkout awaits inline",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "path": "/admin/config",
+      "reference": "services/payment-service/app.py (config dict, set_config, charge)"
+    }
+  }
+}

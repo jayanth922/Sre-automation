@@ -245,11 +245,29 @@ class BaseAgentNode:
         # supervisor being able to say so.
         from langgraph.prebuilt import ToolNode
 
+        from .context_compaction import make_pre_model_hook
         from .mcp_tool_wrapper import handle_tool_execution_error
 
         self.agent = create_react_agent(
             self.llm,
             ToolNode(agent_tools, handle_tool_errors=handle_tool_execution_error),
+            # This loop, not the graph, is where context actually grows: each
+            # iteration re-sends the whole transcript, and one `kubectl get -o
+            # json` can be tens of thousands of tokens. Pre-run compaction
+            # never sees any of it, because specialists run on an isolated
+            # message list and do not write back to `state["messages"]`.
+            #
+            # The hook returns `llm_input_messages`, so it trims only what the
+            # model is shown — graph state keeps the full transcript for
+            # `tool_failures` detection and the stored evidence artifact.
+            pre_model_hook=make_pre_model_hook(
+                on_report=lambda report: logger.info(
+                    f"[{self.name}] context fit: {report.before_tokens} → "
+                    f"{report.after_tokens} tokens (budget {report.budget_tokens}); "
+                    f"{report.truncated_results} tool result(s) truncated, "
+                    f"{report.dropped_messages} message(s) elided"
+                )
+            ),
             # LangGraph otherwise names every specialist subgraph `agent`.
             # Langfuse's Agent Graph keys nodes by this stable name, so the
             # generic default collapses distinct roles into one unreadable
@@ -710,6 +728,32 @@ def create_github_agent(
     return BaseAgentNode(
         name="Code Change Intelligence Agent",  # Fallback for backward compatibility
         description="Correlates code changes (commits, PRs) with incidents and identifies bad commits",  # Fallback
+        tools=filtered_tools,
+        agent_metadata=agent_metadata,
+        **kwargs,
+    )
+
+
+def create_single_agent(
+    tools: List[BaseTool], agent_metadata: AgentMetadata = None, **kwargs
+) -> BaseAgentNode:
+    """Create the single-investigator baseline used by the ablation harness.
+
+    This is the same `BaseAgentNode` every specialist is — same react loop,
+    same context hook, same tool-error handling, same model routing — holding
+    the union of their tools instead of one domain's. That sameness is the
+    point: the `single_agent` arm must differ from the full architecture in
+    supervisor routing and specialist isolation and in nothing else, or the
+    measured difference is not attributable to multi-agent design.
+
+    Never constructed in production; see `sre_agent/ablation.py`.
+    """
+    config = _load_agent_config()
+    filtered_tools = _filter_tools_for_agent(tools, "single_agent", config)
+
+    return BaseAgentNode(
+        name="Single Investigator Agent",  # Fallback for backward compatibility
+        description="One ReAct loop holding every specialist's read-only tools",  # Fallback
         tools=filtered_tools,
         agent_metadata=agent_metadata,
         **kwargs,

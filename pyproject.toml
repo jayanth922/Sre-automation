@@ -64,6 +64,13 @@ dependencies = [
     # the maintained ChatLiteLLM wrapper this talks through.
     "litellm>=1.50.0",
     "langchain-litellm>=0.7.1",
+    # Token counting for context budgeting (sre_agent/context_compaction.py).
+    # Declared explicitly rather than leaned on transitively: budgeting decides
+    # whether a request fits the model's context window, and falling back to the
+    # character heuristic because an unrelated package dropped its dependency is
+    # a silent accuracy regression. Anthropic has no local tokenizer, so this is
+    # cl100k_base plus a safety ratio, not an exact count.
+    "tiktoken>=0.7.0",
 ]
 
 [project.optional-dependencies]

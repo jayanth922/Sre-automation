@@ -184,35 +184,48 @@ class RunbookIndex:
         """Semantic search over indexed runbooks. Callers with a known tenant
         MUST pass organization_id/cluster_id to avoid leaking another
         tenant's runbooks."""
-        if not self.is_available():
-            logger.warning("⚠️ Runbook index not available, cannot search")
-            return []
+        from .retrieval_metrics import RUNBOOK_INDEX, track_retrieval
 
-        try:
-            query_embedding = embed_text(query_text)
-            response = self.client.query_points(
-                collection_name=self.collection_name,
-                query=query_embedding,
-                limit=limit,
-                score_threshold=score_threshold,
-                query_filter=self._tenant_filter(organization_id, cluster_id),
-            )
-            return [
-                {
-                    "runbook_id": point.payload.get("runbook_id", "unknown"),
-                    "title": point.payload.get("title", ""),
-                    "content": point.payload.get("content", ""),
-                    "service": point.payload.get("service", ""),
-                    "incident_type": point.payload.get("incident_type", ""),
-                    "severity": point.payload.get("severity", ""),
-                    "url": point.payload.get("url"),
-                    "similarity_score": point.score,
-                }
-                for point in response.points
-            ]
-        except Exception as e:
-            logger.error(f"❌ Failed to search runbook index: {e}")
-            return []
+        available = self.is_available()
+        with track_retrieval(
+            RUNBOOK_INDEX,
+            requested=limit,
+            threshold=score_threshold,
+            tenant_scoped=bool(organization_id),
+            available=available,
+        ) as observed:
+            if not available:
+                logger.warning("⚠️ Runbook index not available, cannot search")
+                return []
+
+            try:
+                query_embedding = embed_text(query_text)
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_embedding,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    query_filter=self._tenant_filter(organization_id, cluster_id),
+                )
+                results = [
+                    {
+                        "runbook_id": point.payload.get("runbook_id", "unknown"),
+                        "title": point.payload.get("title", ""),
+                        "content": point.payload.get("content", ""),
+                        "service": point.payload.get("service", ""),
+                        "incident_type": point.payload.get("incident_type", ""),
+                        "severity": point.payload.get("severity", ""),
+                        "url": point.payload.get("url"),
+                        "similarity_score": point.score,
+                    }
+                    for point in response.points
+                ]
+                observed["scores"] = [r["similarity_score"] for r in results]
+                return results
+            except Exception as e:
+                logger.error(f"❌ Failed to search runbook index: {e}")
+                observed["error"] = f"{type(e).__name__}: {e}"
+                return []
 
 
 def format_runbooks_for_prompt(runbooks: List[Dict[str, Any]]) -> str:

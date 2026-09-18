@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .ablation import current_ablation
 from .confidence_calibration import (
     ConfidenceCalibrationError,
     calibrate_confidence,
@@ -374,6 +375,10 @@ class ActReport:
     minimum_autonomy_probability: Optional[float] = None
     calibration_artifact_version: Optional[str] = None
     calibration_artifact_sha256: Optional[str] = None
+    # Why a loaded artifact still grants no autonomy — not enough supported
+    # evidence, or evidence that was not observed live. Without this an
+    # operator sees "uncalibrated" and cannot tell which.
+    autonomy_blocked_reason: Optional[str] = None
     # The planner's own error, when the "plan" being gated is the fallback
     # placeholder rather than anything the planner produced. Carried through
     # so the approval message can say so — see RemediationPlan.planning_failed.
@@ -621,11 +626,13 @@ def build_act_report(
     )
     artifact_version = None
     artifact_sha256 = None
+    autonomy_blocked_reason = None
     if calibrated is not None:
         calibrated_action_probability = calibrated.calibrated_probability
         minimum_autonomy_probability = calibrated.autonomy_threshold
         artifact_version = calibrated.artifact_version
         artifact_sha256 = calibrated.artifact_sha256
+        autonomy_blocked_reason = calibrated.autonomy_blocked_reason
     confidence_ready = (
         calibrated is not None and calibrated.autonomy_threshold is not None
     )
@@ -751,6 +758,7 @@ def build_act_report(
         minimum_autonomy_probability=minimum_autonomy_probability,
         calibration_artifact_version=artifact_version,
         calibration_artifact_sha256=artifact_sha256,
+        autonomy_blocked_reason=autonomy_blocked_reason,
         planning_failed=(_get(plan, "planning_failed") or None),
     )
 
@@ -1074,8 +1082,14 @@ def apply_skill_learning(
     organization_id = metadata.get("organization_id")
     cluster_id = metadata.get("cluster_id")
 
-    proposed = propose_skills(
-        store, alert, organization_id=organization_id, cluster_id=cluster_id
+    # The no-memory arm removes learned skills in both directions; during any
+    # ablation experiment writes are frozen for every arm, control included,
+    # because arms run sequentially against one cluster.
+    ablation = current_ablation()
+    proposed = (
+        propose_skills(store, alert, organization_id=organization_id, cluster_id=cluster_id)
+        if ablation.reads_learned_memory
+        else []
     )
     if human_approved is None:
         # Only the graph verifies the approval's action_hash against the plan
@@ -1095,7 +1109,11 @@ def apply_skill_learning(
         live_results=live_results,
         executed=getattr(report, "executed", None) or [],
     )
-    if eligibility.eligible_for_success and live:
+    if not ablation.writes_learned_memory:
+        logger.info(
+            "🧪 Ablation: learned-memory writes frozen — skill outcome not recorded"
+        )
+    elif eligibility.eligible_for_success and live:
         recorded = record_successful_remediation(
             store,
             alert,

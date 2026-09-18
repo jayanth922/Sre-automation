@@ -9,14 +9,16 @@ metadata:
   name: sentinel-config
   namespace: sentinel
 data:
-  # --- Model provider (bring your own) ---
-  # Curated to providers that reliably do tool/function-calling structured output:
-  #   anthropic | gemini
-  # - Claude:    LLM_PROVIDER=anthropic + ANTHROPIC_MODEL, ANTHROPIC_API_KEY in the Secret.
-  # - Gemini:    LLM_PROVIDER=gemini + GEMINI_MODEL, GOOGLE_API_KEY in the Secret.
+  # --- Model provider ---
+  # Anthropic only. `sre_agent.provider_config` runs before the API starts and
+  # refuses any other value, so a config that offered gemini/groq here was
+  # offering a guaranteed CrashLoopBackOff. Set ANTHROPIC_API_KEY in the Secret.
+  #
+  # Keep ANTHROPIC_MODEL on the router's ladder (haiku-4-5, sonnet-4-5,
+  # sonnet-5, opus-5) — an off-ladder anchor silently disables per-tier
+  # escalation and falls back to fixed tier defaults.
   LLM_PROVIDER: "anthropic"
-  ANTHROPIC_MODEL: "claude-3-5-sonnet-latest"
-  GEMINI_MODEL: "gemini-2.0-flash"
+  ANTHROPIC_MODEL: "claude-sonnet-5"
 
   # --- Database / infra (in-cluster) ---
   POSTGRES_USER: "sentinel"

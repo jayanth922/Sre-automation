@@ -11,9 +11,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-SCHEMA_VERSION = 1
+RECORD_SCHEMA_VERSION = 2
+ARTIFACT_SCHEMA_VERSION = 2
+SCHEMA_VERSION = RECORD_SCHEMA_VERSION
 Task = Literal["diagnosis", "remediation"]
 _TASKS = {"diagnosis", "remediation"}
+
+EvidenceSource = Literal["live_benchmark", "replay", "synthetic"]
+_EVIDENCE_SOURCES = {"live_benchmark", "replay", "synthetic"}
+# Only observations taken from a live benchmark run against a real workload may
+# unlock autonomy. Replayed and synthetic corpora still build an artifact — they
+# are how the pipeline is developed and tested — but that artifact carries no
+# threshold, so the runtime keeps requiring human approval.
+_AUTONOMY_EVIDENCE = "live_benchmark"
+
+SELECTION_RULE = (
+    "lowest expected cost per action among operating points whose autonomous "
+    "population meets minimum_threshold_support and whose Wilson lower bound "
+    "meets required_wilson_lower; ties resolve to the higher threshold"
+)
 
 
 class ConfidenceCalibrationError(ValueError):
@@ -32,7 +48,8 @@ class ConfidenceRecord:
     config_fingerprint: str
     pair_id: str
     observed_at: datetime
-    schema_version: int = SCHEMA_VERSION
+    evidence_source: EvidenceSource = "live_benchmark"
+    schema_version: int = RECORD_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -80,6 +97,44 @@ class CalibrationBin:
 
 
 @dataclass(frozen=True)
+class CostModel:
+    """What being wrong costs, in whatever unit the operator cares to declare.
+
+    Only the ratio matters. `abstention_cost` is one human approval round trip;
+    `false_autonomy_cost` is one wrong action taken without one.
+    """
+
+    false_autonomy_cost: float
+    abstention_cost: float
+
+    def action_cost(self, *, autonomous: bool, outcome: bool) -> float:
+        if not autonomous:
+            return self.abstention_cost
+        return 0.0 if outcome else self.false_autonomy_cost
+
+
+@dataclass(frozen=True)
+class OperatingPoint:
+    """One candidate autonomy threshold, scored on the evidence behind it."""
+
+    threshold: float
+    autonomous: int
+    abstained: int
+    true_autonomy: int
+    false_autonomy: int
+    autonomous_success_rate: float
+    wilson_lower: float
+    coverage: float
+    expected_cost_per_action: float
+    meets_support_floor: bool
+    meets_wilson_floor: bool
+
+    @property
+    def eligible(self) -> bool:
+        return self.meets_support_floor and self.meets_wilson_floor
+
+
+@dataclass(frozen=True)
 class CalibrationArtifact:
     artifact_version: str
     task: Task
@@ -92,9 +147,25 @@ class CalibrationArtifact:
     threshold_support: int
     threshold_wilson_lower: Optional[float]
     required_wilson_lower: float
+    minimum_threshold_support: int
+    cost_model: CostModel
+    threshold_curve: tuple[OperatingPoint, ...]
+    always_abstain_cost: float
+    always_autonomous_cost: float
+    selected_cost: Optional[float]
+    evidence_sources: tuple[str, ...]
+    autonomy_blocked_reason: Optional[str]
     built_at: datetime
     artifact_sha256: str
-    schema_version: int = SCHEMA_VERSION
+    schema_version: int = ARTIFACT_SCHEMA_VERSION
+
+    @property
+    def autonomy_beats_abstention(self) -> bool:
+        """Is taking the threshold cheaper than sending everything to a human?"""
+        return (
+            self.selected_cost is not None
+            and self.selected_cost < self.always_abstain_cost
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +181,15 @@ class CalibrationArtifact:
             "threshold_support": self.threshold_support,
             "threshold_wilson_lower": self.threshold_wilson_lower,
             "required_wilson_lower": self.required_wilson_lower,
+            "minimum_threshold_support": self.minimum_threshold_support,
+            "cost_model": asdict(self.cost_model),
+            "threshold_curve": [asdict(item) for item in self.threshold_curve],
+            "always_abstain_cost": self.always_abstain_cost,
+            "always_autonomous_cost": self.always_autonomous_cost,
+            "selected_cost": self.selected_cost,
+            "evidence_sources": list(self.evidence_sources),
+            "autonomy_blocked_reason": self.autonomy_blocked_reason,
+            "selection_rule": SELECTION_RULE,
             "built_at": self.built_at.isoformat(),
             "artifact_sha256": self.artifact_sha256,
         }
@@ -123,6 +203,7 @@ class CalibratedConfidence:
     artifact_version: str
     artifact_sha256: str
     autonomy_threshold: Optional[float]
+    autonomy_blocked_reason: Optional[str] = None
 
     @property
     def autonomy_eligible(self) -> bool:
@@ -168,7 +249,11 @@ def _sha256(value: Any, field: str) -> str:
 
 
 def build_confidence_record(**values: Any) -> ConfidenceRecord:
-    payload = {"schema_version": SCHEMA_VERSION, **values}
+    payload = {
+        "schema_version": RECORD_SCHEMA_VERSION,
+        "evidence_source": "live_benchmark",
+        **values,
+    }
     expected = {
         "schema_version",
         "task",
@@ -181,16 +266,22 @@ def build_confidence_record(**values: Any) -> ConfidenceRecord:
         "config_fingerprint",
         "pair_id",
         "observed_at",
+        "evidence_source",
     }
     if set(payload) != expected:
         raise ConfidenceCalibrationError(
-            "confidence record keys do not match schema v1"
+            "confidence record keys do not match schema v2"
         )
-    if payload["schema_version"] != SCHEMA_VERSION:
+    if payload["schema_version"] != RECORD_SCHEMA_VERSION:
         raise ConfidenceCalibrationError("unsupported confidence record schema")
     task = _string(payload["task"], "task")
     if task not in _TASKS:
         raise ConfidenceCalibrationError(f"unsupported confidence task: {task}")
+    evidence_source = _string(payload["evidence_source"], "evidence_source")
+    if evidence_source not in _EVIDENCE_SOURCES:
+        raise ConfidenceCalibrationError(
+            f"unsupported evidence source: {evidence_source}"
+        )
     if not isinstance(payload["outcome"], bool):
         raise ConfidenceCalibrationError("outcome must be boolean")
     observed_at = payload["observed_at"]
@@ -211,6 +302,7 @@ def build_confidence_record(**values: Any) -> ConfidenceRecord:
         config_fingerprint=_sha256(payload["config_fingerprint"], "config_fingerprint"),
         pair_id=_string(payload["pair_id"], "pair_id"),
         observed_at=parsed_time,
+        evidence_source=evidence_source,  # type: ignore[arg-type]
     )
 
 
@@ -363,6 +455,83 @@ def _wilson_lower(successes: int, total: int, z: float = 1.959963984540054) -> f
     return max(0.0, center - spread)
 
 
+def _cost(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfidenceCalibrationError(f"{field} must be numeric")
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ConfidenceCalibrationError(f"{field} must be a positive finite cost")
+    return parsed
+
+
+def _expect_cost(value: Any, expected: float, field: str) -> None:
+    """Compare a derived cost, which — unlike a declared one — may be zero."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfidenceCalibrationError(f"{field} must be numeric")
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ConfidenceCalibrationError(f"{field} must be a non-negative cost")
+    if not math.isclose(parsed, expected, rel_tol=0.0, abs_tol=1e-12):
+        raise ConfidenceCalibrationError(f"{field} does not match the evidence")
+
+
+def threshold_curve(
+    bins: tuple[CalibrationBin, ...],
+    *,
+    cost_model: CostModel,
+    minimum_threshold_support: int,
+    required_wilson_lower: float,
+) -> tuple[OperatingPoint, ...]:
+    """Score every candidate threshold the bins can express.
+
+    Everything here is a function of the bins and the declared costs, so the
+    loader recomputes it and rejects a curve that was edited after the fact.
+    """
+    total = sum(item.count for item in bins)
+    points: list[OperatingPoint] = []
+    for candidate in sorted({item.calibrated_probability for item in bins}):
+        eligible = [item for item in bins if item.calibrated_probability >= candidate]
+        autonomous = sum(item.count for item in eligible)
+        true_autonomy = sum(item.successes for item in eligible)
+        false_autonomy = autonomous - true_autonomy
+        abstained = total - autonomous
+        expected_cost = (
+            false_autonomy * cost_model.false_autonomy_cost
+            + abstained * cost_model.abstention_cost
+        ) / total
+        points.append(
+            OperatingPoint(
+                threshold=candidate,
+                autonomous=autonomous,
+                abstained=abstained,
+                true_autonomy=true_autonomy,
+                false_autonomy=false_autonomy,
+                autonomous_success_rate=true_autonomy / autonomous,
+                wilson_lower=_wilson_lower(true_autonomy, autonomous),
+                coverage=autonomous / total,
+                expected_cost_per_action=expected_cost,
+                meets_support_floor=autonomous >= minimum_threshold_support,
+                meets_wilson_floor=(
+                    _wilson_lower(true_autonomy, autonomous) >= required_wilson_lower
+                ),
+            )
+        )
+    return tuple(points)
+
+
+def _select_operating_point(
+    curve: tuple[OperatingPoint, ...],
+) -> Optional[OperatingPoint]:
+    """Cheapest eligible point; a tie goes to the more conservative threshold."""
+    eligible = [point for point in curve if point.eligible]
+    if not eligible:
+        return None
+    return min(
+        eligible,
+        key=lambda point: (point.expected_cost_per_action, -point.threshold),
+    )
+
+
 def _artifact_payload(
     *,
     artifact_version: str,
@@ -376,10 +545,18 @@ def _artifact_payload(
     threshold_support: int,
     threshold_wilson_lower: Optional[float],
     required_wilson_lower: float,
+    minimum_threshold_support: int,
+    cost_model: CostModel,
+    curve: tuple[OperatingPoint, ...],
+    always_abstain_cost: float,
+    always_autonomous_cost: float,
+    selected_cost: Optional[float],
+    evidence_sources: tuple[str, ...],
+    autonomy_blocked_reason: Optional[str],
     built_at: datetime,
 ) -> dict[str, Any]:
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
         "artifact_version": artifact_version,
         "task": task,
         "rubric_version": rubric_version,
@@ -391,6 +568,15 @@ def _artifact_payload(
         "threshold_support": threshold_support,
         "threshold_wilson_lower": threshold_wilson_lower,
         "required_wilson_lower": required_wilson_lower,
+        "minimum_threshold_support": minimum_threshold_support,
+        "cost_model": asdict(cost_model),
+        "threshold_curve": [asdict(item) for item in curve],
+        "always_abstain_cost": always_abstain_cost,
+        "always_autonomous_cost": always_autonomous_cost,
+        "selected_cost": selected_cost,
+        "evidence_sources": list(evidence_sources),
+        "autonomy_blocked_reason": autonomy_blocked_reason,
+        "selection_rule": SELECTION_RULE,
         "built_at": built_at.isoformat(),
     }
 
@@ -473,6 +659,8 @@ def build_calibration_artifact(
     maximum_bins: int = 10,
     minimum_threshold_support: int = 40,
     required_wilson_lower: float = 0.90,
+    false_autonomy_cost: float = 20.0,
+    abstention_cost: float = 1.0,
 ) -> CalibrationArtifact:
     fingerprint = _sha256(config_fingerprint, "config_fingerprint")
     selected = sorted(
@@ -511,24 +699,42 @@ def build_calibration_artifact(
         for index, values in enumerate(chunks)
     )
 
-    threshold: Optional[float] = None
-    threshold_support = 0
-    threshold_lower: Optional[float] = None
-    for candidate_threshold in sorted({item.calibrated_probability for item in bins}):
-        eligible = [
-            item for item in bins if item.calibrated_probability >= candidate_threshold
-        ]
-        support = sum(item.count for item in eligible)
-        successes = sum(item.successes for item in eligible)
-        lower = _wilson_lower(successes, support)
-        if (
-            support >= minimum_threshold_support
-            and lower >= required_wilson_lower
-            and (threshold is None or candidate_threshold < threshold)
-        ):
-            threshold = candidate_threshold
-            threshold_support = support
-            threshold_lower = lower
+    cost_model = CostModel(
+        false_autonomy_cost=_cost(false_autonomy_cost, "false_autonomy_cost"),
+        abstention_cost=_cost(abstention_cost, "abstention_cost"),
+    )
+    curve = threshold_curve(
+        bins,
+        cost_model=cost_model,
+        minimum_threshold_support=minimum_threshold_support,
+        required_wilson_lower=required_wilson_lower,
+    )
+    point = _select_operating_point(curve)
+
+    # Evidence provenance is the last gate: a corpus that was replayed or
+    # generated still earns a curve and a reliability picture, but it must not
+    # be able to hand the runtime a threshold.
+    evidence_sources = tuple(sorted({record.evidence_source for record in selected}))
+    blocked_reason: Optional[str] = None
+    if evidence_sources != (_AUTONOMY_EVIDENCE,):
+        blocked_reason = (
+            "autonomy requires evidence observed only from live benchmark runs; "
+            f"this corpus contains {', '.join(evidence_sources)}"
+        )
+    elif point is None:
+        blocked_reason = (
+            "no operating point reached "
+            f"{minimum_threshold_support} autonomous observations with a Wilson "
+            f"lower bound of {required_wilson_lower}"
+        )
+
+    threshold = None if blocked_reason else point.threshold  # type: ignore[union-attr]
+    threshold_support = 0 if blocked_reason else point.autonomous  # type: ignore[union-attr]
+    threshold_lower = None if blocked_reason else point.wilson_lower  # type: ignore[union-attr]
+    selected_cost = (
+        None if blocked_reason else point.expected_cost_per_action  # type: ignore[union-attr]
+    )
+    failures = sum(item.count - item.successes for item in bins)
 
     built_at = datetime.now(timezone.utc)
     payload = _artifact_payload(
@@ -543,6 +749,16 @@ def build_calibration_artifact(
         threshold_support=threshold_support,
         threshold_wilson_lower=threshold_lower,
         required_wilson_lower=required_wilson_lower,
+        minimum_threshold_support=minimum_threshold_support,
+        cost_model=cost_model,
+        curve=curve,
+        always_abstain_cost=cost_model.abstention_cost,
+        always_autonomous_cost=(
+            failures * cost_model.false_autonomy_cost / len(selected)
+        ),
+        selected_cost=selected_cost,
+        evidence_sources=evidence_sources,
+        autonomy_blocked_reason=blocked_reason,
         built_at=built_at,
     )
     artifact_sha = hashlib.sha256(
@@ -560,6 +776,14 @@ def build_calibration_artifact(
         threshold_support=threshold_support,
         threshold_wilson_lower=threshold_lower,
         required_wilson_lower=required_wilson_lower,
+        minimum_threshold_support=minimum_threshold_support,
+        cost_model=cost_model,
+        threshold_curve=curve,
+        always_abstain_cost=payload["always_abstain_cost"],
+        always_autonomous_cost=payload["always_autonomous_cost"],
+        selected_cost=selected_cost,
+        evidence_sources=evidence_sources,
+        autonomy_blocked_reason=blocked_reason,
         built_at=built_at,
         artifact_sha256=artifact_sha,
     )
@@ -599,11 +823,20 @@ def load_calibration_artifact(path: Path) -> CalibrationArtifact:
         "threshold_support",
         "threshold_wilson_lower",
         "required_wilson_lower",
+        "minimum_threshold_support",
+        "cost_model",
+        "threshold_curve",
+        "always_abstain_cost",
+        "always_autonomous_cost",
+        "selected_cost",
+        "evidence_sources",
+        "autonomy_blocked_reason",
+        "selection_rule",
         "built_at",
         "artifact_sha256",
     }
-    if set(payload) != expected or payload["schema_version"] != SCHEMA_VERSION:
-        raise ConfidenceCalibrationError("calibration artifact keys do not match v1")
+    if set(payload) != expected or payload["schema_version"] != ARTIFACT_SCHEMA_VERSION:
+        raise ConfidenceCalibrationError("calibration artifact keys do not match v2")
     task = _string(payload["task"], "task")
     if task not in _TASKS:
         raise ConfidenceCalibrationError(f"unsupported confidence task: {task}")
@@ -707,6 +940,97 @@ def load_calibration_artifact(path: Path) -> CalibrationArtifact:
             raise ConfidenceCalibrationError(
                 "autonomy threshold evidence does not match its bins"
             )
+
+    cost_payload = payload["cost_model"]
+    if not isinstance(cost_payload, dict) or set(cost_payload) != {
+        "false_autonomy_cost",
+        "abstention_cost",
+    }:
+        raise ConfidenceCalibrationError("cost model is malformed")
+    cost_model = CostModel(
+        false_autonomy_cost=_cost(
+            cost_payload["false_autonomy_cost"], "false_autonomy_cost"
+        ),
+        abstention_cost=_cost(cost_payload["abstention_cost"], "abstention_cost"),
+    )
+    minimum_support = payload["minimum_threshold_support"]
+    if (
+        not isinstance(minimum_support, int)
+        or isinstance(minimum_support, bool)
+        or minimum_support < 1
+    ):
+        raise ConfidenceCalibrationError("minimum_threshold_support is invalid")
+    if payload["selection_rule"] != SELECTION_RULE:
+        raise ConfidenceCalibrationError(
+            "calibration artifact was built under a different selection rule"
+        )
+    sources = payload["evidence_sources"]
+    if (
+        not isinstance(sources, list)
+        or not sources
+        or any(item not in _EVIDENCE_SOURCES for item in sources)
+        or list(sources) != sorted(set(sources))
+    ):
+        raise ConfidenceCalibrationError("evidence_sources is invalid")
+    blocked_reason = payload["autonomy_blocked_reason"]
+    if blocked_reason is not None and not isinstance(blocked_reason, str):
+        raise ConfidenceCalibrationError("autonomy_blocked_reason must be a string")
+
+    # The curve is a pure function of the bins and the declared costs, so a
+    # hand-edited operating point cannot survive recomputation.
+    curve = threshold_curve(
+        tuple(bins),
+        cost_model=cost_model,
+        minimum_threshold_support=minimum_support,
+        required_wilson_lower=required_lower,
+    )
+    if payload["threshold_curve"] != [asdict(item) for item in curve]:
+        raise ConfidenceCalibrationError(
+            "threshold curve does not match the calibration bins and cost model"
+        )
+    selected_point = _select_operating_point(curve)
+    failures = sum(item.count - item.successes for item in bins)
+    _expect_cost(
+        payload["always_abstain_cost"],
+        cost_model.abstention_cost,
+        "always_abstain_cost",
+    )
+    _expect_cost(
+        payload["always_autonomous_cost"],
+        failures * cost_model.false_autonomy_cost / sample_count,
+        "always_autonomous_cost",
+    )
+
+    if parsed_threshold is None:
+        if payload["selected_cost"] is not None:
+            raise ConfidenceCalibrationError(
+                "artifact without a threshold cannot declare a selected cost"
+            )
+        if not blocked_reason:
+            raise ConfidenceCalibrationError(
+                "an artifact that grants no autonomy must say why"
+            )
+    else:
+        if blocked_reason is not None:
+            raise ConfidenceCalibrationError(
+                "a blocked artifact cannot also carry an autonomy threshold"
+            )
+        if list(sources) != [_AUTONOMY_EVIDENCE]:
+            raise ConfidenceCalibrationError(
+                "autonomy requires evidence observed only from live benchmark runs"
+            )
+        if selected_point is None or not math.isclose(
+            selected_point.threshold, parsed_threshold, rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise ConfidenceCalibrationError(
+                "autonomy threshold is not the operating point the rule selects"
+            )
+        _expect_cost(
+            payload["selected_cost"],
+            selected_point.expected_cost_per_action,
+            "selected_cost",
+        )
+
     canonical = {
         key: value for key, value in payload.items() if key != "artifact_sha256"
     }
@@ -727,6 +1051,18 @@ def load_calibration_artifact(path: Path) -> CalibrationArtifact:
         threshold_support=threshold_support,
         threshold_wilson_lower=parsed_lower,
         required_wilson_lower=required_lower,
+        minimum_threshold_support=minimum_support,
+        cost_model=cost_model,
+        threshold_curve=curve,
+        always_abstain_cost=float(payload["always_abstain_cost"]),
+        always_autonomous_cost=float(payload["always_autonomous_cost"]),
+        selected_cost=(
+            None
+            if payload["selected_cost"] is None
+            else float(payload["selected_cost"])
+        ),
+        evidence_sources=tuple(sources),
+        autonomy_blocked_reason=blocked_reason,
         built_at=built_at,
         artifact_sha256=expected_sha,
     )
@@ -761,6 +1097,7 @@ def calibrate_confidence(
         artifact_version=artifact.artifact_version,
         artifact_sha256=artifact.artifact_sha256,
         autonomy_threshold=artifact.autonomy_threshold,
+        autonomy_blocked_reason=artifact.autonomy_blocked_reason,
     )
 
 

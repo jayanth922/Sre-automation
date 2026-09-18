@@ -1,0 +1,26 @@
+{
+  "dataset_version": "sentinel-sre-v2",
+  "description": "Content-addressed Meridian reference-workload scenarios spanning single-fault, multi-fault, cross-service cascade, concurrent benign signal, capacity and no-action cases. Every fault knob, alert rule and probe metric is declared in fixtures.json and checked at load time.",
+  "fixtures": {
+    "file": "fixtures.json",
+    "sha256": "60465ad4693f0185084ee244bff1f2d7f81cda8ea90c5c0b00a402b28ecbc158"
+  },
+  "schema_version": 2,
+  "splits": {
+    "dev": {
+      "file": "dev.json",
+      "frozen": false,
+      "sha256": "bc6ed9d3476eb9906c9e2bb1b1b13ad5de532ebd8f85004dafde981e89667849"
+    },
+    "holdout": {
+      "file": "holdout.json",
+      "frozen": true,
+      "sha256": "2183c293fb84c8bf226bc2be22a963c4bf4f5192a46e005c6efacbb5cb31c0b7"
+    },
+    "train": {
+      "file": "train.json",
+      "frozen": false,
+      "sha256": "b66806a74777b678edf3313cb1cced021b151887b2f36aa60ef2bdcad44478aa"
+    }
+  }
+}

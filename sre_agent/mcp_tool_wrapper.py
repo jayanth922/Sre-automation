@@ -315,16 +315,39 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
 
 
 
+# Audit rows are a forensic record, not a data lake. `tool_args` was previously
+# uncapped, so one `kubectl get -o json` argument blob could write megabytes per
+# call into a table with four indexes on it.
+AUDIT_ARGS_MAX_CHARS = int(os.getenv("AUDIT_ARGS_MAX_CHARS", "4000"))
+AUDIT_RESULT_MAX_CHARS = int(os.getenv("AUDIT_RESULT_MAX_CHARS", "10000"))
+AUDIT_ERROR_MAX_CHARS = int(os.getenv("AUDIT_ERROR_MAX_CHARS", "2000"))
+
+
+def _audit_text(value: Any, limit: int) -> str:
+    """Credential-free, length-bounded text for one audit column."""
+    from .prompt_guard import redact_secrets
+
+    text = redact_secrets(value)
+    limit = max(int(limit), 64)
+    if len(text) > limit:
+        return text[:limit] + "... (truncated)"
+    return text
+
+
 def log_audit_entry(
-    tool_name: str, 
-    status: str, 
-    args: Any, 
-    result: Any = None, 
+    tool_name: str,
+    status: str,
+    args: Any,
+    result: Any = None,
     error: str = None,
     audit_id: uuid.UUID = None
 ) -> uuid.UUID:
     """
     Log an audit entry to the database and also push to the live terminal.
+
+    Synchronous: opens a session and commits. Async callers must reach it
+    through `write_audit_entry` so the event loop is not blocked on the
+    database round trip.
     """
     try:
         (
@@ -335,12 +358,19 @@ def log_audit_entry(
             run_id,
         ) = get_audit_context()
         
-        # Serialize args/result safely
-        args_str = str(args)
-        result_str = str(result) if result else None
-        if result_str and len(result_str) > 10000:
-            result_str = result_str[:10000] + "... (truncated)"
-            
+        # Serialize args/result safely.
+        #
+        # Redact before truncating, never after: cutting a bearer token in half
+        # leaves half a bearer token in the row. Tool arguments carry connection
+        # strings and API keys, tool results carry whatever the log line held,
+        # and error text routinely quotes the credential that just failed to
+        # authenticate — all three land in Postgres and on the dashboard's live
+        # terminal, so all three are redacted here at the single write point.
+        args_str = _audit_text(args, AUDIT_ARGS_MAX_CHARS)
+        result_str = _audit_text(result, AUDIT_RESULT_MAX_CHARS) if result else None
+        error = _audit_text(error, AUDIT_ERROR_MAX_CHARS) if error else error
+
+
         # Push a clean message to the Redis live terminal for the Dashboard
         from .redis_state_store import get_state_store
         state_store = get_state_store()
@@ -400,6 +430,52 @@ def log_audit_entry(
     except Exception as e:
         logger.error(f"Failed to write audit log: {e}")
         note_audit_write_failure(str(e))
+        return audit_id
+
+
+async def write_audit_entry(
+    tool_name: str,
+    status: str,
+    args: Any,
+    result: Any = None,
+    error: str = None,
+    audit_id: uuid.UUID = None,
+) -> uuid.UUID:
+    """Await the audit write without blocking the event loop on Postgres.
+
+    Still awaited rather than fire-and-forget: the PENDING row has to exist
+    before the tool runs, and the terminal row has to be written before the
+    caller sees the result, or the flight recorder stops being one.
+
+    The terminal update is shielded. Bug #38 was 18 rows stuck at PENDING
+    because a cancelled sibling never wrote its terminal status; if this
+    coroutine is cancelled mid-write the shield lets the thread finish, and the
+    blocking fallback covers the case where the shield itself is torn down.
+    Re-running a terminal write is safe — it is an UPDATE keyed by `audit_id`.
+    """
+    call = functools.partial(
+        log_audit_entry,
+        tool_name,
+        status,
+        args,
+        result=result,
+        error=error,
+        audit_id=audit_id,
+    )
+    if audit_id is None:
+        return await asyncio.to_thread(call)
+
+    task = asyncio.ensure_future(asyncio.to_thread(call))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if task.cancelled():
+            # The shield went down with the loop. Write it here or lose it.
+            return call()
+        if task.done():
+            return task.result()
+        # Still running in its worker thread and shielded from this
+        # cancellation, so it will land. A second call would only duplicate it.
         return audit_id
 
 
@@ -468,19 +544,19 @@ def wrap_tool_with_audit(tool: Any) -> Any:
     if original_ainvoke:
         @functools.wraps(original_ainvoke)
         async def audit_ainvoke(*args, **kwargs) -> Any:
-            # Note: Writing to DB is sync, preventing blocking async loop might require run_in_executor
-            # For now, we accept brief blocking for audit safety
             input_data = args[0] if args else kwargs
-            audit_id = log_audit_entry(tool_name, "PENDING", input_data)
+            audit_id = await write_audit_entry(tool_name, "PENDING", input_data)
             try:
                 result = await original_ainvoke(*args, **kwargs)
-                log_audit_entry(tool_name, "SUCCESS", input_data, result=result, audit_id=audit_id)
+                await write_audit_entry(
+                    tool_name, "SUCCESS", input_data, result=result, audit_id=audit_id
+                )
                 return result
             except BaseException as e:
                 # BaseException, not Exception: a sibling tool call cancelled
                 # by langgraph raises CancelledError, which the narrower
                 # clause let past without ever closing the PENDING row.
-                log_audit_entry(
+                await write_audit_entry(
                     tool_name,
                     _audit_status_for(e),
                     input_data,

@@ -79,7 +79,7 @@ def test_debug_true_variants():
 def test_secrets_redacted_in_repr():
     env = {
         "SECRET_KEY": "super-secret-key",
-        "GROQ_API_KEY": "gsk_live_secret",
+        "ANTHROPIC_API_KEY": "sk-ant-live-secret",
         "MCP_SERVICE_TOKEN": "mcp-secret",
         "DATABASE_URL": "postgresql+asyncpg://dbuser:dbpass@dbhost:5432/sre",
         "REDIS_URL": "redis://:redispass@redis:6379/0",
@@ -88,7 +88,7 @@ def test_secrets_redacted_in_repr():
     settings = cfg.load_settings(env)
     text = repr(settings)
     assert "super-secret-key" not in text
-    assert "gsk_live_secret" not in text
+    assert "sk-ant-live-secret" not in text
     assert "mcp-secret" not in text
     assert "dbpass" not in text
     assert "redispass" not in text

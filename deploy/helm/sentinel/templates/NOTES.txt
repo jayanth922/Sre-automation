@@ -22,8 +22,7 @@ First run: open the console and register. The first person to sign up creates th
 organization and becomes its admin — from there, invite teammates (they register
 with the same organization name) and manage roles under Team.
 
-Model provider: {{ .Values.llm.provider }}
-{{- if eq .Values.llm.provider "openai_compatible" }}  →  {{ .Values.llm.baseUrl }} (set secrets.llmApiKey if it needs a key){{ end }}
+Model provider: {{ .Values.llm.provider }} (anthropic is the only supported value)
 
 Next: connect a cluster in the console (Settings) — its Prometheus/Loki endpoints
 and metric conventions — and point your Alertmanager webhook at

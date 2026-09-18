@@ -6,22 +6,16 @@ These tests exercise the *decision* logic only (``select_model``), which is pure
 Python with no LLM dependencies, so they run without the full runtime stack.
 """
 
-import importlib.util
 import os
-import sys
-from pathlib import Path
 
 import pytest
 
-# Import the module directly from its file path so the test does not require the
-# rest of the sre_agent package (and its langchain deps) to be importable.
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "model_router.py"
-_spec = importlib.util.spec_from_file_location("model_router", _MODULE_PATH)
-model_router = importlib.util.module_from_spec(_spec)
-# Register before exec so the module's dataclasses (with PEP 563 string
-# annotations) can resolve their own types during class creation.
-sys.modules[_spec.name] = model_router
-_spec.loader.exec_module(model_router)
+# Imported as a package module, not loaded from its file path: the router now
+# validates per-tier provider overrides against `provider_config`, which is a
+# sibling import. `sre_agent/__init__.py` is a docstring and neither module
+# pulls in langchain, so this stays as cheap as the old path-loading trick.
+from sre_agent import model_router
+from sre_agent.provider_config import ProviderConfigError
 
 TaskType = model_router.TaskType
 ModelTier = model_router.ModelTier
@@ -85,13 +79,25 @@ def test_explicit_provider_overrides_env(monkeypatch):
     assert select_model(TaskType.SPECIALIST, provider="other").provider == "other"
 
 
-def test_per_tier_cross_provider_routing(monkeypatch):
-    """Strong tier can be pinned to a different provider than the base."""
+def test_per_tier_provider_override_rejects_unsupported_provider(monkeypatch):
+    """The tier override obeys the same allow-list as `LLM_PROVIDER`.
+
+    It used to be the one hole in the fail-closed provider contract: startup
+    refused `LLM_PROVIDER=groq` with a migration message, while
+    `MODEL_ROUTER_STRONG_PROVIDER=groq` sailed past that check and only came
+    apart later inside a graph node, on the first call routed to that tier.
+    """
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "other")
-    decision = select_model(TaskType.PLANNING)  # planning → strong
-    assert decision.provider == "other"
-    # Fast-tier tasks are unaffected and stay on the base provider.
+    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "groq")
+    with pytest.raises(ProviderConfigError):
+        select_model(TaskType.PLANNING)  # planning → strong
+
+
+def test_per_tier_provider_override_accepts_the_supported_provider(monkeypatch):
+    """A redundant-but-valid override still routes, and other tiers are untouched."""
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("MODEL_ROUTER_STRONG_PROVIDER", "anthropic")
+    assert select_model(TaskType.PLANNING).provider == "anthropic"
     assert select_model(TaskType.ROUTING).provider == "anthropic"
 
 

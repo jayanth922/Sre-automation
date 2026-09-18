@@ -64,14 +64,31 @@ _SCOPE_IDENTIFIER = re.compile(
 )
 
 
-def _redact_sensitive(text: str) -> str:
+def redact_secrets(text: Any) -> str:
+    """Strip credentials from text that will be persisted or displayed.
+
+    Secrets only — no injection filtering and no scope-identifier masking. The
+    audit log and the live terminal are forensic surfaces: rewriting "ignore
+    previous instructions" to "[filtered]" there would destroy the exact
+    evidence an investigator needs after a prompt-injection incident, and the
+    tenant/org id an operator uses to trace a run is not a credential.
+    `sanitize_untrusted` is the one that hardens text on its way *into* a
+    prompt; this one only makes text safe to keep.
+    """
+    if text is None:
+        return ""
+    text = str(text)
     text = _PRIVATE_KEY.sub("[redacted private key]", text)
     text = _BEARER_TOKEN.sub("Bearer [redacted]", text)
     text = _URL_CREDENTIALS.sub(r"\1[redacted]@", text)
-    text = _SECRET_ASSIGNMENT.sub(
+    return _SECRET_ASSIGNMENT.sub(
         lambda match: (f"{match.group(1)}{match.group(2)}[redacted]{match.group(2)}"),
         text,
     )
+
+
+def _redact_sensitive(text: str) -> str:
+    text = redact_secrets(text)
     return _SCOPE_IDENTIFIER.sub(
         lambda match: (
             f"{match.group(1)}{match.group(2)}" f"[redacted-scope-id]{match.group(2)}"

@@ -314,6 +314,39 @@ class InMemorySkillStore:
     def find_matching(
         self, signature: IncidentSignature, threshold: float = 0.5
     ) -> List[Tuple[Skill, float]]:
+        """Recall verified skills for this signature, recording the call shape.
+
+        Instrumented here rather than in each subclass so the semantic store's
+        `super()` call cannot double-count. `requested` is the candidate pool
+        actually considered — with a store this small the useful ratio is
+        "scanned N, returned M", not "asked for k".
+        """
+        # tests/test_skill_store.py loads this module by file path, so there is
+        # no parent package for a relative import to resolve against. The
+        # absolute fallback keeps the instrumentation exercised under that
+        # loader instead of silently disappearing from the tests that cover it;
+        # retrieval_metrics is pure stdlib, so importing it costs nothing.
+        try:
+            from .retrieval_metrics import SKILL_STORE, track_retrieval
+        except ImportError:
+            from sre_agent.retrieval_metrics import SKILL_STORE, track_retrieval
+
+        with track_retrieval(
+            SKILL_STORE,
+            requested=len(self._skills),
+            threshold=threshold,
+            tenant_scoped=bool(signature.organization_id),
+        ) as observed:
+            hits = self._find_matching(signature, threshold, observed)
+            observed["scores"] = [score for _, score in hits]
+            return hits
+
+    def _find_matching(
+        self,
+        signature: IncidentSignature,
+        threshold: float,
+        observed: Dict[str, Any],
+    ) -> List[Tuple[Skill, float]]:
         # Tenant/cluster scope is a hard boundary, not a similarity signal: a
         # skill learned from one org's or cluster's incidents must never be
         # proposed into another's investigation, so it's filtered out here
@@ -546,13 +579,18 @@ class SemanticSkillStore(JsonSkillStore):
                 logger.warning(f"SkillStore: failed to remove '{skill_id}' from semantic index: {e}")
         return skill
 
-    def find_matching(
-        self, signature: IncidentSignature, threshold: float = 0.5
+    def _find_matching(
+        self,
+        signature: IncidentSignature,
+        threshold: float,
+        observed: Dict[str, Any],
     ) -> List[Tuple[Skill, float]]:
         by_id: Dict[str, Tuple[Skill, float]] = {
-            s.skill_id: (s, sc) for s, sc in super().find_matching(signature, threshold=threshold)
+            s.skill_id: (s, sc)
+            for s, sc in super()._find_matching(signature, threshold, observed)
         }
         if not self._semantic_available:
+            observed["error"] = "semantic index unavailable; keyword-only recall"
             return sorted(by_id.values(), key=lambda t: (t[1], t[0].success_count), reverse=True)
 
         try:
@@ -582,6 +620,7 @@ class SemanticSkillStore(JsonSkillStore):
                     by_id[skill.skill_id] = (skill, point.score)
         except Exception as e:
             logger.warning(f"SkillStore: semantic recall query failed ({e}); using keyword-only matches")
+            observed["error"] = f"semantic recall failed: {type(e).__name__}: {e}"
 
         hits = [t for t in by_id.values() if t[1] >= threshold]
         hits.sort(key=lambda t: (t[1], t[0].success_count), reverse=True)

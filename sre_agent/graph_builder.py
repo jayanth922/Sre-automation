@@ -12,12 +12,14 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
+from .ablation import current_ablation
 from .agent_nodes import (
     create_github_agent,
     create_kubernetes_agent,
     create_logs_agent,
     create_metrics_agent,
     create_runbooks_agent,
+    create_single_agent,
 )
 from .agent_state import (
     AgentState,
@@ -920,8 +922,11 @@ def _route_supervisor(state: AgentState) -> str:
     # nodes (reflector → planner) before aggregation, so a remediation plan exists
     # for the ACT gate to evaluate. Specialist routing is unaffected.
     if target == "aggregate" and _act_phase_enabled():
-        logger.info("ACT enabled: routing supervisor-complete → reflector (OODA)")
-        return "reflector"
+        # The no_reflector ablation arm removes the ORIENT stage only; DECIDE
+        # still runs, so the terminal step goes straight to the planner.
+        orient = "reflector" if current_ablation().reflector else "planner"
+        logger.info(f"ACT enabled: routing supervisor-complete → {orient} (OODA)")
+        return orient
 
     return target
 
@@ -1082,19 +1087,29 @@ def _make_investigation_swarm_node(
     metrics_agent: Any,
     logs_agent: Any,
     github_agent: Any,
+    single_agent: Any = None,
 ):
     """Bind executable agents outside durable graph state.
 
     Only their stable names cross the checkpoint boundary. This keeps replay
     serializable and prevents model-produced recommendations from selecting an
     arbitrary callable or graph node.
+
+    ``single_agent``, when given, replaces the specialist set for the
+    ``single_agent`` ablation arm. The reflector still decides *whether* a
+    second look happens and the loop bound is unchanged — only the number of
+    agents doing the looking differs, which is the variable under measurement.
     """
-    agent_instances = {
-        "kubernetes_agent": kubernetes_agent,
-        "metrics_agent": metrics_agent,
-        "logs_agent": logs_agent,
-        "github_agent": github_agent,
-    }
+    agent_instances = (
+        {"single_agent": single_agent}
+        if single_agent is not None
+        else {
+            "kubernetes_agent": kubernetes_agent,
+            "metrics_agent": metrics_agent,
+            "logs_agent": logs_agent,
+            "github_agent": github_agent,
+        }
+    )
 
     async def investigation_swarm_node(state: AgentState) -> Dict[str, Any]:
         logger.info("🔍 InvestigationSwarm: Starting focused deeper investigation")
@@ -1103,6 +1118,10 @@ def _make_investigation_swarm_node(
         selected = _validated_deeper_agents(
             metadata.get("deeper_investigation_agents")
         )
+        if single_agent is not None:
+            # One investigator: a per-specialist recommendation collapses to
+            # "look again". An empty recommendation still means "don't".
+            selected = ["single_agent"] if selected else []
         selected = [name for name in selected if agent_instances.get(name) is not None]
         if not selected:
             logger.warning("InvestigationSwarm: no valid recommended agents")
@@ -1155,8 +1174,13 @@ def _make_investigation_swarm_node(
 
         for agent_name in selected:
             logger.info("🤖 %s: Starting deeper investigation", agent_name)
+            domain = (
+                "all available"
+                if agent_name == "single_agent"
+                else agent_name.replace("_agent", "")
+            )
             thought = (
-                f"Re-checking {agent_name.replace('_agent', '')} evidence to "
+                f"Re-checking {domain} evidence to "
                 "resolve the reflector's remaining unknowns."
             )
             traces = {name: list(items) for name, items in all_traces.items()}
@@ -1221,6 +1245,11 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     )
     logs_findings = agent_results.get("logs_agent")
     code_findings = agent_results.get("github_agent")  # Code change intelligence
+    # The single_agent ablation arm files one combined report instead of four
+    # per-domain ones. Without a slot of its own that evidence would be
+    # invisible here and the arm would lose on an empty investigation — a
+    # difference with nothing to do with the architecture under measurement.
+    single_findings = agent_results.get("single_agent")
 
     # Detect tool failures (ToolError responses)
     tool_failures = []
@@ -1271,6 +1300,12 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     infra_block = wrap_untrusted("infra_metrics", infra_findings) if infra_findings else "No infrastructure findings available"
     code_block = wrap_untrusted("github", code_findings) if code_findings else "No code change findings available"
     logs_block = wrap_untrusted("logs", logs_findings) if logs_findings else "No logs findings available"
+    single_block = (
+        "\n    Combined Investigation Findings (single investigator):\n"
+        f"    {wrap_untrusted('single_investigator', single_findings)}\n"
+        if single_findings
+        else ""
+    )
 
     # Reflection prompt
     reflection_prompt = f"""
@@ -1289,7 +1324,7 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
 
     Logs Findings:
     {logs_block}
-
+{single_block}
     Analyze these findings and:
     1. Identify any discrepancies between infrastructure and code findings
     2. Formulate a primary hypothesis with the exact affected_service and a
@@ -1448,6 +1483,27 @@ def planner_namespace_scope(cluster_namespace: Any) -> str:
     )
 
 
+def _unsynthesised_evidence(agent_results: Any, investigation_findings: Any, wrap) -> str:
+    """Specialist findings with no synthesis layered over them.
+
+    Used only when no reflector analysis exists. The blocks are wrapped as
+    untrusted evidence exactly as the reflector's own inputs are: skipping the
+    ORIENT stage removes reasoning, never the prompt-injection boundary.
+    """
+    results = agent_results if isinstance(agent_results, dict) else {}
+    blocks = [
+        f"#### {name}\n{body}" for name, body in sorted(results.items()) if body
+    ]
+    if not blocks and investigation_findings:
+        blocks.append(str(investigation_findings))
+    if not blocks:
+        return ""
+    return (
+        "### UNSYNTHESISED SPECIALIST FINDINGS (no reflector analysis ran)\n"
+        f"{wrap('specialist_findings', chr(10).join(blocks))}\n"
+    )
+
+
 async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, Any]:
     """
     PlannerNode: Generates structured RemediationPlan based on reflector analysis.
@@ -1464,12 +1520,24 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
         wrap_untrusted_json,
     )
 
+    # When no ORIENT stage ran — the reflector found nothing to reflect on, or
+    # the no_reflector ablation arm removed it — the planner still gets the
+    # specialist evidence, just unsynthesised. What that arm loses is the
+    # hypothesis, the causal chain and the bounded re-investigation loop.
+    # Withholding the evidence as well would make it a strawman, because the
+    # reflector is otherwise the only path by which findings reach here.
+    raw_findings = ""
     if not reflector_analysis:
-        logger.warning("No reflector analysis available, creating basic plan")
+        logger.warning(
+            "No reflector analysis available; planning from unsynthesised specialist findings"
+        )
         reflector_analysis = ReflectorAnalysis(
             hypothesis="Unknown root cause",
             confidence=0.5,
             reasoning="No analysis available",
+        )
+        raw_findings = _unsynthesised_evidence(
+            agent_results, state.get("investigation_findings"), wrap_untrusted
         )
 
     # ---------------------------------------------------------
@@ -1543,87 +1611,99 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
     except Exception as e:
         logger.warning(f"⚠️ Semantic runbook search failed: {e}")
 
+    # Incident memory and learned skills are what the system *learned*; the
+    # no-memory ablation arm removes exactly these two lookups and nothing
+    # else. Runbooks stay, because they are authored knowledge — taking them
+    # away in the same arm would leave any measured difference unattributable.
+    # The lookups are skipped, not discarded afterwards: their latency and
+    # token cost are part of what the arm is measuring.
+    learned_memory = current_ablation().reads_learned_memory
+    if not learned_memory:
+        logger.info("🧪 Ablation: learned memory disabled — skipping incident recall and skill proposal")
+
     # Search memory store for similar past incidents (via MCP if available)
     past_solutions = ""
-    try:
-        # Try MCP memory server first
-        recall_tool = None
-        for tool in tools:
-            tool_name = getattr(tool, "name", "")
-            if "recall_similar_incidents" in tool_name.lower():
-                recall_tool = tool
-                break
+    if learned_memory:
+        try:
+            # Try MCP memory server first
+            recall_tool = None
+            for tool in tools:
+                tool_name = getattr(tool, "name", "")
+                if "recall_similar_incidents" in tool_name.lower():
+                    recall_tool = tool
+                    break
 
-        if recall_tool:
-            # Use MCP memory server
-            query_text = f"{alert_context.alert_name if alert_context else ''} {reflector_analysis.hypothesis} {reflector_analysis.reasoning}"
-            logger.info("🔍 Querying memory via MCP server")
-            
-            if hasattr(recall_tool, "ainvoke"):
-                result = await recall_tool.ainvoke({"query_text": query_text, "limit": 3, "score_threshold": 0.7})
-            else:
-                result = recall_tool.invoke({"query_text": query_text, "limit": 3, "score_threshold": 0.7})
-
-            # Parse result
-            import json
-            if isinstance(result, str):
-                result_data = json.loads(result)
-            elif hasattr(result, "text"):
-                result_data = json.loads(result.text)
-            else:
-                result_data = result
-
-            if "error" not in result_data and result_data.get("results"):
-                similar_incidents = result_data.get("results", [])
-                # Format for prompt
-                if similar_incidents:
-                    past_solutions = "## 🧠 Similar Past Incidents and Solutions:\n\n"
-                    for i, incident in enumerate(similar_incidents, 1):
-                        past_solutions += f"### Incident {i} (Similarity: {incident.get('similarity_score', 0):.2%})\n"
-                        past_solutions += f"**ID**: {incident.get('incident_id', 'N/A')}\n\n"
-                        past_solutions += f"**Description**: {incident.get('incident_text', 'N/A')}\n\n"
-                        if incident.get("metadata", {}).get("resolution"):
-                            past_solutions += f"**Resolution**: {incident['metadata']['resolution']}\n\n"
-                        past_solutions += "---\n\n"
-                    logger.info(f"✅ Found {len(similar_incidents)} similar past incidents via MCP")
-        else:
-            # Fallback to direct memory store (if available)
-            from .memory_store import get_memory_store
-            memory = get_memory_store()
-            if memory.is_available():
+            if recall_tool:
+                # Use MCP memory server
                 query_text = f"{alert_context.alert_name if alert_context else ''} {reflector_analysis.hypothesis} {reflector_analysis.reasoning}"
-                state_metadata = state.get("metadata", {}) or {}
-                similar_incidents = memory.search_similar_incidents(
-                    query_text,
-                    limit=3,
-                    organization_id=state_metadata.get("organization_id"),
-                    cluster_id=state_metadata.get("cluster_id"),
-                )
-                if similar_incidents:
-                    past_solutions = memory.format_similar_incidents_for_prompt(similar_incidents)
-                    logger.info(f"✅ Found {len(similar_incidents)} similar past incidents")
-    except Exception as e:
-        logger.warning(f"⚠️ Memory search failed: {e}")
+                logger.info("🔍 Querying memory via MCP server")
+
+                if hasattr(recall_tool, "ainvoke"):
+                    result = await recall_tool.ainvoke({"query_text": query_text, "limit": 3, "score_threshold": 0.7})
+                else:
+                    result = recall_tool.invoke({"query_text": query_text, "limit": 3, "score_threshold": 0.7})
+
+                # Parse result
+                import json
+                if isinstance(result, str):
+                    result_data = json.loads(result)
+                elif hasattr(result, "text"):
+                    result_data = json.loads(result.text)
+                else:
+                    result_data = result
+
+                if "error" not in result_data and result_data.get("results"):
+                    similar_incidents = result_data.get("results", [])
+                    # Format for prompt
+                    if similar_incidents:
+                        past_solutions = "## 🧠 Similar Past Incidents and Solutions:\n\n"
+                        for i, incident in enumerate(similar_incidents, 1):
+                            past_solutions += f"### Incident {i} (Similarity: {incident.get('similarity_score', 0):.2%})\n"
+                            past_solutions += f"**ID**: {incident.get('incident_id', 'N/A')}\n\n"
+                            past_solutions += f"**Description**: {incident.get('incident_text', 'N/A')}\n\n"
+                            if incident.get("metadata", {}).get("resolution"):
+                                past_solutions += f"**Resolution**: {incident['metadata']['resolution']}\n\n"
+                            past_solutions += "---\n\n"
+                        logger.info(f"✅ Found {len(similar_incidents)} similar past incidents via MCP")
+            else:
+                # Fallback to direct memory store (if available)
+                from .memory_store import get_memory_store
+                memory = get_memory_store()
+                if memory.is_available():
+                    query_text = f"{alert_context.alert_name if alert_context else ''} {reflector_analysis.hypothesis} {reflector_analysis.reasoning}"
+                    state_metadata = state.get("metadata", {}) or {}
+                    similar_incidents = memory.search_similar_incidents(
+                        query_text,
+                        limit=3,
+                        organization_id=state_metadata.get("organization_id"),
+                        cluster_id=state_metadata.get("cluster_id"),
+                    )
+                    if similar_incidents:
+                        past_solutions = memory.format_similar_incidents_for_prompt(similar_incidents)
+                        logger.info(f"✅ Found {len(similar_incidents)} similar past incidents")
+        except Exception as e:
+            logger.warning(f"⚠️ Memory search failed: {e}")
 
     # Learned skills (self-improving loop): propose remediations that worked for
     # prior incidents of this class so the Planner can reuse them instead of
     # re-deriving from scratch. This is what closes the skill loop.
     skill_context = ""
-    try:
-        from .skill_store import format_skills_for_prompt, get_skill_store, propose_skills
+    if learned_memory:
+        try:
+            from .skill_store import format_skills_for_prompt, get_skill_store, propose_skills
 
-        skill_metadata = state.get("metadata", {}) or {}
-        proposed = propose_skills(
-            get_skill_store(),
-            alert_context,
-            organization_id=skill_metadata.get("organization_id"),
-            cluster_id=skill_metadata.get("cluster_id"),
-        )
-        if proposed:
-            skill_context = format_skills_for_prompt(proposed)
-            logger.info(f"🧠 PlannerNode: {len(proposed)} learned skill(s) proposed for this incident class")
-    except Exception as skill_err:
-        logger.warning(f"⚠️ Skill proposal failed: {skill_err}")
+            skill_metadata = state.get("metadata", {}) or {}
+            proposed = propose_skills(
+                get_skill_store(),
+                alert_context,
+                organization_id=skill_metadata.get("organization_id"),
+                cluster_id=skill_metadata.get("cluster_id"),
+            )
+            if proposed:
+                skill_context = format_skills_for_prompt(proposed)
+                logger.info(f"🧠 PlannerNode: {len(proposed)} learned skill(s) proposed for this incident class")
+        except Exception as skill_err:
+            logger.warning(f"⚠️ Skill proposal failed: {skill_err}")
 
     if past_solutions:
         past_solutions = wrap_untrusted(
@@ -1671,6 +1751,8 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
 {namespace_scope}
     Reflector evidence:
     {reflector_evidence}
+
+    {raw_findings}
 
     Alert evidence:
     {alert_evidence}
@@ -1882,6 +1964,10 @@ def build_multi_agent_graph(
     Returns:
         Compiled StateGraph for multi-agent collaboration
     """
+    ablation = current_ablation()
+    if ablation.experiment_active:
+        logger.warning("🧪 Building graph under %s", ablation.describe())
+
     logger.info("Building OODA Loop-based multi-agent collaboration graph")
 
     # Create the state graph
@@ -1935,20 +2021,35 @@ def build_multi_agent_graph(
         **llm_kwargs,
     )
 
+    # The single-investigator baseline. Built only under the `single_agent`
+    # ablation arm, and never in production.
+    single_agent = None
+    if not ablation.multi_agent:
+        single_agent = create_single_agent(
+            tools,
+            agent_metadata=SREConstants.agents.agents["single"],
+            llm_provider=llm_provider,
+            llm_router_enabled=llm_router_enabled,
+            **llm_kwargs,
+        )
+
     # Store agents and tools in a way that nodes can access them
     # Add nodes to the graph
     workflow.add_node("prepare", _observed("prepare", _prepare_initial_state))
-    workflow.add_node(
-        "infra_prescan",
-        _observed("infra_prescan", _make_infra_prescan_node(kubernetes_agent)),
-    )
-    workflow.add_node("supervisor", _observed("supervisor", supervisor.route))
+    if ablation.multi_agent:
+        workflow.add_node(
+            "infra_prescan",
+            _observed("infra_prescan", _make_infra_prescan_node(kubernetes_agent)),
+        )
+        workflow.add_node("supervisor", _observed("supervisor", supervisor.route))
 
-    # Visible specialist nodes
-    workflow.add_node("logs_agent", _observed("logs_agent", logs_agent))
-    workflow.add_node("metrics_agent", _observed("metrics_agent", metrics_agent))
-    workflow.add_node("github_agent", _observed("github_agent", github_agent))
-    workflow.add_node("runbooks_agent", _observed("runbooks_agent", runbooks_agent))
+        # Visible specialist nodes
+        workflow.add_node("logs_agent", _observed("logs_agent", logs_agent))
+        workflow.add_node("metrics_agent", _observed("metrics_agent", metrics_agent))
+        workflow.add_node("github_agent", _observed("github_agent", github_agent))
+        workflow.add_node("runbooks_agent", _observed("runbooks_agent", runbooks_agent))
+    else:
+        workflow.add_node("single_agent", _observed("single_agent", single_agent))
 
     # Aggregation node
     workflow.add_node(
@@ -1958,32 +2059,49 @@ def build_multi_agent_graph(
     # Set entry point
     workflow.set_entry_point("prepare")
 
-    # Always route through the supervisor so the transcript includes explicit
-    # reasoning — but read the cluster's own state first, so the plan and every
-    # specialist after it are working from what the infrastructure declares.
-    workflow.add_edge("prepare", "infra_prescan")
-    workflow.add_edge("infra_prescan", "supervisor")
+    if ablation.multi_agent:
+        # Always route through the supervisor so the transcript includes explicit
+        # reasoning — but read the cluster's own state first, so the plan and every
+        # specialist after it are working from what the infrastructure declares.
+        workflow.add_edge("prepare", "infra_prescan")
+        workflow.add_edge("infra_prescan", "supervisor")
 
-    # Supervisor routing targets. When the ACT phase is enabled, the supervisor's
-    # terminal "aggregate" decision is diverted through the OODA orient/decide
-    # nodes (reflector → planner) first, so add "reflector" as a valid target.
-    _supervisor_routes = {
-        "metrics_agent": "metrics_agent",
-        "logs_agent": "logs_agent",
-        "github_agent": "github_agent",
-        "runbooks_agent": "runbooks_agent",
-        "aggregate": "aggregate",
-    }
-    if _act_phase_enabled():
-        _supervisor_routes["reflector"] = "reflector"
+        # Supervisor routing targets. When the ACT phase is enabled, the supervisor's
+        # terminal "aggregate" decision is diverted through the OODA orient/decide
+        # nodes (reflector → planner) first, so add "reflector" as a valid target.
+        _supervisor_routes = {
+            "metrics_agent": "metrics_agent",
+            "logs_agent": "logs_agent",
+            "github_agent": "github_agent",
+            "runbooks_agent": "runbooks_agent",
+            "aggregate": "aggregate",
+        }
+        if _act_phase_enabled():
+            # The no_reflector arm skips ORIENT and lands on DECIDE instead.
+            _orient_node = "reflector" if ablation.reflector else "planner"
+            _supervisor_routes[_orient_node] = _orient_node
 
-    workflow.add_conditional_edges("supervisor", _route_supervisor, _supervisor_routes)
+        workflow.add_conditional_edges(
+            "supervisor", _route_supervisor, _supervisor_routes
+        )
 
-    # Specialist nodes always hand control back to the supervisor.
-    workflow.add_edge("logs_agent", "supervisor")
-    workflow.add_edge("metrics_agent", "supervisor")
-    workflow.add_edge("github_agent", "supervisor")
-    workflow.add_edge("runbooks_agent", "supervisor")
+        # Specialist nodes always hand control back to the supervisor.
+        workflow.add_edge("logs_agent", "supervisor")
+        workflow.add_edge("metrics_agent", "supervisor")
+        workflow.add_edge("github_agent", "supervisor")
+        workflow.add_edge("runbooks_agent", "supervisor")
+    else:
+        # The single_agent arm removes routing and isolation, so it also
+        # removes the infra pre-scan: that is a second agent, and leaving it in
+        # would make the "single agent" baseline a two-agent one. The single
+        # investigator holds the same Kubernetes tools and can read the same
+        # cluster state itself. Everything downstream of investigation —
+        # ORIENT, DECIDE, aggregation, approval, ACT — is untouched, so the two
+        # arms' outputs stay comparable.
+        workflow.add_edge("prepare", "single_agent")
+        workflow.add_edge(
+            "single_agent", "reflector" if _act_phase_enabled() else "aggregate"
+        )
 
     # Terminal wiring. Default (advisor mode) is byte-for-byte the prior flow:
     # aggregate → END. When ACT is enabled, investigation completion flows through
@@ -2000,19 +2118,21 @@ def build_multi_agent_graph(
         logger.info(
             "ACT phase ENABLED: wiring bounded investigate ↔ reflect loop → planner → aggregate → approval_gate → act_gate → END"
         )
-        workflow.add_node("reflector", _observed("reflector", _reflector_node))
-        workflow.add_node(
-            "investigation_swarm",
-            _observed(
+        if ablation.reflector:
+            workflow.add_node("reflector", _observed("reflector", _reflector_node))
+            workflow.add_node(
                 "investigation_swarm",
-                _make_investigation_swarm_node(
-                    kubernetes_agent,
-                    metrics_agent,
-                    logs_agent,
-                    github_agent,
+                _observed(
+                    "investigation_swarm",
+                    _make_investigation_swarm_node(
+                        kubernetes_agent,
+                        metrics_agent,
+                        logs_agent,
+                        github_agent,
+                        single_agent=single_agent,
+                    ),
                 ),
-            ),
-        )
+            )
 
         async def context_planner_node(state: AgentState) -> Dict[str, Any]:
             return await _planner_node(state, tools)
@@ -2031,15 +2151,16 @@ def build_multi_agent_graph(
         )
         workflow.add_node("approval_gate", _observed("approval_gate", _approval_gate_node))
         workflow.add_node("act_gate", _observed("act_gate", context_act_gate))
-        workflow.add_conditional_edges(
-            "reflector",
-            _route_reflector,
-            {
-                "investigation_swarm": "investigation_swarm",
-                "planner": "planner",
-            },
-        )
-        workflow.add_edge("investigation_swarm", "reflector")
+        if ablation.reflector:
+            workflow.add_conditional_edges(
+                "reflector",
+                _route_reflector,
+                {
+                    "investigation_swarm": "investigation_swarm",
+                    "planner": "planner",
+                },
+            )
+            workflow.add_edge("investigation_swarm", "reflector")
         workflow.add_edge("planner", "aggregate")
         workflow.add_edge("aggregate", "approval_prepare")
         workflow.add_edge("approval_prepare", "approval_gate")

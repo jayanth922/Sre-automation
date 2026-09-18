@@ -358,7 +358,41 @@ class MemoryStore:
             List of similar incidents with metadata, sorted by recency-decayed
             score (highest first)
         """
-        if not self.is_available():
+        from .retrieval_metrics import MEMORY_STORE, track_retrieval
+
+        available = self.is_available()
+        # Recorded even when unavailable or failing: every branch below returns
+        # `[]`, and "the store was down" is otherwise indistinguishable from
+        # "this incident is genuinely novel" at every call site.
+        with track_retrieval(
+            MEMORY_STORE,
+            requested=limit,
+            threshold=score_threshold,
+            tenant_scoped=bool(organization_id),
+            available=available,
+        ) as observed:
+            return self._search_similar_incidents(
+                query_text,
+                limit,
+                score_threshold,
+                organization_id=organization_id,
+                cluster_id=cluster_id,
+                available=available,
+                observed=observed,
+            )
+
+    def _search_similar_incidents(
+        self,
+        query_text: str,
+        limit: int,
+        score_threshold: float,
+        *,
+        organization_id: Optional[str],
+        cluster_id: Optional[str],
+        available: bool,
+        observed: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        if not available:
             logger.warning("⚠️ Memory store not available, cannot search incidents")
             return []
 
@@ -407,11 +441,13 @@ class MemoryStore:
                     },
                 })
 
+            observed["scores"] = [r["similarity_score"] for r in results]
             logger.info(f"✅ Found {len(results)} similar incidents")
             return results
 
         except Exception as e:
             logger.error(f"❌ Failed to search incidents: {e}")
+            observed["error"] = f"{type(e).__name__}: {e}"
             return []
 
     def format_similar_incidents_for_prompt(

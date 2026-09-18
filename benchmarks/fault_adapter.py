@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Safe executable adapter for Meridian `/admin/config` fault contracts."""
+"""Safe executable adapter for Meridian `/admin/config` fault contracts.
+
+A scenario declares one or more contracts, each naming a service, the config
+keys to change, and the baseline those keys must already hold. The adapter
+verifies the baseline before touching anything, applies the contracts in the
+declared order, and unwinds everything it applied if any later contract fails.
+The invariant that matters: a benchmark run never leaves a service in a state
+the scenario did not declare, even when injection fails halfway through.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable, Sequence
 from urllib.parse import urlparse
 
 SUPPORTED_ADAPTER = "meridian_admin_config_v1"
@@ -24,6 +32,14 @@ class FaultLease:
     original_values: dict[str, Any]
     injected_values: dict[str, Any]
     injected_at: datetime
+
+
+@dataclass(frozen=True)
+class _Contract:
+    target: str
+    path: str
+    inject: dict[str, Any]
+    cleanup: dict[str, Any]
 
 
 def _object(value: Any, field: str) -> dict[str, Any]:
@@ -76,34 +92,50 @@ class MeridianAdminConfigAdapter:
         self._service_urls = normalized
         self._timeout_seconds = timeout_seconds
 
-    def _contract(
-        self, scenario: Any
-    ) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+    def _contracts(self, scenario: Any) -> tuple[_Contract, ...]:
         fault = _object(getattr(scenario, "fault", None), "fault")
         if fault.get("adapter") != SUPPORTED_ADAPTER:
             raise FaultAdapterError(
                 f"unsupported fault adapter: {fault.get('adapter')!r}"
             )
-        target = fault.get("target")
-        if not isinstance(target, str) or target not in self._service_urls:
-            raise FaultAdapterError(f"unsupported fault target: {target!r}")
-        inject = _object(fault.get("inject"), "fault.inject")
-        cleanup = _object(fault.get("cleanup"), "fault.cleanup")
-        path = inject.get("path")
-        if (
-            not isinstance(path, str)
-            or not path.startswith("/")
-            or path.startswith("//")
-            or cleanup.get("path") != path
-        ):
-            raise FaultAdapterError("inject/cleanup paths must match and be relative")
-        inject_values = _object(inject.get("payload"), "fault.inject.payload")
-        cleanup_values = _object(cleanup.get("payload"), "fault.cleanup.payload")
-        if not inject_values or set(inject_values) != set(cleanup_values):
-            raise FaultAdapterError(
-                "inject and cleanup payloads must declare the same keys"
+        declared = fault.get("contracts")
+        if not isinstance(declared, (list, tuple)) or not declared:
+            raise FaultAdapterError("fault.contracts must be a non-empty list")
+
+        contracts: list[_Contract] = []
+        seen: set[str] = set()
+        for index, raw in enumerate(declared):
+            contract = _object(raw, f"fault.contracts[{index}]")
+            target = contract.get("target")
+            if not isinstance(target, str) or target not in self._service_urls:
+                raise FaultAdapterError(f"unsupported fault target: {target!r}")
+            if target in seen:
+                raise FaultAdapterError(f"duplicate fault target: {target}")
+            seen.add(target)
+            path = contract.get("path")
+            if (
+                not isinstance(path, str)
+                or not path.startswith("/")
+                or path.startswith("//")
+            ):
+                raise FaultAdapterError("fault contract path must be relative")
+            inject = _object(contract.get("inject"), f"fault.contracts[{index}].inject")
+            cleanup = _object(
+                contract.get("cleanup"), f"fault.contracts[{index}].cleanup"
             )
-        return target, path, inject_values, cleanup_values
+            if not inject or set(inject) != set(cleanup):
+                raise FaultAdapterError(
+                    "inject and cleanup payloads must declare the same keys"
+                )
+            contracts.append(
+                _Contract(
+                    target=target,
+                    path=path,
+                    inject=dict(inject),
+                    cleanup=dict(cleanup),
+                )
+            )
+        return tuple(contracts)
 
     async def _restore(
         self,
@@ -120,23 +152,24 @@ class MeridianAdminConfigAdapter:
         restored = _response_object(response, "cleanup response")
         _assert_values(restored, original_values, "cleanup response")
 
-    async def inject(self, client: Any, scenario: Any) -> FaultLease:
-        target, path, inject_values, cleanup_values = self._contract(scenario)
-        url = f"{self._service_urls[target]}{path}"
+    async def _inject_one(
+        self, client: Any, scenario_name: str, contract: _Contract
+    ) -> FaultLease:
+        url = f"{self._service_urls[contract.target]}{contract.path}"
         current_response = await client.get(url, timeout=self._timeout_seconds)
         current = _response_object(current_response, "baseline response")
-        original_values = {key: current.get(key) for key in inject_values}
-        _assert_values(original_values, cleanup_values, "baseline")
+        original_values = {key: current.get(key) for key in contract.inject}
+        _assert_values(original_values, contract.cleanup, "baseline")
 
         injected_at = datetime.now(timezone.utc)
         try:
             response = await client.post(
                 url,
-                json=inject_values,
+                json=contract.inject,
                 timeout=self._timeout_seconds,
             )
             applied = _response_object(response, "injection response")
-            _assert_values(applied, inject_values, "injection response")
+            _assert_values(applied, contract.inject, "injection response")
         except Exception as exc:
             try:
                 await self._restore(client, url=url, original_values=original_values)
@@ -149,18 +182,51 @@ class MeridianAdminConfigAdapter:
             raise FaultAdapterError(f"fault injection failed: {exc}") from exc
 
         return FaultLease(
-            scenario=str(getattr(scenario, "name", "unknown")),
-            target=target,
-            url=self._service_urls[target],
-            path=path,
+            scenario=scenario_name,
+            target=contract.target,
+            url=self._service_urls[contract.target],
+            path=contract.path,
             original_values=original_values,
-            injected_values=dict(inject_values),
+            injected_values=dict(contract.inject),
             injected_at=injected_at,
         )
 
-    async def cleanup(self, client: Any, lease: FaultLease) -> None:
-        await self._restore(
-            client,
-            url=f"{lease.url}{lease.path}",
-            original_values=lease.original_values,
-        )
+    async def inject(self, client: Any, scenario: Any) -> tuple[FaultLease, ...]:
+        """Apply every declared contract, unwinding all of them on failure."""
+        contracts = self._contracts(scenario)
+        scenario_name = str(getattr(scenario, "name", "unknown"))
+        leases: list[FaultLease] = []
+        for contract in contracts:
+            try:
+                leases.append(await self._inject_one(client, scenario_name, contract))
+            except Exception as exc:
+                # Contracts already applied are not the scenario's fault, but
+                # leaving them applied would poison every run after this one.
+                try:
+                    await self.cleanup(client, leases)
+                except Exception as unwind_exc:
+                    raise FaultAdapterError(
+                        f"fault injection failed on {contract.target} and "
+                        f"unwinding earlier contracts also failed: {unwind_exc}"
+                    ) from exc
+                raise
+        return tuple(leases)
+
+    async def cleanup(
+        self, client: Any, leases: Sequence[FaultLease] | Iterable[FaultLease]
+    ) -> None:
+        """Restore every lease, reporting the first failure only after trying all."""
+        pending = list(leases)
+        failures: list[str] = []
+        # Reverse order so a scenario's contracts unwind the way they applied.
+        for lease in reversed(pending):
+            try:
+                await self._restore(
+                    client,
+                    url=f"{lease.url}{lease.path}",
+                    original_values=lease.original_values,
+                )
+            except Exception as exc:
+                failures.append(f"{lease.target}: {exc}")
+        if failures:
+            raise FaultAdapterError(f"fault cleanup failed: {'; '.join(failures)}")

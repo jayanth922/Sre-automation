@@ -3,9 +3,14 @@
 # nothing is hardcoded in the templates. Override with -f my-values.yaml or --set.
 #
 # The guiding principle: we orchestrate, we don't override your choices. Bring
-# your own LLM, your own MCP tool servers, and your own Postgres/Redis if you
-# have them — or let the chart deploy the basics for you.
+# your own MCP tool servers and your own Postgres/Redis if you have them — or
+# let the chart deploy the basics for you. The one place we do not bend is the
+# model provider: Anthropic only (see the llm block below).
 # =============================================================================
+
+# ── Naming (standard Helm overrides; empty = derive from the chart/release) ──
+nameOverride: ""
+fullnameOverride: ""
 
 # ── Images ───────────────────────────────────────────────────────────────────
 image:
@@ -41,12 +46,11 @@ secrets:
   credentialEncryptionKeysJson: ""
   # Shared bearer credential used only between the API and MCP services.
   mcpServiceToken: ""
-  # Model provider keys (fill the one you use; blank is fine for keyless on-site LLMs)
+  # Model provider key. Anthropic is the only supported provider; the groq /
+  # google / nvidia slots that used to sit here were dead config for providers
+  # `provider_config` rejects at startup.
   llmApiKey: ""
   anthropicApiKey: ""
-  groqApiKey: ""
-  googleApiKey: ""
-  nvidiaApiKey: ""
   githubToken: ""
   # Static single-tenant fallback for the runbooks server; SaaS clusters relay
   # per-cluster Notion creds over MCP instead (blank is fine for self-hosted
@@ -63,11 +67,19 @@ secrets:
   langfuseSecretKey: "change-me-langfuse-secret-key"
 
 # ── Model provider ────────────────────────────────────────────────────────────
-# Curated to reliable structured-output providers: anthropic | gemini.
+# Anthropic only: `sre_agent.provider_config` refuses every other value before
+# the API starts, so any other setting here is a CrashLoopBackOff, not a choice.
+# Keep anthropicModel on the router's ladder (haiku-4-5, sonnet-4-5, sonnet-5,
+# opus-5) or per-tier escalation falls back to fixed defaults.
 llm:
   provider: "anthropic"
-  anthropicModel: "claude-3-5-sonnet-latest"
-  geminiModel: "gemini-2.0-flash"
+  anthropicModel: "claude-sonnet-5"
+  # Single-tenant fallbacks, read only when no cluster is bound (see
+  # sre_agent/cluster_context.resolve_llm). A connected cluster's own settings
+  # always win. baseUrl points at an Anthropic-compatible gateway; leave both
+  # empty for the default endpoint and the router's own model choice.
+  baseUrl: ""
+  model: ""
 
 # ── MCP tool servers ──────────────────────────────────────────────────────────
 mcp:

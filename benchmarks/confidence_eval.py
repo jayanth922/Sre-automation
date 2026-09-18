@@ -44,6 +44,21 @@ def main() -> int:
     parser.add_argument("--maximum-bins", type=int, default=10)
     parser.add_argument("--minimum-threshold-support", type=int, default=40)
     parser.add_argument("--required-wilson-lower", type=float, default=0.90)
+    parser.add_argument(
+        "--false-autonomy-cost",
+        type=float,
+        default=20.0,
+        help=(
+            "Cost of one action taken autonomously that turned out wrong, "
+            "relative to --abstention-cost. Only the ratio matters."
+        ),
+    )
+    parser.add_argument(
+        "--abstention-cost",
+        type=float,
+        default=1.0,
+        help="Cost of one unnecessary human approval round trip.",
+    )
     args = parser.parse_args()
 
     try:
@@ -96,6 +111,8 @@ def main() -> int:
                 maximum_bins=args.maximum_bins,
                 minimum_threshold_support=args.minimum_threshold_support,
                 required_wilson_lower=args.required_wilson_lower,
+                false_autonomy_cost=args.false_autonomy_cost,
+                abstention_cost=args.abstention_cost,
             )
             save_calibration_artifact(args.artifact_output, artifact)
             output["calibration_artifact"] = {
@@ -104,6 +121,30 @@ def main() -> int:
                 "autonomy_threshold": artifact.autonomy_threshold,
                 "threshold_support": artifact.threshold_support,
                 "threshold_wilson_lower": artifact.threshold_wilson_lower,
+                "autonomy_blocked_reason": artifact.autonomy_blocked_reason,
+                "evidence_sources": list(artifact.evidence_sources),
+                "cost_model": {
+                    "false_autonomy_cost": artifact.cost_model.false_autonomy_cost,
+                    "abstention_cost": artifact.cost_model.abstention_cost,
+                },
+                "selected_cost": artifact.selected_cost,
+                "always_abstain_cost": artifact.always_abstain_cost,
+                "always_autonomous_cost": artifact.always_autonomous_cost,
+                "autonomy_beats_abstention": artifact.autonomy_beats_abstention,
+                "threshold_curve": [
+                    {
+                        "threshold": point.threshold,
+                        "autonomous": point.autonomous,
+                        "abstained": point.abstained,
+                        "false_autonomy": point.false_autonomy,
+                        "autonomous_success_rate": point.autonomous_success_rate,
+                        "wilson_lower": point.wilson_lower,
+                        "coverage": point.coverage,
+                        "expected_cost_per_action": point.expected_cost_per_action,
+                        "eligible": point.eligible,
+                    }
+                    for point in artifact.threshold_curve
+                ],
             }
     except ConfidenceCalibrationError as exc:
         parser.error(str(exc))
@@ -117,20 +158,24 @@ def main() -> int:
         isinstance(output.get("drift"), dict)
         and output["drift"].get("status") == "DRIFTED"
     )
-    print(
-        json.dumps(
-            {
-                "task": args.task,
-                "samples": report.samples,
-                "drift": (
-                    output.get("drift", {}).get("status")
-                    if output.get("drift")
-                    else None
-                ),
-            },
-            sort_keys=True,
-        )
-    )
+    summary = {
+        "task": args.task,
+        "samples": report.samples,
+        "drift": (
+            output.get("drift", {}).get("status") if output.get("drift") else None
+        ),
+    }
+    if output["calibration_artifact"]:
+        summary["autonomy_threshold"] = output["calibration_artifact"][
+            "autonomy_threshold"
+        ]
+        summary["autonomy_blocked_reason"] = output["calibration_artifact"][
+            "autonomy_blocked_reason"
+        ]
+        summary["autonomy_beats_abstention"] = output["calibration_artifact"][
+            "autonomy_beats_abstention"
+        ]
+    print(json.dumps(summary, sort_keys=True))
     return 2 if drifted else 0
 
 

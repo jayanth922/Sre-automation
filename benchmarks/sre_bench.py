@@ -33,7 +33,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -101,7 +101,7 @@ DATASET_ROOT = Path(
         str(Path(__file__).resolve().parent / "datasets"),
     )
 )
-DATASET_VERSION = os.getenv("BENCH_DATASET_VERSION", "v1")
+DATASET_VERSION = os.getenv("BENCH_DATASET_VERSION", "v2")
 DATASET_SPLIT = os.getenv("BENCH_DATASET_SPLIT", "dev")
 ALLOW_HOLDOUT = os.getenv("BENCH_ALLOW_HOLDOUT", "").lower() in {
     "1",
@@ -115,6 +115,9 @@ FAULT_SERVICE_URLS = {
     "checkout-service": os.getenv("BENCH_CHECKOUT_URL", "http://localhost:8001"),
     "inventory-service": os.getenv("BENCH_INVENTORY_URL", "http://localhost:8002"),
     "payment-service": os.getenv("BENCH_PAYMENT_URL", "http://localhost:8004"),
+    # Not scraped by Prometheus; it is a fault target only, driving the
+    # services that are scraped.
+    "load-generator": os.getenv("BENCH_LOADGEN_URL", "http://localhost:8003"),
 }
 POLL_INTERVAL_SEC = 5
 TIMEOUT_SEC = 300
@@ -240,24 +243,32 @@ async def _await_manual_fault(
 ) -> None:
     if FAULT_MODE != "manual" or tracker.baseline_healthy is not True:
         return
-    target = spec.fault["target"]
-    inject = spec.fault["inject"]["payload"]
-    cleanup = spec.fault["cleanup"]["payload"]
+    steps = "; ".join(
+        f"apply {contract['inject']} to {contract['target']}"
+        for contract in spec.fault["contracts"]
+    )
+    restore = _manual_cleanup_steps(spec)
     prompt = (
-        f"\nBaseline is healthy for {spec.name}. Apply {inject} to {target}, "
-        f"then press Enter. Required cleanup: {cleanup}. "
+        f"\nBaseline is healthy for {spec.name}. In order: {steps}. "
+        f"Then press Enter. Required cleanup: {restore}. "
     )
     await asyncio.to_thread(input, prompt)
+
+
+def _manual_cleanup_steps(spec: ScenarioSpec) -> str:
+    """Restoration steps in reverse application order, as the adapter unwinds."""
+    return "; ".join(
+        f"restore {contract['target']} to {contract['cleanup']}"
+        for contract in reversed(spec.fault["contracts"])
+    )
 
 
 async def _await_manual_cleanup(spec: ScenarioSpec) -> None:
     if FAULT_MODE != "manual":
         return
-    target = spec.fault["target"]
-    cleanup = spec.fault["cleanup"]["payload"]
     await asyncio.to_thread(
         input,
-        f"\nRestore {target} to {cleanup}, verify it, then press Enter. ",
+        f"\n{_manual_cleanup_steps(spec)}, verify each, then press Enter. ",
     )
 
 
@@ -499,6 +510,9 @@ def _record_confidence_observations(
                 config_fingerprint=CONFIG_FINGERPRINT,
                 pair_id=pair_id,
                 observed_at=datetime.now(timezone.utc),
+                # This runner is the only sanctioned producer of the evidence
+                # that may unlock autonomy: a real agent against a real fault.
+                evidence_source="live_benchmark",
             ),
         )
 
@@ -514,14 +528,16 @@ async def _run_trial(
     tracker = RecoveryOracleTracker(spec.recovery_probe, datetime.now(timezone.utc))
     await _observe_oracle(client, oracle_client, tracker, baseline=True)
 
-    lease = None
+    leases: tuple[Any, ...] = ()
     manual_fault_started = False
     try:
         if tracker.baseline_healthy is True and FAULT_MODE == "automatic":
             if fault_adapter is None:
                 raise RuntimeError("automatic fault mode has no adapter")
-            lease = await fault_adapter.inject(client, spec)
-            started_at = lease.injected_at
+            leases = await fault_adapter.inject(client, spec)
+            # A multi-contract scenario is only fully degraded once its last
+            # contract lands, so the run starts from the newest lease.
+            started_at = max(lease.injected_at for lease in leases)
         else:
             await _await_manual_fault(spec, tracker)
             manual_fault_started = (
@@ -601,8 +617,8 @@ async def _run_trial(
             )
         return score, line, trace_completeness
     finally:
-        if lease is not None and fault_adapter is not None:
-            await fault_adapter.cleanup(client, lease)
+        if leases and fault_adapter is not None:
+            await fault_adapter.cleanup(client, leases)
         elif manual_fault_started:
             await _await_manual_cleanup(spec)
 

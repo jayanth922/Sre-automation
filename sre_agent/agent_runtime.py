@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
+from .ablation import current_ablation
 from .agent_state import AgentState
 from .constants import SREConstants
 
@@ -289,6 +290,7 @@ async def ws_incidents(websocket: WebSocket):
 async def agent_metrics():
     """Graph-node runs, latency and exceptions plus tracing availability."""
     from .observability import get_recorder
+    from .retrieval_metrics import get_retrieval_recorder
     from .tracing import langfuse_enabled
 
     summary = get_recorder().summary()
@@ -296,6 +298,12 @@ async def agent_metrics():
         "langfuse": langfuse_enabled(),
         "note": "Model/tool spans, tokens, cost, and routing are exported to Langfuse when enabled.",
     }
+    # Call-shape only. Relevance needs labels, and production traffic has none;
+    # `benchmarks/retrieval_eval.py` carries the labeled half. What this does
+    # catch is the failure these indexes actually have — a dead store, a tenant
+    # filter that matches nothing, a re-embedded collection — all of which look
+    # like "no relevant history" at the call site and are separable here.
+    summary["retrieval"] = get_retrieval_recorder().summary()
     return summary
 
 # Alert Webhook Router (receives Alertmanager webhooks)
@@ -1093,9 +1101,16 @@ async def _maybe_compact(state: Dict[str, Any]) -> Dict[str, Any]:
     """Compact the input message history before invoking the graph when it's over
     the token budget (keeps recent turns + one summary). Safe: operates on the
     input state before the reducer runs, and only triggers above the budget."""
-    try:
-        from sre_agent.context_compaction import compact_state_messages, make_llm_summarizer, should_compact
+    from sre_agent.context_compaction import (
+        compact_state_messages,
+        fit_to_budget,
+        hard_input_ceiling_tokens,
+        make_llm_summarizer,
+        messages_tokens,
+        should_compact,
+    )
 
+    try:
         if should_compact(state.get("messages", [])):
             from sre_agent.model_router import TaskType, route_llm
 
@@ -1105,6 +1120,26 @@ async def _maybe_compact(state: Dict[str, Any]) -> Dict[str, Any]:
                 state["messages"] = new_msgs
     except Exception as e:
         logger.warning(f"context compaction skipped (non-fatal): {e}")
+
+    # Deterministic backstop. Summarization needs a model call, so it is exactly
+    # the thing that fails when the provider is degraded — and "skipped
+    # (non-fatal)" above would then hand an over-window history straight to that
+    # same provider, turning a recoverable blip into a dead run. This pass needs
+    # no LLM and cannot leave the history over the hard input ceiling.
+    try:
+        ceiling = hard_input_ceiling_tokens()
+        messages = state.get("messages", [])
+        if messages and messages_tokens(messages) > ceiling:
+            fitted, report = fit_to_budget(messages, ceiling)
+            state["messages"] = fitted
+            logger.warning(
+                "context exceeded the input ceiling before the run; fitted "
+                f"{report.before_tokens} → {report.after_tokens} tokens "
+                f"({report.dropped_messages} message(s) elided, "
+                f"{report.truncated_results} tool result(s) truncated)"
+            )
+    except Exception as e:
+        logger.warning(f"context ceiling enforcement skipped (non-fatal): {e}")
     return state
 
 
@@ -1814,7 +1849,16 @@ async def _run_graph_impl(
                 live_results=(act_report or {}).get("live_results"),
                 executed=(act_report or {}).get("executed"),
             )
-            if eligibility.eligible_for_success:
+            if eligibility.eligible_for_success and not current_ablation().writes_learned_memory:
+                # Every arm's writes are frozen for the duration of an
+                # ablation experiment, control included: arms run in sequence
+                # against one cluster, so a write here would hand the next arm
+                # a corpus this one never had.
+                logger.info(
+                    "🧪 Ablation: learned-memory writes frozen — incident %s not stored",
+                    incident_id,
+                )
+            elif eligibility.eligible_for_success:
                 memory = get_memory_store()
                 if memory.is_available():
                     provenance = build_provenance(

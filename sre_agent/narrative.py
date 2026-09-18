@@ -37,6 +37,8 @@ SPECIALIST_LABELS: Dict[str, str] = {
     "logs_agent": "Loki Specialist",
     "github_agent": "GitHub Specialist",
     "runbooks_agent": "Runbooks Specialist",
+    # Ablation harness only — see sre_agent/ablation.py.
+    "single_agent": "Single Investigator",
 }
 
 # Agents whose evidence reaches the war room but who are not in it. The
@@ -60,6 +62,10 @@ SPECIALIST_SCOPE: Dict[str, str] = {
     "logs_agent": "application and infrastructure logs, error patterns, and stack traces",
     "github_agent": "recent commits, pull requests, deployments, and rollback candidates",
     "runbooks_agent": "operational runbooks, playbooks, and step-by-step procedures",
+    "single_agent": (
+        "cluster state, metrics, logs, code changes, and runbooks — the whole "
+        "investigation, held by one agent"
+    ),
 }
 
 

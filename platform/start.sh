@@ -64,7 +64,7 @@ rm -f "$repo_root/.env.bak"
 
 if [ "$GENERATED_ANY" = "1" ]; then
     echo -e "${GREEN}✅ .env internal secrets auto-generated (SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY / MCP_SERVICE_TOKEN / LANGFUSE_SALT / LANGFUSE_ENCRYPTION_KEY, whichever were still blank).${NC}"
-    echo -e "${YELLOW}   No LLM key yet? That's fine — add ANTHROPIC_API_KEY (or GOOGLE_API_KEY) later, in .env or per-cluster in the dashboard.${NC}"
+    echo -e "${YELLOW}   No LLM key yet? That's fine — add ANTHROPIC_API_KEY later, in .env or per-cluster in the dashboard.${NC}"
 fi
 
 # edge_mcp_servers is a second, independently-deployable Docker Compose

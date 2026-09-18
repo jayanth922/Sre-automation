@@ -64,6 +64,55 @@ agents:
       - list_pull_requests
       - get_pull_request
 
+  # Measurement only. The `single_agent` ablation arm (SENTINEL_ABLATION_ARM,
+  # see sre_agent/ablation.py) runs one ReAct loop holding the union of every
+  # specialist's tools, so the baseline differs from the full architecture in
+  # *routing and isolation* and in nothing else. The union is written out
+  # rather than computed so a tool added to one specialist does not silently
+  # change the baseline's capability surface between runs — a diff here is a
+  # deliberate change to what the experiment compares.
+  #
+  # It stays read-only for the same reason github_agent does: this agent is
+  # still only investigating, and `investigation_write_guard` enforces that
+  # independently of this file.
+  single_agent:
+    name: "Single Investigator Agent"
+    description: "One ReAct loop holding every specialist's read-only tools"
+    tools:
+      # kubernetes_agent
+      - check_k8s_health
+      - get_pod_status
+      - list_namespaces
+      - list_pods
+      - list_services
+      - list_deployments
+      - list_events
+      - get_service_endpoints
+      - get_pod_logs
+      - get_deployment_status
+      - get_deployment_spec
+      - get_node_status
+      # logs_agent
+      - query_logs
+      - get_error_logs
+      - analyze_log_patterns
+      # metrics_agent
+      - check_prometheus_health
+      - get_metric
+      - get_metric_range
+      - get_golden_signals
+      # runbooks_agent
+      - search_runbooks
+      - get_incident_playbook
+      - get_troubleshooting_guide
+      - get_escalation_procedures
+      - get_common_resolutions
+      # github_agent
+      - list_commits
+      - get_commit
+      - list_pull_requests
+      - get_pull_request
+
 # Global tools available to all agents
 # Tools are now discovered from MCP servers (K8s, Logs, Metrics, Runbooks, GitHub, Memory)
 global_tools: []

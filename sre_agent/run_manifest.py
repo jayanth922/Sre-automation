@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import models
+from sre_agent.ablation import current_ablation
 from sre_agent.constants import SREConstants
 from sre_agent.litellm_backend import litellm_enabled, tier_litellm_model
 from sre_agent.model_router import TaskType, select_model
@@ -316,6 +317,11 @@ def build_run_manifest(
             "model_router_backend": os.getenv("MODEL_ROUTER_BACKEND", "provider"),
             "executor_live": os.getenv("EXECUTOR_LIVE", "false").lower(),
             "act_phase_enabled": os.getenv("ACT_PHASE_ENABLED", "false").lower(),
+            # `runtime` is fingerprinted, so recording the arm here is what
+            # makes two ablation arms structurally incomparable: the paired
+            # evaluator refuses matching fingerprints, and no operator has to
+            # remember to declare a different one.
+            **current_ablation().manifest_entry(),
         },
         "input": {
             "sha256": _sha256_json(sanitized_input),

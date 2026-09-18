@@ -1,4 +1,9 @@
 {{- /* Fail-closed production checks (P04). Rendered as empty when valid. */ -}}
+{{- /* Anthropic is the only provider sre_agent/provider_config.py accepts. Catch
+       it at render time instead of letting the API CrashLoopBackOff on boot. */ -}}
+{{- if ne .Values.llm.provider "anthropic" }}
+{{- fail (printf "llm.provider=%s is not supported — anthropic is the only provider the API accepts, and any other value fails startup (see docs/ai/DECISIONS.md)" .Values.llm.provider) }}
+{{- end }}
 {{- if and (not .Values.redis.deploy) (not .Values.redis.external.url) }}
 {{- fail "redis.deploy=false requires redis.external.url (or keep redis.deploy=true)" }}
 {{- end }}

@@ -9,7 +9,6 @@ data:
   LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
   LLM_MODEL: {{ .Values.llm.model | quote }}
   ANTHROPIC_MODEL: {{ .Values.llm.anthropicModel | quote }}
-  GROQ_MODEL: {{ .Values.llm.groqModel | quote }}
 
   # Datastores
   POSTGRES_USER: {{ .Values.postgres.user | quote }}

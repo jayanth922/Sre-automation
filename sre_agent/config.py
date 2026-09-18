@@ -129,9 +129,10 @@ class Settings(BaseModel):
     redis_url: str = "redis://localhost:6379/0"
 
     secret_key: SecretStr = Field(default_factory=lambda: SecretStr(""))
-    google_api_key: Optional[SecretStr] = None
+    # Anthropic is the only provider `provider_config` accepts. The former
+    # google_api_key/groq_api_key fields were loaded, redacted in the repr, and
+    # read by nothing — config surface for providers the runtime refuses.
     anthropic_api_key: Optional[SecretStr] = None
-    groq_api_key: Optional[SecretStr] = None
     llm_api_key: Optional[SecretStr] = None
     mcp_service_token: Optional[SecretStr] = None
 
@@ -165,7 +166,6 @@ class Settings(BaseModel):
             f"database_url='{_redact_url(self.database_url)}', "
             f"redis_url='{_redact_url(self.redis_url)}', "
             f"secret_key={_secret_repr(self.secret_key)}, "
-            f"groq_api_key={_secret_repr(self.groq_api_key)}, "
             f"anthropic_api_key={_secret_repr(self.anthropic_api_key)}, "
             f"llm_api_key={_secret_repr(self.llm_api_key)}, "
             f"mcp_service_token={_secret_repr(self.mcp_service_token)}, "
@@ -275,7 +275,6 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
         database_url=database_url,
         redis_url=redis_url,
         secret_key=_optional_secret(env.get("SECRET_KEY")) or SecretStr(""),
-        groq_api_key=_optional_secret(env.get("GROQ_API_KEY")),
         anthropic_api_key=_optional_secret(env.get("ANTHROPIC_API_KEY")),
         llm_api_key=_optional_secret(env.get("LLM_API_KEY") or env.get("OPENAI_API_KEY")),
         mcp_service_token=_optional_secret(env.get("MCP_SERVICE_TOKEN")),

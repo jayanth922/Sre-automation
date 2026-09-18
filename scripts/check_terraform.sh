@@ -11,11 +11,11 @@ if ! command -v terraform >/dev/null 2>&1; then
 fi
 
 # Guard: module must not accept plaintext secret variables.
-if grep -Eq 'variable "(secret_key|postgres_password|groq_api_key|anthropic_api_key)"' "$tf_dir"/*.tf; then
+if grep -Eq 'variable "(secret_key|postgres_password|anthropic_api_key|llm_api_key)"' "$tf_dir"/*.tf; then
   echo "plaintext secret variables must not be declared in deploy/terraform" >&2
   exit 1
 fi
-if grep -Eq 'set_sensitive|secrets\.(secretKey|postgresPassword|groqApiKey)' "$tf_dir"/*.tf; then
+if grep -Eq 'set_sensitive|secrets\.(secretKey|postgresPassword|anthropicApiKey|llmApiKey)' "$tf_dir"/*.tf; then
   echo "Helm set_sensitive / chart secret keys must not be wired from Terraform" >&2
   exit 1
 fi

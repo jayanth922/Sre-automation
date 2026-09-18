@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """
-Model Router — task-aware model / provider selection for the SRE multi-agent system.
+Model Router — task-aware model tier selection for the SRE multi-agent system.
 
-This module integrates project #6 from Harkirat Singh's "7 Projects" video
-("Model router — chooses the right model for a task") into the SRE Agent.
+Scope, stated plainly
+---------------------
+What is live: every production LLM call routes by :class:`TaskType` to a model
+tier, resolved one rung up or down the Anthropic ladder from the cluster's own
+anchor model.
+
+What is not: this is **not** adaptive or data-driven routing, and it is not
+cross-provider. ``SUPPORTED_PROVIDERS`` is ``("anthropic",)``; the per-tier
+provider override is validated against it. ``complexity`` and
+:class:`RequestContext` (budget, off-policy) are implemented and tested, but no
+production caller passes either — every live call site uses the defaults. Until
+a caller measures and supplies them, the honest claim is "static task tiers",
+not "adaptive routing", and there is no evidence here that routing saves money.
+Proving that needs a per-task cost/quality frontier and a router-vs-fixed-model
+experiment, neither of which exists yet.
 
 Motivation
 ----------
@@ -117,11 +130,13 @@ class ModelRouterBlocked(Exception):
 
 @dataclass
 class RequestContext:
-    """Per-request signals the router uses beyond task type.
+    """Per-request signals the router can use beyond task type.
 
-    This is what makes the router match the *product* definition (not OpenRouter):
-    it routes by task complexity **and** by the caller's remaining budget, and it
-    can **block** off-policy requests entirely.
+    Available to callers, exercised by tests, and supplied by **no production
+    call site** — `route_llm` is always invoked without it, so budget downgrade
+    and off-policy blocking never fire in a live run. Kept rather than deleted
+    because the blocking semantics are the right shape for a budget owner to
+    wire up; do not describe them as active until one does.
     """
 
     remaining_budget: Optional[float] = None  # remaining credits/USD; None = unmetered
@@ -271,16 +286,26 @@ def _downgrade(tier: ModelTier, steps: int = 1) -> ModelTier:
 
 
 def _tier_provider(tier: ModelTier, default_provider: str) -> str:
-    """Provider for a tier.
+    """Provider for a tier, validated against the providers the runtime has.
 
-    By default every tier uses the same provider (``LLM_PROVIDER``), so the
-    router degrades gracefully to a single-provider setup. Cross-provider
-    routing is opt-in per tier via env vars, e.g.::
+    The per-tier override exists so a tier can be pinned somewhere other than
+    ``LLM_PROVIDER``, but it is checked against ``SUPPORTED_PROVIDERS`` — which
+    is ``("anthropic",)`` — instead of being trusted.
 
-        MODEL_ROUTER_STRONG_PROVIDER=nvidia
-        MODEL_ROUTER_FAST_PROVIDER=groq
+    Before this check the override was a hole in the fail-closed provider
+    contract: ``provider_config`` refuses ``LLM_PROVIDER=groq`` at startup with
+    a migration message, while ``MODEL_ROUTER_STRONG_PROVIDER=groq`` sailed past
+    it and only came apart later, inside a graph node, on the one call that
+    happened to route to the strong tier. Same rejection, same message, at the
+    routing boundary now.
     """
-    return os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_PROVIDER", default_provider)
+    override = os.getenv(f"MODEL_ROUTER_{tier.value.upper()}_PROVIDER", "").strip()
+    if not override:
+        return default_provider
+
+    from .provider_config import require_supported_provider
+
+    return require_supported_provider(override)
 
 
 def _tier_model_override(
@@ -322,11 +347,12 @@ def select_model(
 
     Pure function — no LLM libraries imported — so it is cheap and easy to test.
 
-    Routing considers three axes (matching the product definition, not OpenRouter):
+    Three axes are implemented; only the first is fed by production callers:
     1. **Task complexity** — task type + simple/complex escalate the tier.
+       Live callers pass the task type and leave ``complexity`` at "simple".
     2. **Budget** — a low remaining budget downgrades the tier (cheaper model);
-       an exhausted budget blocks the request.
-    3. **Policy** — an off-policy request is blocked outright.
+       an exhausted budget blocks the request. No live caller passes ``request``.
+    3. **Policy** — an off-policy request is blocked outright. Same: unused live.
 
     Args:
         task_type: What the LLM call is for (see :class:`TaskType`).

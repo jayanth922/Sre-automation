@@ -107,6 +107,14 @@ jobs:
           uv run python benchmarks/release_gate.py matrix
           --matrix benchmarks/release/v1/ci-matrix.json
           --output reports/release-matrix.json
+      - name: Evaluate verified-skill retrieval quality
+        # Named release-retrieval.json so the existing evidence upload below
+        # picks it up. Labels are derived from the checked-in dataset, so this
+        # needs no services; the Qdrant-backed memory half reports itself as
+        # skipped rather than passing untested.
+        run: >-
+          uv run python benchmarks/retrieval_eval.py
+          --output reports/release-retrieval.json
       - name: Record changed files
         if: github.event_name == 'pull_request'
         env:

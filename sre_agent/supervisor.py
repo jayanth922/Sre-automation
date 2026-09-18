@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field, field_validator
 
+from .ablation import current_ablation
 from .agent_state import AgentState
 from .constants import SREConstants
 from .incident_timeline import (
@@ -1662,7 +1663,14 @@ You can:
                 live_results=(act_report or {}).get("live_results"),
                 executed=(act_report or {}).get("executed"),
             )
-            if eligibility.eligible_for_success:
+            if eligibility.eligible_for_success and not current_ablation().writes_learned_memory:
+                # Frozen for every arm during an experiment, control included:
+                # arms run sequentially against one cluster, so a write here
+                # would give the next arm a corpus this one never had.
+                logger.info(
+                    "🧪 Ablation: learned-memory writes frozen — resolution not stored"
+                )
+            elif eligibility.eligible_for_success:
                 tools = self.tools
                 store_tool = None
                 for tool in tools:

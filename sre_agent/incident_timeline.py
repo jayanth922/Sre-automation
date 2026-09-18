@@ -16,11 +16,18 @@ from .narration_grounding import grounding_footnote
 
 logger = logging.getLogger(__name__)
 
+# `single_agent` appears only under the ablation harness's single-agent arm,
+# which replaces all four specialists with one investigator. It is labelled so
+# that arm still emits a visible finding — an arm whose evidence never reached
+# the timeline would be measured on transcript shape rather than on diagnosis.
+# It is deliberately absent from VISIBLE_SPECIALIST_ORDER below: production's
+# routing queue must not change because a measurement configuration exists.
 VISIBLE_SPECIALIST_LABELS = {
     "metrics_agent": "Prometheus Specialist",
     "logs_agent": "Loki Specialist",
     "github_agent": "GitHub Specialist",
     "runbooks_agent": "Runbooks Specialist",
+    "single_agent": "Single Investigator",
 }
 
 VISIBLE_SPECIALIST_ROLES = {
@@ -28,6 +35,7 @@ VISIBLE_SPECIALIST_ROLES = {
     "logs_agent": "loki_specialist",
     "github_agent": "github_specialist",
     "runbooks_agent": "runbooks_specialist",
+    "single_agent": "single_investigator",
 }
 
 VISIBLE_SPECIALIST_ORDER = [
@@ -45,6 +53,7 @@ def internal_agent_name(agent_type: str) -> str:
         "github": "github_agent",
         "runbooks": "runbooks_agent",
         "kubernetes": "kubernetes_agent",
+        "single": "single_agent",
     }
     return mapping.get(agent_type, agent_type)
 
