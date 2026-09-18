@@ -157,8 +157,7 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   `act_phase.py`, and `tests/test_evidence_contract.py`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration`:
-  **1,709 passed** in ~28s. (`test_live_remediation_temporal_workflow` can fail
+- `uv run pytest tests/ -q`: **1,733 passed** in ~31s. (`test_live_remediation_temporal_workflow` can fail
   on a Temporal test-server port bind when other jobs hold the port; it passes
   run alone.)
 - `uv run python benchmarks/retrieval_eval.py --output reports/release-retrieval.json`:
@@ -170,11 +169,17 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
 - `bash scripts/check_python_quality.sh`: passed.
 - Deployment-template gate and secret scan: passed;
   `helm template --set llm.provider=gemini` fails at render time as intended.
-- Live, in the Codespace: `python3 scripts/check_runtime_parity.py` →
-  `code_sha=5956c8094b15… fingerprint=e7af89b2… files=155`. Bring the stack up
-  only as `cd platform && docker compose --env-file ../.env up -d`; from the
-  repo root `${POSTGRES_*}` interpolate empty and asyncpg fails as user
-  "root".
+- Live, in the Codespace: `python3 scripts/check_runtime_parity.py` (it runs on
+  the Codespace host and `docker exec`s in; `scripts/` is not in the image) →
+  `code_sha=dff11fb2fdcf… fingerprint=e5d73be36eaa… files=155`. Deploy with
+  `bash scripts/deploy_agent_runtimes.sh`, which exports `SENTINEL_CODE_SHA`
+  from git HEAD — a bare `docker compose build` bakes `code_sha=unknown` into
+  the image and the manifests lose their revision. Bring the stack up only as
+  `cd platform && docker compose --env-file ../.env up -d`; from the repo root
+  `${POSTGRES_*}` interpolate empty and asyncpg fails as user "root".
+- Live cost accounting, same revision: one real routed `narration` call
+  recorded `cost_usd=3.4e-05`, `cost_source="derived"`, rates attached, and no
+  `cost_unavailable` reason.
 
 ## Known blockers or risks
 - Never stage the untracked secret backup `.env.local-backup-20260910`; the
@@ -221,7 +226,11 @@ invitation flow, cluster id `bcbd9577-…`, cluster token, and the four fault
 service URLs on `10.0.0.207`).
 
 1. `ACT_PHASE_ENABLED=true` in the Codespace `.env`, then recreate the API and
-   worker with `cd platform && docker compose --env-file ../.env up -d`.
+   worker with `bash scripts/deploy_agent_runtimes.sh`. **Not** a bare
+   `docker compose up -d`: the image now has a real `SENTINEL_CODE_SHA` baked
+   in, compose defaults the runtime value to `unknown`, and preflight then
+   fails closed with `runtime code revision mismatch: image=dff11fb…
+   deployment=unknown` (verified). The script exports it from git HEAD.
 2. `export BENCH_INCIDENT_TIMEOUT_SEC=2700` (a run needs 10-30 min),
    `BENCH_RUNS_PER_SCENARIO=1`, `BENCH_DATASET_SPLIT=dev`,
    `BENCH_FAULT_MODE=automatic`.
