@@ -6,14 +6,11 @@ Deterministic policy and durable state—not model prose—must control writes,
 approvals, status transitions, and operator-facing claims.
 
 ## Current milestone
-P0 #4 crash-resumable live remediation is deployed and live-verified. Temporal
-checkpoints each action; a replacement-worker run proved successful writes are
-not replayed and Task #40 still withdraws later remediation authority after an
-external clear. Stable Langfuse names, fail-closed image parity, and
-missed-clear reconciliation are deployed. Live-action transport failures now
-retry only proven pre-claim failures; claim/dispatch/audit uncertainty stops
-for manual review. The runtime is exact revision `d6a6a1b`.
-The reflector and artifact-context branches are deployed (`5c292cd`).
+P0 #4 crash-resumable live remediation is deployed and live-verified. A
+replacement-worker run proved successful writes are not replayed and Task #40
+still withdraws remediation authority after an external clear. Stable Langfuse
+names, fail-closed image parity, missed-clear reconciliation, bounded
+pre-claim retries, and reflector/artifact context (`5c292cd`) are deployed.
 Observability is deployed (`e2b9fe0`); runtime-only job completion is deployed
 from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
 
@@ -71,15 +68,17 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   switch dashboard surface was removed. The worker regression test proves it
   does not issue a second completion after the runtime writes its rich result.
 - Time-skipping and live Temporal smoke drive both gates, child verification,
-  and a mocked PR result.
+  and a mocked PR result. A replacement-worker regression preserves the pending
+  first gate; denial terminates without child verification or PR activity.
 
 ## Active problem
-Next: Temporal restart/denial-path coverage.
+Next: isolate the environment-dependent `act_phase` focused-test stall.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
 - `sre_agent/mutation_gateway.py`, `sre_agent/alert_lifecycle_reconciler.py`
 - `tests/test_live_remediation_temporal_workflow.py`
+- `tests/test_incident_remediation_workflow.py`, `tests/test_act_phase.py`
 - `tests/test_deeper_investigation_loop.py`
 - `sre_agent/evidence_artifacts.py`, `backend/models.py`
 - `tests/test_evidence_artifacts.py`
@@ -92,6 +91,7 @@ Next: Temporal restart/denial-path coverage.
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Observability-focused suite: **130 passed**. Full suite: **1,507 passed**.
 - Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
+- Temporal remediation focused suite: **35 passed**.
 - Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
@@ -105,4 +105,5 @@ Next: Temporal restart/denial-path coverage.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Add Temporal restart/denial-path coverage; keep writes and PRs out of scope.
+Make the alert-specific live-verification regression deterministic with the
+local runtime stack both stopped and running; preserve production behavior.

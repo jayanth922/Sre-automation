@@ -310,3 +310,76 @@ async def test_full_workflow_passes_both_gates_before_raising_pr():
         ("raise_pr", "PENDING"),
         ("raise_pr", "PR_CREATED"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_restart_preserves_pending_gate_and_denial_stops_pipeline():
+    """A replacement worker resumes the gate state without opening later gates."""
+    from temporalio import activity
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+
+    gate_events = []
+
+    @activity.defn(name="emit_gate_event_activity")
+    async def emit_gate_event(_incident, _workflow, gate, status, _detail):
+        gate_events.append((gate, status))
+
+    @activity.defn(name="open_gate_activity")
+    async def open_gate(*_args):
+        return None
+
+    @activity.defn(name="expire_gate_approval_activity")
+    async def expire_gate(*_args):
+        raise AssertionError("restart/denial path must not expire the gate")
+
+    params = IncidentRemediationInput(
+        incident_id="incident-restart",
+        organization_id="org-restart",
+        cluster_id="cluster-restart",
+        action_type="code_fix",
+        target="checkout-service",
+        runner_image="sentinel/runner:latest",
+        patch="diff --git a/app.py b/app.py",
+        baseline_command=["python", "baseline.py"],
+        candidate_command=["python", "candidate.py"],
+        failure_signature="panic: restart",
+        approval_timeout_seconds=60,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"incident-remediation-restart-{uuid.uuid4().hex}"
+        worker_one = Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[IncidentRemediationWorkflow],
+            activities=[emit_gate_event, open_gate, expire_gate],
+            max_cached_workflows=0,
+        )
+        worker_one_task = asyncio.create_task(worker_one.run())
+        handle = await env.client.start_workflow(
+            IncidentRemediationWorkflow.run,
+            params,
+            id=f"incident-remediation-restart-{uuid.uuid4().hex}",
+            task_queue=task_queue,
+        )
+        await _wait_for_phase(handle, "AWAITING_START_FIX")
+        await worker_one.shutdown()
+        await asyncio.wait_for(worker_one_task, timeout=10)
+
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[IncidentRemediationWorkflow],
+            activities=[emit_gate_event, open_gate, expire_gate],
+            max_cached_workflows=0,
+        ):
+            await handle.signal(
+                IncidentRemediationWorkflow.decide_start_fix,
+                args=[False, "replacement-worker-operator"],
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=10)
+
+    assert result.status == "DENIED_START_FIX"
+    assert result.verification_status is None
+    assert gate_events == [("start_fix", "PENDING"), ("start_fix", "DENIED")]
