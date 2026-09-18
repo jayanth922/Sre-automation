@@ -11,6 +11,9 @@ rather than erroring collection when it's absent (same pattern as
 test_sandbox_workflow.py).
 """
 
+import asyncio
+import uuid
+
 import pytest
 
 pytest.importorskip("temporalio")
@@ -26,6 +29,21 @@ from sre_agent.incident_remediation_workflow import (  # noqa: E402
     _parse_verification_commands,
     _repo_clone_url,
 )
+from sre_agent.sandbox_workflow import (  # noqa: E402
+    CodeFixVerificationWorkflow,
+    CodeFixVerificationInput,
+    SandboxRunRequest,
+    SandboxRunResult,
+    VerdictResult,
+)
+
+
+async def _wait_for_phase(handle, phase: str) -> None:
+    for _ in range(200):
+        if await handle.query(IncidentRemediationWorkflow.phase) == phase:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"workflow never reached phase {phase!r}")
 
 
 def test_deferred_sentinel_is_not_a_known_autonomy_decision():
@@ -156,3 +174,139 @@ def test_pr_result_and_verdict_are_plain_dataclasses():
     assert pr.status == "PR_CREATED"
     verdict = RemediationVerdict("PR_CREATED", "done", pr_url=pr.pr_url, verification_status="RESOLVED")
     assert verdict.verification_status == "RESOLVED"
+
+
+@pytest.mark.asyncio
+async def test_full_workflow_passes_both_gates_before_raising_pr():
+    """The real workflow sequencing is exercised without external writes."""
+    gate_events = []
+    cleanup_calls = []
+    verdict_calls = []
+
+    from temporalio import activity
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+
+    @activity.defn(name="emit_gate_event_activity")
+    async def emit_gate_event(incident_id, workflow_id, gate, status, detail):
+        gate_events.append((gate, status))
+
+    @activity.defn(name="open_gate_activity")
+    async def open_gate(*args):
+        return None
+
+    @activity.defn(name="expire_gate_approval_activity")
+    async def expire_gate(*args):
+        raise AssertionError("successful path must not expire a gate")
+
+    @activity.defn(name="raise_pr_activity")
+    async def raise_pr(params: IncidentRemediationInput):
+        return PrResult("PR_CREATED", "created", pr_url="https://example.test/pr/1")
+
+    @activity.defn(name="mark_incident_needs_manual_review_activity")
+    async def mark_manual_review(*args):
+        raise AssertionError("successful path must not escalate")
+
+    @activity.defn(name="run_baseline_activity")
+    async def run_baseline(params: CodeFixVerificationInput):
+        return SandboxRunResult("baseline", "FAILED", logs="panic: boom")
+
+    @activity.defn(name="apply_patch_activity")
+    async def apply_patch(params: CodeFixVerificationInput):
+        return SandboxRunRequest(
+            incident_id=params.incident_id,
+            organization_id=params.organization_id,
+            cluster_id=params.cluster_id,
+            workflow_id="child",
+            stage="candidate",
+            image=params.runner_image,
+            command=params.candidate_command,
+            env=params.env,
+            active_deadline_seconds=params.active_deadline_seconds,
+        )
+
+    @activity.defn(name="run_candidate_activity")
+    async def run_candidate(request: SandboxRunRequest):
+        return SandboxRunResult("candidate", "SUCCEEDED", logs="all clean")
+
+    @activity.defn(name="verify_recovery_activity")
+    async def verify_recovery(
+        failure_signature: str,
+        baseline: SandboxRunResult,
+        candidate: SandboxRunResult,
+    ):
+        return VerdictResult("RESOLVED", "candidate no longer fails")
+
+    @activity.defn(name="emit_verdict_activity")
+    async def emit_verdict(
+        incident_id: str, workflow_id: str, verdict: VerdictResult, patch: str
+    ):
+        verdict_calls.append(verdict.status)
+
+    @activity.defn(name="cleanup_activity")
+    async def cleanup(*args):
+        cleanup_calls.append(args[-1])
+
+    params = IncidentRemediationInput(
+        incident_id="incident-e2e",
+        organization_id="org-e2e",
+        cluster_id="cluster-e2e",
+        action_type="code_fix",
+        target="checkout-service",
+        runner_image="sentinel/runner:latest",
+        baseline_command=["python", "baseline.py"],
+        candidate_command=["python", "candidate.py"],
+        patch="diff --git a/app.py b/app.py",
+        failure_signature="panic: boom",
+        approval_timeout_seconds=60,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"incident-remediation-e2e-{uuid.uuid4().hex}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[IncidentRemediationWorkflow, CodeFixVerificationWorkflow],
+            activities=[
+                emit_gate_event,
+                open_gate,
+                expire_gate,
+                raise_pr,
+                mark_manual_review,
+                run_baseline,
+                apply_patch,
+                run_candidate,
+                verify_recovery,
+                emit_verdict,
+                cleanup,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                IncidentRemediationWorkflow.run,
+                params,
+                id=f"incident-remediation-e2e-{uuid.uuid4().hex}",
+                task_queue=task_queue,
+            )
+            await _wait_for_phase(handle, "AWAITING_START_FIX")
+            await handle.signal(
+                IncidentRemediationWorkflow.decide_start_fix,
+                args=[True, "alice"],
+            )
+            await _wait_for_phase(handle, "AWAITING_RAISE_PR")
+            await handle.signal(
+                IncidentRemediationWorkflow.decide_raise_pr,
+                args=[True, "bob"],
+            )
+            result = await handle.result()
+
+    assert result.status == "PR_CREATED"
+    assert result.verification_status == "RESOLVED"
+    assert result.pr_url == "https://example.test/pr/1"
+    assert verdict_calls == ["RESOLVED"]
+    assert len(cleanup_calls) == 1
+    assert gate_events == [
+        ("start_fix", "PENDING"),
+        ("start_fix", "APPROVED"),
+        ("raise_pr", "PENDING"),
+        ("raise_pr", "PR_CREATED"),
+    ]

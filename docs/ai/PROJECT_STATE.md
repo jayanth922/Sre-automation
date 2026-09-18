@@ -63,17 +63,18 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
 - Reflector re-investigation validates recommendations against four agents,
   keeps callables out of checkpoints, bounds depth, and loops only selected
   agents. Stable names preserve a readable Langfuse cycle/expanded DAG.
-- Artifact reload verifies incident ownership and SHA-256 integrity. Tests prove
-  a fresh session can reload the artifact, large raw tool output is absent from
-  successful checkpoints, severity retains exact tool provenance, and storage
-  failure remains lossless. Duplicate deeper-loop findings were removed.
+- Artifact reload verifies ownership and SHA-256 integrity. Tests prove large
+  raw output is absent from successful checkpoints, severity retains tool
+  provenance, and storage failure remains lossless. Duplicate findings removed.
 - All 14 graph nodes now feed local metrics. Tests pin failed-run denominators,
   complete node coverage, and `fallback_allowed=false`; the dead provider-
   switch dashboard surface was removed. The worker regression test proves it
   does not issue a second completion after the runtime writes its rich result.
+- Temporal orchestration test drives both approval gates, child verification,
+  and the PR result with 15 passing workflow tests.
 
 ## Active problem
-Next: full Temporal remediation workflow through both gates; no active code.
+Next: live Temporal-server smoke with mocked activities.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -104,5 +105,5 @@ Next: full Temporal remediation workflow through both gates; no active code.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Exercise local `IncidentRemediationWorkflow` through both
-gates; live writes and GitHub PRs are out of scope.
+Run Temporal-server smoke with restart/denial paths; keep writes and PRs
+out of scope.
