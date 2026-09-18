@@ -39,3 +39,20 @@ def test_ci_runs_backend_frontend_and_manifest_checks():
     assert "tsc --noEmit" in ci or "npm run build" in ci
     assert "check_helm_rbac.sh" in ci
     assert "Dockerfile.dashboard" in ci or "platform/Dockerfile" in ci
+
+
+@pytest.mark.integration
+def test_qdrant_client_and_server_versions_stay_compatible():
+    version = "1.19.1"
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    assert f'"qdrant-client>={version},<1.20.0"' in pyproject
+
+    manifests = [
+        ROOT / "platform" / "docker-compose.yaml",
+        ROOT / "deploy" / "helm" / "sentinel" / "values.yaml",
+        ROOT / "deploy" / "k8s" / "datastores.yaml",
+    ]
+    for manifest in manifests:
+        text = manifest.read_text()
+        assert f"qdrant/qdrant:v{version}" in text, manifest
+        assert "qdrant/qdrant:latest" not in text, manifest

@@ -74,21 +74,20 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
 - ORM-backed API response models use Pydantic `ConfigDict`; validation
   and serialization remain covered. FastAPI startup/shutdown now run through
   one deployed lifespan context with cleanup regression coverage (`12facc3`).
+- Qdrant client/server and all manifests are pinned to 1.19.1; a deployment
+  contract prevents version drift and reintroduction of `latest`.
 
 ## Active problem
-Next: resolve the Qdrant client/server compatibility warning.
+Next: deploy the Qdrant-aligned API/worker and verify source parity.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- `pyproject.toml`, `platform/docker-compose.yaml`, `tests/test_runbook_generator.py`
+- `pyproject.toml`, `platform/docker-compose.yaml`, deployment tests
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,512 passed**; warnings fell from 17 to 1.
-- Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
-- Temporal remediation focused suite: **35 passed**.
-- Live artifact probe wrote, digest-verified, reloaded, and removed one row.
+- Full suite: **1,513 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `2468645c…`, revision `12facc3`, fingerprint
   `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
@@ -99,5 +98,5 @@ Next: resolve the Qdrant client/server compatibility warning.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Align the Qdrant dependency and runtime image on compatible versions; retain
-the compatibility check rather than suppressing its warning.
+Build and deploy API and worker with Qdrant client 1.19.1, then verify health
+and exact source-manifest parity without external remediation writes.
