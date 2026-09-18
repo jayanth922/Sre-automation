@@ -245,5 +245,119 @@ def test_cached_tools_noop_on_empty_list(monkeypatch):
     assert model_router.cached_tools([]) == []
 
 
+# --- Conversation-prefix caching ---------------------------------------------
+
+
+def _react_transcript():
+    """A ReAct loop mid-flight: the newest message is always a tool result."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    return [
+        model_router.cached_system_message("static system prompt"),
+        HumanMessage(content="investigate the checkout 5xx spike"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "get_logs", "args": {}, "id": "call-1"}],
+        ),
+        ToolMessage(content="...50k of logs...", tool_call_id="call-1"),
+    ]
+
+
+def test_conversation_prefix_is_tagged_at_the_newest_tool_result(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    tagged = model_router.cache_conversation_prefix(_react_transcript())
+
+    last = tagged[-1].content
+    assert last == [
+        {
+            "type": "text",
+            "text": "...50k of logs...",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
+
+
+def test_tagging_walks_past_a_tool_calling_message_with_no_prose(monkeypatch):
+    """Anthropic rejects an empty text block, so an AIMessage whose content is
+    ``""`` cannot hold the marker — it has to land further back."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    messages = [
+        HumanMessage(content="investigate"),
+        AIMessage(
+            content="", tool_calls=[{"name": "get_logs", "args": {}, "id": "c1"}]
+        ),
+    ]
+    tagged = model_router.cache_conversation_prefix(messages)
+
+    assert tagged[1].content == ""
+    assert tagged[0].content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_tagging_does_not_mutate_the_caller_transcript(monkeypatch):
+    """The hook returns ``llm_input_messages``; graph state must stay clean, or
+    the next turn's prefix would carry a stale marker and never hit cache."""
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    messages = _react_transcript()
+    original = messages[-1].content
+
+    tagged = model_router.cache_conversation_prefix(messages)
+
+    assert messages[-1].content == original
+    assert tagged is not messages
+
+
+def test_only_one_conversation_breakpoint_is_added(monkeypatch):
+    """Anthropic allows four breakpoints and the system prompt and tool catalog
+    already hold two."""
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    tagged = model_router.cache_conversation_prefix(_react_transcript())
+
+    marked = [
+        message
+        for message in tagged
+        if isinstance(message.content, list)
+        and any(block.get("cache_control") for block in message.content)
+    ]
+    # The static system message plus exactly one conversation breakpoint.
+    assert len(marked) == 2
+
+
+def test_tagging_stops_at_an_existing_marker(monkeypatch):
+    """A transcript of nothing but the already-tagged system message has no
+    room for a second marker behind the first."""
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    messages = [model_router.cached_system_message("static system prompt")]
+
+    assert model_router.cache_conversation_prefix(messages) is messages
+
+
+def test_tagging_preserves_tool_message_status(monkeypatch):
+    """``tool_failures`` detection keys off ``ToolMessage.status``; a copy that
+    dropped it would silently stop reporting downed MCP servers."""
+    from langchain_core.messages import ToolMessage
+
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    messages = [ToolMessage(content="boom", tool_call_id="c1", status="error")]
+
+    tagged = model_router.cache_conversation_prefix(messages)
+
+    assert tagged[0].status == "error"
+    assert tagged[0].tool_call_id == "c1"
+
+
+def test_conversation_prefix_noop_when_caching_disabled(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "false")
+    messages = _react_transcript()
+
+    assert model_router.cache_conversation_prefix(messages) is messages
+
+
+def test_conversation_prefix_noop_on_empty_transcript(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    assert model_router.cache_conversation_prefix([]) == []
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

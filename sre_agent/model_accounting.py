@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - exercised only without LangChain
 
 
 logger = logging.getLogger(__name__)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _TRACE_KEYS = (
     "root_trace_id",
     "run_manifest_id",
@@ -223,7 +223,36 @@ _RATE_KEYS = (
     "output_cost_per_token",
     "cache_read_input_token_cost",
     "cache_creation_input_token_cost",
+    "cache_creation_input_token_cost_above_1hr",
 )
+
+
+def _cache_write_rate(rates: dict[str, float], fallback: float) -> float:
+    """The cache-write rate matching the TTL the router asks for.
+
+    Writing a cache entry costs more the longer it must live — 1.25x the base
+    input rate for Anthropic's 5m entries, 2x for 1h — and LiteLLM prices the
+    two under separate keys. The router defaults to 1h, so reading only
+    ``cache_creation_input_token_cost`` (the 5m rate) understates every write
+    this system makes.
+
+    The response never says which TTL was honoured, so this reads the TTL that
+    was requested. The rate used is recorded on the call either way.
+    """
+    try:
+        try:
+            from .model_router import prompt_cache_ttl
+        except ImportError:
+            from sre_agent.model_router import prompt_cache_ttl
+
+        ttl = prompt_cache_ttl()
+    except Exception:  # pragma: no cover - dependency-light environments
+        ttl = "1h"
+    if ttl == "1h":
+        above_hour = rates.get("cache_creation_input_token_cost_above_1hr")
+        if above_hour is not None:
+            return above_hour
+    return rates.get("cache_creation_input_token_cost", fallback)
 
 
 def _price_table_entry(model: Optional[str]) -> Optional[dict[str, Any]]:
@@ -258,6 +287,9 @@ def _derived_cost(
 ) -> tuple[Optional[float], Optional[dict[str, float]]]:
     """Cost from reported tokens and the pinned price table, plus the rates used.
 
+    The returned rates are the ones *applied*, not a dump of the table row, so
+    a recorded cost can be recomputed from the record alone.
+
     Returns ``(None, None)`` whenever the inputs would force a guess: unknown
     model, unreported usage, or a breakdown that exceeds the input count.
     """
@@ -266,13 +298,13 @@ def _derived_cost(
     entry = _price_table_entry(model)
     if entry is None:
         return None, None
-    rates: dict[str, float] = {}
+    table: dict[str, float] = {}
     for key in _RATE_KEYS:
         value = entry.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            rates[key] = float(value)
-    input_rate = rates.get("input_cost_per_token")
-    output_rate = rates.get("output_cost_per_token")
+            table[key] = float(value)
+    input_rate = table.get("input_cost_per_token")
+    output_rate = table.get("output_cost_per_token")
     if input_rate is None or output_rate is None:
         return None, None
     read = cache_read or 0
@@ -281,12 +313,23 @@ def _derived_cost(
     if uncached < 0:
         # The breakdown contradicts the total; pricing it would invent a number.
         return None, None
-    cost = uncached * input_rate + output_tokens * output_rate
     # A provider that reports cache tokens but no cache rate is priced at the
     # ordinary input rate rather than dropped: the fallback is explicit here and
     # visible in the recorded rates.
-    cost += read * rates.get("cache_read_input_token_cost", input_rate)
-    cost += created * rates.get("cache_creation_input_token_cost", input_rate)
+    rates = {
+        "input_cost_per_token": input_rate,
+        "output_cost_per_token": output_rate,
+        "cache_read_input_token_cost": table.get(
+            "cache_read_input_token_cost", input_rate
+        ),
+        "cache_creation_input_token_cost": _cache_write_rate(table, input_rate),
+    }
+    cost = (
+        uncached * input_rate
+        + output_tokens * output_rate
+        + read * rates["cache_read_input_token_cost"]
+        + created * rates["cache_creation_input_token_cost"]
+    )
     return round(cost, 12), rates
 
 
@@ -473,6 +516,16 @@ class ModelAccountingRecorder:
                     "input": sum(record["tokens"]["input"] for record in records),
                     "output": sum(record["tokens"]["output"] for record in records),
                     "total": sum(record["tokens"]["total"] for record in records),
+                    # Summed with a zero default: a provider reporting no cache
+                    # usage contributes nothing, rather than voiding the total.
+                    # Both are subsets of ``input``, so they never add to it.
+                    "cache_read": sum(
+                        record["tokens"].get("cache_read") or 0 for record in records
+                    ),
+                    "cache_creation": sum(
+                        record["tokens"].get("cache_creation") or 0
+                        for record in records
+                    ),
                 }
                 if complete
                 else None
@@ -580,11 +633,11 @@ class ModelAccountingCallback(BaseCallbackHandler):
             pending.actual_provider,
             pending.actual_model,
         )
+        cache_read, cache_creation = _cache_usage(response)
         cost_usd = _cost(response)
         cost_source = "provider" if cost_usd is not None else None
         cost_rates: Optional[dict[str, float]] = None
         if cost_usd is None:
-            cache_read, cache_creation = _cache_usage(response)
             cost_usd, cost_rates = _derived_cost(
                 actual_model,
                 input_tokens,
@@ -636,6 +689,13 @@ class ModelAccountingCallback(BaseCallbackHandler):
                 "input": input_tokens,
                 "output": output_tokens,
                 "total": total_tokens,
+                # A breakdown of ``input``, never an addition to it. Kept so a
+                # derived cost can be recomputed from the record and its rates,
+                # and so a run can show what its prompt cache actually bought.
+                # ``None`` where the provider reports no cache usage at all,
+                # which is not a completeness failure — most providers don't.
+                "cache_read": cache_read,
+                "cache_creation": cache_creation,
             },
             "cost_usd": cost_usd,
             "cost_source": cost_source,

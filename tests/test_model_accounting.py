@@ -90,7 +90,13 @@ def test_complete_call_records_actual_route_usage_cost_latency_and_trace(tmp_pat
 
     assert summary["complete"] is True
     assert summary["cost_usd"] == pytest.approx(0.0125)
-    assert summary["tokens"] == {"input": 10, "output": 4, "total": 14}
+    assert summary["tokens"] == {
+        "input": 10,
+        "output": 4,
+        "total": 14,
+        "cache_read": 0,
+        "cache_creation": 0,
+    }
     assert summary["root_trace_ids"] == ["trace-123"]
     assert record["routing"]["actual_provider"] == "groq"
     assert record["trace"] == TRACE
@@ -209,6 +215,86 @@ def test_cache_breakdown_exceeding_the_input_count_is_not_priced(monkeypatch):
     assert record["cost_usd"] is None
     assert record["cost_source"] is None
     assert "cost_unavailable" in record["completeness_reasons"]
+
+
+def _priced_cache_write(monkeypatch, ttl):
+    """Record one call that writes 50 cache tokens, under cache TTL ``ttl``."""
+    monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_TTL", ttl)
+    monkeypatch.setattr(
+        accounting,
+        "_price_table_entry",
+        lambda model: {
+            "input_cost_per_token": 2e-6,
+            "output_cost_per_token": 1e-5,
+            "cache_read_input_token_cost": 2e-7,
+            "cache_creation_input_token_cost": 2.5e-6,
+            "cache_creation_input_token_cost_above_1hr": 4e-6,
+        },
+    )
+    response = _response(cost=None)
+    response.generations[0][0].message.usage_metadata.update(
+        {"input_tokens": 50, "input_token_details": {"cache_creation": 50}}
+    )
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id=f"w-{ttl}", metadata=TRACE)
+    callback.on_llm_end(response, run_id=f"w-{ttl}")
+    return accounting.get_model_accounting_recorder().records()[0]
+
+
+def test_one_hour_cache_writes_are_priced_at_the_one_hour_rate(monkeypatch):
+    """A longer-lived cache entry costs more to write (2x base, not 1.25x), and
+    the router asks for 1h by default — pricing every write at LiteLLM's 5m key
+    would understate the bill."""
+    record = _priced_cache_write(monkeypatch, "1h")
+
+    assert record["cost_usd"] == pytest.approx(50 * 4e-6 + 4 * 1e-5)
+    assert record["cost_rates"]["cache_creation_input_token_cost"] == 4e-6
+
+
+def test_five_minute_cache_writes_are_priced_at_the_five_minute_rate(monkeypatch):
+    record = _priced_cache_write(monkeypatch, "5m")
+
+    assert record["cost_usd"] == pytest.approx(50 * 2.5e-6 + 4 * 1e-5)
+    assert record["cost_rates"]["cache_creation_input_token_cost"] == 2.5e-6
+
+
+def test_cache_token_breakdown_is_persisted_on_the_record(monkeypatch):
+    """Without these the derived cost cannot be re-checked against its rates,
+    and a run cannot show what its prompt cache bought."""
+    monkeypatch.setattr(
+        accounting,
+        "_price_table_entry",
+        lambda model: {"input_cost_per_token": 2e-6, "output_cost_per_token": 1e-5},
+    )
+    response = _response(cost=None)
+    response.generations[0][0].message.usage_metadata.update(
+        {
+            "input_tokens": 100,
+            "input_token_details": {"cache_read": 60, "cache_creation": 25},
+        }
+    )
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-b", metadata=TRACE)
+    callback.on_llm_end(response, run_id="call-b")
+
+    tokens = accounting.get_model_accounting_recorder().records()[0]["tokens"]
+    assert tokens["cache_read"] == 60
+    assert tokens["cache_creation"] == 25
+    # A breakdown of the input count, never an addition to it.
+    assert tokens["cache_read"] + tokens["cache_creation"] <= tokens["input"]
+
+
+def test_absent_cache_reporting_is_recorded_as_none_not_zero(monkeypatch):
+    """Most providers report no cache usage at all. That is unknown, not zero,
+    and it is not a completeness failure either."""
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-n", metadata=TRACE)
+    callback.on_llm_end(_response(), run_id="call-n")
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    assert record["tokens"]["cache_read"] is None
+    assert record["tokens"]["cache_creation"] is None
+    assert record["completeness_reasons"] == []
 
 
 def test_provider_qualified_model_names_resolve_in_the_price_table():

@@ -572,6 +572,7 @@ def make_pre_model_hook(
     budget_tokens: Optional[int] = None,
     *,
     on_report: Optional[Callable[[FitReport], None]] = None,
+    prepare_for_model: Optional[Callable[[List[Any]], List[Any]]] = None,
 ) -> Callable[[Any], Dict[str, Any]]:
     """A LangGraph ``pre_model_hook`` that budgets the history before each call.
 
@@ -579,10 +580,25 @@ def make_pre_model_hook(
     sees. Graph state keeps the full transcript, so tool-failure detection and
     the stored evidence artifact are unaffected by anything trimmed here.
 
+    ``prepare_for_model`` is a last pass over the budgeted list, for transforms
+    that must see exactly what will be sent. It runs *after* fitting because
+    the only caller tags an Anthropic cache breakpoint, and a breakpoint placed
+    before trimming could be trimmed away. Kept provider-agnostic here: this
+    module budgets tokens and knows nothing about who is being billed for them.
+
     Fitting failures are swallowed: an over-long prompt is a bad request, but a
     crash in the budgeter would take down an investigation that would otherwise
     have succeeded.
     """
+
+    def _prepare(messages: List[Any]) -> List[Any]:
+        if prepare_for_model is None:
+            return messages
+        try:
+            return prepare_for_model(messages)
+        except Exception:  # pragma: no cover - must not break the loop
+            logger.debug("pre-model preparation skipped", exc_info=True)
+            return messages
 
     def _hook(state: Any) -> Dict[str, Any]:
         messages = (
@@ -594,13 +610,13 @@ def make_pre_model_hook(
             fitted, report = fit_to_budget(messages, budget_tokens)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("context budgeting skipped (non-fatal): %s", exc)
-            return {"llm_input_messages": list(messages or [])}
+            return {"llm_input_messages": _prepare(list(messages or []))}
         if on_report is not None and report.changed:
             try:
                 on_report(report)
             except Exception:  # pragma: no cover - reporting must not break the loop
                 logger.debug("context fit report callback failed", exc_info=True)
-        return {"llm_input_messages": fitted}
+        return {"llm_input_messages": _prepare(fitted)}
 
     return _hook
 

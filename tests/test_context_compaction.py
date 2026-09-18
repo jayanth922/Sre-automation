@@ -389,6 +389,55 @@ def test_pre_model_hook_accepts_an_object_state():
     assert out["llm_input_messages"] == _State.messages
 
 
+def test_prepare_for_model_runs_after_fitting():
+    """The only caller tags an Anthropic cache breakpoint. Placed before
+    trimming, the marker could be the thing that gets trimmed away."""
+    seen = []
+    hook = cc.make_pre_model_hook(
+        budget_tokens=500,
+        prepare_for_model=lambda messages: seen.append(messages) or messages,
+    )
+    hook({"messages": [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", "A" * 40000)]})
+
+    assert len(seen) == 1
+    # It saw the budgeted list, not the 40k original.
+    assert len(cc._content(seen[0][2])) < 40000
+
+
+def test_prepare_for_model_output_is_what_the_model_is_shown():
+    hook = cc.make_pre_model_hook(
+        budget_tokens=100000,
+        prepare_for_model=lambda messages: [*messages, _msg("user", "appended")],
+    )
+    out = hook({"messages": [_msg("user", "hi")]})
+
+    assert cc._content(out["llm_input_messages"][-1]) == "appended"
+
+
+def test_prepare_for_model_failure_does_not_break_the_loop():
+    """Tagging is a cost optimisation; losing it must never lose the run."""
+    def _boom(messages):
+        raise RuntimeError("tagging blew up")
+
+    messages = [_msg("user", "hi")]
+    out = cc.make_pre_model_hook(budget_tokens=100000, prepare_for_model=_boom)(
+        {"messages": messages}
+    )
+
+    assert out["llm_input_messages"] == messages
+
+
+def test_prepare_for_model_still_runs_when_budgeting_failed(monkeypatch):
+    monkeypatch.setattr(cc, "fit_to_budget", lambda *a, **k: 1 / 0)
+    hook = cc.make_pre_model_hook(
+        budget_tokens=10,
+        prepare_for_model=lambda messages: [*messages, _msg("user", "tagged")],
+    )
+    out = hook({"messages": [_msg("user", "hi")]})
+
+    assert cc._content(out["llm_input_messages"][-1]) == "tagged"
+
+
 # ── Pre-run compaction (unchanged behavior) ─────────────────────────────────
 
 

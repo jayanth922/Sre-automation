@@ -54,7 +54,7 @@ import os
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -545,9 +545,13 @@ def route_llm(
 # last content block of a static system prompt, and the last tool in a tool
 # list, with Anthropic's ``cache_control`` marker. Anthropic caches everything
 # up to and including a tagged block, so a single trailing marker is enough to
-# cover an entire (unchanging) system prompt or tool catalog. Sub-1024-token
+# cover an entire (unchanging) system prompt or tool catalog. Sub-minimum
 # prompts silently skip caching (no error, no extra cost), so it's always safe
 # to tag a block whether or not it will actually reach the cacheable minimum.
+#
+# Those two spans are static. The third — the conversation — is not, and is
+# the one that dominates a ReAct loop's bill; `cache_conversation_prefix`
+# below moves a marker to the tail of the transcript before each call.
 
 
 def _prompt_cache_enabled() -> bool:
@@ -558,7 +562,14 @@ def _prompt_cache_enabled() -> bool:
     )
 
 
-def _prompt_cache_ttl() -> str:
+def prompt_cache_ttl() -> str:
+    """The cache lifetime the router asks Anthropic for.
+
+    Public because it is also a *pricing* input: Anthropic charges 1.25x the
+    base input rate to write a 5m entry and 2x to write a 1h one, so
+    ``model_accounting`` has to know which one was requested to price a cache
+    write correctly.
+    """
     ttl = os.getenv("ANTHROPIC_PROMPT_CACHE_TTL", "1h").strip().lower()
     return ttl if ttl in ("5m", "1h") else "1h"
 
@@ -568,7 +579,7 @@ def cache_control_marker() -> Optional[Dict[str, str]]:
     prompt caching is disabled (``ANTHROPIC_PROMPT_CACHE_ENABLED=false``)."""
     if not _prompt_cache_enabled():
         return None
-    return {"type": "ephemeral", "ttl": _prompt_cache_ttl()}
+    return {"type": "ephemeral", "ttl": prompt_cache_ttl()}
 
 
 def cached_system_message(content: str):
@@ -599,3 +610,77 @@ def cached_tools(tools: List) -> List:
         return tools
     new_extras = {**(getattr(last, "extras", None) or {}), "cache_control": marker}
     return [*tools[:-1], last.model_copy(update={"extras": new_extras})]
+
+
+def _has_cache_marker(content: Any) -> bool:
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("cache_control") for block in content
+    )
+
+
+def _content_with_marker(content: Any, marker: Dict[str, str]) -> Optional[List[Any]]:
+    """``content`` with its last non-empty text block tagged, or ``None`` when
+    it holds nothing cacheable.
+
+    Anthropic rejects an empty text block, so a tool-calling ``AIMessage`` with
+    no prose (content ``""``, everything in ``tool_calls``) is not a place a
+    marker can go — the caller walks past it to an earlier message.
+    """
+    if isinstance(content, str):
+        if not content.strip():
+            return None
+        return [{"type": "text", "text": content, "cache_control": marker}]
+    if isinstance(content, list):
+        for index in range(len(content) - 1, -1, -1):
+            block = content[index]
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and str(block.get("text") or "").strip()
+            ):
+                tagged = {**block, "cache_control": marker}
+                return [*content[:index], tagged, *content[index + 1 :]]
+    return None
+
+
+def cache_conversation_prefix(messages: List[Any]) -> List[Any]:
+    """Return ``messages`` with a cache breakpoint at the end of the transcript.
+
+    ``cached_system_message`` and ``cached_tools`` cover the two *static* spans
+    of a request. Neither covers the conversation, and in a ReAct loop that is
+    where the tokens actually are: every iteration re-sends the whole
+    transcript, so an N-turn investigation pays for its own history N times at
+    the full input rate — quadratic growth in turn count.
+
+    Anthropic caches everything up to and including a tagged block and matches
+    the longest cached prefix of an incoming request, so moving one marker to
+    the tail before each call turns the previous turns into a cache read (10%
+    of the input rate) and leaves only the newest increment at full price.
+
+    Caching changes billing and latency, never sampling: the model is sent
+    byte-identical tokens either way.
+
+    Tagging exactly one block keeps a request to three breakpoints (system
+    prompt, tool catalog, transcript), inside Anthropic's limit of four.
+    """
+    marker = cache_control_marker()
+    if not marker or not messages:
+        return messages
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        content = getattr(message, "content", None)
+        if _has_cache_marker(content):
+            # A marker already covers this prefix — the static system message,
+            # most likely. Adding a second one behind it would buy nothing and
+            # spend a breakpoint.
+            return messages
+        tagged = _content_with_marker(content, marker)
+        if tagged is None:
+            continue
+        try:
+            updated = message.model_copy(update={"content": tagged})
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("prompt-cache tagging skipped", exc_info=True)
+            return messages
+        return [*messages[:index], updated, *messages[index + 1 :]]
+    return messages

@@ -231,10 +231,12 @@ class BaseAgentNode:
         # instead of a full-price re-send. No-op for non-Anthropic providers
         # or when ANTHROPIC_PROMPT_CACHE_ENABLED=false.
         agent_tools = self.tools
+        prepare_for_model = None
         if llm_provider == "anthropic":
-            from .model_router import cached_tools
+            from .model_router import cache_conversation_prefix, cached_tools
 
             agent_tools = cached_tools(self.tools)
+            prepare_for_model = cache_conversation_prefix
 
         # Create the react agent. The tools go in as an explicit ToolNode so a
         # ToolExecutionError (an MCP server that stayed down through every
@@ -266,7 +268,14 @@ class BaseAgentNode:
                     f"{report.after_tokens} tokens (budget {report.budget_tokens}); "
                     f"{report.truncated_results} tool result(s) truncated, "
                     f"{report.dropped_messages} message(s) elided"
-                )
+                ),
+                # The system prompt and tool catalog are already cached, but
+                # they are the *static* part. This is the loop that re-sends
+                # the transcript every iteration, so without a breakpoint at
+                # its tail the history is billed at the full input rate once
+                # per turn. Runs after fitting, so the marker lands on a
+                # message that survived trimming.
+                prepare_for_model=prepare_for_model,
             ),
             # LangGraph otherwise names every specialist subgraph `agent`.
             # Langfuse's Agent Graph keys nodes by this stable name, so the
