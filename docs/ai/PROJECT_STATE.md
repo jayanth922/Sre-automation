@@ -73,14 +73,14 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   isolate the settle floor and no longer stall the suite.
 - ORM-backed API response models use Pydantic `ConfigDict`; validation
   and serialization remain covered. FastAPI startup/shutdown now run through
-  one lifespan context with cleanup regression coverage.
+  one deployed lifespan context with cleanup regression coverage (`12facc3`).
 
 ## Active problem
-Next: deploy the lifespan revision and verify exact runtime parity.
+Next: remove Alembic's legacy path-separator fallback warning.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- `sre_agent/supervisor.py`, `sre_agent/narration_grounding.py`
+- `alembic.ini`, `tests/test_canonical_models.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
@@ -90,8 +90,8 @@ Next: deploy the lifespan revision and verify exact runtime parity.
 - Temporal remediation focused suite: **35 passed**.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `033ea434…`, revision `2d1f65c`, fingerprint
-  `1fe2ecb7…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
+  and worker are healthy on image `2468645c…`, revision `12facc3`, fingerprint
+  `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
 - Live `/agent/metrics` is fail-closed: the stack returned `403`
   because `.env` has no `INTERNAL_API_TOKEN`; schema remains covered by tests.
 
@@ -99,5 +99,5 @@ Next: deploy the lifespan revision and verify exact runtime parity.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Deploy API and worker from the revision, then verify health and source parity;
-do not perform external remediation writes.
+Set Alembic's explicit path separator, then verify the canonical-head test and
+migration commands retain their behavior.
