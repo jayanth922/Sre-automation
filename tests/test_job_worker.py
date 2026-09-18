@@ -48,6 +48,59 @@ async def test_lease_renewer_heartbeats_repeatedly(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_execute_claimed_job_leaves_success_completion_to_runtime(monkeypatch):
+    """The runtime owns the rich terminal job write, not the queue worker."""
+    job = _job()
+    job.payload.update(
+        {
+            "incident_id": str(job.incident_id),
+            "cluster_id": str(job.cluster_id),
+            "alert_name": "ApiLatencyHigh",
+        }
+    )
+    heartbeat_calls = []
+    runtime_calls = []
+
+    async def fake_heartbeat(db, job_id, *, worker_id, lease_seconds):
+        heartbeat_calls.append((job_id, worker_id, lease_seconds))
+
+    async def fake_run(**kwargs):
+        runtime_calls.append(kwargs)
+
+    async def forbidden_complete(*args, **kwargs):  # pragma: no cover - failure path
+        raise AssertionError("job_worker must not complete the runtime-owned job")
+
+    monkeypatch.setattr(job_worker, "heartbeat_job", fake_heartbeat)
+    monkeypatch.setattr(
+        "sre_agent.incident_runner.run_incident_investigation", fake_run
+    )
+    # Keep this guard even though the production import was removed: it makes
+    # a future reintroduction of the second completion owner fail loudly.
+    monkeypatch.setattr(job_worker, "complete_job", forbidden_complete, raising=False)
+    monkeypatch.setattr(
+        job_worker.database, "AsyncSessionLocal", lambda: _FakeSessionContext()
+    )
+
+    await job_worker.execute_claimed_job(job, worker_id="worker-a")
+
+    assert heartbeat_calls == [(job.id, "worker-a", 60)]
+    assert runtime_calls == [
+        {
+            "incident_id": job.incident_id,
+            "cluster_id": job.cluster_id,
+            "alert_name": "ApiLatencyHigh",
+            "job_id": job.id,
+            "alert_labels": {},
+            "alert_annotations": {},
+            "alert_starts_at": None,
+            "alert_severity": "warning",
+            "organization_id": str(job.organization_id),
+            "admission_owner": "worker-a",
+        }
+    ]
+
+
 # --- A claimed batch must not starve behind its own first member -------------
 # `claim_jobs` marks every job in the batch RUNNING with a lease that starts
 # ticking at claim time, but only `execute_claimed_job` starts a job's lease

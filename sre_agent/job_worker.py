@@ -18,7 +18,6 @@ from sre_agent.durable_jobs import (
 )
 from sre_agent.job_store import (
     claim_jobs,
-    complete_job,
     fail_job,
     heartbeat_job,
 )
@@ -76,7 +75,15 @@ async def _renew_job_lease(
 
 
 async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
-    """Run one claimed investigation job and finalize its lease."""
+    """Run one claimed investigation job.
+
+    ``run_incident_investigation`` owns the successful terminal transition: it
+    has the incident status, verification outcome, audit result, trace summary,
+    and dashboard payload needed to write the job atomically. The queue worker
+    only owns the lease while that call is running and records exceptions that
+    escape it. Completing the row here as well would create two completion
+    owners and make the worker race (or reject) the rich runtime result.
+    """
     from sre_agent.incident_runner import run_incident_investigation
 
     payload = job.payload
@@ -142,9 +149,6 @@ async def execute_claimed_job(job: DurableJob, *, worker_id: str) -> None:
     finally:
         stop_renewal.set()
         await asyncio.gather(renewal_task, return_exceptions=True)
-
-    async with database.AsyncSessionLocal() as db:
-        await complete_job(db, job.id, worker_id=worker_id, result_payload={"ok": True})
 
 
 async def _execute_and_finalize(job: DurableJob, owner: str) -> None:

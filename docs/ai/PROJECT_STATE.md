@@ -9,20 +9,16 @@ approvals, status transitions, and operator-facing claims.
 P0 #4 crash-resumable live remediation is deployed and live-verified. Temporal
 checkpoints each action; a replacement-worker run proved successful writes are
 not replayed and Task #40 still withdraws later remediation authority after an
-external clear. Stable Langfuse specialist names, fail-closed API/worker image
-parity and missed-clear reconciliation are also deployed.
-Live-action transport failures are now classified at the idempotency boundary:
-only proven pre-claim failures receive bounded Temporal retries, while
-claim/dispatch/audit uncertainty stops the plan for manual review. This complete
-runtime is deployed from exact revision `d6a6a1b`.
-The P1 reflector branch is deployed. Artifact-backed specialist context is
-deployed from exact revision `5c292cd`.
-Observability semantics are corrected and fully tested locally.
+external clear. Stable Langfuse names, fail-closed image parity, and
+missed-clear reconciliation are deployed. Live-action transport failures now
+retry only proven pre-claim failures; claim/dispatch/audit uncertainty stops
+for manual review. The runtime is exact revision `d6a6a1b`.
+The reflector and artifact-context branches are deployed (`5c292cd`).
+Observability is deployed (`e2b9fe0`); the completion-owner fix is local.
 
 ## Current architecture and invariants
-- `act_phase.build_live_action_requests()` serializes the exact approved batch.
-  `LiveRemediationWorkflow` schedules one activity at a time; the separate
-  `IncidentRemediationWorkflow` continues to own code-fix/sandbox/PR work.
+- `act_phase` serializes the approved batch; `LiveRemediationWorkflow` runs one
+  activity at a time while `IncidentRemediationWorkflow` owns code-fix/PR work.
 - `mutation_gateway.authorize_and_execute()` remains the sole fresh incident,
   policy, tenant/namespace, idempotency, and audit boundary.
 - Unexpected failures before an idempotency claim become retryable
@@ -44,6 +40,8 @@ Observability semantics are corrected and fully tested locally.
 - The local recorder measures every top-level graph node. Failed calls count as
   runs and latency; Langfuse separately owns model/tool/token/cost semantics.
   No surface claims unobserved cross-provider fallback.
+- The canonical SaaS runtime owns the successful durable-job terminal write;
+  the queue worker holds the lease and handles only exceptions that escape it.
 - Lost resolved webhooks are recovered only when the original durable alert job
   identifies a Prometheus rule that exists and is healthy, and two snapshots at
   least five minutes apart show no matching active series. The first observation
@@ -54,29 +52,27 @@ Observability semantics are corrected and fully tested locally.
 ## Completed or verified work
 - A controlled workflow checkpointed action 0, lost its worker, then resumed
   after alert clear with one `EXECUTED`, one `REFUSED(incident_resolved)`, no
-  verification, exactly one audit, and no repeated cluster mutation.
+  verification, one audit, and no repeated mutation.
 - Fresh Langfuse trace `1814f33e5e50a4aaf93e788ebcaba7d4`: 142 observations,
   zero generic `agent` names, zero errors/missing I/O, and all 31 generations
   carried model and usage metadata.
 - A process-restart regression recovers after two healthy absences, invokes
-  Task #40 once, records `remediation_verified=false`, and cannot replay closure.
-  A CAS prevents late-webhook/reconciler races.
-- Reflector re-investigation now validates model recommendations against four
-  evidence agents, keeps callables outside checkpoint state, reruns only the
-  selected agents, increments a durable depth counter, and conditionally loops
-  `reflector → investigation_swarm → reflector`. Invalid names and depth
-  exhaustion fall through to the planner. Stable observation names preserve a
-  readable Langfuse cycle/expanded DAG.
+  Task #40 once, records `remediation_verified=false`, and cannot replay closure;
+  a CAS prevents late-webhook/reconciler races.
+- Reflector re-investigation validates recommendations against four agents,
+  keeps callables out of checkpoints, bounds depth, and loops only selected
+  agents. Stable names preserve a readable Langfuse cycle/expanded DAG.
 - Artifact reload verifies incident ownership and SHA-256 integrity. Tests prove
   a fresh session can reload the artifact, large raw tool output is absent from
   successful checkpoints, severity retains exact tool provenance, and storage
   failure remains lossless. Duplicate deeper-loop findings were removed.
 - All 14 graph nodes now feed local metrics. Tests pin failed-run denominators,
   complete node coverage, and `fallback_allowed=false`; the dead provider-
-  switch dashboard surface was removed.
+  switch dashboard surface was removed. The worker regression test proves it
+  does not issue a second completion after the runtime writes its rich result.
 
 ## Active problem
-The observability correction is not yet committed or deployed.
+The completion-owner correction is committed locally but not yet deployed.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -92,18 +88,19 @@ The observability correction is not yet committed or deployed.
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Observability-focused suite: **130 passed**. Full suite: **1,507 passed**.
+- Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
 - Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
-- Live artifact probe wrote, digest-verified, reloaded, and removed one exact row.
+- Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `d4f32ad4…`, revision `5c292cd`, fingerprint
-  `b90474be…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
+  and worker are healthy on image `1a15c4cf…`, revision `e2b9fe0`, fingerprint
+  `28540eba…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head). The local
+  Docker daemon was unavailable when the `/agent/metrics` live schema probe was
+  attempted; the endpoint contract is covered by the focused suite.
 
 ## Known blockers or risks
-- Codespace k3s often stops after sleep. Run `scripts/codespace_boot.sh` and
-  verify `kubectl get nodes` before live actions.
-- `.env.local-backup-20260910` is untracked, contains live secrets, and is not
-  ignored. Never stage it; avoid `git add -A`.
+- Codespace k3s may stop after sleep; run `scripts/codespace_boot.sh` first.
+- Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Commit/push and deploy the observability correction, verify parity and live node
-metrics, then audit the last P1: no single owner of job completion.
+Commit/push and deploy the completion-owner correction, verify runtime parity
+and `/agent/metrics`, then continue with the next bounded P1 audit.

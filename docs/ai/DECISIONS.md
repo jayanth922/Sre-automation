@@ -794,3 +794,19 @@
   actual model-name differences. Rejected because a model alias/version change
   within one provider is not cross-provider fallback, and relabeling it would
   manufacture an event rather than observe one.
+
+## Runtime owns successful durable-job completion
+
+- **Decision:** `run_graph_background_saas()` is the sole successful terminal
+  writer for an investigation job. The queue worker owns the lease while the
+  run executes and records only exceptions that escape the canonical runner.
+- **Reason:** The runtime has the incident status, verification, audit result,
+  trace completeness, and dashboard payload needed for one atomic terminal
+  write. The worker's second `complete_job()` call discarded that context and
+  raced or rejected the already-completed row.
+- **Consequences:** A successful run has one authoritative `COMPLETED` or
+  `DEGRADED` transition. Runtime failure handling remains retry-aware; worker
+  finalization is reserved for uncaught/pre-runtime failures.
+- **Rejected alternative:** Make the worker complete with `{"ok": true}` and
+  leave the runtime's rich update in place. Rejected because it creates two
+  owners and can turn a retryable runtime failure into a completion attempt.
