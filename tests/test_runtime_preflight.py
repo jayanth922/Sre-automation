@@ -17,6 +17,8 @@ def _runtime_tree(root: Path) -> None:
         directory.mkdir()
         (directory / "__init__.py").write_text("", encoding="utf-8")
     (root / "sre_agent" / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", encoding="utf-8")
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
 
 
 def test_manifest_detects_runtime_file_drift(tmp_path, monkeypatch):
@@ -28,11 +30,23 @@ def test_manifest_detects_runtime_file_drift(tmp_path, monkeypatch):
 
     identity = rp.verify_runtime("worker", root=tmp_path, manifest_path=manifest)
     assert identity.code_sha == "abc123"
-    assert identity.file_count == 3
+    assert identity.file_count == 5
 
     (tmp_path / "sre_agent" / "worker.py").write_text("VALUE = 2\n", encoding="utf-8")
     with pytest.raises(rp.RuntimePreflightError, match="differ from the image"):
         rp.verify_runtime("worker", root=tmp_path, manifest_path=manifest)
+
+
+def test_manifest_detects_dependency_lock_drift(tmp_path, monkeypatch):
+    _runtime_tree(tmp_path)
+    manifest = tmp_path / "runtime.json"
+    rp.write_runtime_manifest(manifest, root=tmp_path, code_sha="abc123")
+    monkeypatch.setenv(rp.CODE_SHA_ENV, "abc123")
+
+    (tmp_path / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+
+    with pytest.raises(rp.RuntimePreflightError, match="differ from the image"):
+        rp.verify_runtime("api", root=tmp_path, manifest_path=manifest)
 
 
 def test_manifest_rejects_deployment_revision_mismatch(tmp_path, monkeypatch):

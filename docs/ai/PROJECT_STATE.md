@@ -44,7 +44,7 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   identifies a Prometheus rule that exists and is healthy, and two snapshots at
   least five minutes apart show no matching active series. The first observation
   is durable; missing/unhealthy/unreachable source state leaves the incident open.
-- API and Temporal worker share one image and verify the same source manifest
+- API and Temporal worker share one image and verify the same source/dependency manifest
   before work; deployment fails if their runtime identities differ.
 
 ## Completed or verified work
@@ -80,7 +80,7 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: make dependency changes alter the runtime fingerprint.
+Next: deploy manifest schema v2 and verify exact parity.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
@@ -89,7 +89,7 @@ Next: make dependency changes alter the runtime fingerprint.
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,515 passed** with zero warnings.
+- Full suite: **1,516 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `0134900e…`, revision `0d71536`, fingerprint
   `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
@@ -98,5 +98,5 @@ Next: make dependency changes alter the runtime fingerprint.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Include `pyproject.toml` and `uv.lock` in the runtime manifest so dependency
-drift changes the fingerprint; preserve API/worker parity enforcement.
+Build and deploy manifest schema v2, then verify both entrypoints report the
+new 151-file source/dependency fingerprint and remain healthy.

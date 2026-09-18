@@ -2,7 +2,7 @@
 
 The API and Temporal worker are intentionally two entrypoints into one image.
 This module gives that contract a concrete identity: Docker writes a manifest
-after copying the Python sources, both processes verify it before serving work,
+after copying the runtime inputs, both processes verify it before serving work,
 and the deploy checker compares the two running identities.
 """
 
@@ -17,10 +17,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 MANIFEST_ENV = "SENTINEL_RUNTIME_MANIFEST"
 CODE_SHA_ENV = "SENTINEL_CODE_SHA"
 _RUNTIME_PACKAGES = ("backend", "sre_agent")
+_RUNTIME_METADATA_FILES = ("pyproject.toml", "uv.lock")
 _REQUIRED_SHARED_SYMBOLS = (
     ("sre_agent.act_phase", "execute_live_action_request"),
     ("sre_agent.executor", "NON_MUTATING_ACTIONS"),
@@ -57,6 +58,11 @@ def _runtime_files(root: Path) -> Iterable[Path]:
             for path in package_root.rglob("*.py")
             if "__pycache__" not in path.parts
         )
+    for relative in _RUNTIME_METADATA_FILES:
+        path = root / relative
+        if not path.is_file():
+            raise RuntimePreflightError(f"runtime metadata is missing: {path}")
+        yield path
 
 
 def compute_runtime_fingerprint(root: Path) -> tuple[str, int]:
