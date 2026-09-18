@@ -76,16 +76,16 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   one deployed lifespan context with cleanup regression coverage (`12facc3`).
 
 ## Active problem
-Next: remove Alembic's legacy path-separator fallback warning.
+Next: resolve the Qdrant client/server compatibility warning.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- `alembic.ini`, `tests/test_canonical_models.py`
+- `pyproject.toml`, `platform/docker-compose.yaml`, `tests/test_runbook_generator.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,512 passed**; warnings fell from 17 to 2.
+- Full suite: **1,512 passed**; warnings fell from 17 to 1.
 - Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
 - Temporal remediation focused suite: **35 passed**.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
@@ -99,5 +99,5 @@ Next: remove Alembic's legacy path-separator fallback warning.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Set Alembic's explicit path separator, then verify the canonical-head test and
-migration commands retain their behavior.
+Align the Qdrant dependency and runtime image on compatible versions; retain
+the compatibility check rather than suppressing its warning.
