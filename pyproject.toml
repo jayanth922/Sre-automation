@@ -87,7 +87,7 @@ bench = [
 # Temporal-orchestrated code-fix verification sandbox (sre_agent.sandbox_worker).
 # Optional: only the worker container needs it, not the API image.
 temporal = [
-    "temporalio>=1.7.0",
+    "temporalio>=1.32.0,<1.33.0",
 ]
 
 

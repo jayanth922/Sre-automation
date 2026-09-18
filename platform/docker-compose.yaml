@@ -89,7 +89,7 @@ services:
   # ============================================
 
   temporal:
-    image: temporalio/temporal:latest
+    image: temporalio/temporal:1.8.3
     container_name: sre-temporal
     hostname: temporal
     profiles: ["local-temporal"]

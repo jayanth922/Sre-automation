@@ -23,18 +23,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
 
 # Copy dependency manifest and install
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra temporal
 
 # Anthropic (Claude) client. Kept as a separate image layer instead of in the
 # locked graph so `uv sync --frozen` stays reproducible; only needed when
 # LLM_PROVIDER=anthropic. Groq / openai_compatible work without it.
 RUN uv pip install --no-cache "langchain-anthropic>=0.2.0"
 
-# Temporal client/worker SDK. Same image doubles as the sandbox workflow
-# worker (see deploy/helm/sentinel/templates/temporal-worker.yaml) with a
-# different entrypoint, so it needs this even though the API process itself
-# never imports sre_agent.sandbox_workflow directly.
-RUN uv pip install --no-cache "temporalio>=1.7.0"
+# The Temporal client/worker SDK comes from the locked `temporal` extra above.
+# This image doubles as the sandbox workflow worker (see
+# deploy/helm/sentinel/templates/temporal-worker.yaml), so both entrypoints use
+# exactly the same SDK build.
 
 # Copy application code — only platform-relevant modules
 COPY sre_agent/ ./sre_agent/

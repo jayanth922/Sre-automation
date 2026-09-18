@@ -75,10 +75,11 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   and serialization remain covered. FastAPI startup/shutdown now run through
   one deployed lifespan context with cleanup regression coverage (`12facc3`).
 - Qdrant client/server and all manifests are deployed at 1.19.1; a deployment
-  contract prevents version drift and reintroduction of `latest`.
+  contract prevents version drift and reintroduction of `latest`. Temporal's
+  dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: pin the local Temporal server image and SDK compatibility window.
+Next: deploy the Temporal-pinned runtime and verify exact parity.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
@@ -87,16 +88,14 @@ Next: pin the local Temporal server image and SDK compatibility window.
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,513 passed** with zero warnings.
+- Full suite: **1,514 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `4ca57fbb…`, revision `e9eecf9`, fingerprint
   `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
-- Live `/agent/metrics` is fail-closed: the stack returned `403`
-  because `.env` has no `INTERNAL_API_TOKEN`; schema remains covered by tests.
 
 ## Known blockers or risks
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Pin the Temporal dev-server image and constrain its SDK extra compatibly; prove
-the process-death and two-gate workflow tests still pass.
+Build and deploy API and worker with the locked Temporal SDK, then verify health
+and exact source-manifest parity without external remediation writes.

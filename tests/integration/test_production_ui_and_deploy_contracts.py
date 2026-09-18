@@ -56,3 +56,16 @@ def test_qdrant_client_and_server_versions_stay_compatible():
         text = manifest.read_text()
         assert f"qdrant/qdrant:v{version}" in text, manifest
         assert "qdrant/qdrant:latest" not in text, manifest
+
+
+@pytest.mark.integration
+def test_temporal_server_and_sdk_are_pinned():
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    dockerfile = (ROOT / "platform" / "Dockerfile").read_text()
+    compose = (ROOT / "platform" / "docker-compose.yaml").read_text()
+
+    assert '"temporalio>=1.32.0,<1.33.0"' in pyproject
+    assert "uv sync --frozen --no-dev --extra temporal" in dockerfile
+    assert 'uv pip install --no-cache "temporalio' not in dockerfile
+    assert "temporalio/temporal:1.8.3" in compose
+    assert "temporalio/temporal:latest" not in compose
