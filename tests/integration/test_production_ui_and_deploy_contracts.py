@@ -65,7 +65,17 @@ def test_temporal_server_and_sdk_are_pinned():
     compose = (ROOT / "platform" / "docker-compose.yaml").read_text()
 
     assert '"temporalio>=1.32.0,<1.33.0"' in pyproject
-    assert "uv sync --frozen --no-dev --extra temporal" in dockerfile
+    assert "uv sync --frozen --no-dev --extra temporal --extra anthropic" in dockerfile
     assert 'uv pip install --no-cache "temporalio' not in dockerfile
     assert "temporalio/temporal:1.8.3" in compose
     assert "temporalio/temporal:latest" not in compose
+
+
+@pytest.mark.integration
+def test_anthropic_runtime_dependency_is_locked():
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    dockerfile = (ROOT / "platform" / "Dockerfile").read_text()
+
+    assert '"langchain-anthropic>=1.7.2,<1.8.0"' in pyproject
+    assert "--extra anthropic" in dockerfile
+    assert 'uv pip install --no-cache "langchain-anthropic' not in dockerfile

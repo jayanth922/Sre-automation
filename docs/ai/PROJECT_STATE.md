@@ -74,12 +74,13 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
 - ORM-backed API response models use Pydantic `ConfigDict`; validation
   and serialization remain covered. FastAPI startup/shutdown now run through
   one deployed lifespan context with cleanup regression coverage (`12facc3`).
+- Anthropic 1.7.2 now comes from the frozen image graph.
 - Qdrant client/server and all manifests are deployed at 1.19.1; a deployment
   contract prevents version drift and reintroduction of `latest`. Temporal's
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: move the Anthropic runtime dependency into the locked graph.
+Next: deploy the fully locked runtime and verify exact parity.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
@@ -88,7 +89,7 @@ Next: move the Anthropic runtime dependency into the locked graph.
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,514 passed** with zero warnings.
+- Full suite: **1,515 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `3e87403a…`, revision `e78781d`, fingerprint
   `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
@@ -97,5 +98,5 @@ Next: move the Anthropic runtime dependency into the locked graph.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Replace the Dockerfile's unbounded Anthropic install with a constrained project
-extra, and prove image installation no longer mutates locked dependencies.
+Build and deploy the frozen Anthropic/Temporal dependency graph, then verify
+health and source-manifest parity without external remediation writes.

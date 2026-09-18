@@ -23,12 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
 
 # Copy dependency manifest and install
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --extra temporal
-
-# Anthropic (Claude) client. Kept as a separate image layer instead of in the
-# locked graph so `uv sync --frozen` stays reproducible; only needed when
-# LLM_PROVIDER=anthropic. Groq / openai_compatible work without it.
-RUN uv pip install --no-cache "langchain-anthropic>=0.2.0"
+RUN uv sync --frozen --no-dev --extra temporal --extra anthropic
 
 # The Temporal client/worker SDK comes from the locked `temporal` extra above.
 # This image doubles as the sandbox workflow worker (see
