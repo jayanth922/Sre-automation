@@ -1026,181 +1026,200 @@ def _make_infra_prescan_node(kubernetes_agent):
     return _infra_prescan
 
 
-async def _investigation_swarm(state: AgentState, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+_DEEPER_AGENT_ALIASES = {
+    "kubernetes": "kubernetes_agent",
+    "kubernetes_agent": "kubernetes_agent",
+    "infra": "kubernetes_agent",
+    "infrastructure": "kubernetes_agent",
+    "metrics": "metrics_agent",
+    "metrics_agent": "metrics_agent",
+    "prometheus": "metrics_agent",
+    "logs": "logs_agent",
+    "logs_agent": "logs_agent",
+    "loki": "logs_agent",
+    "github": "github_agent",
+    "github_agent": "github_agent",
+    "code": "github_agent",
+}
+
+
+def _validated_deeper_agents(recommended_agents: Any) -> List[str]:
+    """Map model recommendations onto the fixed graph-owned specialist set."""
+    selected: List[str] = []
+    for value in recommended_agents or []:
+        key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        canonical = _DEEPER_AGENT_ALIASES.get(key)
+        if canonical and canonical not in selected:
+            selected.append(canonical)
+    return selected
+
+
+def _deeper_investigation_decision(
+    analysis: ReflectorAnalysis,
+    current_count: int,
+    max_depth: int,
+) -> tuple[str, List[str]]:
+    selected = _validated_deeper_agents(analysis.recommended_agents)
+    if (
+        analysis.requires_deeper_investigation
+        and selected
+        and current_count < max(0, max_depth)
+    ):
+        return "investigation_swarm", selected
+    return "planner", []
+
+
+def _route_reflector(state: AgentState) -> str:
+    """The reflector may choose only the bounded loop or the planner."""
+    return (
+        "investigation_swarm"
+        if state.get("next") == "investigation_swarm"
+        else "planner"
+    )
+
+
+def _finding_payload(value: Any) -> Optional[Dict[str, Any]]:
+    """Normalize specialist output into InvestigationFindings' durable shape."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    return {"summary": str(value)}
+
+
+def _make_investigation_swarm_node(
+    kubernetes_agent: Any,
+    metrics_agent: Any,
+    logs_agent: Any,
+    github_agent: Any,
+):
+    """Bind executable agents outside durable graph state.
+
+    Only their stable names cross the checkpoint boundary. This keeps replay
+    serializable and prevents model-produced recommendations from selecting an
+    arbitrary callable or graph node.
     """
-    InvestigationSwarm: Parallel execution of InfraAgent and CodeAgent.
-    
-    This implements the OBSERVE phase of the OODA loop by gathering
-    evidence from multiple sources simultaneously.
-    """
-    logger.info("🔍 InvestigationSwarm: Starting parallel investigation")
+    agent_instances = {
+        "kubernetes_agent": kubernetes_agent,
+        "metrics_agent": metrics_agent,
+        "logs_agent": logs_agent,
+        "github_agent": github_agent,
+    }
 
-    # Prepare investigation query
-    alert_context = state.get("alert_context")
-    current_query = state.get("current_query", "")
+    async def investigation_swarm_node(state: AgentState) -> Dict[str, Any]:
+        logger.info("🔍 InvestigationSwarm: Starting focused deeper investigation")
 
-    if alert_context:
-        investigation_query = f"""
-        Alert: {alert_context.alert_name}
-        Severity: {alert_context.severity}
-        Labels: {alert_context.labels}
-        Description: {alert_context.annotations.get('description', '')}
-        
-        Investigate this alert and gather evidence from infrastructure and code changes.
-        Reference Golden Signals: Latency, Traffic, Errors, Saturation.
-        """
-    else:
-        investigation_query = current_query or "Investigate system health and identify issues."
-
-    # Per-cluster scope: when this cluster is limited to one namespace, tell every
-    # specialist to confine its queries to it — so a scoped cluster investigates
-    # only its own app, not the neighbours sharing the same Prometheus/Loki/K8s.
-    _meta = state.get("metadata", {}) or {}
-    cluster_namespace = str(_meta.get("cluster_namespace") or "").strip()
-    if cluster_namespace:
-        investigation_query += (
-            f"\n\nSCOPE: This cluster is limited to the Kubernetes namespace "
-            f"'{cluster_namespace}'. Investigate only resources in this namespace. "
-            f"Pass namespace=\"{cluster_namespace}\" to any Kubernetes, Prometheus, or "
-            f"Loki tool that accepts a namespace argument, add "
-            f"{{namespace=\"{cluster_namespace}\"}} to every PromQL selector, and use "
-            f"{{namespace=\"{cluster_namespace}\"}} in every LogQL stream selector."
+        metadata = state.get("metadata", {}) or {}
+        selected = _validated_deeper_agents(
+            metadata.get("deeper_investigation_agents")
         )
+        selected = [name for name in selected if agent_instances.get(name) is not None]
+        if not selected:
+            logger.warning("InvestigationSwarm: no valid recommended agents")
+            return {
+                "ooda_phase": "ORIENT",
+                "next": "reflector",
+                "investigation_count": int(
+                    state.get("investigation_count", 0) or 0
+                ) + 1,
+                "metadata": {
+                    **metadata,
+                    "investigation_complete": True,
+                    "investigation_error": "No valid deeper-investigation agents",
+                },
+            }
 
-    # Get agent instances from metadata (passed from graph builder)
-    metadata = state.get("metadata", {})
-    kubernetes_agent = metadata.get("kubernetes_agent")
-    metrics_agent = metadata.get("metrics_agent")
-    logs_agent = metadata.get("logs_agent")
-    github_agent = metadata.get("github_agent")
+        alert_context = state.get("alert_context")
+        current_query = state.get("current_query", "")
+        if alert_context:
+            investigation_query = f"""
+            Alert: {alert_context.alert_name}
+            Severity: {alert_context.severity}
+            Labels: {alert_context.labels}
+            Description: {alert_context.annotations.get('description', '')}
 
-    if not all([kubernetes_agent, metrics_agent, logs_agent]):
-        logger.warning("Agent instances not found in metadata, creating fallback")
-        # Fallback: agents will be created by the wrapper function
+            Re-investigate this alert to resolve the reflector's remaining unknowns.
+            """
+        else:
+            investigation_query = current_query or "Investigate the unresolved system issue."
+
+        analysis = state.get("reflector_analysis")
+        unknowns = getattr(analysis, "unknowns", None) or []
+        if unknowns:
+            investigation_query += "\nRemaining unknowns:\n- " + "\n- ".join(
+                str(item) for item in unknowns
+            )
+
+        cluster_namespace = str(metadata.get("cluster_namespace") or "").strip()
+        if cluster_namespace:
+            investigation_query += (
+                f"\n\nSCOPE: Investigate only Kubernetes namespace "
+                f"'{cluster_namespace}' and scope every supported query to it."
+            )
+
+        agent_results = dict(state.get("agent_results", {}) or {})
+        all_traces = {
+            name: list(items)
+            for name, items in (state.get("thought_traces", {}) or {}).items()
+        }
+
+        for agent_name in selected:
+            logger.info("🤖 %s: Starting deeper investigation", agent_name)
+            thought = (
+                f"Re-checking {agent_name.replace('_agent', '')} evidence to "
+                "resolve the reflector's remaining unknowns."
+            )
+            traces = {name: list(items) for name, items in all_traces.items()}
+            traces.setdefault(agent_name, []).append(thought)
+            agent_state = {
+                **state,
+                "current_query": (
+                    f"As the {agent_name}, investigate: {investigation_query}"
+                ),
+                "thought_traces": traces,
+            }
+            try:
+                result = await agent_instances[agent_name](agent_state)
+            except Exception as exc:
+                logger.error("❌ %s deeper investigation failed: %s", agent_name, exc)
+                agent_results[agent_name] = f"Error: {exc}"
+                all_traces.update(traces)
+                continue
+            if isinstance(result, dict):
+                agent_results.update(result.get("agent_results", {}))
+                all_traces.update(result.get("thought_traces", traces))
+
+        findings = InvestigationFindings(
+            infra_findings={
+                "kubernetes": agent_results.get("kubernetes_agent"),
+                "metrics": agent_results.get("metrics_agent"),
+            },
+            code_findings=_finding_payload(agent_results.get("github_agent")),
+            logs_findings=_finding_payload(agent_results.get("logs_agent")),
+            correlation_timestamp=datetime.now(timezone.utc).isoformat(),
+        )
         return {
-            "investigation_findings": InvestigationFindings(
-                correlation_timestamp=datetime.now(timezone.utc).isoformat(),
-            ),
+            "investigation_findings": findings,
+            "agent_results": agent_results,
             "ooda_phase": "ORIENT",
             "next": "reflector",
+            "thought_traces": all_traces,
+            "investigation_count": int(
+                state.get("investigation_count", 0) or 0
+            ) + 1,
             "metadata": {
-                **state.get("metadata", {}),
+                **metadata,
                 "investigation_complete": True,
-                "investigation_error": "Agent instances not available",
+                "deeper_investigation_agents": selected,
             },
         }
 
-    # Execute agents in parallel
-    async def run_agent(agent_name: str, agent_instance):
-        logger.info(f"🤖 {agent_name}: Starting investigation")
-        thought = f"Hey team, I'm digging into the {agent_name.replace('_agent', '').capitalize()} data around this alert. I'll check the Golden Signals and let you know what I find."
-        logger.info(f"💭 {agent_name} THOUGHT: {thought}")
-
-        # Add thought to traces
-        traces = state.get("thought_traces", {})
-        if agent_name not in traces:
-            traces[agent_name] = []
-        traces[agent_name].append(thought)
-
-        # Create focused state for this agent
-        agent_state = {
-            **state,
-            "current_query": f"As the {agent_name}, investigate: {investigation_query}",
-            "thought_traces": traces,
-        }
-
-        try:
-            # BaseAgentNode uses __call__ which is async, not ainvoke
-            result = await agent_instance(agent_state)
-            logger.info(f"✅ {agent_name}: Investigation complete")
-            return agent_name, result
-        except Exception as e:
-            logger.error(f"❌ {agent_name}: Investigation failed: {e}")
-            return agent_name, {
-                "agent_results": {
-                    agent_name: f"Error: {str(e)}",
-                },
-                "thought_traces": traces,
-            }
-
-    # Execute agents sequentially to stay within free-tier API rate limits
-    logger.info("🔄 Executing agents sequentially (Infra + Code)...")
-    
-    agent_list = [
-        ("kubernetes_agent", kubernetes_agent),
-        ("metrics_agent", metrics_agent),
-        ("logs_agent", logs_agent),
-    ]
-    
-    # Add GitHub agent if available
-    if github_agent:
-        agent_list.append(("github_agent", github_agent))
-        logger.info("🔄 Including GitHub agent for code change correlation")
-    else:
-        logger.warning("⚠️ GitHub agent not available - code change correlation disabled")
-    
-    results = []
-    for name, instance in agent_list:
-        try:
-            res = await run_agent(name, instance)
-            results.append(res)
-        except Exception as e:
-            logger.error(f"Agent {name} raised exception: {e}")
-            results.append((name, Exception(str(e))))
-    
-    # Collect results
-    agent_results = state.get("agent_results", {})
-    all_traces = state.get("thought_traces", {})
-
-    for name_result in results:
-        if not isinstance(name_result, tuple):
-            continue
-            
-        agent_name, result = name_result
-        if isinstance(result, Exception):
-            logger.error(f"Agent {agent_name} raised exception: {result}")
-            agent_results[agent_name] = f"Error: {str(result)}"
-        else:
-            # Merge agent results
-            if isinstance(result, dict):
-                agent_results.update(result.get("agent_results", {}))
-                all_traces.update(result.get("thought_traces", {}))
-
-    # Extract findings
-    infra_findings = {
-        "kubernetes": agent_results.get("kubernetes_agent"),
-        "metrics": agent_results.get("metrics_agent"),
-    }
-    logs_findings = agent_results.get("logs_agent")
-    code_findings = agent_results.get("github_agent")  # Code change intelligence
-
-    findings = InvestigationFindings(
-        infra_findings=infra_findings,
-        code_findings=code_findings,
-        logs_findings=logs_findings,
-        correlation_timestamp=datetime.now(timezone.utc).isoformat(),
-    )
-
-    logger.info("✅ InvestigationSwarm: Parallel investigation complete")
-
-    # Update state with findings
-    return {
-        "investigation_findings": findings,
-        "agent_results": agent_results,
-        "ooda_phase": "ORIENT",
-        "next": "reflector",
-        "thought_traces": all_traces,
-        "investigation_count": state.get("investigation_count", 0) + 1,
-        "metadata": {
-            **state.get("metadata", {}),
-            "investigation_complete": True,
-        },
-    }
+    return investigation_swarm_node
 
 
 async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     """
-    ReflectorNode: Reviews findings from parallel agents, identifies discrepancies,
+    ReflectorNode: Reviews findings from evidence agents, identifies discrepancies,
     and formulates hypotheses. Implements the ORIENT phase of OODA loop.
     """
     logger.info("🧠 ReflectorNode: Analyzing investigation findings")
@@ -1299,7 +1318,9 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
        must name its source and exact query/resource/log/commit locator; never invent one
     4. List material unknowns and assess confidence level (0.0-1.0)
     5. Determine if deeper investigation is needed
-    6. Recommend which agents should investigate further
+    6. Recommend only the evidence agents that should investigate further,
+       using these exact names: kubernetes_agent, metrics_agent, logs_agent,
+       github_agent
 
     Consider Golden Signals:
     - Latency: Is response time degraded?
@@ -1347,20 +1368,33 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         logger.info(f"   Confidence: {analysis.confidence:.2f}")
         logger.info(f"   Discrepancies: {len(analysis.discrepancies)}")
 
-        # Determine next step (configurable investigation depth via MAX_INVESTIGATION_DEPTH)
-        max_depth = int(os.getenv("MAX_INVESTIGATION_DEPTH", "3"))
-        current_investigation_count = state.get("investigation_count", 0)
-        if analysis.requires_deeper_investigation and analysis.recommended_agents and current_investigation_count < max_depth:
+        # Determine the next step through a fixed allowlist and bounded counter.
+        # A model can recommend evidence sources; it cannot choose arbitrary
+        # graph nodes or executable callables.
+        try:
+            max_depth = int(os.getenv("MAX_INVESTIGATION_DEPTH", "3"))
+        except (TypeError, ValueError):
+            max_depth = 3
+        current_investigation_count = int(
+            state.get("investigation_count", 0) or 0
+        )
+        next_node, deeper_agents = _deeper_investigation_decision(
+            analysis,
+            current_investigation_count,
+            max_depth,
+        )
+        if next_node == "investigation_swarm":
             logger.info(
-                f"🔄 ReflectorNode: Routing back to agents for deeper investigation"
+                "🔄 ReflectorNode: Routing to %s for deeper investigation",
+                ", ".join(deeper_agents),
             )
             return {
                 "reflector_analysis": analysis,
-                "next": "investigation_swarm",  # Loop back for deeper investigation
+                "next": "investigation_swarm",
                 "ooda_phase": "OBSERVE",
                 "metadata": {
                     **state.get("metadata", {}),
-                    "deeper_investigation_agents": analysis.recommended_agents,
+                    "deeper_investigation_agents": deeper_agents,
                     "llm_provider": llm_provider,
                 },
                 "thought_traces": traces,
@@ -1853,7 +1887,7 @@ def build_multi_agent_graph(
     Build the multi-agent collaboration graph implementing OODA Loop pattern.
     
     Architecture:
-    - OBSERVE: InvestigationSwarm (parallel agents)
+    - OBSERVE: Supervisor-routed specialists, with a focused bounded recheck
     - ORIENT: ReflectorNode (analysis and hypothesis)
     - DECIDE: PlannerNode (remediation plan)
     - ACT: PolicyGateNode -> ExecutorNode
@@ -1974,14 +2008,26 @@ def build_multi_agent_graph(
     #                    → aggregate → approval_prepare → approval_gate
     #                    → act_gate (ACT, dry-run/live) → END
     #
-    # Reflector's own "deeper investigation" loop-back is intentionally collapsed
-    # to a single forward pass in v1 (fixed reflector → planner edge); wiring the
-    # investigation_swarm loop is a later enhancement.
+    # Reflector may request a bounded second look from a fixed allowlist of
+    # evidence agents. `investigation_count` survives checkpoints and caps the
+    # loop; invalid model-produced agent names fall through to the planner.
     if _act_phase_enabled():
         logger.info(
-            "ACT phase ENABLED: wiring supervisor → reflector → planner → aggregate → approval_gate → act_gate → END"
+            "ACT phase ENABLED: wiring bounded investigate ↔ reflect loop → planner → aggregate → approval_gate → act_gate → END"
         )
         workflow.add_node("reflector", _observed("reflector", _reflector_node))
+        workflow.add_node(
+            "investigation_swarm",
+            _observed(
+                "investigation_swarm",
+                _make_investigation_swarm_node(
+                    kubernetes_agent,
+                    metrics_agent,
+                    logs_agent,
+                    github_agent,
+                ),
+            ),
+        )
 
         async def context_planner_node(state: AgentState) -> Dict[str, Any]:
             return await _planner_node(state, tools)
@@ -2000,7 +2046,15 @@ def build_multi_agent_graph(
         )
         workflow.add_node("approval_gate", _observed("approval_gate", _approval_gate_node))
         workflow.add_node("act_gate", _observed("act_gate", context_act_gate))
-        workflow.add_edge("reflector", "planner")
+        workflow.add_conditional_edges(
+            "reflector",
+            _route_reflector,
+            {
+                "investigation_swarm": "investigation_swarm",
+                "planner": "planner",
+            },
+        )
+        workflow.add_edge("investigation_swarm", "reflector")
         workflow.add_edge("planner", "aggregate")
         workflow.add_edge("aggregate", "approval_prepare")
         workflow.add_edge("approval_prepare", "approval_gate")
@@ -2033,7 +2087,10 @@ def build_multi_agent_graph(
             with open(graph_output_path, "w") as f:
                 f.write("# SRE Agent Architecture (OODA Loop)\n\n")
                 f.write("## OOD Flow:\n")
-                f.write("- **OBSERVE**: investigation_swarm (parallel agents)\n")
+                f.write(
+                    "- **OBSERVE**: supervisor-routed specialists; "
+                    "focused investigation_swarm on reflector recheck\n"
+                )
                 f.write("- **ORIENT**: reflector (analysis & hypothesis)\n")
                 f.write("- **DECIDE**: planner (remediation plan)\n\n")
                 f.write("```mermaid\n")

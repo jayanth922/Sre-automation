@@ -14,6 +14,7 @@ it stays out of the visible cast without being erased from the record.
 
 import asyncio
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,7 +108,10 @@ def test_the_graph_runs_the_prescan_between_prepare_and_the_supervisor():
     assert 'workflow.add_edge("prepare", "infra_prescan")' in source
     assert 'workflow.add_edge("infra_prescan", "supervisor")' in source
     # ...and never as a supervisor routing target: it is not a chat participant.
-    assert '"kubernetes_agent": "kubernetes_agent"' not in source
+    assert 'workflow.add_node("kubernetes_agent"' not in source
+    assert "kubernetes_agent" not in inspect.getsource(
+        graph_builder._route_supervisor
+    )
 
 
 # --------------------------------------------------------------------------

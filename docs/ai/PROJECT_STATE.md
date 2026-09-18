@@ -15,6 +15,7 @@ Live-action transport failures are now classified at the idempotency boundary:
 only proven pre-claim failures receive bounded Temporal retries, while
 claim/dispatch/audit uncertainty stops the plan for manual review. This complete
 runtime is deployed from exact revision `d6a6a1b`.
+The P1 reflector branch is now a real bounded, allowlisted graph loop locally.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -48,16 +49,13 @@ runtime is deployed from exact revision `d6a6a1b`.
 - Fresh Langfuse trace `1814f33e5e50a4aaf93e788ebcaba7d4`: 142 observations,
   zero generic `agent` names, zero errors/missing I/O, and all 31 generations
   carried model and usage metadata.
-- A process-restart regression persists the first healthy absence, recovers on
-  the second, invokes Task #40’s external-clear boundary exactly once, never runs
-  human-resolution semantics, records `remediation_verified=false`, and proves a
-  later sweep cannot replay closure. A CAS prevents late-webhook/reconciler races.
+- A process-restart regression recovers after two healthy absences, invokes
+  Task #40 once, records `remediation_verified=false`, and cannot replay closure.
+  A CAS prevents late-webhook/reconciler races.
 - Live incident `193c3bf3…` lost its resolved webhook while the API/receiver
   were unavailable. Two healthy Prometheus snapshots recovered it exactly once;
   the run recorded `remediation_suppressed.reason=incident_resolved`, zero live
   writes, and zero action/gate approvals.
-- Pre-test monitoring configs were restored; the rule is absent, Alertmanager
-  routes to port 8080, and every Meridian deployment is available.
 - Boundary tests prove: one transient pre-dispatch failure yields two activity
   attempts but one external mutation; exhaustion stops after three; an
   ambiguous dispatched outcome runs once and schedules no later action; audit
@@ -68,12 +66,16 @@ runtime is deployed from exact revision `d6a6a1b`.
   activity attempt 3, `LiveActionPreDispatchError`, and
   `MANUAL_REVIEW_REQUIRED/pre_dispatch_retries_exhausted`. Redis had no claim
   and the executor edge had no matching call. API/worker remained healthy.
+- Reflector re-investigation now validates model recommendations against four
+  evidence agents, keeps callables outside checkpoint state, reruns only the
+  selected agents, increments a durable depth counter, and conditionally loops
+  `reflector → investigation_swarm → reflector`. Invalid names and depth
+  exhaustion fall through to the planner. Stable observation names preserve a
+  readable Langfuse cycle/expanded DAG.
 
 ## Active problem
-P0 #4 is complete. The next audit item is the P1 operational-reflection branch:
-comments and state shape suggest a deeper-investigation loop, but graph wiring
-always routes reflector directly to planner. It must be made truthful by either
-wiring the bounded loop or deleting the unreachable branch.
+The reflector loop is implemented and tested but not yet deployed
+from a clean revision.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -82,6 +84,7 @@ wiring the bounded loop or deleting the unreachable branch.
 - `tests/test_live_remediation_temporal_workflow.py`
 - `tests/test_live_remediation_activity.py`, `tests/test_mutation_gateway.py`
 - `tests/test_alert_lifecycle_reconciler.py`
+- `tests/test_deeper_investigation_loop.py`
 
 ## Verification commands and latest results
 - Focused missed-clear/resolution/reconciler suite: **51 passed**.
@@ -89,6 +92,7 @@ wiring the bounded loop or deleting the unreachable branch.
   were OS-blocked, then all **8 passed** with local-server permission.
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
+- Reflector-loop focused suite: **37 passed**. Full suite: **1,502 passed**.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `d8bcafd7…`, revision `d6a6a1b`, fingerprint
   `42cfe500…`, and 147 files.
@@ -100,7 +104,7 @@ wiring the bounded loop or deleting the unreachable branch.
   ignored. Never stage it; avoid `git add -A`.
 
 ## Next bounded task
-Map the reflector's claimed deeper-investigation state and conditional paths
-against actual LangGraph edges and tests. Choose the smallest honest outcome:
-wire one bounded, durable loop if all required state already exists; otherwise
-remove dead branch/state and update operator-facing documentation.
+Commit/push and deploy the bounded reflector loop from an exact clean revision;
+verify API/worker parity. Then begin the next P1: map large evidence/context
+payloads retained in LangGraph state against existing durable artifact storage,
+and define the smallest artifact-backed replacement without losing traceability.

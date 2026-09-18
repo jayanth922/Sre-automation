@@ -132,6 +132,24 @@
   idempotency claim after an error, or continuing later actions when an earlier
   mutation's outcome is unknown.
 
+## Reflector re-investigation is a bounded graph-owned loop
+
+- **Decision:** When the reflector identifies material unknowns, it may route
+  through `investigation_swarm` and back to itself at most
+  `MAX_INVESTIGATION_DEPTH` times. Recommendations are normalized onto the
+  fixed Kubernetes, metrics, logs, and GitHub agent allowlist; executable agent
+  instances remain graph-bound and never enter checkpointed state.
+- **Reason:** The state and reflector claimed this loop existed, but the graph
+  always routed directly to the planner. Trusting arbitrary model-produced
+  names as graph targets would fix the dead branch by introducing a control-flow
+  vulnerability.
+- **Consequences:** Only recommended evidence agents rerun, the durable counter
+  prevents unbounded model/tool cost, invalid names fall through to planning,
+  and Langfuse receives stable repeated node names that render as a cycle or an
+  expanded per-call DAG.
+- **Rejected alternative:** Delete the branch despite its complete state/model
+  contract, rerun every specialist, or store agent callables in durable state.
+
 ## Per-cluster credentials relay over the MCP transport (Phase 4)
 
 - **Decision:** `edge_mcp_servers/*` keep resolving credentials from static
