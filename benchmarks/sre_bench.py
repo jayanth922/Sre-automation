@@ -120,7 +120,15 @@ FAULT_SERVICE_URLS = {
     "load-generator": os.getenv("BENCH_LOADGEN_URL", "http://localhost:8003"),
 }
 POLL_INTERVAL_SEC = 5
-TIMEOUT_SEC = 300
+# How long one trial may wait for the oracle to see recovery. 300s was chosen
+# when a run was one investigation pass; it is below the floor of what this
+# system actually takes. Measured on the live cluster, a single incident spends
+# 10-30 minutes in the graph: each specialist may burn its own 120s ceiling,
+# and the reflector's unknowns can send the whole set round again. A ceiling
+# under the loop's own runtime does not measure a slow agent, it records every
+# trial as a non-recovery — so the ceiling is operator-set, and the default
+# stays 300 only so existing invocations keep their meaning.
+TIMEOUT_SEC = int(os.getenv("BENCH_INCIDENT_TIMEOUT_SEC", "300"))
 COOLDOWN_SEC = 30
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))

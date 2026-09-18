@@ -55,6 +55,10 @@ Config via env: `BENCH_BASE_URL`, `BENCH_ADMIN_EMAIL`, `BENCH_ADMIN_PASSWORD`,
 `BENCH_CLUSTER_ID`, `BENCH_CLUSTER_TOKEN`, `BENCH_RUNS_PER_SCENARIO`,
 `BENCH_PROMETHEUS_URL`, optional `BENCH_PROMETHEUS_BEARER_TOKEN`,
 `BENCH_ORACLE_RESULTS_PATH`, `BENCH_ORACLE_COMPLETION_GRACE_SEC`,
+`BENCH_INCIDENT_TIMEOUT_SEC` (default 300 — raise it: a live incident measured
+on the reference cluster spends 10-30 minutes in the graph, because each
+specialist may use its full 120s and the reflector's unknowns can send the set
+round again, and a ceiling below that records every trial as a non-recovery),
 `BENCH_DATASET_VERSION` (default `v2`), `BENCH_DATASET_SPLIT`, and
 `BENCH_FAULT_MODE`. Raw agent outputs and structured judgments are written to
 `BENCH_GRADER_RESULTS_PATH` (default `reports/sre-bench-grades.jsonl`).
