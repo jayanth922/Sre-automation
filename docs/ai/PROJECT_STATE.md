@@ -14,7 +14,8 @@ missed-clear reconciliation are deployed. Live-action transport failures now
 retry only proven pre-claim failures; claim/dispatch/audit uncertainty stops
 for manual review. The runtime is exact revision `d6a6a1b`.
 The reflector and artifact-context branches are deployed (`5c292cd`).
-Observability is deployed (`e2b9fe0`); the completion-owner fix is local.
+Observability is deployed (`e2b9fe0`); runtime-only job completion is deployed
+from `5c55bed`.
 
 ## Current architecture and invariants
 - `act_phase` serializes the approved batch; `LiveRemediationWorkflow` runs one
@@ -72,7 +73,8 @@ Observability is deployed (`e2b9fe0`); the completion-owner fix is local.
   does not issue a second completion after the runtime writes its rich result.
 
 ## Active problem
-The completion-owner correction is committed locally but not yet deployed.
+Next gap: aggregate wrap-up narration may not follow computed incident/
+remediation status.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -83,6 +85,7 @@ The completion-owner correction is committed locally but not yet deployed.
 - `tests/test_evidence_artifacts.py`
 - `sre_agent/observability.py`, `sre_agent/model_router.py`
 - `tests/test_observability.py`, `tests/test_model_accounting.py`
+- `sre_agent/supervisor.py`, `sre_agent/narration_grounding.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
@@ -92,15 +95,16 @@ The completion-owner correction is committed locally but not yet deployed.
 - Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `1a15c4cf…`, revision `e2b9fe0`, fingerprint
-  `28540eba…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head). The local
-  Docker daemon was unavailable when the `/agent/metrics` live schema probe was
-  attempted; the endpoint contract is covered by the focused suite.
+  and worker are healthy on image `9b8a7199…`, revision `5c55bed`, fingerprint
+  `e362a3ac…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
+- Live `/agent/metrics` is fail-closed: the stack returned `403`
+  because `.env` has no `INTERNAL_API_TOKEN`; schema remains covered by tests.
 
 ## Known blockers or risks
 - Codespace k3s may stop after sleep; run `scripts/codespace_boot.sh` first.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Commit/push and deploy the completion-owner correction, verify runtime parity
-and `/agent/metrics`, then continue with the next bounded P1 audit.
+Audit `build_supervisor_aggregate_content` and its callers. Add a bounded
+status-grounding regression, preserving actionable remediation details, then
+commit/push/deploy if a fix is required.
