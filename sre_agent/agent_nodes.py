@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,8 +13,10 @@ from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
 
 from .agent_state import AgentState
+from .act_phase import measured_evidence_for_trace
 from .audit_context import set_audit_context, clear_audit_context
 from .constants import AgentMetadata
+from .evidence_artifacts import persist_specialist_trace
 from .incident_timeline import (
     build_specialist_finding_content,
     emit_timeline_event,
@@ -32,6 +35,87 @@ from .prompt_loader import prompt_loader
 logger = logging.getLogger(__name__)
 
 _SPECIALIST_ROLE_METADATA_KEY = "sentinel.specialist_role"
+
+
+def _bounded_agent_result(response: str, max_chars: Optional[int] = None) -> str:
+    """Keep active reasoning context bounded; the artifact remains lossless."""
+    if max_chars is None:
+        try:
+            max_chars = int(os.getenv("AGENT_RESULT_MAX_CHARS", "12000"))
+        except (TypeError, ValueError):
+            max_chars = 12000
+    max_chars = min(max(int(max_chars), 2000), 50000)
+    text = str(response or "")
+    if len(text) <= max_chars:
+        return text
+    marker = "\n\n… [middle omitted; full response stored in evidence artifact] …\n\n"
+    available = max_chars - len(marker)
+    head = available // 2
+    tail = available - head
+    return text[:head] + marker + text[-tail:]
+
+
+async def _artifact_backed_trace_metadata(
+    state: AgentState,
+    *,
+    incident_id: Optional[str],
+    agent_key: str,
+    messages: List[Any],
+    raw_response: str,
+    tool_failures: List[Dict[str, str]],
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Offload a transcript while preserving a lossless in-state fallback."""
+    metadata = dict(state.get("metadata", {}) or {})
+    measured_by_agent = dict(metadata.get("measured_evidence", {}) or {})
+    measured_by_agent[agent_key] = measured_evidence_for_trace(agent_key, messages)
+    metadata["measured_evidence"] = measured_by_agent
+
+    try:
+        reference = await persist_specialist_trace(
+            incident_id=incident_id,
+            root_trace_id=metadata.get("root_trace_id"),
+            agent_name=agent_key,
+            messages=messages,
+            raw_response=raw_response,
+            tool_failures=tool_failures,
+        )
+    except Exception as exc:
+        # The graph must not silently discard evidence just because artifact
+        # storage is unavailable. The old checkpoint shape is intentionally the
+        # fallback, and the error records only its type (never evidence text).
+        logger.warning(
+            "%s - durable evidence artifact unavailable; retaining checkpoint trace: %s",
+            agent_key,
+            type(exc).__name__,
+        )
+        metadata[f"{agent_key}_trace"] = messages
+        errors = dict(metadata.get("evidence_artifact_errors", {}) or {})
+        errors[agent_key] = type(exc).__name__
+        metadata["evidence_artifact_errors"] = errors
+        return metadata, None
+
+    if reference is None:
+        # CLI/ad-hoc runs have no durable incident identity to own an artifact.
+        metadata[f"{agent_key}_trace"] = messages
+        return metadata, None
+
+    references = dict(metadata.get("evidence_artifact_refs", {}) or {})
+    prior = references.get(agent_key, [])
+    if isinstance(prior, dict):
+        prior = [prior]
+    history = [item for item in prior if isinstance(item, dict)]
+    if not any(item.get("artifact_id") == reference["artifact_id"] for item in history):
+        history.append(reference)
+    references[agent_key] = history
+    metadata["evidence_artifact_refs"] = references
+    metadata.pop(f"{agent_key}_trace", None)
+    errors = dict(metadata.get("evidence_artifact_errors", {}) or {})
+    errors.pop(agent_key, None)
+    if errors:
+        metadata["evidence_artifact_errors"] = errors
+    else:
+        metadata.pop("evidence_artifact_errors", None)
+    return metadata, reference
 
 
 def specialist_trace_metadata(agent_type: str) -> Dict[str, str]:
@@ -444,9 +528,27 @@ class BaseAgentNode:
             if agent_response:
                 logger.info(f"{self.name} - Full response: {str(agent_response)}")
 
-            # Update state with streaming info
+            # The internal React transcript can contain every raw tool payload
+            # and is routinely much larger than the specialist's final report.
+            # Persist it as a durable artifact before the graph checkpoints;
+            # policy keeps only its compact measured projection in state.
             agent_type = self._get_agent_type()
             specialist_agent_name = agent_key
+            artifact_metadata, artifact_reference = await _artifact_backed_trace_metadata(
+                state,
+                incident_id=incident_id,
+                agent_key=agent_key,
+                messages=all_messages,
+                raw_response=agent_response,
+                tool_failures=tool_failures,
+            )
+            state_agent_response = (
+                _bounded_agent_result(agent_response)
+                if artifact_reference is not None
+                else agent_response
+            )
+
+            # Update state with streaming info
             speaker_role = visible_specialist_role(specialist_agent_name)
             if speaker_role != "system":
                 # Narrate the finding conversationally before persisting it.
@@ -479,6 +581,8 @@ class BaseAgentNode:
                 # load_incident_chat_context) can still tell real tool
                 # failures apart from the investigated service's own errors.
                 finding_payload["tool_failures"] = tool_failures
+                if artifact_reference is not None:
+                    finding_payload["evidence_artifact_ref"] = artifact_reference
 
                 await emit_timeline_event(
                     incident_id,
@@ -495,23 +599,24 @@ class BaseAgentNode:
             # must not leak into state["messages"] — otherwise the next
             # specialist (with a different bound tool set) would see
             # tool_calls referencing tools it doesn't have, triggering
-            # LangChain's INVALID_CHAT_HISTORY error. The full raw response
-            # is preserved in agent_results[agent_key] for the supervisor
-            # to synthesize from, and in metadata[..._trace] for debugging.
+            # LangChain's INVALID_CHAT_HISTORY error. A bounded head-and-tail
+            # view of the final response stays in agent_results for active
+            # synthesis. The lossless response and tool evidence live in a
+            # durable, content-addressed artifact; state carries its reference
+            # and compact measured values. The legacy metadata trace is
+            # retained only when no durable incident exists or artifact
+            # storage fails.
             return {
                 "agent_results": {
                     **state.get("agent_results", {}),
-                    agent_key: agent_response,
+                    agent_key: state_agent_response,
                 },
                 "agent_tool_failures": {
                     **state.get("agent_tool_failures", {}),
                     agent_key: tool_failures,
                 },
                 "agents_invoked": state.get("agents_invoked", []) + [agent_key],
-                "metadata": {
-                    **state.get("metadata", {}),
-                    f"{agent_key}_trace": all_messages,
-                },
+                "metadata": artifact_metadata,
             }
 
         except Exception as e:

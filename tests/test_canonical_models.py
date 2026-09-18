@@ -105,11 +105,11 @@ def test_agent_audit_migration_exists_and_is_head_child():
     assert "agent_audit_logs" in text
 
 
-def test_alembic_single_head_includes_agent_audit():
+def test_alembic_has_one_canonical_head():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     cfg = Config(str(ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["d4e5f6a7b8c9"], heads
+    assert heads == ["e5f6a7b8c9d0"], heads

@@ -752,3 +752,24 @@
   incident. Rejected because it detects drift only after deployment, misses new
   dependencies, and repeats the exact manual procedure that allowed the worker
   to diverge.
+
+## Raw specialist evidence is artifact-backed, not checkpoint context
+
+- **Decision:** Persist each specialist's lossless tool transcript and final
+  response as a gzip-compressed, content-addressed PostgreSQL artifact. Graph
+  state retains its digest/reference, compact measured evidence used by policy,
+  and at most a bounded head-and-tail view of the final response. Duplicate
+  `investigation_findings` copies are no longer produced.
+- **Reason:** Tool transcripts are the largest checkpoint values and grow with
+  every MCP result. Only measured values and the specialist conclusion are
+  needed for active reasoning; retaining raw payloads in every LangGraph
+  checkpoint increases serialization, storage, and restart cost without adding
+  decision authority.
+- **Consequences:** Artifact reads verify the SHA-256 digest and require the
+  owning incident ID. References remain visible in checkpoint and timeline
+  metadata for Langfuse/audit correlation. If PostgreSQL is unavailable or an
+  ad-hoc run has no durable incident ID, the old in-state trace is retained so
+  evidence is never silently lost.
+- **Rejected alternative:** Treat Langfuse or local JSONL trace files as the
+  artifact store. Rejected because Langfuse is optional and the JSONL file is
+  process-local; neither is the durable incident-owned recovery boundary.

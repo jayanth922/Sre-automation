@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     Index,
     JSON,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -338,9 +339,50 @@ class Incident(Base):
         cascade="all, delete-orphan",
         order_by="IncidentTimelineEvent.sequence",
     )
+    evidence_artifacts: Mapped[List["EvidenceArtifact"]] = relationship(
+        back_populates="incident",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"<Incident(title='{self.title}', severity='{self.severity}')>"
+
+
+class EvidenceArtifact(Base):
+    """Compressed, content-addressed evidence kept outside graph checkpoints."""
+
+    __tablename__ = "evidence_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "kind",
+            "source",
+            "content_sha256",
+            name="uq_evidence_artifact_content",
+        ),
+        Index("ix_evidence_artifacts_incident_created", "incident_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    root_trace_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    stored_byte_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_encoding: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    incident: Mapped["Incident"] = relationship(back_populates="evidence_artifacts")
 
 
 class IncidentTimelineEvent(Base):

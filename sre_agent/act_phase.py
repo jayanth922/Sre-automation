@@ -178,6 +178,60 @@ def _tool_payload(message: Any) -> Any:
         return None
 
 
+def _walk_trace_messages(agent: str, messages: Any) -> Dict[str, Any]:
+    """Extract measured values and provenance from one specialist transcript."""
+    if not isinstance(messages, (list, tuple)):
+        return {}
+    found: Dict[str, Any] = {}
+    for message in messages:
+        # Tool results only — an AIMessage's prose is exactly what this is
+        # avoiding.
+        if _get(message, "tool_call_id", None) is None:
+            continue
+        if _get(message, "status", "success") == "error":
+            continue
+        payload = _tool_payload(message)
+        if payload is None:
+            continue
+        tool = _get(message, "name", None) or "tool"
+        for metric, (value, path) in _walk_metrics(payload).items():
+            if metric in found:
+                continue
+            trail = f"{agent}:{tool}"
+            found[metric] = (value, f"{trail}:{path}" if path else trail)
+    return found
+
+
+def measured_evidence_for_trace(agent: str, messages: Any) -> Dict[str, Any]:
+    """Checkpoint-safe measured evidence derived before a trace is offloaded."""
+    return {
+        metric: {"value": value, "source": source}
+        for metric, (value, source) in _walk_trace_messages(agent, messages).items()
+    }
+
+
+def _walk_artifact_measurements(state: Any) -> Dict[str, Any]:
+    """Read compact measurements whose full transcript lives in an artifact."""
+    metadata = _get(state, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        return {}
+    by_agent = metadata.get("measured_evidence") or {}
+    if not isinstance(by_agent, dict):
+        return {}
+
+    found: Dict[str, Any] = {}
+    for metrics in by_agent.values():
+        if not isinstance(metrics, dict):
+            continue
+        for metric, item in metrics.items():
+            if metric in found or not isinstance(item, dict):
+                continue
+            if "value" not in item or not str(item.get("source") or "").strip():
+                continue
+            found[str(metric)] = (item["value"], str(item["source"]))
+    return found
+
+
 def _walk_tool_outputs(state: Any) -> Dict[str, Any]:
     """Measured metrics from the tool results, not from the model's summary.
 
@@ -197,11 +251,11 @@ def _walk_tool_outputs(state: Any) -> Dict[str, Any]:
     platform has made came from alert labels alone.
 
     The measured numbers were never missing, only in a different place: the
-    specialist's raw tool results are kept in `metadata[f"{agent}_trace"]`, and
-    an MCP server returns JSON. Reading those instead of the prose is also the
-    more defensible source — it is the telemetry itself rather than the
-    model's retelling of it, and it carries real provenance (which agent, which
-    tool).
+    specialist's MCP tool results. Production runs project those values into
+    ``metadata.measured_evidence`` before moving the full transcript to a
+    durable artifact. This walker retains compatibility with older checkpoints
+    and the fail-safe path where the transcript remains under
+    `metadata[f"{agent}_trace"]`.
 
     Tool messages marked `status == "error"` are skipped: a failed call's
     content is an error string, and severity must not be computed from one.
@@ -218,22 +272,8 @@ def _walk_tool_outputs(state: Any) -> Dict[str, Any]:
         if not name.endswith(_TRACE_SUFFIX) or not isinstance(messages, (list, tuple)):
             continue
         agent = name[: -len(_TRACE_SUFFIX)] or "agent"
-        for message in messages:
-            # Tool results only — an AIMessage's prose is exactly what this is
-            # avoiding.
-            if _get(message, "tool_call_id", None) is None:
-                continue
-            if _get(message, "status", "success") == "error":
-                continue
-            payload = _tool_payload(message)
-            if payload is None:
-                continue
-            tool = _get(message, "name", None) or "tool"
-            for metric, (value, path) in _walk_metrics(payload).items():
-                if metric in found:
-                    continue
-                trail = f"{agent}:{tool}"
-                found[metric] = (value, f"{trail}:{path}" if path else trail)
+        for metric, measured in _walk_trace_messages(agent, messages).items():
+            found.setdefault(metric, measured)
     return found
 
 
@@ -435,7 +475,15 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
     )
     # Then the tool results themselves, which outrank both the alert's labels
     # and any structured summary: they are the measurement rather than a
-    # report of it. See `_walk_tool_outputs` for why this exists at all.
+    # report of it. Production checkpoints retain only this compact projection
+    # and an artifact reference; the legacy in-state trace remains a fallback
+    # for ad-hoc runs and artifact-storage failures.
+    _absorb(
+        _walk_artifact_measurements(state),
+        measured,
+        links,
+        source_prefix="tool",
+    )
     _absorb(_walk_tool_outputs(state), measured, links, source_prefix="tool")
 
     for key, value in measured.items():

@@ -16,10 +16,11 @@ and every severity decision came from alert labels alone, while the evidence
 links implied telemetry had been consulted.
 
 The numbers were never missing, just somewhere else: the specialist's raw tool
-results sit in `metadata[f"{agent}_trace"]` and an MCP server returns JSON.
-Reading those is also the better source — the measurement itself rather than
-the model's retelling, with provenance naming the agent, the tool and the path
-inside the payload.
+results. Production now projects their measured values into compact checkpoint
+metadata and stores the full transcript as an artifact; the legacy
+`metadata[f"{agent}_trace"]` shape below remains the compatibility and storage-
+failure path. Both use the measurement itself rather than the model's retelling,
+with provenance naming the agent, the tool and the path inside the payload.
 
 The live case this came from: incident `033d433c` ([inventory-service]
 InventoryHighErrorRate, 02:33) whose Performance Metrics Agent found the

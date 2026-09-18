@@ -21,7 +21,6 @@ from .agent_nodes import (
 )
 from .agent_state import (
     AgentState,
-    InvestigationFindings,
     ReflectorAnalysis,
     RemediationAction,
     RemediationPlan,
@@ -1078,15 +1077,6 @@ def _route_reflector(state: AgentState) -> str:
     )
 
 
-def _finding_payload(value: Any) -> Optional[Dict[str, Any]]:
-    """Normalize specialist output into InvestigationFindings' durable shape."""
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    return {"summary": str(value)}
-
-
 def _make_investigation_swarm_node(
     kubernetes_agent: Any,
     metrics_agent: Any,
@@ -1189,17 +1179,7 @@ def _make_investigation_swarm_node(
                 agent_results.update(result.get("agent_results", {}))
                 all_traces.update(result.get("thought_traces", traces))
 
-        findings = InvestigationFindings(
-            infra_findings={
-                "kubernetes": agent_results.get("kubernetes_agent"),
-                "metrics": agent_results.get("metrics_agent"),
-            },
-            code_findings=_finding_payload(agent_results.get("github_agent")),
-            logs_findings=_finding_payload(agent_results.get("logs_agent")),
-            correlation_timestamp=datetime.now(timezone.utc).isoformat(),
-        )
         return {
-            "investigation_findings": findings,
             "agent_results": agent_results,
             "ooda_phase": "ORIENT",
             "next": "reflector",
