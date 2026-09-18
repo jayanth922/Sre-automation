@@ -74,29 +74,29 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
 - ORM-backed API response models use Pydantic `ConfigDict`; validation
   and serialization remain covered. FastAPI startup/shutdown now run through
   one deployed lifespan context with cleanup regression coverage (`12facc3`).
-- Anthropic 1.7.2 now comes from the frozen image graph.
+- Deployed Anthropic 1.7.2 now comes from the frozen image graph.
 - Qdrant client/server and all manifests are deployed at 1.19.1; a deployment
   contract prevents version drift and reintroduction of `latest`. Temporal's
   deployed dev server/SDK are pinned to CLI 1.8.3 and SDK 1.32.0.
 
 ## Active problem
-Next: deploy the fully locked runtime and verify exact parity.
+Next: make dependency changes alter the runtime fingerprint.
 
 ## Relevant files
 - `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- `pyproject.toml`, `platform/docker-compose.yaml`, deployment tests
+- `sre_agent/runtime_preflight.py`, `tests/test_runtime_preflight.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Full suite: **1,515 passed** with zero warnings.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `3e87403a…`, revision `e78781d`, fingerprint
+  and worker are healthy on image `0134900e…`, revision `0d71536`, fingerprint
   `7fbd3205…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
 
 ## Known blockers or risks
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Build and deploy the frozen Anthropic/Temporal dependency graph, then verify
-health and source-manifest parity without external remediation writes.
+Include `pyproject.toml` and `uv.lock` in the runtime manifest so dependency
+drift changes the fingerprint; preserve API/worker parity enforcement.
