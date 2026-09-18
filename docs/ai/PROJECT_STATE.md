@@ -15,7 +15,7 @@ Live-action transport failures are now classified at the idempotency boundary:
 only proven pre-claim failures receive bounded Temporal retries, while
 claim/dispatch/audit uncertainty stops the plan for manual review. This complete
 runtime is deployed from exact revision `d6a6a1b`.
-The P1 reflector branch is now a real bounded, allowlisted graph loop locally.
+The P1 reflector branch is now a deployed bounded, allowlisted graph loop.
 
 ## Current architecture and invariants
 - `act_phase.build_live_action_requests()` serializes the exact approved batch.
@@ -74,8 +74,9 @@ The P1 reflector branch is now a real bounded, allowlisted graph loop locally.
   readable Langfuse cycle/expanded DAG.
 
 ## Active problem
-The reflector loop is implemented and tested but not yet deployed
-from a clean revision.
+Large evidence and context payloads are retained directly in LangGraph state.
+They need mapping against durable artifact storage before selecting the
+smallest reference-backed replacement that preserves restart and trace behavior.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -94,8 +95,8 @@ from a clean revision.
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
 - Reflector-loop focused suite: **37 passed**. Full suite: **1,502 passed**.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `d8bcafd7…`, revision `d6a6a1b`, fingerprint
-  `42cfe500…`, and 147 files.
+  and worker are healthy on image `f53fec6d…`, revision `202c9f2`, fingerprint
+  `ca76813b…`, and 147 files.
 
 ## Known blockers or risks
 - Codespace k3s often stops after sleep. Run `scripts/codespace_boot.sh` and
@@ -104,7 +105,6 @@ from a clean revision.
   ignored. Never stage it; avoid `git add -A`.
 
 ## Next bounded task
-Commit/push and deploy the bounded reflector loop from an exact clean revision;
-verify API/worker parity. Then begin the next P1: map large evidence/context
-payloads retained in LangGraph state against existing durable artifact storage,
-and define the smallest artifact-backed replacement without losing traceability.
+Map large evidence/context payloads retained in LangGraph state against existing
+durable artifact storage, then define and implement the smallest artifact-backed
+replacement without losing restart safety or Langfuse traceability.
