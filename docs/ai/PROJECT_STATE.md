@@ -235,3 +235,13 @@ service URLs on `10.0.0.207`).
 
 Six pairs per arm will likely report `NOT_DEMONSTRATED` with a non-empty
 `insufficient_evidence` list. Report that as ignorance, not a null.
+
+**API budget.** Measured, not estimated: the first live incident made 123 model
+calls for 3.37M input and 114K output tokens, which reprices to **$8.32**
+(sonnet-5 specialists are 91% of it — 111 calls averaging ~30K input each,
+because every ReAct turn re-sends the growing history). Dev split is 6
+scenarios, so one arm is ~$50 and the four together ~$140, since `no_reflector`
+(~$16, no re-investigation rounds) and `single_agent` (~$22) are much cheaper
+than `full` and `no_memory`. Budget $75 for one arm and $200 for the set to
+cover retries and the act phase. The one lever worth pulling later: only the
+static system prefix is tagged `cache_control`, not the conversation body.

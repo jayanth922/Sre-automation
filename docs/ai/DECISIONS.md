@@ -1111,3 +1111,40 @@ revisited — that is a new decision, not a resumption of this one.
 It would produce a real number attached to a question nobody asked, and the
 number would be quoted as if it validated adaptive routing, which is exactly
 the overstatement the audit was closing.
+
+## Model cost is derived from reported tokens when the client hides `response_cost`
+
+**Decision.** `model_accounting.py` prefers a provider-reported cost and, when
+none is surfaced, derives one from provider-reported token counts against
+LiteLLM's price table. Every record carries `cost_source` (`provider` or
+`derived`); a derived record also carries the exact per-token rates used, and
+the rollup exposes `cost_sources` so a total summed from derived parts is never
+mistaken for a reported one. Token counts are still never estimated — no usage
+means no cost and an incomplete call. Cache-read and cache-creation tokens are
+priced at their own rates, since LiteLLM folds both into `prompt_tokens`.
+
+**Reason.** The module previously held that missing values stay missing rather
+than being estimated from mutable price tables. Live fire showed that stance
+had no reachable success case: `langchain_litellm.ChatLiteLLM` builds its
+`llm_output` from `token_usage` and `model` alone and never propagates the
+`_hidden_params` where LiteLLM puts `response_cost`, so the reported cost is
+structurally unavailable through the only client this system uses. Every one of
+the 123 calls in the first live incident recorded `cost_unavailable`, which made
+the whole rollup incomplete and nulled `cost_usd` and `tokens` on every trial
+record. The real choice was therefore derived-and-labelled versus permanently
+null, and permanently null silently disables the cost half of A10 — the
+question of whether the architecture earns its cost is the one that ablation
+exists to answer.
+
+**Consequences.** Artifact `SCHEMA_VERSION` is 2. `cost_usd` is populated for
+any model LiteLLM prices; an unpriceable model still fails closed. The price
+table is a mutable dependency, which is why the rates travel with the number
+instead of being trusted implicitly. Re-pricing the first live incident from its
+recorded tokens yields $8.32, which is the basis of the ~$50/arm and ~$140/four-arm
+budget.
+
+**Rejected alternative.** Fixing it at the client — patching or replacing
+`ChatLiteLLM` so `_hidden_params` reaches the callback. Rejected as a much
+larger blast radius (the wrapper is what gives every agent `with_structured_output`
+and tool binding) for a number this system can compute exactly from data it
+already records.

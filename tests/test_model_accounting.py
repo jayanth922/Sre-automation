@@ -101,7 +101,8 @@ def test_complete_call_records_actual_route_usage_cost_latency_and_trace(tmp_pat
     assert "secret prompt" not in artifact_text
 
 
-def test_missing_provider_cost_fails_closed_instead_of_estimating():
+def test_unpriceable_model_fails_closed_instead_of_estimating():
+    """``model-a`` is in no price table, so there is nothing to derive from."""
     callback = _instrument(FakeModel())
     callback.on_chat_model_start({}, [["prompt"]], run_id="call-2", metadata=TRACE)
     callback.on_llm_end(_response(cost=None), run_id="call-2")
@@ -118,6 +119,116 @@ def test_missing_provider_cost_fails_closed_instead_of_estimating():
     assert any(
         "cost_unavailable" in reason for reason in summary["completeness_reasons"]
     )
+
+
+def test_provider_reported_cost_is_labelled_and_never_recomputed(monkeypatch):
+    """A reported cost wins outright; the price table is not consulted."""
+    monkeypatch.setattr(
+        accounting,
+        "_price_table_entry",
+        lambda model: pytest.fail("price table consulted despite a reported cost"),
+    )
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-p", metadata=TRACE)
+    callback.on_llm_end(_response(cost=0.0125), run_id="call-p")
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    assert record["cost_usd"] == pytest.approx(0.0125)
+    assert record["cost_source"] == "provider"
+    assert record["cost_rates"] is None
+
+
+def test_cost_is_derived_from_tokens_when_the_client_hides_response_cost(monkeypatch):
+    """ChatLiteLLM drops ``_hidden_params``; tokens still price the call."""
+    monkeypatch.setattr(
+        accounting,
+        "_price_table_entry",
+        lambda model: {"input_cost_per_token": 2e-6, "output_cost_per_token": 1e-5},
+    )
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-d", metadata=TRACE)
+    callback.on_llm_end(_response(cost=None), run_id="call-d")
+    accounting.get_model_accounting_recorder().finalize_trace(
+        "trace-123", status="success"
+    )
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    summary = accounting.get_model_accounting_recorder().summary(
+        root_trace_id="trace-123"
+    )
+
+    # 10 input @ $2/M + 4 output @ $10/M
+    assert record["cost_usd"] == pytest.approx(10 * 2e-6 + 4 * 1e-5)
+    assert record["cost_source"] == "derived"
+    assert record["cost_rates"]["input_cost_per_token"] == pytest.approx(2e-6)
+    assert summary["complete"] is True
+    assert summary["cost_sources"] == ["derived"]
+
+
+def test_cached_input_is_priced_at_the_cache_rate_not_the_input_rate(monkeypatch):
+    """LiteLLM folds cache tokens into ``prompt_tokens``; they are not new input."""
+    monkeypatch.setattr(
+        accounting,
+        "_price_table_entry",
+        lambda model: {
+            "input_cost_per_token": 2e-6,
+            "output_cost_per_token": 1e-5,
+            "cache_read_input_token_cost": 2e-7,
+            "cache_creation_input_token_cost": 2.5e-6,
+        },
+    )
+    response = _response(cost=None)
+    response.generations[0][0].message.usage_metadata.update(
+        {"input_tokens": 100, "input_token_details": {"cache_read": 60}}
+    )
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-c", metadata=TRACE)
+    callback.on_llm_end(response, run_id="call-c")
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    # 40 uncached @ $2/M + 60 cached @ $0.20/M + 4 output @ $10/M
+    assert record["cost_usd"] == pytest.approx(40 * 2e-6 + 60 * 2e-7 + 4 * 1e-5)
+
+
+def test_cache_breakdown_exceeding_the_input_count_is_not_priced(monkeypatch):
+    """Contradictory usage must fail closed rather than invent a negative charge."""
+    monkeypatch.setattr(
+        accounting,
+        "_price_table_entry",
+        lambda model: {"input_cost_per_token": 2e-6, "output_cost_per_token": 1e-5},
+    )
+    response = _response(cost=None)
+    response.generations[0][0].message.usage_metadata.update(
+        {"input_tokens": 10, "input_token_details": {"cache_read": 99}}
+    )
+    callback = _instrument(FakeModel())
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-x", metadata=TRACE)
+    callback.on_llm_end(response, run_id="call-x")
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    assert record["cost_usd"] is None
+    assert record["cost_source"] is None
+    assert "cost_unavailable" in record["completeness_reasons"]
+
+
+def test_provider_qualified_model_names_resolve_in_the_price_table():
+    """The router sends ``anthropic/claude-…``; the table is keyed on the bare id."""
+    pytest.importorskip("litellm")
+    from litellm import model_cost
+
+    bare = next(
+        (
+            name
+            for name, entry in model_cost.items()
+            if "/" not in name
+            and isinstance(entry, dict)
+            and entry.get("input_cost_per_token") is not None
+        ),
+        None,
+    )
+    assert bare is not None, "litellm shipped no priced, unqualified model"
+    assert accounting._price_table_entry(f"anthropic/{bare}") == model_cost[bare]
+    assert accounting._price_table_entry("no/such-model-xyz") is None
 
 
 def test_actual_provider_change_is_explicit_fallback_evidence():

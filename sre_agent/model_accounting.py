@@ -2,8 +2,25 @@
 """Trace-linked, fail-closed accounting for every routed model call.
 
 Only metadata is recorded. Prompts and model outputs never enter the accounting
-artifact. Provider-reported usage and cost are preserved as evidence; missing
-values remain missing rather than being estimated from mutable price tables.
+artifact. Provider-reported usage and cost are preserved as evidence whenever
+the client surfaces them.
+
+Cost is the one value that often cannot be observed. LiteLLM computes a
+``response_cost`` but ``langchain_litellm.ChatLiteLLM`` builds its ``llm_output``
+from ``token_usage`` and ``model`` alone, so the ``_hidden_params`` carrying that
+number never reach a callback. No configuration recovers it. The choice is
+therefore not "reported or estimated" but "derived or permanently null", and a
+null cost silently disables the cost side of every ablation and release
+comparison that consumes this artifact.
+
+So cost is derived from provider-reported token counts against LiteLLM's pinned
+price table when, and only when, the provider did not report one. Every record
+carries ``cost_source`` (``provider`` or ``derived``) and a derived record also
+carries the exact per-token rates it used, so a number produced from a mutable
+table can be re-checked against the table that produced it. Token counts are
+never estimated: if the provider did not report usage, the cost stays ``None``
+and the call is incomplete. Cache-read and cache-creation tokens are priced at
+their own rates rather than as ordinary input.
 """
 
 from __future__ import annotations
@@ -28,7 +45,7 @@ except ImportError:  # pragma: no cover - exercised only without LangChain
 
 
 logger = logging.getLogger(__name__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _TRACE_KEYS = (
     "root_trace_id",
     "run_manifest_id",
@@ -110,7 +127,13 @@ def _response_mappings(response: Any) -> list[dict[str, Any]]:
     llm_output = _mapping(getattr(response, "llm_output", None))
     if llm_output:
         values.append(llm_output)
-        for key in ("token_usage", "usage", "usage_metadata", "_hidden_params"):
+        for key in (
+            "token_usage",
+            "usage",
+            "usage_metadata",
+            "_hidden_params",
+            "input_token_details",
+        ):
             nested = _mapping(llm_output.get(key))
             if nested:
                 values.append(nested)
@@ -121,7 +144,12 @@ def _response_mappings(response: Any) -> list[dict[str, Any]]:
                 nested = _mapping(getattr(message, attribute, None))
                 if nested:
                     values.append(nested)
-                    for key in ("token_usage", "usage", "_hidden_params"):
+                    for key in (
+                        "token_usage",
+                        "usage",
+                        "_hidden_params",
+                        "input_token_details",
+                    ):
                         child = _mapping(nested.get(key))
                         if child:
                             values.append(child)
@@ -169,6 +197,97 @@ def _cost(response: Any) -> Optional[float]:
         _response_mappings(response),
         ("response_cost", "cost_usd", "total_cost", "cost"),
     )
+
+
+def _cache_usage(response: Any) -> tuple[Optional[int], Optional[int]]:
+    """Cache-read and cache-creation input tokens, when the provider reports them.
+
+    LiteLLM folds both into ``prompt_tokens`` for OpenAI compatibility
+    (``raw_input_tokens = prompt_tokens - cache_read - cache_creation``), so
+    these are a *breakdown* of the input count, never an addition to it.
+    """
+    mappings = _response_mappings(response)
+    read = _first_number(mappings, ("cache_read", "cache_read_input_tokens"))
+    creation = _first_number(
+        mappings, ("cache_creation", "cache_creation_input_tokens")
+    )
+    return (
+        int(read) if read is not None else None,
+        int(creation) if creation is not None else None,
+    )
+
+
+# Rate keys in LiteLLM's price table, in the order this module prices them.
+_RATE_KEYS = (
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "cache_read_input_token_cost",
+    "cache_creation_input_token_cost",
+)
+
+
+def _price_table_entry(model: Optional[str]) -> Optional[dict[str, Any]]:
+    """LiteLLM's rates for ``model``, or ``None`` when it does not price it.
+
+    The router hands LiteLLM a provider-qualified name (``anthropic/claude-…``)
+    but the price table is keyed on the bare model id, so the qualified form
+    misses. Both spellings are tried; nothing is guessed beyond that.
+    """
+    if not model:
+        return None
+    try:
+        from litellm import model_cost  # heavy, optional dependency
+    except Exception:  # pragma: no cover - dependency-light environments
+        return None
+    candidates = [model]
+    if "/" in model:
+        candidates.append(model.split("/", 1)[1])
+    for candidate in candidates:
+        entry = model_cost.get(candidate)
+        if isinstance(entry, dict) and entry.get("input_cost_per_token") is not None:
+            return entry
+    return None
+
+
+def _derived_cost(
+    model: Optional[str],
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
+    cache_read: Optional[int],
+    cache_creation: Optional[int],
+) -> tuple[Optional[float], Optional[dict[str, float]]]:
+    """Cost from reported tokens and the pinned price table, plus the rates used.
+
+    Returns ``(None, None)`` whenever the inputs would force a guess: unknown
+    model, unreported usage, or a breakdown that exceeds the input count.
+    """
+    if input_tokens is None or output_tokens is None:
+        return None, None
+    entry = _price_table_entry(model)
+    if entry is None:
+        return None, None
+    rates: dict[str, float] = {}
+    for key in _RATE_KEYS:
+        value = entry.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            rates[key] = float(value)
+    input_rate = rates.get("input_cost_per_token")
+    output_rate = rates.get("output_cost_per_token")
+    if input_rate is None or output_rate is None:
+        return None, None
+    read = cache_read or 0
+    created = cache_creation or 0
+    uncached = input_tokens - read - created
+    if uncached < 0:
+        # The breakdown contradicts the total; pricing it would invent a number.
+        return None, None
+    cost = uncached * input_rate + output_tokens * output_rate
+    # A provider that reports cache tokens but no cache rate is priced at the
+    # ordinary input rate rather than dropped: the fallback is explicit here and
+    # visible in the recorded rates.
+    cost += read * rates.get("cache_read_input_token_cost", input_rate)
+    cost += created * rates.get("cache_creation_input_token_cost", input_rate)
+    return round(cost, 12), rates
 
 
 def _actual_route(
@@ -282,6 +401,7 @@ class ModelAccountingRecorder:
                 "completeness_reasons": ["no_model_calls_recorded"],
                 "calls": 0,
                 "cost_usd": None,
+                "cost_sources": [],
                 "tokens": None,
                 "latency_ms": 0.0,
                 "fallbacks": [],
@@ -338,6 +458,15 @@ class ModelAccountingRecorder:
                 round(sum(record["cost_usd"] for record in records), 12)
                 if complete
                 else None
+            ),
+            # A total summed from derived parts is itself derived. Consumers that
+            # compare cost across runs need to know that before they trust it.
+            "cost_sources": sorted(
+                {
+                    record["cost_source"]
+                    for record in records
+                    if record.get("cost_source")
+                }
             ),
             "tokens": (
                 {
@@ -452,6 +581,19 @@ class ModelAccountingCallback(BaseCallbackHandler):
             pending.actual_model,
         )
         cost_usd = _cost(response)
+        cost_source = "provider" if cost_usd is not None else None
+        cost_rates: Optional[dict[str, float]] = None
+        if cost_usd is None:
+            cache_read, cache_creation = _cache_usage(response)
+            cost_usd, cost_rates = _derived_cost(
+                actual_model,
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_creation,
+            )
+            if cost_usd is not None:
+                cost_source = "derived"
         reasons = [
             f"{key}_missing" for key, value in pending.trace.items() if not value
         ]
@@ -496,6 +638,8 @@ class ModelAccountingCallback(BaseCallbackHandler):
                 "total": total_tokens,
             },
             "cost_usd": cost_usd,
+            "cost_source": cost_source,
+            "cost_rates": cost_rates,
             "latency_ms": round(
                 (time.perf_counter() - pending.started_monotonic) * 1000.0, 3
             ),

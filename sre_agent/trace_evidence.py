@@ -400,6 +400,11 @@ class RunTraceRecorder:
             },
             "error_spans": sum(record["status"] == "error" for record in spans),
             "cost_usd": model_accounting.get("cost_usd") if complete else None,
+            # Whether that cost was reported by the provider or derived from
+            # tokens travels with it; the number alone is not self-describing.
+            "cost_sources": (
+                model_accounting.get("cost_sources", []) if complete else []
+            ),
             "tokens": model_accounting.get("tokens") if complete else None,
             "model_latency_ms": (
                 model_accounting.get("latency_ms") if complete else None
