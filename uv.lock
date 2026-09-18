@@ -3660,6 +3660,7 @@ dependencies = [
     { name = "redis" },
     { name = "slack-bolt" },
     { name = "sqlalchemy" },
+    { name = "tiktoken" },
     { name = "uvicorn" },
 ]
 
@@ -3731,6 +3732,7 @@ requires-dist = [
     { name = "slack-bolt", specifier = ">=1.18.0" },
     { name = "sqlalchemy", specifier = ">=2.0.28" },
     { name = "temporalio", marker = "extra == 'temporal'", specifier = ">=1.32.0,<1.33.0" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "uvicorn", specifier = ">=0.27.0" },
 ]
 provides-extras = ["dev", "bench", "temporal", "anthropic"]

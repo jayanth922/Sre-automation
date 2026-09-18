@@ -20,6 +20,20 @@ else
   PYTHON=(python3)
 fi
 
+# A dependency added to pyproject.toml without re-locking is invisible to CI —
+# `uv sync --frozen` installs the stale lock and says nothing — but it is fatal
+# in the container: the entrypoint's first `uv run` re-locks, rewrites
+# `uv.lock`, and `uv.lock` is one of the files the runtime manifest
+# fingerprints, so the API kills itself at startup with "runtime files differ
+# from the image manifest". That is how `tiktoken>=0.7.0` (added by the
+# context-budget work) took the stack down on first deploy.
+if command -v uv >/dev/null 2>&1; then
+  echo "==> uv lock is in sync with pyproject.toml"
+  uv lock --check
+else
+  echo "==> uv not on PATH; skipping lockfile drift check"
+fi
+
 echo "==> ruff critical (E9/F63/F7/F82/F821/F823/F811)"
 "${RUFF[@]}" check backend sre_agent tests \
   --select E9,F63,F7,F82,F821,F823,F811
