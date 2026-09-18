@@ -35,7 +35,7 @@ same organization name, and the admin manages roles under Team.
 ## Configure
 
 - **Secrets** — `secret.yaml` (git-ignored): `SECRET_KEY`, `POSTGRES_PASSWORD`,
-  and your model provider key (`GROQ_API_KEY`, etc.).
+  and `ANTHROPIC_API_KEY` (Anthropic is the only supported provider).
 - **Config** — `config.yaml`: model choice, feature flags, and the in-cluster
   service DNS for the edge tool servers (already wired). `PROMETHEUS_URL` /
   `LOKI_URL` are blank by default — set them **per cluster** in the console

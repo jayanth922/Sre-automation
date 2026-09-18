@@ -1,14 +1,16 @@
 # Scenario datasets
 
-`v1/` is a content-addressed benchmark dataset. `dataset.json` pins the SHA-256
-of every split, and the loader rejects any unrecorded edit.
+`v2/` is the current content-addressed benchmark dataset; `v1/` is retained
+unchanged for reproducibility of older runs. `dataset.json` pins the SHA-256 of
+every split — and, from schema 2, of the fixture manifest — and the loader
+rejects any unrecorded edit.
 
 Each scenario declares:
 
 - scenario and dataset versions;
 - taxonomy and risk class;
 - provenance;
-- alert input and fault-adapter contract;
+- alert input and fault-adapter contracts;
 - expected evidence;
 - allowed and forbidden action types;
 - expected severity bands; and
@@ -28,11 +30,103 @@ prompts, models, tools, thresholds, or scenario logic.
 Never edit a frozen holdout file in place. Create a new dataset version,
 recompute all split digests, and retain the old version for reproducibility.
 
-## Current boundary
+## Inspecting and re-pinning
 
-Version 1 migrates the four evidence-backed reference-client scenarios that
-already existed in the live benchmark. The `meridian_admin_config_v1` adapter
-executes their typed `/admin/config` inject/cleanup contracts, verifies applied
-values, and restores the healthy baseline. Clean, noisy, multi-fault, capacity,
-security, partial-outage, and no-action cases remain future dataset additions
-and must be backed by runnable fixtures rather than invented labels.
+```
+PYTHONPATH=benchmarks python benchmarks/scenario_dataset.py --version v2
+PYTHONPATH=benchmarks python benchmarks/scenario_dataset.py --version v2 --repin
+```
+
+The first prints each split's scenario count and digest, failing closed on any
+validation error. The second recomputes every pinned digest after a deliberate
+edit and then re-loads all three splits, so it can only restore content
+addressing — it can never bless a dataset that does not validate.
+
+## Schema 2: multi-contract faults
+
+A schema-1 scenario degrades exactly one service. Schema 2 replaces
+`fault.target` / `fault.inject` / `fault.cleanup` with `fault.contracts`, a
+non-empty ordered list of `{target, inject, cleanup}`, so one scenario can
+degrade several services at once — a real fault plus benign noise elsewhere, or
+a compound failure. The loader normalizes both schema versions to the same
+internal shape, so `fault_adapter.py` and `sre_bench.py` only ever see
+`contracts`.
+
+The adapter applies contracts in the declared order and returns one lease each.
+If a later contract fails, every contract already applied is unwound before the
+error propagates, so a failed injection cannot leave a service degraded for the
+next scenario. Cleanup restores in reverse order and attempts every lease
+before reporting failures.
+
+## Fixture capability manifest
+
+`v2/fixtures.json` declares the fault surface the Meridian reference workload
+actually exposes:
+
+- **targets** — each service the adapter can drive, its `/admin/config` path,
+  and every knob with its type, bounds, and the healthy baseline;
+- **alerts** — every Prometheus rule a scenario may claim to have fired, with
+  the severity and service the rule itself emits;
+- **metrics** — every series a recovery probe may query.
+
+Validation happens at load time, so a scenario that invents a fixture fails in
+CI rather than on a live cluster. A scenario is rejected when it names an
+undeclared target, knob, alert, or metric; uses a config path the target does
+not serve; injects a value outside a knob's declared range or of the wrong
+type; injects the declared healthy baseline; cleans up to a value that is not
+the real baseline (which the adapter would refuse anyway); or claims a severity
+or service the alert rule does not emit.
+
+Every knob bound and baseline in the manifest was read out of the reference
+workload's source, and each entry carries a `reference` pointing at it. Change
+the workload and the manifest must change with it, or scenarios will keep
+asserting a fault surface that no longer exists.
+
+## Recovery probes and no-action scenarios
+
+`require_failure_observation` arms the recovery oracle: the probe must observe
+the signal leave its healthy band before recovery can be credited, otherwise
+the trial reports `INVALID_SCENARIO`. Every scenario whose ground truth is a
+real remediation sets it. The three sub-threshold scenarios — where the alert
+fired but the measured signal never actually breached its rule, and the correct
+action is none — must leave it `false`, since the probe is expected to stay
+healthy throughout.
+
+## Known fixture constraints
+
+These are properties of the reference workload, not of the dataset:
+
+- **checkout-service has a ~35% baseline error ratio.** `reserve_inventory_hold`
+  fails a fixed 7-in-20 hash bucket, returning 503 and incrementing
+  `http_errors_total`, while `http_requests_total` counts only `/process`.
+  `CheckoutHighErrorRate` (>0.10) therefore fires permanently at baseline.
+  v1's `bad_deploy_checkout` probe demanded an error ratio below 0.05 and could
+  never establish a healthy baseline, so that scenario would always have
+  reported `INVALID_SCENARIO`. v2 sets checkout error-ratio probes at 0.45,
+  above the organic baseline and below every injected value.
+- **Memory only recovers on restart.** `leak_kb_per_request` appends to a
+  process-lifetime buffer that is never freed, so reverting the knob does not
+  lower `process_memory_bytes_simulated`. The memory scenarios require a
+  checkout pod that has restarted recently enough to be under 150MB; run them
+  against a freshly restarted checkout-service or they begin above their probe
+  threshold.
+- **`payment_failures_total` is emitted by both checkout and payment** and
+  carries only a `reason` label, so probes scope it with `{job="checkout-service"}`.
+  `db_query_duration_seconds` carries only a `query` label and is scoped with
+  `{job="inventory-service"}`.
+- **`load-generator` is not scraped by Prometheus.** It is a fault target only;
+  its effects are observed through the services it drives. The bench reaches it
+  at `BENCH_LOADGEN_URL` (default `http://localhost:8003`).
+- **Two declared alert rules are unused.** `InventoryMemoryApproachingLimit` is
+  unreachable — inventory's analytics buffer plateaus far below its 1MB
+  threshold — and `PaymentServiceUnhandledErrors` fires on the same series as
+  `PaymentServiceHighErrorRate`, which always trips first. Both stay declared so
+  the manifest describes the real rule set rather than a convenient subset.
+
+## What lives elsewhere
+
+Prompt-injection, forged-approval, malicious-runbook, tool-result-spoofing,
+secret-exfiltration and cross-tenant-bait cases are *not* fault-injection
+scenarios — they need no cluster and assert on refusal, not recovery. They live
+in `benchmarks/adversarial/v1/cases.json` under the separate
+`sentinel-adversarial-v1` dataset and are graded by `adversarial_eval.py`.

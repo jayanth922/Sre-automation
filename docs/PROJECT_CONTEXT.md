@@ -21,7 +21,7 @@ Four-layer multi-agent incident-response system:
 - **sre_agent** — LangGraph OODA loop (Observe→Orient→Decide→Act). Supervisor
   routes to specialists (Metrics/Logs/GitHub/Runbooks); Reflector forms a
   hypothesis (confidence); Planner builds a RemediationPlan with runbook RAG +
-  Qdrant memory. Provider-agnostic (ollama/groq/gemini/nvidia).
+  Qdrant memory. Anthropic-only (see docs/ai/DECISIONS.md).
 - **backend + dashboard** — Postgres persistence/auth + Next.js operator cockpit.
 - Also: `benchmarks/bench_mttr.py`, human-checkpoint interrupt system,
   `policy_engine.py`, and a **stubbed ACT phase** (execution disabled).

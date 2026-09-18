@@ -40,8 +40,8 @@ project's fit is a judgment call, that is stated explicitly.
   (Observe → Orient → Decide → Act): a Supervisor plans and routes to
   specialist agents (Metrics, Logs, GitHub, Runbooks); a Reflector forms a
   hypothesis with a confidence score; a Planner produces a remediation plan
-  using runbook RAG and Qdrant incident-memory. Provider-agnostic across
-  ollama / groq / gemini / nvidia.
+  using runbook RAG and Qdrant incident-memory. Anthropic-only; the model
+  router tiers tasks across the Claude ladder rather than across vendors.
 - **backend + dashboard** — Postgres persistence and auth (orgs, users,
   clusters, incidents, timeline events, jobs, SLOs, audit logs) and a Next.js
   operator cockpit that renders the multi-agent conversation live.

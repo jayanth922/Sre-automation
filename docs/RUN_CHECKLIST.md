@@ -11,7 +11,7 @@ exact flags that turn each feature on. Work top to bottom the first time.
 - [ ] `uv` + Python 3.12 (`pyproject.toml` targets 3.12).
 - [ ] Node 20+ (for the dashboard).
 - [ ] A working `~/.kube/config` (the K8s + executor MCP servers mount it).
-- [ ] An LLM provider: local **Ollama**, or an API key for **groq / gemini / nvidia**.
+- [ ] An **Anthropic** API key. Anthropic is the only provider the runtime accepts.
 - [ ] `git bash`/WSL if on Windows (the start scripts are bash).
 
 Housekeeping: the accidental nested `SRE_Agent_Intermediate/` folder was already
@@ -29,8 +29,8 @@ cp edge_mcp_servers/.env.example edge_mcp_servers/.env
 Edit the root `.env` — the values that matter:
 
 - [ ] `SECRET_KEY` — any strong random string.
-- [ ] `LLM_PROVIDER` = `ollama` | `groq` | `gemini` | `nvidia`, plus its key
-      (`GROQ_API_KEY` / `GOOGLE_API_KEY` / `NVIDIA_API_KEY`, or `OLLAMA_BASE_URL`).
+- [ ] `LLM_PROVIDER` = `anthropic` (the only accepted value), plus
+      `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`.
 - [ ] `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`.
 - [ ] MCP URIs (`MCP_K8S_URI` … `MCP_EXECUTOR_URI`) — defaults are correct for the
       local compose setup.

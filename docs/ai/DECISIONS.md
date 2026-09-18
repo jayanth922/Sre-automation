@@ -825,3 +825,234 @@
 - **Rejected alternative:** Rewrite or prompt the model to obey the status.
   Rejected because the existing follow-up incident showed that prompting alone
   still produced contradictory phase claims.
+
+## Sentinel is Anthropic-only; multi-provider is not being pursued
+
+- **Decision:** `provider_config.SUPPORTED_PROVIDERS` stays `("anthropic",)`.
+  Every other value — including one supplied per tier via
+  `MODEL_ROUTER_<TIER>_PROVIDER`, which previously bypassed the check — is
+  rejected at the point of configuration with a migration message. The model
+  router varies the Claude model per task type on a fixed ladder
+  (haiku-4-5 → sonnet-4-5 → sonnet-5 → opus-5); it does not vary vendors.
+- **Reason:** One provider is the only configuration that is exercised end to
+  end. The specialist and planner nodes depend on reliable tool/function-call
+  structured output, and the dead Gemini/Groq/NVIDIA config surface advertised
+  a portability the runtime refused at startup — every doc, chart value, and
+  example secret naming those providers pointed an operator at a guaranteed
+  CrashLoopBackOff.
+- **Consequences:** The honest claim is "static task tiers on the Anthropic
+  ladder", not "adaptive multi-provider routing". `ANTHROPIC_MODEL` must stay
+  on the ladder or per-tier escalation silently falls back to the router's
+  fixed tier defaults. `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` survive as
+  single-tenant fallbacks for an Anthropic-compatible gateway, read only when
+  no cluster is bound (`cluster_context.resolve_llm`). `RequestContext` and
+  the `complexity` axis in `model_router` stay implemented and tested but are
+  documented as having no production caller.
+- **Rejected alternative:** Keeping the multi-provider config surface as a
+  "future option". Rejected because unused config that fails closed at startup
+  is not an option, it is a false claim with a deployment cost.
+
+## Context is budgeted against a declared window with the reply reserved
+
+- **Decision:** `context_compaction` counts tokens with tiktoken (plus a
+  safety ratio, because Anthropic ships no local tokenizer) instead of
+  `len(text)//4`, and derives a hard input ceiling of
+  `CONTEXT_WINDOW_TOKENS − CONTEXT_RESERVED_OUTPUT_TOKENS − margin`. That
+  ceiling is enforced in two places: a deterministic `pre_model_hook` on every
+  specialist's ReAct loop (`agent_nodes.py`), and a no-LLM backstop in
+  `agent_runtime._maybe_compact` that runs even when the summarizer call
+  fails. The window is **operator-declared, not discovered** — there is no
+  hardcoded per-model table.
+- **Reason:** Compaction ran pre-run, over `state["messages"]` — the one list
+  a specialist never touches. Specialists run on an isolated
+  `[system, user]` pair and do not return `messages`, so the loop that
+  actually accumulates tool output (a single `kubectl get -o json` is tens of
+  thousands of tokens, re-sent every iteration) had no budget at all. The
+  character heuristic also scored tool-call arguments as free, since the
+  requesting message's `content` is empty. And a budget equal to the full
+  window is a guaranteed 400: the model needs room to answer.
+- **Consequences:** The hook returns `llm_input_messages`, so it rewrites only
+  the model's view — graph state keeps the full transcript, which is what
+  `tool_failures` detection and `evidence_artifacts` read, and is why
+  in-prompt truncation loses no evidence. Trimming sacrifices in order: shrink
+  oldest tool results (head+tail kept, middle elided), drop whole oldest turn
+  groups with a counted note, then hard-truncate. Cuts are always on turn-group
+  boundaries because an orphaned `tool_result` is a hard provider rejection —
+  the old `messages[-keep_recent:]` slice could produce exactly that.
+  `CONTEXT_ITERATION_MAX_TOKENS` defaults to the full ceiling: per-iteration
+  trimming exists to prevent a failed request, and degrading diagnosis quality
+  for cost has to be opted into. `tiktoken` is now a declared dependency; its
+  first-use BPE fetch is attempted exactly once per process and never retried,
+  so an air-gapped cluster degrades to the character heuristic instead of
+  hanging a hot-path budget check (`CONTEXT_TOKENIZER=heuristic` skips it).
+- **Rejected alternative:** A per-model context-window table keyed on model id.
+  Rejected because the numbers are unverifiable from inside the process, model
+  ids turn over faster than the table would be maintained, and a stale entry
+  fails in the same silent, expensive way the character estimate did.
+
+## Retrieval is measured in two separate halves, and every offline label is derived
+
+- **Decision:** Retrieval quality is split into label-free runtime
+  instrumentation (`sre_agent/retrieval_metrics.RetrievalRecorder`, surfaced at
+  `/agent/metrics → retrieval`) and labeled offline ranking metrics
+  (`benchmarks/retrieval_eval.py`). The two never merge. Offline labels are
+  **derived** from contracts the code already commits to — self-retrieval,
+  taxonomy-generated paraphrase, tenant/cluster isolation, distractor
+  rejection, invalidation — and no relevance judgment is hand-assigned. The
+  gate fires on `mrr`, `hit_rate` and `false_positive_rate`; `precision_at_k`
+  is reported but never gated.
+- **Reason:** Memory, verified skills, and runbooks all degrade to "returns
+  zero results" when they break — dead store, tenant filter matching nothing,
+  a re-embedded collection, a changed embedding dimension — and zero results
+  is indistinguishable from "nothing relevant exists" at every call site, so
+  the learning claim was unfalsifiable. Call-shape metrics catch most of that
+  and need no labels. Relevance does need labels, and
+  `benchmarks/datasets/README.md` already forbids invented ones; a derived
+  label is wrong only if the contract behind it is wrong, which is a bug worth
+  failing on. Precision is excluded from the gate because `match_score` gives
+  a same-class skill on a different service 0.5 by design, so that candidate
+  is intended behavior, not a false positive.
+- **Consequences:** `RetrievalEvent` carries no query text, no document text
+  and no ids — shapes and numbers only, consistent with the audit-redaction
+  work. The instrumented wrapper lives on `InMemorySkillStore.find_matching`
+  with implementations moved to `_find_matching`, so `SemanticSkillStore`'s
+  `super()` call cannot double-count. Because all three stores swallow their
+  own exceptions, `track_retrieval` reads `observed["error"]` rather than
+  relying on propagation; a recorder that throws is swallowed, since a metrics
+  ring buffer must never fail an investigation. The no-relevant-documents case
+  is routed to `false_positive_rate` instead of being scored 0.0 or skipped:
+  for an SRE agent a confident irrelevant incident is worse than nothing,
+  because the model reasons from it. The Qdrant-backed memory half runs only
+  with `--qdrant-url` and reports `{"status": "skipped"}` otherwise — never a
+  pass it did not earn.
+- **Rejected alternative:** One combined retrieval score mixing production
+  call shape with offline relevance. Rejected because it would let a healthy
+  empty-rate mask a recall regression, and because publishing a relevance
+  number computed over unlabeled production traffic is the specific dishonesty
+  this work exists to remove.
+
+## Benchmark scenarios are bounded by a digest-pinned fixture capability manifest
+
+- **Decision:** Dataset v2 (`benchmarks/datasets/v2/`) adds `fixtures.json`, a
+  manifest of the fault surface the Meridian reference workload actually
+  exposes: every adapter-drivable target with its `/admin/config` path and each
+  knob's type, bounds and healthy baseline; every Prometheus alert rule a
+  scenario may claim to have fired, with the severity and service that rule
+  itself emits; and every metric series a recovery probe may query. Its SHA-256
+  is pinned in `dataset.json` alongside the three split digests, and
+  `load_dataset` enforces the manifest for every scenario. Schema 2 also
+  replaces the single `fault.target`/`inject`/`cleanup` triple with an ordered
+  `fault.contracts[]`, and `scenario_dataset.py --repin` becomes the only
+  sanctioned way to re-pin digests.
+- **Reason:** "No invented fixtures" was README prose, and v1 had already
+  violated it in a way nobody could see: `bad_deploy_checkout`'s probe demanded
+  a checkout error ratio below 0.05, but `reserve_inventory_hold` fails a fixed
+  7-in-20 hash bucket, so the service sits near 35% at rest and that scenario
+  could only ever have reported `INVALID_SCENARIO` on a live cluster. A
+  scenario that cites a knob, alert, or metric the workload does not have is
+  not a failing test — it is a benchmark measuring nothing, and it fails far
+  from the edit that caused it. The manifest turns that class of error into a
+  load-time `DatasetError` that CI catches with no cluster. Multi-contract
+  faults exist because the interesting scenarios — noisy neighbour, dependency
+  cascade, compound failure — are precisely the ones a single-target schema
+  cannot express, and those are what separate a diagnosis from a guess.
+- **Consequences:** A scenario is rejected at load time when it names an
+  undeclared target, knob, alert or metric; serves a config path the target
+  does not; injects a wrong-typed or out-of-range value, or the declared
+  healthy baseline; cleans up to something that is not the real baseline; or
+  claims a severity or service its alert rule does not emit. Every manifest
+  bound carries a `reference` into the workload source, so changing the
+  workload without changing the manifest is now a visible inconsistency rather
+  than silent drift. The adapter applies contracts in order and unwinds every
+  contract already applied if a later one fails, so a partial injection cannot
+  leak into the next scenario; cleanup restores in reverse and attempts every
+  lease before raising. Contracts are normalized at load time, so
+  `fault_adapter.py` and `sre_bench.py` only ever see `contracts` and schema 1
+  keeps working unchanged. `--repin` re-loads all three splits before writing,
+  so it can restore content addressing but can never bless a dataset that does
+  not validate. Two declared alert rules are deliberately unreachable
+  (`InventoryMemoryApproachingLimit`, `PaymentServiceUnhandledErrors`); they
+  stay in the manifest so it describes the real rule set, not a convenient
+  subset.
+- **Rejected alternative:** Keeping one fault target per scenario and trusting
+  the README. Rejected because it caps the corpus at single-service faults —
+  no noise, no cascade — which is the half of the space where an SRE agent
+  actually fails, and because the v1 defect proves prose does not hold a
+  contract that nothing checks.
+
+## The autonomy threshold is chosen by declared cost, and only live evidence can grant one
+
+- **Decision:** Confidence calibration artifacts (schema 2) record a full
+  `threshold_curve` over every candidate operating point plus an explicit
+  `cost_model` (`false_autonomy_cost` vs `abstention_cost`), and the threshold
+  is the cheapest eligible point under a recorded `selection_rule` rather than
+  the first point clearing a hardcoded Wilson bound. Every record declares an
+  `evidence_source`; only an all-`live_benchmark` corpus can produce an
+  artifact carrying a threshold.
+- **Reason:** The old 0.90 Wilson floor was decorative — it was asserted, not
+  derived, carried no rationale, and could not be argued with because nothing
+  recorded what it was trading off. Worse, the rule that synthetic evidence
+  must never enable autonomy lived only in `benchmarks/confidence/README.md`
+  prose, so a fabricated JSONL carrying the right `config_fingerprint` would
+  have produced a fully valid autonomy-granting artifact. That is the same
+  defect class as the v1 fixture prose fixed in the dataset manifest decision:
+  a safety contract nothing checks.
+- **Consequences:** The floors survive as an eligibility constraint, not as the
+  selector — an operating point that cannot be shown to work is never eligible
+  however cheap it looks. Raising `false_autonomy_cost` demonstrably buys a
+  stricter threshold and less coverage; the tests pin that relationship, so the
+  threshold is now falsifiable. `load_calibration_artifact` recomputes the
+  curve, the three policy costs, and the selected point from the bins and the
+  cost model, so a hand-edited and re-digested artifact fails to load — as does
+  one whose threshold did not come from live evidence. Artifacts that grant no
+  autonomy must say why, and that reason reaches the operator through
+  `ActReport.autonomy_blocked_reason` instead of an undifferentiated
+  "uncalibrated". `benchmarks/sre_bench.py` is the only sanctioned producer of
+  `live_benchmark` records, which means no real artifact can be built without a
+  paired A05 run against a live cluster.
+- **Rejected alternative:** Keeping the Wilson floor as the selector and adding
+  the cost model as reporting only. Rejected because it leaves the number that
+  actually gates production unexplained, and because a curve nobody selects
+  from is decoration of a different kind.
+
+## An ablation arm is a configuration fingerprint, and the manifest — not the operator — attests it
+
+- **Decision:** `SENTINEL_ABLATION_ARM` selects one of four measurement
+  configurations (`full`, `single_agent`, `no_reflector`, `no_memory`), each
+  removing at most one component. Unset is production, not an arm. The arm is
+  written into the run manifest's `runtime` section, which is one of the four
+  sections the A01 configuration fingerprint hashes, so two arms are
+  structurally incomparable by construction. `benchmarks/ablation_eval.py`
+  requires every arm — control included — to present the manifest it actually
+  ran under, recomputes `configuration_fingerprint()` from it, and refuses to
+  proceed unless that hash equals the fingerprint recorded on the arm's
+  trials, the manifest names the claimed arm, `ablation_experiment` is true,
+  `learned_memory_writes` is false, and the `code_sha` matches the control's.
+- **Reason:** Three of the four architectural claims in the HolmesGPT
+  comparison — multi-agent, reflection, memory — were asserted from the
+  diagram. Measuring them needs arms, and arms need provenance:
+  `BENCH_CONFIG_FINGERPRINT` is operator-declared, so without manifest
+  attestation an operator could hand in two runs of the *same* arm under
+  different fingerprints and `compare_candidates` would compare the full stack
+  to itself and report a confident null. That is the worst possible output —
+  a number that looks like evidence of no effect.
+- **Consequences:** Learned-memory writes are frozen in every arm including
+  the control, because arms run sequentially against one cluster and a control
+  that wrote what it learned would hand the next arm a corpus it never had;
+  the comparison would measure run order. An unknown arm name raises
+  `AblationError` at startup rather than degrading to the control. Two naive
+  arms would have been strawmen and are not: `no_reflector` passes the
+  specialists' findings to the planner directly (the reflector was their only
+  channel), still wrapped in the untrusted-content boundary, and
+  `single_agent` writes its findings where the reflector can read them.
+  `single_agent` keeps `aggregate`, so report quality stays comparable, and
+  holds the explicit union of every specialist's read-only tools so the
+  baseline measures architecture rather than tool access. `no_memory` keeps
+  static runbooks, which are authored rather than learned.
+- **Rejected alternative:** Reusing `compare_candidates`' PROMOTE/BLOCK as the
+  ablation verdict. Rejected because it is a non-inferiority release gate — a
+  bar a component that does nothing clears easily. The harness applies its own
+  superiority rule (lower bound of the paired full-minus-arm quality delta
+  strictly above zero) and reports an interval containing zero as
+  `NOT_DEMONSTRATED`, annotated with why the evidence was too thin to call it
+  a null when it was.

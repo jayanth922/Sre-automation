@@ -56,11 +56,12 @@ mutation is governed by the policy gate + human approval (surfaced as
 `EXECUTOR_LIVE`), which is a deliberate safety control, not a feature flag.
 
 **Model routing.** Each task type is routed to a model tier (fast / balanced /
-strong) — cheap models for narration/routing, strong models for
-reflection/planning — with complexity bump-up, budget-aware downgrade,
-off-policy blocking, and a provider fallback chain. Per-tier provider overrides
-(`MODEL_ROUTER_<TIER>_PROVIDER`) let you split, e.g., reflection/planning on
-Claude and fast narration on Gemini.
+strong) on a fixed Anthropic ladder — cheap models for narration/routing,
+strong models for reflection/planning — with budget-aware downgrade and
+off-policy blocking. Sentinel is Anthropic-only by design: any other provider,
+including one named per tier via `MODEL_ROUTER_<TIER>_PROVIDER`, is rejected at
+Helm render time and again at startup rather than failing later in a
+CrashLoopBackOff. Tiers vary the model, never the vendor.
 
 ## Observability, security, production engineering
 
@@ -68,6 +69,13 @@ Claude and fast narration on Gemini.
   `/agent/metrics` (per-node runs/latency/errors, always on), and full Langfuse
   Cloud span tracing of every LLM/tool/chain call with tokens & cost when
   configured (free tier; no self-hosted option).
+- **Retrieval is measured, not asserted** — every incident-memory, verified-skill
+  and runbook lookup is counted under `/agent/metrics → retrieval`: empty rate,
+  store unavailability, tenant-scoped rate, score distribution, latency. That
+  separates "the index is down" from "this incident is genuinely novel", which
+  look identical at the call site. Relevance itself needs labels, so it lives in
+  `benchmarks/retrieval_eval.py`, whose labels are derived from contracts the
+  code already commits to rather than hand-assigned.
 - **Auth / sessions** — every HTTP and WebSocket route on the runtime requires
   an authenticated principal; tenant and cluster context are derived
   server-side from that principal, never accepted as trusted request input.
@@ -125,8 +133,8 @@ your organization and makes you its admin. Configuration happens from here,
 not before it: add a cluster in Settings (LLM provider + key, endpoints,
 metric conventions, GitHub repo, and optionally a Notion runbook database, a
 Jira project for ticketing, or a GitHub App install — all per-cluster, none
-required to start). Until an LLM key is set (`ANTHROPIC_API_KEY` /
-`GOOGLE_API_KEY` in `.env`, or per-cluster from Settings), the platform runs
+required to start). Until an LLM key is set (`ANTHROPIC_API_KEY` in `.env`,
+or per-cluster from Settings), the platform runs
 fine — investigations just wait for one. Set `GITHUB_TOKEN` / `GITHUB_REPO`
 in `edge_mcp_servers/.env` when you want GitHub-backed tools (code context,
 revert PRs) — also optional. From there, either point your Alertmanager at
@@ -175,13 +183,15 @@ conventions, GitHub repo, Notion runbook database) and point Alertmanager at
 
 ## Configure (bring your own)
 
-- **LLM** — `anthropic` (Claude) or `gemini`, per cluster or per model-router
-  tier (`MODEL_ROUTER_<TIER>_PROVIDER`). Provider support is deliberately
-  narrow rather than a generic LiteLLM passthrough: both providers give
-  reliable tool/function-calling structured output, which the agent's
-  specialist and planner nodes depend on. Startup fails closed with a
-  migration message if a legacy provider (`groq`, `ollama`, `nvidia`,
-  `openai`, `openai_compatible`) is still configured.
+- **LLM** — `anthropic` only. This is a deliberate narrowing, not a generic
+  LiteLLM passthrough: the specialist and planner nodes depend on reliable
+  tool/function-calling structured output, and one provider is the only
+  configuration that is actually tested end to end. Startup fails closed with
+  a migration message for every other value (`gemini`, `groq`, `ollama`,
+  `nvidia`, `openai`, `openai_compatible`), including one set per model-router
+  tier via `MODEL_ROUTER_<TIER>_PROVIDER`. What the router *does* vary is the
+  Claude model per task type — haiku for cheap classification up to opus for
+  planning — which is static task tiering, not adaptive cross-vendor routing.
 - **MCP tools** — register your own servers via `MCP_SERVERS_JSON`, merged with
   the built-ins.
 - **Runbooks** — a cluster's Notion database; no runbooks without it.

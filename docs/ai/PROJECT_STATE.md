@@ -6,96 +6,165 @@ Deterministic policy and durable state—not model prose—must control writes,
 approvals, status transitions, and operator-facing claims.
 
 ## Current milestone
-P0 #4 crash-resumable live remediation is deployed and live-verified. A
-replacement-worker run proved successful writes are not replayed and Task #40
-still withdraws remediation authority after an external clear. Stable Langfuse
-names, fail-closed image parity, missed-clear reconciliation, bounded
-pre-claim retries, and reflector/artifact context (`5c292cd`) are deployed.
-Observability is deployed (`e2b9fe0`); runtime-only job completion is deployed
-from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
+Closing the HolmesGPT-comparison gaps (canvas
+`sentinel-vs-holmesgpt.canvas.tsx`). All implementable items are done: audit
+redaction (#16), the Anthropic-only provider contract (#17), token-aware
+context budgeting (#18), two-part retrieval quality measurement (#19),
+benchmark dataset v2 at 22 scenarios (#20), cost-derived autonomy thresholds
+with enforced evidence provenance (#21), and the ablation harness (#22). What
+remains is not code: none of #16-#22 has been deployed, and the ablation arms
+have never been run against a live cluster, so the three architectural claims
+are measurable but not yet measured.
+
+Prior milestone, deployed and live-verified: P0 #4 crash-resumable live
+remediation, with stable Langfuse names, fail-closed image parity,
+missed-clear reconciliation, and bounded pre-claim retries.
 
 ## Current architecture and invariants
-- `act_phase` serializes the approved batch; `LiveRemediationWorkflow` runs one
-  activity at a time while `IncidentRemediationWorkflow` owns code-fix/PR work.
-- `mutation_gateway.authorize_and_execute()` remains the sole fresh incident,
-  policy, tenant/namespace, idempotency, and audit boundary.
-- Unexpected failures before an idempotency claim become retryable
-  `MutationPreDispatchError`; once the claim starts, failure is retry-unsafe.
-  Temporal makes at most three attempts. An `ERROR`/unknown outcome is terminal
-  for the batch, and MCP-client teardown cannot replace a successful result.
-- A replacement worker consumes completed activity results from Temporal
-  history. After Alertmanager clear, the next activity returns
-  `REFUSED/incident_resolved`, stops scheduling, and skips verification while
-  retaining completed results in Slack/timeline output.
-- Human approval cannot override hard policy blocks. `EXECUTOR_LIVE=true` fails
-  closed without Temporal and an incident ID.
-- Langfuse graph keys are unchanged. Only the exact internal chain name `agent`
-  becomes `<role>_reasoning` from code-owned, low-cardinality metadata.
-- Lossless specialist tool transcripts and responses are compressed into
-  incident-owned, content-addressed PostgreSQL artifacts. Checkpoints keep only
-  references, policy measurements, and bounded response context; storage
-  failure retains the legacy trace rather than losing evidence.
-- The local recorder measures every top-level graph node. Failed calls count as
-  runs and latency; Langfuse separately owns model/tool/token/cost semantics.
-  No surface claims unobserved cross-provider fallback.
+- `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
+  policy, tenant/namespace, idempotency, and audit boundary. Human approval
+  cannot override a hard policy block; `EXECUTOR_LIVE=true` fails closed
+  without Temporal and an incident ID.
+- Failures before an idempotency claim are retryable
+  (`MutationPreDispatchError`); after it, retry-unsafe. Three Temporal
+  attempts; `ERROR`/unknown is terminal for the batch. After Alertmanager
+  clear the next activity returns `REFUSED/incident_resolved` and stops
+  scheduling, keeping completed results in Slack/timeline output.
+- Lost resolved webhooks are recovered only when the alert job's Prometheus
+  rule is healthy and two snapshots ≥5 min apart show no active series;
+  missing or unreachable source state leaves the incident open.
+- Specialist transcripts compress into incident-owned, content-addressed
+  PostgreSQL artifacts; checkpoints keep references only, and storage failure
+  retains the legacy trace rather than losing evidence.
 - The canonical SaaS runtime owns the successful durable-job terminal write;
-  the queue worker holds the lease and handles only exceptions that escape it.
-- Lost resolved webhooks are recovered only when the original durable alert job
-  identifies a Prometheus rule that exists and is healthy, and two snapshots at
-  least five minutes apart show no matching active series. The first observation
-  is durable; missing/unhealthy/unreachable source state leaves the incident open.
-- API and Temporal worker share one image and verify the same source/dependency manifest
-  before work; deployment fails if their runtime identities differ.
+  the queue worker holds the lease. API and Temporal worker share one image
+  and verify the same manifest before work.
+- Anthropic is the only accepted provider, enforced at Helm render time, at
+  startup, and on per-tier router overrides. No surface claims unobserved
+  cross-provider fallback.
+- Input ceiling = `CONTEXT_WINDOW_TOKENS − CONTEXT_RESERVED_OUTPUT_TOKENS −
+  margin`, enforced per iteration by a `pre_model_hook` returning
+  `llm_input_messages`, so graph state keeps the full transcript. Trimming cuts
+  on turn-group boundaries; an orphaned `tool_result` is a hard rejection.
+- Retrieval is measured in two halves that never merge: label-free call shape
+  from production (`/agent/metrics → retrieval`) and labeled offline ranking
+  (`benchmarks/retrieval_eval.py`). `mrr`, `hit_rate`, `false_positive_rate`
+  gate; an unrunnable store reports `skipped`, never a pass.
+- Benchmark scenarios are data, never inline Python. `dataset.json` pins a
+  SHA-256 per split and for `fixtures.json`, which declares the fault surface
+  the workload really exposes; anything a scenario names but the manifest does
+  not declare is a load-time `DatasetError`.
+- The autonomy threshold is selected, not asserted: the cheapest eligible
+  operating point under a recorded `cost_model` and `selection_rule`. Support
+  and Wilson floors constrain eligibility but no longer select. Only
+  `sre_bench.py` emits `evidence_source=live_benchmark` and only an all-live
+  corpus yields a threshold; anything else gets a curve, a null threshold, and
+  a stated `autonomy_blocked_reason` reaching operators via `ActReport`.
+  `load_calibration_artifact` recomputes everything, so a hand edit fails.
+- `SENTINEL_ABLATION_ARM` unset is production; set (even to `full`) it is a
+  measurement run. Four arms remove at most one component each, an unknown arm
+  raises `AblationError` rather than degrading to the control, and the arm is
+  written into the manifest's `runtime` section — one of the four sections the
+  A01 fingerprint hashes — so two arms are structurally incomparable. Every
+  arm freezes learned-memory writes, the control included, because arms run
+  sequentially against one cluster.
+- `benchmarks/ablation_eval.py` takes the arm as baseline and the full stack as
+  candidate, so paired deltas read "full minus arm". It requires each arm's run
+  manifest to re-hash to the fingerprint on that arm's trials, closing the hole
+  that `BENCH_CONFIG_FINGERPRINT` is operator-declared. A component is credited
+  only when the lower CI bound clears zero; an interval containing zero is
+  `NOT_DEMONSTRATED`, annotated when the evidence was too thin to be a null.
 
 ## Completed or verified work
-- A controlled workflow checkpointed action 0, lost its worker, then resumed
-  after alert clear with one `EXECUTED`, one `REFUSED(incident_resolved)`, no
-  verification, one audit, and no repeated mutation.
-- Fresh Langfuse trace `1814f33e5e50a4aaf93e788ebcaba7d4`: 142 observations,
-  zero generic `agent` names, zero errors/missing I/O, and all 31 generations
-  carried model and usage metadata.
-- A process-restart regression recovers after two healthy absences, invokes
-  Task #40 once, records `remediation_verified=false`, and cannot replay closure;
-  a CAS prevents late-webhook/reconciler races.
-- Reflector re-investigation validates recommendations against four agents,
-  keeps callables out of checkpoints, bounds depth, and loops only selected
-  agents. Stable names preserve a readable Langfuse cycle/expanded DAG.
-- Artifact reload verifies ownership and SHA-256 integrity. Tests prove large
-  raw output is absent from successful checkpoints, severity retains tool
-  provenance, and storage failure remains lossless. Duplicate findings removed.
-- All 14 graph nodes now feed local metrics. Tests pin failed-run denominators,
-  complete node coverage, and `fallback_allowed=false`; the dead provider-
-  switch dashboard surface was removed. The worker regression test proves it
-  does not issue a second completion after the runtime writes its rich result.
-- Time-skipping and live Temporal smoke drive both gates, child verification,
-  and a mocked PR result. A replacement-worker regression preserves the pending
-  gate; denial stops without verification or PR activity. Alert-focused tests
-  isolate the settle floor and no longer stall the suite.
-- ORM-backed API response models use Pydantic `ConfigDict`; validation
-  and serialization remain covered. FastAPI startup/shutdown now run through
-  one deployed lifespan context with cleanup regression coverage (`12facc3`).
-- Deployed Anthropic 1.7.2 now comes from the frozen image graph.
-- Qdrant 1.19.1, PostgreSQL 15.19, Redis 7.4.11, and Temporal CLI 1.8.3 are
-  digest-pinned; deployment contracts prevent drift. Temporal SDK is 1.32.0.
+- Crash-resumption proven live: a workflow that lost its worker resumed after
+  alert clear with one `EXECUTED`, one `REFUSED(incident_resolved)`, one audit,
+  no repeated mutation. A CAS blocks late-webhook/reconciler races.
+- Langfuse trace `1814f33e…`: 142 observations, zero generic `agent` names, all
+  31 generations carrying model and usage metadata.
+- Dataset v2: 22 scenarios (12/6/4) over 4 fault targets, all injecting and
+  fully restoring in test. v1's `bad_deploy_checkout` probe could never have
+  gone healthy; v2's thresholds sit above checkout's organic error ratio.
+- Confidence calibration is empirical end to end: on a graded 300-sample
+  corpus `false_autonomy_cost=2` selects threshold 0.597 at 80% coverage while
+  `=200` selects 0.969 at 20%. Four artifact tamper paths are closed.
+- Ablation arms verified by graph shape: control and unset are node- and
+  edge-identical; `no_memory` differs only behaviourally; `no_reflector` drops
+  ORIENT and its re-investigation loop; `single_agent` keeps the reflector and
+  the report writer. Two strawmen were avoided — the planner now reads the
+  specialists' findings directly when ORIENT is gone (still wrapped as
+  untrusted), and the single investigator writes where the reflector reads.
+- Qdrant 1.19.1, PostgreSQL 15.19, Redis 7.4.11, Temporal CLI 1.8.3, Anthropic
+  1.7.2 digest-pinned; Temporal SDK 1.32.0.
 
 ## Active problem
-Next: digest-pin the Helm Temporal server image.
+Nothing in #16-#22 has run against a live cluster. The ablation harness can now
+answer whether the specialist split, the reflector and learned memory earn
+their cost, but until the four arms are actually run the HolmesGPT comparison
+still rests on design description. The same live-run dependency blocks the
+confidence calibration artifact.
+
+Deferred, unrelated: digest-pin the Helm Temporal server image.
 
 ## Relevant files
-- `backend/schemas.py`, `sre_agent/agent_runtime.py`
-- Compose/deployment manifests and deployment tests
+- Ablation: `sre_agent/ablation.py` (arms), `benchmarks/ablation_eval.py`
+  (harness), `benchmarks/ablation/README.md` (operator runbook),
+  `sre_agent/graph_builder.py` (per-arm wiring),
+  `sre_agent/config/agent_config.yaml` + `prompts/single_agent_prompt.txt`
+  (the single-investigator baseline), and the write gates in `act_phase.py`,
+  `supervisor.py`, `agent_runtime.py`.
+- Paired statistics: `benchmarks/sre_bench.py` (`BENCH_CANDIDATE_ID`,
+  `BENCH_CONFIG_FINGERPRINT`), `benchmarks/statistical_eval.py`.
+- Corpus: `benchmarks/datasets/v2/` (+ `fixtures.json`), `scenario_dataset.py`,
+  `fault_adapter.py`.
+- Confidence: `sre_agent/confidence_calibration.py`,
+  `benchmarks/confidence_eval.py`, `benchmarks/confidence/{v1,v2}/`, and the
+  loaders behind `DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH` /
+  `REMEDIATION_CONFIDENCE_CALIBRATION_PATH`.
+- Retrieval: `sre_agent/retrieval_metrics.py`, `skill_store.py`,
+  `memory_store.py`, `runbook_index.py`, `benchmarks/retrieval_eval.py`.
 
 ## Verification commands and latest results
-- `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
-  config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,519 passed** with zero warnings.
-- Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `82305738…`, revision `cf76a94`, fingerprint
-  `13db9184…`, and 151 inputs. Alembic is at `e5f6a7b8c9d0` (head).
+- `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration`:
+  **1,666 passed** in ~28s. (`test_live_remediation_temporal_workflow` can fail
+  on a Temporal test-server port bind when other jobs hold the port; it passes
+  run alone.)
+- `uv run python benchmarks/retrieval_eval.py --output reports/release-retrieval.json`:
+  PASS — 25 probes on v2, mrr/hit_rate/nDCG 1.0, false_positive_rate 0.0,
+  memory store `skipped` without `--qdrant-url`.
+- `PYTHONPATH=benchmarks .venv/bin/python benchmarks/scenario_dataset.py --version v2`:
+  12/6/4 = 22 scenarios, digests matching; `--repin` idempotent.
+- `PYTHONPATH=. .venv/bin/python benchmarks/make_release_fixtures.py --check`: exit 0.
+- `bash scripts/check_python_quality.sh`: passed.
+- Deployment-template gate and secret scan: passed;
+  `helm template --set llm.provider=gemini` fails at render time as intended.
+- Not re-verified since #16: the exact-revision Docker build and live
+  `check_runtime_parity.py`. Last known good — image `82305738…`, revision
+  `cf76a94`, fingerprint `13db9184…`, Alembic `e5f6a7b8c9d0` (head).
 
 ## Known blockers or risks
-- Never stage the untracked secret backup `.env.local-backup-20260910`.
+- Never stage the untracked secret backup `.env.local-backup-20260910`; the
+  `.gitignore` `.env` pattern does not match it. Always use explicit paths in
+  `git add`.
+- #16–#21 are in the working tree but not deployed or live-verified.
+- No real calibration artifact exists and none can be built without a paired
+  A05 `sre_bench.py` run against a live cluster; synthetic evidence is refused
+  at load time. Until then remediation autonomy stays fail-closed on human
+  approval — the intended state, not a gap. The ablation arms have the same
+  dependency.
+- v2 has never run against a live cluster; the adapter round trip is proven
+  only against manifest-derived fakes. Memory scenarios need a checkout pod
+  restarted recently enough to sit under 150MB (`leak_kb_per_request` never
+  frees its buffer).
+- `CONTEXT_WINDOW_TOKENS` is operator-declared; a model with a window under
+  200k will under-reserve unless it is set.
+- tiktoken fetches its BPE file on first use; an air-gapped image without that
+  cache silently degrades to the character heuristic.
 
 ## Next bounded task
-Replace Helm's `temporalio/auto-setup:1.24` reference with its exact tested patch
-and manifest digest; preserve chart rendering and workflow compatibility.
+Deploy #16-#22 and run them under live fire. Specifically: build at the exact
+revision, run `check_runtime_parity.py`, then run the four ablation arms back
+to back on the v2 holdout under one `BENCH_EXPERIMENT_ID` and `BENCH_PAIR_SEED`
+per `benchmarks/ablation/README.md`, capture each arm's run manifest, and
+compare with `ablation_eval.py`. The same run produces the first real
+confidence calibration artifact. Until then every architectural claim in the
+HolmesGPT comparison is measurable but unmeasured.

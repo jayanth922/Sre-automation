@@ -73,10 +73,11 @@ The dashboard container is built from [../dashboard/](../dashboard/) and points 
 Use [../.env.example](../.env.example) as the source of truth. The most important values are:
 
 - `SECRET_KEY` for JWT signing and auth consistency.
-- `LLM_PROVIDER` to select the model backend: `anthropic` or `gemini` (see [../.env.example](../.env.example)).
-  Invalid values fail startup — they are never silently coerced.
-- `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` when using Anthropic.
-- `GOOGLE_API_KEY` and `GEMINI_MODEL` when using Gemini.
+- `LLM_PROVIDER` — `anthropic` is the only accepted value. Anything else fails
+  startup with a migration message; it is never silently coerced.
+- `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. Keep the model on the router's
+  ladder (`claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-5`,
+  `claude-opus-5`) or per-tier escalation falls back to fixed defaults.
 - `POSTGRES_*` for database connectivity.
 - `REDIS_URL` and `QDRANT_URL` when overriding defaults.
 - `PROMETHEUS_URL`, `LOKI_URL`, `MCP_*_URI`, and source-control settings when the platform talks to live edge services.

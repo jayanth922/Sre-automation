@@ -55,9 +55,16 @@ Config via env: `BENCH_BASE_URL`, `BENCH_ADMIN_EMAIL`, `BENCH_ADMIN_PASSWORD`,
 `BENCH_CLUSTER_ID`, `BENCH_CLUSTER_TOKEN`, `BENCH_RUNS_PER_SCENARIO`,
 `BENCH_PROMETHEUS_URL`, optional `BENCH_PROMETHEUS_BEARER_TOKEN`,
 `BENCH_ORACLE_RESULTS_PATH`, `BENCH_ORACLE_COMPLETION_GRACE_SEC`,
-`BENCH_DATASET_VERSION`, `BENCH_DATASET_SPLIT`, and
+`BENCH_DATASET_VERSION` (default `v2`), `BENCH_DATASET_SPLIT`, and
 `BENCH_FAULT_MODE`. Raw agent outputs and structured judgments are written to
 `BENCH_GRADER_RESULTS_PATH` (default `reports/sre-bench-grades.jsonl`).
+
+`BENCH_FAULT_MODE=automatic` drives the fault targets directly, so each one
+must be reachable: `BENCH_CHECKOUT_URL` (8001), `BENCH_INVENTORY_URL` (8002),
+`BENCH_LOADGEN_URL` (8003), `BENCH_PAYMENT_URL` (8004). A v2 scenario may
+degrade more than one at once; a partially applied injection is unwound before
+the error propagates. See `benchmarks/datasets/README.md` for the fixture
+manifest that bounds what any scenario may ask of them.
 
 For paired A05 experiments, also set `BENCH_EXPERIMENT_ID`,
 `BENCH_CANDIDATE_ID`, `BENCH_CONFIG_FINGERPRINT`, and `BENCH_PAIR_SEED`.
@@ -71,12 +78,20 @@ The same paired run writes exact confidence/outcome observations to
 `BENCH_CONFIDENCE_RESULTS_PATH` (default
 `reports/sre-bench-confidence.jsonl`). Use `confidence_eval.py` for A06
 reliability metrics, content-addressed monotonic calibration artifacts, measured
-autonomy thresholds, and reference drift checks. Runtime diagnosis and
-remediation artifacts are configured separately with
+autonomy thresholds, and reference drift checks. The threshold is not asserted:
+the artifact scores every candidate operating point and picks the one with the
+lowest expected cost per action, given `--false-autonomy-cost` (one wrong
+autonomous action) against `--abstention-cost` (one human approval round trip),
+among the points that clear the support and Wilson floors. Only observations
+this runner produced carry `evidence_source=live_benchmark`, and only an
+all-live corpus can yield an artifact that grants autonomy — anything else
+still gets a full curve but a null threshold and a stated reason. Runtime
+diagnosis and remediation artifacts are configured separately with
 `DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH` and
 `REMEDIATION_CONFIDENCE_CALIBRATION_PATH`; `SENTINEL_CONFIG_FINGERPRINT` must
-match the artifact configuration. Absent, invalid, or mismatched artifacts fail
-closed. See `benchmarks/confidence/README.md`.
+match the artifact configuration. Absent, invalid, mismatched, and
+evidence-blocked artifacts fail closed. See
+`benchmarks/confidence/README.md`.
 
 A07 adversarial release evidence uses the content-addressed cases under
 `benchmarks/adversarial/`. Candidate observations must preserve the rendered
@@ -99,6 +114,19 @@ promote and deliberately regressive prompt, model, and tool bundles must block.
 Protected source changes require a fresh evidence bundle whose source digest
 matches the repository, plus shadow/canary stages and automatic rollback to the
 evaluated baseline. See `benchmarks/release/README.md`.
+
+A10 asks whether the architecture earns its cost. `SENTINEL_ABLATION_ARM`
+selects a measurement configuration — `full`, `single_agent`, `no_reflector`,
+or `no_memory` — each removing at most one component, and each runnable as an
+ordinary paired candidate. Unset means production, and the control arm's graph
+is asserted identical to it; an unknown arm fails closed rather than quietly
+running the control. Learned-memory writes are frozen in every arm, the
+control included, because arms run sequentially against one cluster. Compare
+them with `ablation_eval.py`, which takes the arm as baseline and the full
+stack as candidate, requires each arm's run manifest to attest the arm it
+claims, and credits a component only when the lower bound of the paired
+quality delta clears zero — "no measurable difference" is reported as exactly
+that. See `benchmarks/ablation/README.md`.
 
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped
@@ -128,3 +156,52 @@ Add scenarios through a new content-addressed dataset version under
 requires provenance, taxonomy, risk, expected evidence, allowed/forbidden
 actions, and one aggregate recovery probe returning exactly one scalar. See
 `benchmarks/datasets/README.md` for split and holdout rules.
+
+## `retrieval_eval.py` — retrieval quality for memory, skills, and runbooks
+
+Sentinel claims to learn: past incidents, verified skills, and runbooks are
+embedded and recalled into each investigation. This measures whether recall
+actually works, and it is split in two on purpose.
+
+**Runtime instrumentation** (`sre_agent/retrieval_metrics.py`, exposed at
+`/agent/metrics → retrieval`) is label-free. Per store it counts calls, empty
+results, store unavailability, errors, tenant-scoped rate, returned counts,
+top-score distribution, and p50/p95 latency. It cannot tell you whether what
+came back was *relevant* — production traffic has no labels — but it does
+separate "the index is down, mis-filtered, or re-embedded" from "this incident
+is genuinely novel". Those are indistinguishable at every call site, and they
+are most of what actually goes wrong. Events carry no query text, no document
+text, and no ids.
+
+**This harness** is the labeled half. Every label is **derived** from a
+contract the code already commits to, never hand-assigned — the dataset rule
+in `benchmarks/datasets/README.md` applies here too:
+
+| probe | label source |
+| --- | --- |
+| self-retrieval | the skill learned from scenario S must rank first when S recurs |
+| paraphrase | a different alert name generated from `skill_store._FAILURE_CLASS_KEYWORDS`, kept only if `_failure_class` confirms the same class |
+| tenant / cluster isolation | `_find_matching` filters other tenants before scoring; a hit is a leak |
+| distractor rejection | an unknown-class alert on a service with no history must return nothing |
+| invalidation | an invalidated skill must stop being recalled |
+
+Gated: `mrr`, `hit_rate`, `false_positive_rate`. Reported but **not** gated:
+`precision_at_k` — a same-class skill from another service scores 0.5 and
+legitimately enters the candidate list, so precision below 1.0 is the taxonomy
+working as designed, not a defect.
+
+```bash
+# verified-skill index only; no services needed, runs in CI
+python benchmarks/retrieval_eval.py --output reports/release-retrieval.json
+
+# also evaluate the Qdrant-backed incident memory
+python benchmarks/retrieval_eval.py --output reports/release-retrieval.json \
+    --qdrant-url http://localhost:6333
+```
+
+Without `--qdrant-url` the incident-memory section is written as
+`{"status": "skipped"}` and is never counted as a pass. Probe incidents are
+written to a dedicated collection; the production collection is refused.
+Non-zero exit means the gate failed. CI runs the no-services form in the
+`release-evaluation` job and uploads the report with the other release
+evidence.

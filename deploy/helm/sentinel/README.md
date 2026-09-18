@@ -1,8 +1,9 @@
 # Sentinel Helm chart
 
 Install Sentinel onto your own Kubernetes cluster. Everything is configurable in
-`values.yaml` — bring your own LLM, your own MCP tool servers, and your own
-Postgres/Redis if you run them, or let the chart deploy the basics.
+`values.yaml` — bring your own Anthropic key, your own MCP tool servers, and
+your own Postgres/Redis if you run them, or let the chart deploy the basics.
+Anthropic is the only model provider; every other value fails startup.
 
 ## Prerequisites
 
@@ -43,7 +44,7 @@ Then follow the notes printed on install (port-forward or ingress URL).
 
 | Area | Keys |
 |---|---|
-| Bring-your-own LLM | `llm.provider=openai_compatible`, `llm.baseUrl`, `llm.model`, `secrets.llmApiKey` |
+| LLM | `secrets.anthropicApiKey`, `llm.anthropicModel`. `llm.provider` is Anthropic-only — every other value fails startup. `llm.baseUrl` / `llm.model` / `secrets.llmApiKey` are single-tenant fallbacks for an Anthropic-compatible gateway, used only when no cluster is connected |
 | Bring-your-own MCP | `mcp.extraServersJson`, `mcp.edge.enabled`, `mcp.edge.servers` |
 | Bring-your-own datastores | `postgres.deploy=false` + `postgres.external.*`; `redis.deploy=false` + `redis.external.url`; `qdrant.deploy=false` + `qdrant.external.url` |
 | Existing secret | `secrets.create=false`, `secrets.existingSecret=<name>` (keys: `SECRET_KEY`, `POSTGRES_PASSWORD`, `LLM_API_KEY`, …) |
