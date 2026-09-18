@@ -11,10 +11,13 @@ Closing the HolmesGPT-comparison gaps (canvas
 redaction (#16), the Anthropic-only provider contract (#17), token-aware
 context budgeting (#18), two-part retrieval quality measurement (#19),
 benchmark dataset v2 at 22 scenarios (#20), cost-derived autonomy thresholds
-with enforced evidence provenance (#21), and the ablation harness (#22). What
-remains is not code: none of #16-#22 has been deployed, and the ablation arms
-have never been run against a live cluster, so the three architectural claims
-are measurable but not yet measured.
+with enforced evidence provenance (#21), the ablation harness (#22), the typed
+`EvidenceRecord` contract (#23), the swarm→specialist rename in operator-facing
+text (#24), striking the unmeasurable model-routing cost claim (#25), and the
+cross-corpus scenario-mix accounting (#26). What remains is not code: none of
+#16-#26 has been deployed, and the ablation arms have never been run against a
+live cluster, so the three architectural claims are measurable but not yet
+measured.
 
 Prior milestone, deployed and live-verified: P0 #4 crash-resumable live
 remediation, with stable Langfuse names, fail-closed image parity,
@@ -50,6 +53,17 @@ missed-clear reconciliation, and bounded pre-claim retries.
   from production (`/agent/metrics → retrieval`) and labeled offline ranking
   (`benchmarks/retrieval_eval.py`). `mrr`, `hit_rate`, `false_positive_rate`
   gate; an unrunnable store reports `skipped`, never a pass.
+- `evidence_contract.py` is the single definition of what severity may count:
+  the metric allowlist, each metric's type, and its aliases. `EvidenceRecord`
+  requires an agent and a tool, so an unattributed number is not evidence, and
+  an uncoercible value becomes `None` (UNKNOWN) rather than a calm zero. The
+  walker, the artifact reader and the alert-label path all read that one
+  registry; pre-contract checkpoint records are split back apart, not dropped.
+  `EvidenceRecord` (observation), `EvidenceLink` (severity's decision input)
+  and `EvidenceReference` (model-authored citation) stay separate on purpose.
+- The graph node id `investigation_swarm` is frozen — it is written into
+  LangGraph checkpoints and Langfuse span names — but no operator-facing string
+  calls the specialist split a swarm; a test enforces that.
 - Benchmark scenarios are data, never inline Python. `dataset.json` pins a
   SHA-256 per split and for `fixtures.json`, which declares the fault surface
   the workload really exposes; anything a scenario names but the manifest does
@@ -97,7 +111,7 @@ missed-clear reconciliation, and bounded pre-claim retries.
   1.7.2 digest-pinned; Temporal SDK 1.32.0.
 
 ## Active problem
-Nothing in #16-#22 has run against a live cluster. The ablation harness can now
+Nothing in #16-#26 has run against a live cluster. The ablation harness can now
 answer whether the specialist split, the reflector and learned memory earn
 their cost, but until the four arms are actually run the HolmesGPT comparison
 still rests on design description. The same live-run dependency blocks the
@@ -122,10 +136,12 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   `REMEDIATION_CONFIDENCE_CALIBRATION_PATH`.
 - Retrieval: `sre_agent/retrieval_metrics.py`, `skill_store.py`,
   `memory_store.py`, `runbook_index.py`, `benchmarks/retrieval_eval.py`.
+- Evidence typing: `sre_agent/evidence_contract.py`, its readers in
+  `act_phase.py`, and `tests/test_evidence_contract.py`.
 
 ## Verification commands and latest results
 - `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration`:
-  **1,666 passed** in ~28s. (`test_live_remediation_temporal_workflow` can fail
+  **1,709 passed** in ~28s. (`test_live_remediation_temporal_workflow` can fail
   on a Temporal test-server port bind when other jobs hold the port; it passes
   run alone.)
 - `uv run python benchmarks/retrieval_eval.py --output reports/release-retrieval.json`:
@@ -145,7 +161,14 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
 - Never stage the untracked secret backup `.env.local-backup-20260910`; the
   `.gitignore` `.env` pattern does not match it. Always use explicit paths in
   `git add`.
-- #16–#21 are in the working tree but not deployed or live-verified.
+- #16–#26 are committed but not deployed or live-verified.
+- The evaluation mix is five of six categories. **Missing-data is measured by
+  no corpus**: no scenario tests what the agent concludes from absent
+  telemetry. v2's splits are frozen and SHA-256 pinned, so closing it needs a
+  v3 with a fixture knob that removes a metric source. Declared in the
+  coverage table in `benchmarks/datasets/README.md` and pinned by
+  `tests/test_scenario_mix_coverage.py`, which fails if the declaration is
+  removed without a dataset that measures it.
 - No real calibration artifact exists and none can be built without a paired
   A05 `sre_bench.py` run against a live cluster; synthetic evidence is refused
   at load time. Until then remediation autonomy stays fail-closed on human
@@ -161,7 +184,7 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-Deploy #16-#22 and run them under live fire. Specifically: build at the exact
+Deploy #16-#26 and run them under live fire. Specifically: build at the exact
 revision, run `check_runtime_parity.py`, then run the four ablation arms back
 to back on the v2 holdout under one `BENCH_EXPERIMENT_ID` and `BENCH_PAIR_SEED`
 per `benchmarks/ablation/README.md`, capture each arm's run manifest, and

@@ -130,3 +130,40 @@ secret-exfiltration and cross-tenant-bait cases are *not* fault-injection
 scenarios — they need no cluster and assert on refusal, not recovery. They live
 in `benchmarks/adversarial/v1/cases.json` under the separate
 `sentinel-adversarial-v1` dataset and are graded by `adversarial_eval.py`.
+
+## Scenario-mix coverage, across all corpora
+
+The evaluation design calls for a mix of clean/no-action, noisy, multi-fault,
+missing-data, prompt-injection and cross-tenant cases. Three of those are v2
+scenarios, two are measured elsewhere, and one is not measured at all. "22
+scenarios" on its own would imply the whole mix, so the accounting is here:
+
+| Required category | Where it is measured | Count |
+| --- | --- | --- |
+| clean / no-action | v2 `taxonomy.category = clean` (`sub_threshold`) | 3 |
+| noisy | v2 `taxonomy.category = noisy` (`concurrent_benign_signal`) | 3 |
+| multi-fault | v2 `taxonomy.category = multi_fault` | 3 |
+| prompt-injection | A07 `indirect_injection`, `malicious_runbook`, `tool_result_spoofing` | 3 |
+| cross-tenant | A07 `cross_tenant_bait`; `retrieval_eval.py` `tenant_isolation` probes | 1 + probes |
+| **missing-data** | **nowhere** | **0** |
+
+`tests/test_scenario_mix_coverage.py` asserts this table against both corpora,
+so a category cannot quietly leave the mix and the missing-data gap cannot be
+closed in a doc without being closed in a dataset.
+
+Two notes on why the split is real rather than administrative:
+
+* An adversarial case **cannot** be a v2 scenario. The strict loader requires
+  one aggregate recovery probe returning exactly one scalar, and a
+  prompt-injection case has nothing to recover — the correct outcome is that
+  nothing happened. Giving it a probe would mean inventing a health signal to
+  satisfy a schema, which is the failure mode the content-addressed loader
+  exists to prevent.
+* **Missing-data is a genuine hole, not a category living elsewhere.** The
+  behaviour it would test — what the agent concludes when Prometheus is
+  unreachable or a series is absent — is exercised by unit tests and fails
+  closed in `recovery_oracle.py`, but no scenario measures what the *agent*
+  does with absent telemetry end to end. v2's splits are frozen and SHA-256
+  pinned, so closing this means a v3 with a fixture knob that removes a
+  metric source. Until then the mix is five of six categories, and the
+  evaluation should be described that way.

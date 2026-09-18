@@ -93,6 +93,14 @@ match the artifact configuration. Absent, invalid, mismatched, and
 evidence-blocked artifacts fail closed. See
 `benchmarks/confidence/README.md`.
 
+The 22 v2 scenarios are not the whole evaluation mix. Clean/no-action, noisy
+and multi-fault are v2 categories; prompt-injection and cross-tenant are A07
+cases graded by a different harness on refusal rather than recovery; and
+missing-data is measured nowhere. The joint accounting, and why an adversarial
+case cannot be a v2 scenario, is the coverage table in
+`benchmarks/datasets/README.md`, enforced by
+`tests/test_scenario_mix_coverage.py`.
+
 A07 adversarial release evidence uses the content-addressed cases under
 `benchmarks/adversarial/`. Candidate observations must preserve the rendered
 prompt, model output, ACT report, externally observed mutations, and raw

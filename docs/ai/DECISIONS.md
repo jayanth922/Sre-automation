@@ -1056,3 +1056,58 @@
   strictly above zero) and reports an interval containing zero as
   `NOT_DEMONSTRATED`, annotated with why the evidence was too thin to call it
   a null when it was.
+
+## The specialist split is not a swarm, but the node id stays `investigation_swarm`
+
+**Decision.** Every string an operator reads calls this what it is — a
+supervisor-routed split of specialists with a bounded re-investigation loop.
+The LangGraph node id `investigation_swarm` is frozen and not renamed.
+
+**Reason.** A swarm is peer-to-peer handoff with no central router. This graph
+routes every transition: the supervisor picks which specialists run, the
+reflector picks which run again. Calling it a swarm claimed an architecture
+the code does not implement, and it claimed it in log lines, in the
+reflector's thought trace, and in the design docs — the three places a
+reviewer looks. The node id is different in kind: it is written into LangGraph
+checkpoints and into Langfuse span names. Renaming it would fail resume for
+every in-flight incident and split the trace history at the rename, which is a
+real operational cost paid for a cosmetic gain.
+
+**Consequences.** `tests/test_deeper_investigation_loop.py` fails if any line
+of `graph_builder.py` mentions a swarm outside the node id itself, so the
+language cannot drift back. Anyone reading the node id in a trace will find
+the explanation at the node definition and here.
+
+**Rejected alternative.** Renaming the node and writing a checkpoint
+migration. The migration is possible but buys nothing an operator can see, and
+it would have to be correct on the crash-recovery path — the one path where a
+bug is least recoverable.
+
+## "Model routing saves cost" is struck, not deferred
+
+**Decision.** Sentinel does not claim that model routing saves money, and the
+claim is removed from the standard it was being held to rather than left open
+as future work. What the repository claims is exactly this: task-aware static
+tiering on a fixed Anthropic ladder, whose cost effect is unmeasured.
+
+**Reason.** The claim was going to be proved with a per-task cost/quality
+Pareto frontier and a router-vs-fixed-model experiment. Two things in the
+current design make that experiment meaningless. First, the provider contract
+is Anthropic-only, so the interesting half of the routing question — cheap
+vendor versus expensive vendor — cannot be asked. Second, `complexity` and
+`RequestContext` (budget, off-policy) are implemented and tested but no
+production call site passes either, so a routing experiment would compare a
+static ladder against a static model and measure the ladder, not routing. An
+unprovable claim left on a roadmap reads as work in progress; it is really a
+claim that will never be settled, and saying so is the honest version.
+
+**Consequences.** `model_router.py` states the cost effect as a hypothesis and
+says plainly that no document should assert the saving. `README.md` says the
+same and points here. If a future version routes on measured complexity or
+across vendors, the claim becomes askable again and this entry should be
+revisited — that is a new decision, not a resumption of this one.
+
+**Rejected alternative.** Running the router-vs-fixed-model experiment anyway.
+It would produce a real number attached to a question nobody asked, and the
+number would be quoted as if it validated adaptive routing, which is exactly
+the overstatement the audit was closing.

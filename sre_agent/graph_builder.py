@@ -971,7 +971,7 @@ async def _prepare_initial_state(state: AgentState) -> Dict[str, Any]:
         "ooda_phase": ooda_phase,
         "agent_results": {},
         "agents_invoked": [],
-        "requires_collaboration": True,  # Always true for investigation swarm
+        "requires_collaboration": True,  # Always true for the specialist split
         "metadata": {
             **existing_metadata,
             "llm_provider": llm_provider,
@@ -1112,7 +1112,12 @@ def _make_investigation_swarm_node(
     )
 
     async def investigation_swarm_node(state: AgentState) -> Dict[str, Any]:
-        logger.info("🔍 InvestigationSwarm: Starting focused deeper investigation")
+        # The graph node id stays `investigation_swarm`; see
+        # `docs/ai/DECISIONS.md` on why the name is frozen while the language
+        # around it is not. Nothing an operator reads should call this a swarm:
+        # it is a supervisor-routed re-investigation by selected specialists,
+        # with no peer-to-peer handoff anywhere in it.
+        logger.info("🔍 DeeperInvestigation: starting focused re-investigation")
 
         metadata = state.get("metadata", {}) or {}
         selected = _validated_deeper_agents(
@@ -1124,7 +1129,7 @@ def _make_investigation_swarm_node(
             selected = ["single_agent"] if selected else []
         selected = [name for name in selected if agent_instances.get(name) is not None]
         if not selected:
-            logger.warning("InvestigationSwarm: no valid recommended agents")
+            logger.warning("DeeperInvestigation: no valid recommended agents")
             return {
                 "ooda_phase": "ORIENT",
                 "next": "reflector",
@@ -1346,7 +1351,7 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     Return your analysis in JSON format matching ReflectorAnalysis schema.
     """
 
-    thought = "Alright, looking at the data collected by the Swarm. I'm going to cross-reference our infrastructure metrics with recent code changes to piece together a solid hypothesis..."
+    thought = "Alright, looking at the data the specialists collected. I'm going to cross-reference our infrastructure metrics with recent code changes to piece together a solid hypothesis..."
     logger.info(f"💭 ReflectorNode THOUGHT: {thought}")
 
     traces = state.get("thought_traces", {})
@@ -1453,8 +1458,8 @@ def planner_namespace_scope(cluster_namespace: Any) -> str:
     `act_phase` hard-blocks every action whose `parameters.namespace` differs
     from the cluster's namespace — correctly, since a scoped cluster must not
     reach its neighbours. But the planner was never told what that namespace
-    *is*. The investigation swarm gets a SCOPE clause (see
-    `_investigation_swarm_node`); the node that actually emits the namespaces
+    *is*. The deeper-investigation node gets a SCOPE clause (see
+    `investigation_swarm_node`); the node that actually emits the namespaces
     being scope-checked did not, so the model had to infer one from evidence —
     runbook snippets full of `kubectl -n demo-app`, MCP tool signatures whose
     default argument is `namespace="demo-app"` — and every wrong guess became a

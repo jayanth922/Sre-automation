@@ -29,10 +29,13 @@ The runtime already abstracts providers behind ``create_llm_with_error_handling`
 - The Reflector's **hypothesis** and the Planner's **remediation plan** are the
   high-stakes reasoning calls that justify a stronger (and pricier) model.
 
-Routing each task to an appropriate model *tier* cuts cost and latency without
-sacrificing quality on the calls that matter. This router makes that decision
-explicit, deterministic, testable, and fully configurable via environment
-variables — and it is a strict superset of the current behavior: when disabled
+The *hypothesis* is that routing each task to an appropriate model tier cuts
+cost and latency without sacrificing quality on the calls that matter. It is
+plausible and it is unmeasured — see "Scope, stated plainly" above. This
+router makes the decision explicit, deterministic, testable, and configurable
+via environment variables; it does not make the hypothesis true, and no
+document in this repository should assert the saving as a result. It is a
+strict superset of the previous behaviour: when disabled
 (``MODEL_ROUTER_ENABLED=false``) it falls back to the existing single-provider
 path, so nothing breaks.
 

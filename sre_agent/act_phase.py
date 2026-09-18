@@ -36,6 +36,15 @@ from .confidence_calibration import (
     calibrate_confidence,
     load_calibration_artifact,
 )
+from .evidence_contract import (
+    ALIASES_OF,
+    METRIC_NAMES,
+    SEVERITY_METRICS,
+    EvidenceContractError,
+    EvidenceRecord,
+    canonical_metric,
+    coerce_metric,
+)
 from .execution_context import ExecutionContext
 from .executor import (
     EXECUTOR_TOOL_MAP,
@@ -98,6 +107,12 @@ def _with_target(action: Any, target: str) -> Any:
 
 
 def _as_float(value: Any) -> Optional[float]:
+    """Numeric parse for values that are not severity metrics.
+
+    Metric coercion belongs to `evidence_contract.coerce_metric`, which knows
+    each metric's declared type. This one survives for the reflector's raw
+    confidence, which is not evidence and has no entry in that registry.
+    """
     if value is None or value == "":
         return None
     try:
@@ -106,43 +121,15 @@ def _as_float(value: Any) -> Optional[float]:
         return None
 
 
-def _as_int(value: Any) -> Optional[int]:
-    number = _as_float(value)
-    if number is None:
-        return None
-    return int(number)
-
-
-def _as_bool(value: Any) -> Optional[bool]:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y"}:
-        return True
-    if text in {"0", "false", "no", "n"}:
-        return False
-    return None
-
-
 def _walk_metrics(obj: Any) -> Dict[str, Any]:
-    """Collect known metric keys from nested investigation payloads."""
+    """Collect known metric keys from nested investigation payloads.
+
+    What counts as a metric is `evidence_contract.METRIC_NAMES`, not a set
+    maintained here — a name this walker collects but the contract cannot type
+    would be dropped later without a word.
+    """
     found: Dict[str, Any] = {}
-    keys = {
-        "error_rate",
-        "slo_burn_rate",
-        "burn_rate",
-        "saturation",
-        "error_rate_slope",
-        "affected_pods",
-        "affected_services",
-        "slo_breached",
-        "still_escalating",
-        "duration_seconds",
-        "dependency_count",
-        "customer_scope",
-    }
+    keys = METRIC_NAMES
 
     def visit(node: Any, path: str) -> None:
         if isinstance(node, dict):
@@ -179,11 +166,11 @@ def _tool_payload(message: Any) -> Any:
         return None
 
 
-def _walk_trace_messages(agent: str, messages: Any) -> Dict[str, Any]:
-    """Extract measured values and provenance from one specialist transcript."""
+def _walk_trace_messages(agent: str, messages: Any) -> Dict[str, EvidenceRecord]:
+    """Extract typed measured evidence from one specialist transcript."""
     if not isinstance(messages, (list, tuple)):
         return {}
-    found: Dict[str, Any] = {}
+    found: Dict[str, EvidenceRecord] = {}
     for message in messages:
         # Tool results only — an AIMessage's prose is exactly what this is
         # avoiding.
@@ -198,21 +185,36 @@ def _walk_trace_messages(agent: str, messages: Any) -> Dict[str, Any]:
         for metric, (value, path) in _walk_metrics(payload).items():
             if metric in found:
                 continue
-            trail = f"{agent}:{tool}"
-            found[metric] = (value, f"{trail}:{path}" if path else trail)
+            try:
+                record = EvidenceRecord(
+                    metric=metric, value=value, agent=agent, tool=tool, pointer=path
+                )
+            except EvidenceContractError:
+                # A tool reported the key but not a usable value — a null, a
+                # placeholder string, a nested object. Not evidence.
+                continue
+            found[record.metric] = record
     return found
 
 
 def measured_evidence_for_trace(agent: str, messages: Any) -> Dict[str, Any]:
     """Checkpoint-safe measured evidence derived before a trace is offloaded."""
     return {
-        metric: {"value": value, "source": source}
-        for metric, (value, source) in _walk_trace_messages(agent, messages).items()
+        metric: record.to_dict()
+        for metric, record in _walk_trace_messages(agent, messages).items()
     }
 
 
 def _walk_artifact_measurements(state: Any) -> Dict[str, Any]:
-    """Read compact measurements whose full transcript lives in an artifact."""
+    """Read compact measurements whose full transcript lives in an artifact.
+
+    This is the boundary the evidence contract exists for: the transcript that
+    produced these numbers is gone, offloaded to a content-addressed artifact,
+    so nothing here can be re-derived. Each stored record must parse as an
+    `EvidenceRecord` or it is discarded — and discarded loudly, because a
+    measurement silently missing from the ledger is how severity ends up
+    computed from alert labels while the report claims otherwise.
+    """
     metadata = _get(state, "metadata", {}) or {}
     if not isinstance(metadata, dict):
         return {}
@@ -225,11 +227,14 @@ def _walk_artifact_measurements(state: Any) -> Dict[str, Any]:
         if not isinstance(metrics, dict):
             continue
         for metric, item in metrics.items():
-            if metric in found or not isinstance(item, dict):
+            if str(metric) in found:
                 continue
-            if "value" not in item or not str(item.get("source") or "").strip():
+            try:
+                record = EvidenceRecord.from_dict(metric, item)
+            except EvidenceContractError as exc:
+                logger.warning("Discarding unusable measured evidence: %s", exc)
                 continue
-            found[str(metric)] = (item["value"], str(item["source"]))
+            found[record.metric] = (record.value, record.source)
     return found
 
 
@@ -273,8 +278,8 @@ def _walk_tool_outputs(state: Any) -> Dict[str, Any]:
         if not name.endswith(_TRACE_SUFFIX) or not isinstance(messages, (list, tuple)):
             continue
         agent = name[: -len(_TRACE_SUFFIX)] or "agent"
-        for metric, measured in _walk_trace_messages(agent, messages).items():
-            found.setdefault(metric, measured)
+        for metric, record in _walk_trace_messages(agent, messages).items():
+            found.setdefault(metric, (record.value, record.source))
     return found
 
 
@@ -293,17 +298,11 @@ def _absorb(
     The disagreement is worth knowing about, so it is logged rather than
     silently dropped.
     """
-    for key, (value, path) in discovered.items():
-        if key == "burn_rate":
-            key = "slo_burn_rate"
-        if key == "slo_breached" or key == "still_escalating":
-            parsed = _as_bool(value)
-        elif key in {"affected_pods", "affected_services", "dependency_count"}:
-            parsed = _as_int(value)
-        elif key == "customer_scope":
-            parsed = str(value) if value is not None else None
-        else:
-            parsed = _as_float(value)
+    for raw_key, (value, path) in discovered.items():
+        key = canonical_metric(raw_key)
+        if key is None:
+            continue
+        parsed = coerce_metric(key, value)
         if parsed is None:
             continue
         superseded = [link for link in links if link.field == key and not link.unknown]
@@ -422,46 +421,17 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
             )
         )
 
-    # Explicit measured values from alert annotations / labels only when present.
-    measured = {
-        "error_rate": _as_float(
-            labels.get("error_rate") or annotations.get("error_rate")
-        ),
-        "slo_burn_rate": _as_float(
-            labels.get("slo_burn_rate")
-            or labels.get("burn_rate")
-            or annotations.get("slo_burn_rate")
-            or annotations.get("burn_rate")
-        ),
-        "saturation": _as_float(
-            labels.get("saturation") or annotations.get("saturation")
-        ),
-        "error_rate_slope": _as_float(
-            labels.get("error_rate_slope") or annotations.get("error_rate_slope")
-        ),
-        "affected_pods": _as_int(
-            labels.get("affected_pods") or annotations.get("affected_pods")
-        ),
-        "affected_services": _as_int(
-            labels.get("affected_services") or annotations.get("affected_services")
-        ),
-        "slo_breached": _as_bool(
-            labels.get("slo_breached") or annotations.get("slo_breached")
-        ),
-        "still_escalating": _as_bool(
-            labels.get("still_escalating") or annotations.get("still_escalating")
-        ),
-        "duration_seconds": _as_float(
-            labels.get("duration_seconds") or annotations.get("duration_seconds")
-        ),
-        "dependency_count": _as_int(
-            labels.get("dependency_count") or annotations.get("dependency_count")
-        ),
-        "customer_scope": (
-            str(labels.get("customer_scope") or annotations.get("customer_scope") or "")
-            or None
-        ),
-    }
+    # Explicit measured values from alert annotations / labels only when
+    # present. Which metrics exist and what each coerces to is the evidence
+    # contract's to declare; this loop only knows where to look for them.
+    def _labelled(metric: str) -> Any:
+        for name in (metric, *ALIASES_OF.get(metric, ())):
+            for container in (labels, annotations):
+                if container.get(name) not in (None, ""):
+                    return coerce_metric(metric, container.get(name))
+        return None
+
+    measured = {metric: _labelled(metric) for metric in SEVERITY_METRICS}
 
     # Raw reflector confidence is retained as evidence but cannot affect
     # severity until a diagnosis-specific calibration artifact maps it.

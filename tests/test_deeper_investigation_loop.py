@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 from sre_agent import graph_builder
 from sre_agent.agent_state import ReflectorAnalysis
@@ -47,7 +48,7 @@ def test_invalid_or_unrequested_deeper_work_falls_through_to_planner():
     assert graph_builder._route_reflector({"next": "arbitrary_model_node"}) == "planner"
 
 
-def test_swarm_reruns_only_the_reflectors_selected_agents():
+def test_deeper_investigation_reruns_only_the_reflectors_selected_agents():
     calls = []
 
     def agent(name):
@@ -146,4 +147,38 @@ def test_graph_wires_the_reflector_loop_instead_of_claiming_a_dead_branch(monkey
         edge.conditional
         for edge in graph.edges
         if edge.source == "reflector" and edge.target == "planner"
+    )
+
+
+def test_nothing_an_operator_reads_calls_this_a_swarm():
+    """Architecture honesty: it is a supervisor-routed split, not a swarm.
+
+    A swarm is peer-to-peer handoff with no central router. This graph has a
+    supervisor that picks the specialists and a reflector that picks who runs
+    again — every transition goes through a router. Calling it a swarm
+    oversold the architecture in log lines, in the reflector's thought trace,
+    and in the design docs.
+
+    The *node id* `investigation_swarm` is deliberately not renamed: it is
+    written into LangGraph checkpoints and Langfuse span names, so changing it
+    would break resume of in-flight incidents and silently split the trace
+    history. This test draws the line where it belongs — at the strings a
+    human actually reads.
+    """
+    source = Path(graph_builder.__file__).read_text()
+
+    operator_visible = []
+    for line in source.splitlines():
+        text = line.strip()
+        if "swarm" not in text.lower():
+            continue
+        if "investigation_swarm" in text:
+            continue  # the frozen node id, and code that routes on it
+        if text.startswith("#"):
+            continue  # the comment explaining this very rule
+        operator_visible.append(text)
+
+    assert operator_visible == [], (
+        "operator-visible text still calls the specialist split a swarm: "
+        f"{operator_visible}"
     )

@@ -180,7 +180,7 @@ New OODA flow (additive; existing supervisor/specialist flow is untouched until
 the ACT nodes are enabled by flag):
 
 ```
-swarm → reflector → planner → [severity → policy_gate] → executor → verify → aggregate
+specialists → reflector → planner → [severity → policy_gate] → executor → verify → aggregate
                                           │
                                           └─ REQUIRES_APPROVAL / BLOCKED → human checkpoint (existing)
 ```

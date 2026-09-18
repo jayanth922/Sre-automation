@@ -57,11 +57,18 @@ mutation is governed by the policy gate + human approval (surfaced as
 
 **Model routing.** Each task type is routed to a model tier (fast / balanced /
 strong) on a fixed Anthropic ladder — cheap models for narration/routing,
-strong models for reflection/planning — with budget-aware downgrade and
-off-policy blocking. Sentinel is Anthropic-only by design: any other provider,
-including one named per tier via `MODEL_ROUTER_<TIER>_PROVIDER`, is rejected at
-Helm render time and again at startup rather than failing later in a
-CrashLoopBackOff. Tiers vary the model, never the vendor.
+strong models for reflection/planning. Sentinel is Anthropic-only by design:
+any other provider, including one named per tier via
+`MODEL_ROUTER_<TIER>_PROVIDER`, is rejected at Helm render time and again at
+startup rather than failing later in a CrashLoopBackOff. Tiers vary the model,
+never the vendor.
+
+This is static task tiering. Budget-aware downgrade and off-policy blocking
+are implemented and tested, but no production call site supplies the
+`RequestContext` they need, so neither is live. Nor is there a measurement
+that the tiering saves money: that would take a per-task cost/quality frontier
+and a router-vs-fixed-model experiment, and Sentinel runs neither. The claim
+is therefore not made anywhere — see `docs/ai/DECISIONS.md`.
 
 ## Observability, security, production engineering
 

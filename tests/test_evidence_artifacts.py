@@ -171,10 +171,17 @@ async def test_checkpoint_keeps_reference_and_measured_projection_not_raw_trace(
     assert returned == reference
     assert "metrics_agent_trace" not in metadata
     assert metadata["evidence_artifact_refs"]["metrics_agent"] == [reference]
-    assert metadata["measured_evidence"]["metrics_agent"]["error_rate"] == {
-        "value": 0.24,
-        "source": "metrics_agent:prometheus_query:error_rate",
-    }
+    # The projection is a serialized EvidenceRecord: the tool call is kept in
+    # parts so provenance stays queryable once the transcript is gone, and
+    # `source` is denormalised so pre-contract readers still work.
+    projected = metadata["measured_evidence"]["metrics_agent"]["error_rate"]
+    assert projected["metric"] == "error_rate"
+    assert projected["value"] == 0.24
+    assert projected["agent"] == "metrics_agent"
+    assert projected["tool"] == "prometheus_query"
+    assert projected["pointer"] == "error_rate"
+    assert projected["source"] == "metrics_agent:prometheus_query:error_rate"
+    assert projected["observed_at"]
     assert "raw_series" not in json.dumps(metadata)
 
     signals = extract_incident_signals(
