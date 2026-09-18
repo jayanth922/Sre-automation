@@ -810,3 +810,18 @@
 - **Rejected alternative:** Make the worker complete with `{"ok": true}` and
   leave the runtime's rich update in place. Rejected because it creates two
   owners and can turn a retryable runtime failure into a completion attempt.
+
+## Aggregate narration gets deterministic status grounding
+
+- **Decision:** `build_supervisor_summary_content()` accepts the durable
+  incident status and appends `grounding_footnote()` when model-authored
+  wrap-up text claims a contradictory phase or omits the exact next command.
+- **Reason:** Follow-up answers already had this correction, but the initial
+  aggregate summary was another Slack-visible model surface with no equivalent
+  status check.
+- **Consequences:** The model's wording remains intact for auditability; the
+  timeline content and payload carry the correction and status together. Calls
+  without a status retain their backward-compatible behavior.
+- **Rejected alternative:** Rewrite or prompt the model to obey the status.
+  Rejected because the existing follow-up incident showed that prompting alone
+  still produced contradictory phase claims.

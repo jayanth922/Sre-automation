@@ -1291,6 +1291,20 @@ User's query: {current_query}
                 },
             }
 
+        # Aggregate narration is also model-authored. Reuse the durable status
+        # when available so the timeline correction can call out a claim that
+        # contradicts what the rest of the system will act on.
+        incident_status = str(
+            state.get("incident_status") or metadata.get("incident_status") or ""
+        )
+        if not incident_status and incident_id:
+            incident_status = str(
+                (await load_incident_chat_context(incident_id)).get(
+                    "incident_status", ""
+                )
+                or ""
+            )
+
         if remediation_plan and reflector_analysis:
             # Format the output from the OODA workflow
             final_response = f"## 🔍 Incident Investigation Summary\n\n"
@@ -1347,6 +1361,7 @@ User's query: {current_query}
                 query=current_query,
                 alert_context=alert_context,
                 narrative=plan_narrative,
+                incident_status=incident_status,
             )
             summary_payload["narrative"] = plan_narrative or summary_content
             await emit_timeline_event(
@@ -1618,6 +1633,7 @@ You can:
             query=state.get("current_query", ""),
             alert_context=alert_context,
             narrative=narrative_summary,
+            incident_status=incident_status,
         )
         summary_payload["narrative"] = narrative_summary or summary_content
         await emit_timeline_event(

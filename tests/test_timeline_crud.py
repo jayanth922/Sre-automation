@@ -165,6 +165,22 @@ def test_supervisor_summary_flags_conflicting_numeric_facts():
     assert "Raw draft summary" in content
 
 
+def test_supervisor_summary_grounding_corrects_status_contradictions():
+    content, payload = build_supervisor_summary_content(
+        "Raw draft summary",
+        {"metrics_agent": "The service is stable."},
+        query="Investigate checkout errors",
+        narrative="The remediation is executing right now; I'll report back.",
+        incident_status="awaiting_approval",
+    )
+
+    assert "The remediation is executing right now" in content
+    assert "waiting on a human to approve it" in content
+    assert "reply `approve fix`" in content
+    assert payload["incident_status"] == "awaiting_approval"
+    assert payload["grounding_footnote"]
+
+
 def test_a_conflict_caveat_does_not_delete_the_conclusion():
     """A wrap-up that says only "reconcile the data" throws away the root
     cause the specialists agreed on and contradicts the thread above it."""

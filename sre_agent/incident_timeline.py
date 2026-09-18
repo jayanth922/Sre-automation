@@ -443,6 +443,7 @@ def build_supervisor_summary_content(
     alert_context: Any = None,
     *,
     narrative: Optional[str] = None,
+    incident_status: str = "",
 ) -> Tuple[str, Dict[str, Any]]:
     """Build the timeline event for the supervisor's final synthesis.
 
@@ -536,6 +537,13 @@ def build_supervisor_summary_content(
             ]
         )
 
+    # The aggregate is another model-authored narration surface. Keep its
+    # wording intact, but append the same status-derived correction used by
+    # follow-up answers when a caller has the durable incident status.
+    footnote = grounding_footnote(content, incident_status)
+    if footnote:
+        content = "\n".join([content, "", "---", footnote])
+
     payload = {
         "source": "supervisor.aggregate_responses",
         "specialists_invoked": list(visible_results.keys()),
@@ -545,6 +553,8 @@ def build_supervisor_summary_content(
         "normalized_findings": normalized_findings,
         "conflicting_numeric_facts": conflicts,
         "raw_final_response": _truncate(final_response or "", 8000),
+        "incident_status": incident_status or None,
+        "grounding_footnote": footnote,
     }
     return content, payload
 
