@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from backend.models import UserRole, ClusterStatus, IncidentSeverity, IncidentStatus
 
@@ -31,16 +31,16 @@ class UserCreate(UserBase):
     org_name: str  # Create a new organization with the user
 
 class UserResponse(UserBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     role: UserRole
     org_id: uuid.UUID
     is_active: bool
 
-    class Config:
-        from_attributes = True
-
-
 class UserProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     email: EmailStr
     full_name: Optional[str] = None
@@ -50,10 +50,6 @@ class UserProfileResponse(BaseModel):
     organization_name: str
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class PasswordResetRequest(BaseModel):
     current_password: str
@@ -65,16 +61,14 @@ class PasswordResetRequest(BaseModel):
 # ----------------------------------------------------------------------
 
 class OrgMemberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     email: EmailStr
     full_name: Optional[str] = None
     role: UserRole
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class MemberRoleUpdate(BaseModel):
     role: UserRole
@@ -137,6 +131,8 @@ class OrgCreate(BaseModel):
     name: str
 
 class OrgResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     name: str
     created_at: datetime
@@ -144,9 +140,6 @@ class OrgResponse(BaseModel):
     # Public key only — never expose langfuse_secret_key here.
     langfuse_public_key: Optional[str] = None
     langfuse_host: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 # ----------------------------------------------------------------------
 # Cluster Schemas
@@ -201,6 +194,8 @@ class ClusterUpdate(BaseModel):
     llm_router_enabled: Optional[bool] = None
 
 class ClusterResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     name: str
     status: ClusterStatus
@@ -224,9 +219,6 @@ class ClusterResponse(BaseModel):
     llm_base_url: Optional[str] = None
     llm_router_enabled: bool = False
 
-    class Config:
-        from_attributes = True
-
 class LlmModelsRequest(BaseModel):
     # Optional: lets the dashboard list models for a key the admin just typed
     # but hasn't saved yet. Falls back to the cluster's saved llm_api_key.
@@ -244,6 +236,8 @@ class IncidentCreate(BaseModel):
     severity: IncidentSeverity
 
 class IncidentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     cluster_id: uuid.UUID
     title: str
@@ -255,11 +249,9 @@ class IncidentResponse(BaseModel):
     resolved_at: Optional[datetime] = None
     jira_issue_key: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-
-
 class IncidentTimelineEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     incident_id: uuid.UUID
     sequence: int
@@ -271,10 +263,6 @@ class IncidentTimelineEventResponse(BaseModel):
     pending_supervisor: bool = False
     handled_at: Optional[datetime] = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class IncidentTranscriptResponse(BaseModel):
     incident: IncidentResponse
@@ -297,6 +285,8 @@ class GateApprovalDecisionRequest(BaseModel):
 
 
 class GateApprovalResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     incident_id: uuid.UUID
     workflow_id: str
@@ -306,9 +296,6 @@ class GateApprovalResponse(BaseModel):
     decided_at: Optional[datetime] = None
     expires_at: datetime
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 # ----------------------------------------------------------------------
 # SLO Schemas
@@ -329,6 +316,8 @@ class SLOUpdate(BaseModel):
     window_days: Optional[int] = None
 
 class SLOResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     cluster_id: uuid.UUID
     name: str
@@ -338,9 +327,6 @@ class SLOResponse(BaseModel):
     current_value: Optional[float] = None
     error_budget_remaining: Optional[float] = None
     last_calculated: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 class SLOStatusResponse(BaseModel):
     """Enriched SLO status with burn rate."""
@@ -367,6 +353,8 @@ class JobStatusUpdate(BaseModel):
 
 
 class RunManifestResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     job_id: uuid.UUID
     incident_id: uuid.UUID
@@ -380,10 +368,6 @@ class RunManifestResponse(BaseModel):
     root_trace_id: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
-
 class RunManifestComparisonResponse(BaseModel):
     left_job_id: str
     right_job_id: str
@@ -395,6 +379,8 @@ class RunManifestComparisonResponse(BaseModel):
 
 
 class JobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     cluster_id: uuid.UUID
     job_type: JobType
@@ -415,6 +401,3 @@ class JobResponse(BaseModel):
     lease_expires_at: Optional[datetime] = None
     cancel_requested_at: Optional[datetime] = None
     last_error: Optional[str] = None
-
-    class Config:
-        from_attributes = True

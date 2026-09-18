@@ -71,27 +71,26 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   and a mocked PR result. A replacement-worker regression preserves the pending
   gate; denial stops without verification or PR activity. Alert-focused tests
   isolate the settle floor and no longer stall the suite.
+- All 11 ORM-backed API response models use Pydantic `ConfigDict`; validation
+  and serialization behavior remains covered by the full suite.
 
 ## Active problem
-Next: remove Pydantic v2 class-config deprecations from backend schemas.
+Next: replace deprecated FastAPI startup/shutdown decorators with lifespan.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
 - `sre_agent/mutation_gateway.py`, `sre_agent/alert_lifecycle_reconciler.py`
 - `tests/test_live_remediation_temporal_workflow.py`
 - `tests/test_incident_remediation_workflow.py`, `tests/test_act_phase.py`
-- `backend/schemas.py`
-- `sre_agent/observability.py`, `sre_agent/model_router.py`
-- `tests/test_observability.py`, `tests/test_model_accounting.py`
+- `backend/schemas.py`, `sre_agent/agent_runtime.py`
 - `sre_agent/supervisor.py`, `sre_agent/narration_grounding.py`
 
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Full suite: **1,511 passed**.
+- Full suite: **1,511 passed**; warnings fell from 17 to 6.
 - Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
 - Temporal remediation focused suite: **35 passed**.
-- Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
   and worker are healthy on image `033ea434…`, revision `2d1f65c`, fingerprint
@@ -100,9 +99,8 @@ Next: remove Pydantic v2 class-config deprecations from backend schemas.
   because `.env` has no `INTERNAL_API_TOKEN`; schema remains covered by tests.
 
 ## Known blockers or risks
-- Codespace k3s may stop after sleep; run `scripts/codespace_boot.sh` first.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Migrate `backend/schemas.py` from class-based Pydantic config to `ConfigDict`
-without changing API serialization or validation behavior.
+Replace `agent_runtime.py` startup/shutdown decorators with a lifespan context;
+preserve Temporal bootstrap, worker cancellation, and tests.
