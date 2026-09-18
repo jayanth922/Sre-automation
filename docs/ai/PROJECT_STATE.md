@@ -69,19 +69,18 @@ from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
   does not issue a second completion after the runtime writes its rich result.
 - Time-skipping and live Temporal smoke drive both gates, child verification,
   and a mocked PR result. A replacement-worker regression preserves the pending
-  first gate; denial terminates without child verification or PR activity.
+  gate; denial stops without verification or PR activity. Alert-focused tests
+  isolate the settle floor and no longer stall the suite.
 
 ## Active problem
-Next: isolate the environment-dependent `act_phase` focused-test stall.
+Next: remove Pydantic v2 class-config deprecations from backend schemas.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
 - `sre_agent/mutation_gateway.py`, `sre_agent/alert_lifecycle_reconciler.py`
 - `tests/test_live_remediation_temporal_workflow.py`
 - `tests/test_incident_remediation_workflow.py`, `tests/test_act_phase.py`
-- `tests/test_deeper_investigation_loop.py`
-- `sre_agent/evidence_artifacts.py`, `backend/models.py`
-- `tests/test_evidence_artifacts.py`
+- `backend/schemas.py`
 - `sre_agent/observability.py`, `sre_agent/model_router.py`
 - `tests/test_observability.py`, `tests/test_model_accounting.py`
 - `sre_agent/supervisor.py`, `sre_agent/narration_grounding.py`
@@ -89,7 +88,7 @@ Next: isolate the environment-dependent `act_phase` focused-test stall.
 ## Verification commands and latest results
 - `scripts/check_python_quality.sh`, secret scan, module reachability, Compose
   config, and Helm/Kustomize/Terraform deployment-template gate: passed.
-- Observability-focused suite: **130 passed**. Full suite: **1,507 passed**.
+- Full suite: **1,511 passed**.
 - Job-worker/canonical-runner/failure-path regression suite: **22 passed**.
 - Temporal remediation focused suite: **35 passed**.
 - Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
@@ -105,5 +104,5 @@ Next: isolate the environment-dependent `act_phase` focused-test stall.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Make the alert-specific live-verification regression deterministic with the
-local runtime stack both stopped and running; preserve production behavior.
+Migrate `backend/schemas.py` from class-based Pydantic config to `ConfigDict`
+without changing API serialization or validation behavior.

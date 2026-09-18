@@ -610,10 +610,11 @@ def test_verify_live_builds_query_and_evaluates():
     assert out["signal"] == "error_rate"
 
 
-def test_verify_live_checks_the_alert_that_opened_the_incident():
+def test_verify_live_checks_the_alert_that_opened_the_incident(monkeypatch):
     """A latency alert graded on the error rate can be called "resolved" while
     queries are still slow. When the incident carries an alert name, that alert
     is the signal."""
+    monkeypatch.setenv("VERIFY_ALERT_MIN_CLEAR_SECONDS", "0")
     alert = FakeAlert(
         "warning",
         {"service": "inventory-service", "namespace": "demo-app"},
@@ -652,6 +653,7 @@ def test_the_default_verification_budget_outlasts_the_alerts_own_window(monkeypa
     to leave room for the window *plus* a rollout.
     """
     monkeypatch.delenv("VERIFY_ALERT_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("VERIFY_ALERT_MIN_CLEAR_SECONDS", "0")
     alert = FakeAlert(
         "warning",
         {"service": "inventory-service", "namespace": "demo-app"},
@@ -680,6 +682,7 @@ def test_the_default_verification_budget_outlasts_the_alerts_own_window(monkeypa
 def test_the_verification_budget_is_still_operator_overridable(monkeypatch):
     """The default is a floor for correctness, not a hardcode."""
     monkeypatch.setenv("VERIFY_ALERT_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("VERIFY_ALERT_MIN_CLEAR_SECONDS", "0")
     alert = FakeAlert(
         "warning",
         {"service": "inventory-service", "namespace": "demo-app"},
