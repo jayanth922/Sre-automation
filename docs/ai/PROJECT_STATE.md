@@ -15,7 +15,7 @@ retry only proven pre-claim failures; claim/dispatch/audit uncertainty stops
 for manual review. The runtime is exact revision `d6a6a1b`.
 The reflector and artifact-context branches are deployed (`5c292cd`).
 Observability is deployed (`e2b9fe0`); runtime-only job completion is deployed
-from `5c55bed`.
+from `5c55bed`. Aggregate status grounding is deployed from `50873ae`.
 
 ## Current architecture and invariants
 - `act_phase` serializes the approved batch; `LiveRemediationWorkflow` runs one
@@ -73,8 +73,7 @@ from `5c55bed`.
   does not issue a second completion after the runtime writes its rich result.
 
 ## Active problem
-Next gap: aggregate wrap-up narration may not follow computed incident/
-remediation status.
+Next: full Temporal remediation workflow through both gates; no active code.
 
 ## Relevant files
 - `sre_agent/act_phase.py`, `sre_agent/incident_remediation_workflow.py`
@@ -95,8 +94,8 @@ remediation status.
 - Dashboard TypeScript check passed. ESLint has 30 pre-existing errors.
 - Live artifact probe wrote, digest-verified, reloaded, and removed one row.
 - Exact-revision Docker build and live `check_runtime_parity.py`: passed. API
-  and worker are healthy on image `9b8a7199…`, revision `5c55bed`, fingerprint
-  `e362a3ac…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
+  and worker are healthy on image `79acf4e8…`, revision `50873ae`, fingerprint
+  `1fe2ecb7…`, and 149 files. Alembic is at `e5f6a7b8c9d0` (head).
 - Live `/agent/metrics` is fail-closed: the stack returned `403`
   because `.env` has no `INTERNAL_API_TOKEN`; schema remains covered by tests.
 
@@ -105,6 +104,5 @@ remediation status.
 - Never stage the untracked secret backup `.env.local-backup-20260910`.
 
 ## Next bounded task
-Audit `build_supervisor_aggregate_content` and its callers. Add a bounded
-status-grounding regression, preserving actionable remediation details, then
-commit/push/deploy if a fix is required.
+Exercise local `IncidentRemediationWorkflow` through both
+gates; live writes and GitHub PRs are out of scope.
