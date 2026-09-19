@@ -146,19 +146,44 @@ answered both questions and surfaced one structural defect:
    unchanged across both: `skills.json` 5 @ `success_count=1`,
    `sre_skills_v1` 5, `sre_incidents_v2` 0. The *retrieval* half works live —
    `SkillStore: semantic recall enabled` and 3 learned skills proposed.
-3. **Root cause — autonomous ACT is unreachable in production (task #33).**
-   `compute_urgency_score` needs `slo_burn_rate`, `saturation`, or
-   `error_rate_slope`. Production supplies none: the first two names appear
-   only in test fixtures and `examples/`, and the one real `saturation`
-   producer (`prometheus_real/server.py:392`) emits
-   `{"query":…, "value":…}`, which `_walk_metrics` captures as a dict and
-   `_as_float` turns into `None` — the `key_str not in found` guard then
-   blocks the nested number. No alert rule supplies them either. So urgency
-   is always `None` → severity always `UNKNOWN` → `is_low_severity` always
-   `False` → **no plan can ever run unattended, for any incident.** The
+3. **Root cause — autonomous ACT was unreachable in production (task #33,
+   now fixed at `8c7b4c0`).** `compute_urgency_score` needs `slo_burn_rate`,
+   `saturation`, or `error_rate_slope`. Production supplied none, so urgency
+   was always `None` → severity always `UNKNOWN` → `is_low_severity` always
+   `False` → **no plan could ever run unattended, for any incident.** The
    earlier attribution of `5cc643c5`'s UNKNOWN to "the fault was cleared" was
    wrong: `281b8110` kept its fault injected and still went UNKNOWN. Tests
-   miss this because they inject all three metrics by hand.
+   missed it because they inject all three metrics by hand — they exercised
+   the scoring maths, never the pipeline's ability to supply its inputs.
+
+   It was **two** defects, not one, and fixing only the first would have left
+   autonomy just as unreachable:
+   - *Slot poisoning.* `_walk_metrics` claimed a metric slot on `key_str not
+     in found` regardless of whether the value coerced, so the MCP's wrapper
+     dict claimed `saturation` and hid the number below it.
+   - *Unreachable value.* The real payload from
+     `prometheus_real/server.py:392` is not `{"query":…,"value":0.42}` but a
+     capped Prometheus instant-vector envelope three layers deep. Recovering
+     it needed `act_phase._prometheus_scalar`, which unwraps **only**
+     unambiguous cases: zero series is not a measurement and several series
+     are several measurements, so both stay `None` rather than having one
+     picked and called evidence.
+
+   The fix does not rely on the model choosing to call an MCP tool. A new
+   `severity_telemetry` graph node (between `aggregate` and
+   `approval_prepare`) measures the inputs deterministically from the
+   cluster's own Prometheus and writes `metadata["severity_telemetry"]`,
+   which `extract_incident_signals` absorbs at **highest** precedence — it is
+   the only source whose query provenance the platform itself authored. Two
+   optional per-cluster profile fields drive it, `saturation_query` (with a
+   `$service` placeholder, so the reading describes the service on fire
+   rather than a diluting cluster-wide average) and `slo_target`. `cpu_query`
+   is deliberately **not** reused: it is customer-authored with no declared
+   unit, and guessing 100× low would understate urgency and make a plan
+   *more* likely to run unattended. A cluster setting neither field keeps
+   today's behaviour exactly (unmeasured → UNKNOWN → human approval), which
+   is the safe direction to fail; a *malformed* value raises
+   `MetricsProfileMalformed` instead of being silently dropped.
 
 Also open: **task #32**, nothing cancels an in-flight investigation when an
 incident resolves externally (`durable_jobs.request_cancel` has zero callers;
@@ -193,6 +218,18 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   `act_phase.py`, and `tests/test_evidence_contract.py`.
 
 ## Verification commands and latest results
+**There are two complete platform stacks, and only one is live.** The Mac runs
+`sre-agent-api` / `sre-postgres` / `sre-redis` / `sre-qdrant` / `sre-temporal`
+/ `sre-temporal-worker`, and the Codespace runs a second full stack of the
+same services (plus `sre-dashboard`). **The Codespace stack is the one under
+test** — Alertmanager's webhook points at it and `BENCH_BASE_URL` resolves to
+it — so deploys, API writes, and log greps all belong there; the Mac stack is
+a separate dev copy whose database receives none of it. Assuming a single
+stack produced a wrong conclusion once already (a cluster-profile PATCH issued
+against the Codespace was checked for on the Mac, found absent, and misread as
+a failed write). Forwarding the Codespace's port 8080 to the Mac also fails,
+because the Mac's own `sre-agent-api` already holds it.
+
 - `uv run pytest tests/ -q`: **1,733 passed** in ~31s. (`test_live_remediation_temporal_workflow` can fail
   on a Temporal test-server port bind when other jobs hold the port; it passes
   run alone.)
@@ -271,16 +308,17 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-**Decide task #33** — the urgency-telemetry gap — because it blocks every
-downstream phase. Until urgency is measurable, no arm can produce an
-autonomous `act_report`, and a "no-memory" ablation is untestable since
-memory is never written in the first place. Three candidate fixes are in the
-task; option 3 (relaxing the all-three-missing early return) deliberately
-weakens a safety property and should not be taken casually.
+**Phase 1** (train split, production mode, to seed memory legitimately), then
+**Phase 2** (dev split `full` + ablation identifiers), then **Phase 3** (the
+three counterfactual arms).
 
-Blocked on that: **Phase 1** (train split, production mode, to seed memory
-legitimately), **Phase 2** (dev split `full` + ablation identifiers), and
-**Phase 3** (the three counterfactual arms). Baseline to diff every memory
+Task #33 no longer blocks them. Of its three candidate fixes, option 3
+(relaxing the all-three-missing early return) was **rejected** — it weakens a
+safety property to buy a symptom — and options 1+2 were implemented instead,
+with per-cluster explicit configuration and a fail-safe default. Live cluster
+`bcbd9577-…` is configured and measuring; verified inside the running
+container that the same incident classifies `UNKNOWN`/`autonomous=False`
+without the telemetry and `SEV3`/`autonomous=True` with it. Baseline to diff every memory
 claim against, taken 2026-09-19 and still true after two runs: `skills.json`
 5 skills each at `success_count=1`, Qdrant `sre_skills_v1` 5 points,
 `sre_incidents_v2` **0 points**. The corpus already holds a
@@ -294,10 +332,12 @@ if *any* of `BENCH_EXPERIMENT_ID` / `BENCH_CANDIDATE_ID` /
 `BENCH_CONFIG_FINGERPRINT` / `BENCH_PAIR_SEED` is set, then demands all
 four). Read cost from `/api/v1/incidents/{id}/agent-metrics` only after the
 job leaves `running`; a single failed span nulls the whole total by design.
-The Codespace working tree carries `95ef01b`'s `benchmarks/sre_bench.py` as
-an uncommitted copy — deliberately left in place, since reverting would
-reintroduce the 401. `deploy_agent_runtimes.sh` refuses a dirty tracked tree,
-so land that commit in the Codespace before the next agent redeploy.
+The Codespace tree is now clean and at `8c7b4c0`, matching local content
+exactly (same HEAD tree sha). It got there by patch — `git format-patch` on
+the Mac, `git am` in the Codespace — not by pushing, since pushing was not
+authorized. `deploy_agent_runtimes.sh` refuses a dirty tracked tree, so keep
+it clean before any redeploy. Note `uv` is not on the non-interactive SSH
+`PATH`; prefix with `export PATH="$HOME/.local/bin:$PATH"`.
 
 Then the four ablation arms. Everything they need is in place: Codespace
 `cuddly-winner-659v67gv695hrxjw`, k3s up, Meridian healthy, and `~/bench.env`

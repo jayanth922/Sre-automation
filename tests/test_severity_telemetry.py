@@ -29,13 +29,17 @@ inputs itself rather than hoping the model ran the right query.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from typing import Any, Dict
 
 import httpx
 import pytest
 
+from sre_agent import graph_builder
 from sre_agent import metrics_profile as mp
 from sre_agent import severity_telemetry as st
 from sre_agent.act_phase import _walk_metrics, extract_incident_signals
+from sre_agent.agent_state import AlertContext
 from sre_agent.severity_engine import Severity, classify_severity, is_low_severity
 
 PROFILE = {
@@ -367,3 +371,65 @@ def test_platform_measurement_outranks_a_model_reported_one():
     state = _state({"metrics": {"error_rate": 0.02}})
     state["agent_results"] = {"metrics_agent": {"error_rate": 0.9}}
     assert extract_incident_signals(state).error_rate == 0.02
+
+
+# ── The node's own inputs ────────────────────────────────────────────────────
+# Everything above proves the measurement is right *given* a service name. The
+# node also has to get one, and that is where it first failed in production:
+# at runtime `alert_context` is an `AlertContext` model, not the dict every
+# test here builds, so a dict-only read found no labels, passed an empty
+# service, and turned the node into a silent no-op while the whole suite
+# stayed green. These two tests run the node itself, once per shape.
+@pytest.mark.parametrize(
+    "alert",
+    [
+        pytest.param(
+            AlertContext(
+                alert_name="InventorySlowQueries",
+                severity="warning",
+                labels={"service": "inventory-service", "namespace": "meridian"},
+            ),
+            id="AlertContext model (production)",
+        ),
+        pytest.param(
+            {"labels": {"service": "inventory-service", "namespace": "meridian"}},
+            id="plain dict (tests, resumed checkpoints)",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_node_reads_the_service_from_either_alert_shape(alert, monkeypatch):
+    seen: Dict[str, Any] = {}
+
+    async def fake_measure(*, cluster_id, service):
+        seen["cluster_id"], seen["service"] = cluster_id, service
+        return {"metrics": {"saturation": 0.3}, "sources": {}, "service": service}
+
+    monkeypatch.setattr(st, "measure_for_incident", fake_measure)
+
+    out = await graph_builder._severity_telemetry_node(
+        {"alert_context": alert, "metadata": {"existing": 1}},
+        SimpleNamespace(cluster_id="bcbd9577-3195-45e4-b840-da592647459c"),
+    )
+
+    assert seen["service"] == "inventory-service"
+    assert seen["cluster_id"] == "bcbd9577-3195-45e4-b840-da592647459c"
+    assert out["metadata"]["severity_telemetry"]["metrics"]["saturation"] == 0.3
+    # The node merges into metadata rather than replacing it.
+    assert out["metadata"]["existing"] == 1
+
+
+@pytest.mark.asyncio
+async def test_node_measuring_nothing_leaves_state_untouched(monkeypatch):
+    """An unmeasurable incident must degrade, not fail the investigation."""
+
+    async def fake_measure(*, cluster_id, service):
+        raise RuntimeError("Prometheus is down")
+
+    monkeypatch.setattr(st, "measure_for_incident", fake_measure)
+
+    out = await graph_builder._severity_telemetry_node(
+        {"alert_context": {"labels": {}}, "metadata": {}},
+        SimpleNamespace(cluster_id="bcbd9577-3195-45e4-b840-da592647459c"),
+    )
+    assert out == {}
