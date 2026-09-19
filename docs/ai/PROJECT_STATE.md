@@ -151,6 +151,16 @@ as a non-recovery… the default stays 300 only so existing invocations keep
 their meaning" — and `_Token`'s docstring names the intended value, **45 min
 (2700s)**. The ceiling is operator-set and was never set.
 
+**Made visible at `c673696`.** The runner now prints the timeout (it never
+did, which is why this hid through three pilots) and `timeout_warning()`
+warns when the ceiling is below the measured 21-min floor and a fault is
+actually injected. The default stays 300 — a short ceiling is correct when
+smoke-testing the harness or running `fault mode: none` — so this exposes the
+trap rather than removing the knob. Floor is the measured *minimum*, not the
+49-min worst case; calibrated at the maximum it would fire on ceilings that
+can legitimately work. Pinned by `tests/test_bench_timeout_floor.py`.
+Still set `BENCH_INCIDENT_TIMEOUT_SEC=2700` explicitly on every real run.
+
 Two consequences, both observed live on 2026-09-19:
 - Every trial reports `UNRESOLVED` regardless of what the agent does, so
   oracle recovery can never be anything but 0%.
