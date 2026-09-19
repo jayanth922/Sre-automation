@@ -122,17 +122,38 @@ missed-clear reconciliation, and bounded pre-claim retries.
   boundary working on live input.
 
 ## Active problem
-The four ablation arms have not been run. Deploying removed every obstacle but
-the clock: the arms are ~12h of wall time at one run per scenario, because a
-live incident takes 10-30 minutes. Until they run, the HolmesGPT comparison
-still rests on design description, and the same run is the only source of a
-real confidence calibration artifact.
+No benchmark campaign has produced an `act_report` yet, so the HolmesGPT
+comparison still rests on design description and there is no real confidence
+calibration artifact.
 
-Before the first arm, set `ACT_PHASE_ENABLED=true` in the Codespace `.env`.
-It is `false` today, so no `act_report` is produced and the benchmark's
-remediation, severity and safety columns — and the confidence observations —
-have nothing to read. `EXECUTOR_LIVE` is already `true`; with no calibration
-artifact the gate still fails closed onto human approval.
+`ACT_PHASE_ENABLED=true` is now set in the Codespace `.env` (backup:
+`.env.bak-phase0`) and confirmed wired at runtime — `graph_builder.py:2123`
+logs the investigate ↔ reflect → planner → aggregate → approval_gate →
+act_gate chain. `EXECUTOR_LIVE` and `TEMPORAL_ENABLED` are `true`.
+
+The Phase 0 smoke run (incident `5cc643c5`, 2026-09-19) did **not** reach ACT.
+Two defects and one open design question came out of it:
+
+1. **Fixed (`95ef01b`).** The runner logged in once and reused that JWT for
+   the whole campaign. Tokens live 15 min (`ACCESS_TOKEN_EXPIRE_MINUTES`),
+   incidents are allowed 45 (`BENCH_INCIDENT_TIMEOUT_SEC`), so the client
+   died on a 401 mid-poll at minute 17. Its cleanup then cleared the injected
+   fault, the alert went away, and the reconciler closed the incident while
+   the agent was still on investigation pass 3 — it never reached the planner.
+2. **Open (task #32).** Nothing cancels an in-flight investigation when an
+   incident resolves externally. `durable_jobs.request_cancel` has zero
+   callers repo-wide; the claim at `agent_runtime.py:1338` that "Resolution
+   now cancels in-flight investigations" describes only the *start-time*
+   backstop below it. Observed cost: the agent kept issuing Opus/Sonnet calls
+   against a resolved incident. An unconditional cancel is the wrong fix — a
+   flapping alert would abort a legitimate diagnosis — so this needs a
+   debounce or a verified-recovery condition.
+3. **Open, unquantified.** One incident spent ~100 model calls / ~120 tool
+   calls in 20 minutes without reaching the planner. The reflector ran its
+   full `MAX_INVESTIGATION_DEPTH=3` and confidence did not converge
+   (0.72 → 0.86 → 0.72, discrepancies 7 → 6 → 7) even though pass 2 had
+   already named the true root cause. At ~12h per ablation campaign this is
+   the dominant cost term and is worth a bound before the arms run.
 
 Deferred, unrelated: digest-pin the Helm Temporal server image.
 
@@ -235,19 +256,36 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-Run the four ablation arms. Everything they need is in place: Codespace
-`cuddly-winner-659v67gv695hrxjw`, k3s up, Meridian healthy, the stack at
-`5956c80`, and `~/bench.env` holding every `BENCH_*` value (base URL, the
-`bench-runner@example.com` service account created through the sanctioned
-invitation flow, cluster id `bcbd9577-…`, cluster token, and the four fault
-service URLs on `10.0.0.207`).
+Re-run Phase 0: one smoke incident that actually reaches ACT, now that the
+token bug is fixed. `BENCH_SCENARIOS=<name>` narrows a run to one scenario
+without buying a split; it is refused alongside the statistical env on
+purpose (see `benchmarks/ablation/README.md`). Report measured cost from
+`/api/v1/incidents/{id}/agent-metrics` — `model_accounting.cost_usd` and
+`tokens` are `null` until the trace finalises, so read them only after the
+job leaves `running` — and check both memory writes against this baseline,
+taken 2026-09-19 before the run: `skills.json` 5 skills each at
+`success_count=1`, Qdrant `sre_skills_v1` 5 points, `sre_incidents_v2`
+**0 points**. The corpus already holds a `latency-inventory-service` skill,
+so on `inventory_slow_queries` the correct outcome is that skill being
+retrieved and incremented to 2 — not a sixth being written.
 
-1. `ACT_PHASE_ENABLED=true` in the Codespace `.env`, then recreate the API and
-   worker with `bash scripts/deploy_agent_runtimes.sh`. **Not** a bare
+Then the four ablation arms. Everything they need is in place: Codespace
+`cuddly-winner-659v67gv695hrxjw`, k3s up, Meridian healthy, and `~/bench.env`
+holding every `BENCH_*` value (base URL, the `bench-runner@example.com`
+service account created through the sanctioned invitation flow, cluster id
+`bcbd9577-…`, cluster token, and the four fault service URLs). Those URLs are
+now `localhost`, not a node IP: Docker-in-Docker storage does not survive a
+Codespace stop/resume, so k3s restarts with a new node IP and any baked-in
+address goes stale. `scripts/codespace_boot.sh` repoints the Alertmanager
+webhook but does **not** touch `~/bench.env`.
+
+1. Confirm `ACT_PHASE_ENABLED=true` in the Codespace `.env`, then recreate the
+   API and worker with `bash scripts/deploy_agent_runtimes.sh`. **Not** a bare
    `docker compose up -d`: the image now has a real `SENTINEL_CODE_SHA` baked
    in, compose defaults the runtime value to `unknown`, and preflight then
    fails closed with `runtime code revision mismatch: image=dff11fb…
-   deployment=unknown` (verified). The script exports it from git HEAD.
+   deployment=unknown` (verified). The script exports it from git HEAD, and
+   refuses to run against a dirty tracked working tree.
 2. `export BENCH_INCIDENT_TIMEOUT_SEC=2700` (a run needs 10-30 min),
    `BENCH_RUNS_PER_SCENARIO=1`, `BENCH_DATASET_SPLIT=dev`,
    `BENCH_FAULT_MODE=automatic`.
