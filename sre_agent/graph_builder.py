@@ -58,6 +58,50 @@ def _act_phase_enabled() -> bool:
     return True
 
 
+async def _severity_telemetry_node(
+    state: AgentState,
+    execution_context: Any = None,
+) -> Dict[str, Any]:
+    """Measure the severity engine's inputs before any gate consults them.
+
+    The gate needs `slo_burn_rate`, `saturation` and `error_rate_slope` to
+    score urgency at all, and nothing in the investigation reliably produces
+    them: the model may or may not run a metrics tool, and the one tool that
+    did report saturation reported it as a dict the extractor could not read.
+    Urgency was therefore always unknown, severity always escalated to
+    UNKNOWN, and no plan could ever run unattended — regardless of how safe
+    it was. Measuring here, deterministically and from the cluster's own
+    Prometheus, is what makes the gate able to see.
+
+    This runs between `aggregate` and `approval_prepare` so both call sites of
+    `build_act_report` (approval_prepare and act_gate) read the same numbers.
+    A cluster with no Prometheus URL or no observability profile measures
+    nothing and keeps today's behaviour exactly.
+    """
+    from .severity_telemetry import measure_for_incident
+
+    metadata = dict(state.get("metadata", {}) or {})
+    alert = state.get("alert_context") or {}
+    labels = (alert.get("labels") if isinstance(alert, dict) else None) or {}
+    # Raw, not lower-cased: this becomes a Prometheus label matcher, and
+    # Prometheus label values are case-sensitive.
+    service = str(labels.get("service") or labels.get("app") or "").strip()
+
+    cluster_id = getattr(execution_context, "cluster_id", None)
+    try:
+        telemetry = await measure_for_incident(cluster_id=cluster_id, service=service)
+    except Exception as exc:
+        # Severity degrades to UNKNOWN without these, which only means the
+        # plan needs a human. That is never worth failing an investigation for.
+        logger.warning("Severity telemetry failed, severity stays unknown: %s", exc)
+        return {}
+
+    if not telemetry:
+        return {}
+    metadata["severity_telemetry"] = telemetry
+    return {"metadata": metadata}
+
+
 async def _prepare_approval_node(
     state: AgentState,
     execution_context: Any = None,
@@ -2150,6 +2194,13 @@ def build_multi_agent_graph(
         async def context_prepare_approval(state: AgentState) -> Dict[str, Any]:
             return await _prepare_approval_node(state, execution_context)
 
+        async def context_severity_telemetry(state: AgentState) -> Dict[str, Any]:
+            return await _severity_telemetry_node(state, execution_context)
+
+        workflow.add_node(
+            "severity_telemetry",
+            _observed("severity_telemetry", context_severity_telemetry),
+        )
         workflow.add_node(
             "approval_prepare",
             _observed("approval_prepare", context_prepare_approval),
@@ -2167,7 +2218,8 @@ def build_multi_agent_graph(
             )
             workflow.add_edge("investigation_swarm", "reflector")
         workflow.add_edge("planner", "aggregate")
-        workflow.add_edge("aggregate", "approval_prepare")
+        workflow.add_edge("aggregate", "severity_telemetry")
+        workflow.add_edge("severity_telemetry", "approval_prepare")
         workflow.add_edge("approval_prepare", "approval_gate")
         workflow.add_edge("approval_gate", "act_gate")
         workflow.add_edge("act_gate", END)

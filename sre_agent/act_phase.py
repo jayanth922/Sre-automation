@@ -121,6 +121,35 @@ def _as_float(value: Any) -> Optional[float]:
         return None
 
 
+def _prometheus_scalar(node: Any) -> Any:
+    """The single number inside a Prometheus instant-query envelope, or None.
+
+    A metric-named key does not always point at a number. The Prometheus MCP
+    wraps each golden signal as ``{"query": …, "value": <capped vector>}``,
+    and the capped vector is itself ``{"result": [ …series… ], …}`` with the
+    sample as ``[timestamp, "0.42"]``. The number is real; it is just three
+    layers down, so a walker looking only for scalars found nothing.
+
+    Unwrapped only when the answer is unambiguous. Zero series is not a
+    measurement, and several series are several different measurements —
+    picking one would be a guess presented as evidence, so both stay None.
+    A query the MCP reports as failed (`error`) is likewise not evidence.
+    """
+    if not isinstance(node, dict) or "error" in node:
+        return None
+    inner = node.get("value", node)
+    if isinstance(inner, (int, float, str)):
+        return inner
+    envelope = inner if isinstance(inner, dict) else {"result": inner}
+    series = envelope.get("result")
+    if not isinstance(series, list) or len(series) != 1:
+        return None
+    sample = series[0].get("value") if isinstance(series[0], dict) else None
+    if isinstance(sample, (list, tuple)) and len(sample) == 2:
+        return sample[1]
+    return None
+
+
 def _walk_metrics(obj: Any) -> Dict[str, Any]:
     """Collect known metric keys from nested investigation payloads.
 
@@ -136,8 +165,20 @@ def _walk_metrics(obj: Any) -> Dict[str, Any]:
             for key, value in node.items():
                 key_str = str(key)
                 child_path = f"{path}.{key_str}" if path else key_str
+                # A key with the right name but a value that will not coerce
+                # is not a measurement, so it must not claim the slot. It used
+                # to: the Prometheus MCP reports each signal as
+                # {"query": …, "value": …}, so the first node named
+                # "saturation" was that wrapper dict, the coercion turned it
+                # into None, and this guard then hid every real saturation
+                # further down the payload. Before blaming the shape, try to
+                # read it — the number is usually in there.
                 if key_str in keys and key_str not in found:
-                    found[key_str] = (value, child_path)
+                    scalar = value
+                    if coerce_metric(key_str, scalar) is None:
+                        scalar = _prometheus_scalar(value)
+                    if coerce_metric(key_str, scalar) is not None:
+                        found[key_str] = (scalar, child_path)
                 visit(value, child_path)
         elif isinstance(node, list):
             for idx, item in enumerate(node):
@@ -460,6 +501,19 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
         source_prefix="tool",
     )
     _absorb(_walk_tool_outputs(state), measured, links, source_prefix="tool")
+    # Highest precedence: the platform's own severity measurement. Every other
+    # source depends on the model having chosen to run some query; this one is
+    # scoped to the incident's service by the platform itself, so when both
+    # exist it is the one the gate should decide on. `sources` is a sibling
+    # key, not inline, so a PromQL string can never be read as a value.
+    platform = _get(state, "metadata", {}) or {}
+    if isinstance(platform, dict):
+        _absorb(
+            _walk_metrics((platform.get("severity_telemetry") or {}).get("metrics")),
+            measured,
+            links,
+            source_prefix="platform_telemetry",
+        )
 
     for key, value in measured.items():
         if value is None:

@@ -14,10 +14,20 @@ interface ConnCheck {
   detail: string
 }
 
-// Mirrors backend examples (sre_agent/metrics_profile.EXAMPLES) — shown only
-// as placeholder illustrations. All 7 fields are required: Prometheus-backed
-// queries refuse to run for this cluster until every one is set explicitly.
-const METRIC_FIELDS: { key: string; label: string; def: string; kind: "select" | "input" }[] = [
+// Mirrors backend examples (sre_agent/metrics_profile.EXAMPLES and
+// SEVERITY_EXAMPLES) — shown only as placeholder illustrations. The first 7
+// fields are required: Prometheus-backed queries refuse to run for this
+// cluster until every one is set explicitly. The last 2 are optional and
+// feed the severity engine; leaving them unset is safe, it just means every
+// remediation plan needs a human.
+const METRIC_FIELDS: {
+  key: string
+  label: string
+  def: string
+  kind: "select" | "input"
+  optional?: boolean
+  help?: string
+}[] = [
   { key: "service_label", label: "Service label", def: "service", kind: "select" },
   { key: "request_metric", label: "Request counter metric", def: "http_requests_total", kind: "select" },
   { key: "status_label", label: "Status label", def: "status", kind: "select" },
@@ -25,6 +35,22 @@ const METRIC_FIELDS: { key: string; label: string; def: string; kind: "select" |
   { key: "latency_histogram", label: "Latency histogram metric", def: "http_request_duration_seconds", kind: "select" },
   { key: "cpu_query", label: "CPU saturation query", def: "avg(rate(container_cpu_usage_seconds_total[5m])) * 100", kind: "input" },
   { key: "mem_query", label: "Memory query", def: "sum(container_memory_usage_bytes) / (1024*1024*1024)", kind: "input" },
+  {
+    key: "saturation_query",
+    label: "Saturation ratio query (optional)",
+    def: 'avg(rate(process_cpu_seconds_total{job="$service"}[5m])) / avg(kube_pod_container_resource_limits{resource="cpu",container="$service"})',
+    kind: "input",
+    optional: true,
+    help: "Must return 0.0–1.0, not a percentage. $service is replaced with the alerting service's name, so the reading describes that service rather than a cluster-wide average. Separate from the CPU query above, whose unit is yours to choose.",
+  },
+  {
+    key: "slo_target",
+    label: "Availability SLO target (optional)",
+    def: "0.99",
+    kind: "input",
+    optional: true,
+    help: "A fraction between 0 and 1. The error budget is 1 − this, and the burn rate is measured against it.",
+  },
 ]
 
 interface MetricFieldDiscovery {
@@ -486,7 +512,10 @@ export default function SettingsPage() {
               }
             />
             <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
-              All fields below are required — the example shown as each placeholder is illustration only, never a fallback. Metrics, CPU/memory, and per-service views stay disabled until every field is set explicitly, since the platform can't safely guess your metric names. Discovery only suggests values found on your own Prometheus — nothing is applied until you pick it and save.
+              Every field except the two marked optional is required — the example shown as each placeholder is illustration only, never a fallback. Metrics, CPU/memory, and per-service views stay disabled until each required field is set explicitly, since the platform can&apos;t safely guess your metric names. Discovery only suggests values found on your own Prometheus — nothing is applied until you pick it and save.
+            </p>
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 6, lineHeight: 1.6 }}>
+              The two optional fields let the severity engine measure urgency. Without them it cannot score urgency at all, so every incident classifies as unknown severity and every remediation plan waits for a human — safe, but never autonomous.
             </p>
             {discoveryError && <div style={{ color: "var(--crit)", fontSize: 11, marginTop: 4 }}>{discoveryError}</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
@@ -522,6 +551,11 @@ export default function SettingsPage() {
                         value={current}
                         onChange={(e) => setMetrics({ ...metrics, [f.key]: e.target.value })}
                       />
+                    )}
+                    {f.help && (
+                      <div style={{ fontSize: 11, color: "var(--ink2)", marginTop: 4, lineHeight: 1.5 }}>
+                        {f.help}
+                      </div>
                     )}
                     {f.kind === "input" && d?.suggestion && (
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
