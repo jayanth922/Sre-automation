@@ -69,28 +69,33 @@ is also how the considered finding "learned memory does not earn its
 complexity" reports. The artifact cannot tell the two apart, so measure it
 first:
 
-**Run it inside the agent container.** `SemanticSkillStore` degrades to
-keyword-only recall when `qdrant-client` is missing, Qdrant is unreachable, or
-the embedding model will not load — each time with a log line and no error.
-The agent image ships without `qdrant-client`; an operator host with the dev
-extras does not. On the same corpus and the same six dev scenarios that
-difference gave **6/6 coverage on the host and 3/6 in the container**.
-`--expect-retrieval-path` turns that into an error instead of a plausible
-number.
+**Run it as the agent, not merely where the agent is.** `SemanticSkillStore`
+degrades to keyword-only recall when `qdrant-client` is missing, Qdrant is
+unreachable, or the embedding model will not load — each time with a log line
+and no error. The agent is `uv run`, i.e. `/app/.venv/bin/python`; the
+container's bare `python` is `/usr/local/bin/python`, which has none of the
+project's dependencies. Running the preflight under the latter reports
+`qdrant-client not installed` and **3/6** for a corpus that actually covers
+**6/6** — a wrong answer shaped exactly like a finding.
+`--expect-retrieval-path semantic` turns that into an exit 2.
 
 `benchmarks/` is not in the agent image, so copy it in for the run and take it
 out again — this is a measurement, not a deployment:
 
 ```bash
 docker cp benchmarks sre-agent-api:/app/benchmarks
-docker exec sre-agent-api python /app/benchmarks/ablation_coverage.py \
+docker exec sre-agent-api /app/.venv/bin/python \
+  /app/benchmarks/ablation_coverage.py \
   --split dev --organization-id "$ORG" --cluster-id "$CLUSTER" \
   --qdrant-url http://qdrant:6333 \
-  --expect-retrieval-path keyword_only \
+  --expect-retrieval-path semantic \
   --output /tmp/ablation-memory-coverage.json
 docker cp sre-agent-api:/tmp/ablation-memory-coverage.json reports/
 docker exec sre-agent-api rm -rf /app/benchmarks
 ```
+
+The artifact records the interpreter that produced it, so a report can be
+attributed after the fact as well as gated in advance.
 
 The preflight is read-only. `SemanticSkillStore.__init__` backfills the Qdrant
 skill index, which would have the preflight reporting on a corpus it had just

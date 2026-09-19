@@ -29,15 +29,19 @@ Two checks, and they differ in strength:
 A pair is *blind* when neither lookup can return anything. Blind pairs carry no
 information about learned memory, whatever the outcome.
 
-**Run this where the agent runs.** `SemanticSkillStore` degrades to keyword-only
-recall whenever `qdrant-client` or the embedding model is unavailable, and it
-does so with a log line rather than an error. An operator host with the dev
-dependencies installed therefore answers a different question than the agent
-container without them — measured here, the same corpus and the same six
-scenarios gave 6/6 coverage on the host and 3/6 inside the container. The
-report records which path it took so a coverage number can never be read
-without it; a number measured on a path the agent does not use is worse than
-no number, because it reassures.
+**Run this as the agent runs it.** `SemanticSkillStore` degrades to
+keyword-only recall whenever `qdrant-client` or the embedding model is
+unavailable, and it does so with a log line rather than an error. So the
+answer depends on the interpreter: the image's `/app/.venv` (what `uv run`
+starts, and what the agent is) has the dependency, while the container's bare
+`/usr/local/bin/python` does not. Running this under the latter reported
+`qdrant-client not installed` and 3/6 coverage for a corpus that actually
+covers 6/6 — a wrong answer that looked exactly like a finding.
+
+Hence `--expect-retrieval-path`, and hence the `interpreter` block in the
+report: a coverage number is unreadable without knowing which stack produced
+it, and one measured on a stack nothing runs is worse than none, because it
+reassures.
 """
 
 from __future__ import annotations
@@ -79,11 +83,27 @@ def retrieval_path(store: Any) -> str:
     `SemanticSkillStore` degrades to keyword-only when `qdrant-client` is
     missing, when Qdrant is unreachable, or when the embedding model will not
     load — each with a log line and no error. The coverage number differs by
-    path: on this corpus, semantic recall covered 6/6 scenarios and
+    path: on this corpus, semantic recall covers 6/6 scenarios and
     keyword-only 3/6. A coverage report that does not say which path produced
     it cannot be acted on.
     """
     return "semantic" if getattr(store, "_semantic_available", False) else "keyword_only"
+
+
+def interpreter_provenance() -> dict[str, Any]:
+    """Which Python produced this report.
+
+    The agent is `uv run`, i.e. `/app/.venv/bin/python`. A `docker exec
+    … python` lands on `/usr/local/bin/python` instead, which has none of the
+    project's dependencies and silently yields the keyword-only path. Recording
+    the executable makes that confusion auditable after the fact rather than
+    only catchable in advance.
+    """
+    return {
+        "executable": sys.executable,
+        "prefix": sys.prefix,
+        "version": sys.version.split()[0],
+    }
 
 
 def open_store_read_only() -> Any:
@@ -208,8 +228,9 @@ def verdict_lines(report: dict[str, Any]) -> list[str]:
     else:
         lines.append(f"Retrieval path: {path}.")
     lines.append(
-        "Valid only if the agent's own process takes that same path. Confirm it "
-        "there, not here: the paths disagreed 6/6 against 3/6 on this corpus."
+        "Valid only if the agent's own process takes that same path — the agent "
+        "is /app/.venv/bin/python, not the container's bare `python`, and the "
+        "two disagreed 6/6 against 3/6 on this corpus."
     )
     return lines
 
@@ -311,6 +332,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             "organization_id": org,
             "cluster_id": cluster,
             "skills_in_store": len(store.all()),
+            "interpreter": interpreter_provenance(),
         }
     )
 

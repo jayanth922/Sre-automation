@@ -212,18 +212,23 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   only against manifest-derived fakes. Memory scenarios need a checkout pod
   restarted recently enough to sit under 150MB (`leak_kb_per_request` never
   frees its buffer).
-- **Semantic skill recall is off in the deployed agent.** `qdrant-client` is
-  not in the agent image, so `SemanticSkillStore._init_semantic` returns at
-  its `QDRANT_AVAILABLE` guard and `get_skill_store()` serves keyword-only
-  matches — logged at INFO, never raised. Skill *writes* still land in
-  `skills.json`; only the embedding-based second recall path is dead, so the
-  fixed failure-class keywords are the whole of retrieval. Measured effect on
-  the v2 dev split: 3 of 6 scenarios retrieve a skill, against 6 of 6 with
-  semantic recall available. Deliberately **not** fixed before the ablation —
-  installing the client would change the control arm's behaviour on the eve of
-  the run. `benchmarks/ablation_coverage.py --expect-retrieval-path` exists so
-  a coverage number can never again be quoted without saying which path
-  produced it.
+- **`docker exec … python` is not the agent.** The agent is `uv run`, i.e.
+  `/app/.venv/bin/python`; the container's bare `python` is
+  `/usr/local/bin/python` and has none of the project's dependencies. Probing
+  with it reports `qdrant-client not installed` and a keyword-only skill
+  store, which is indistinguishable from a real degradation — it produced a
+  false 3/6 coverage reading and a false "semantic recall is dead in
+  production" finding, both since retracted. The true state is semantic,
+  6/6. Always `docker exec sre-agent-api /app/.venv/bin/python`, and prefer
+  `ablation_coverage.py --expect-retrieval-path semantic`, which exits 2 on
+  the wrong stack; the artifact also records the interpreter that produced it.
+- **Incident recall is empty, by design, until ACT runs.** `sre_incidents_v2`
+  holds zero points because `agent_runtime.py:1852` gates `store_incident` on
+  `eligibility.eligible_for_success`, which needs an `act_report` with
+  objective verification, and `ACT_PHASE_ENABLED` has never been on. Not a
+  bug. It does mean the learned-memory arm currently measures only its
+  verified-skill half, and that the corpus must be populated by a
+  **non-experiment** run before the experiment freezes writes for every arm.
 - `CONTEXT_WINDOW_TOKENS` is operator-declared; a model with a window under
   200k will under-reserve unless it is set.
 - tiktoken fetches its BPE file on first use; an air-gapped image without that
@@ -255,14 +260,15 @@ service URLs on `10.0.0.207`).
    working: `comparable: true`, arm in `runtime`), then `ablation_eval.py`
    with `--memory-coverage`.
 
-Run `benchmarks/ablation_coverage.py` **inside the agent container** before
-spending anything — `ablation_eval.py` records an `insufficient_evidence`
-entry for `no_memory` without it. Last measured there: `PARTIAL: 3/6`,
-`retrieval_path: keyword_only`, incident recall provably inert (zero
-tenant-scoped points in `sre_incidents_v2`). So half of what the arm removes
-is already absent from every arm, and half the pairs cannot observe the other
-half. Seeding the corpus from the **train** split before the run would fix
-this legitimately; seeding from dev would be leakage.
+Run `benchmarks/ablation_coverage.py` **as `/app/.venv/bin/python` in the
+agent container** before spending anything — `ablation_eval.py` records an
+`insufficient_evidence` entry for `no_memory` without it. Last measured there:
+`COVERED: all 6`, `retrieval_path: semantic`, 3 skills retrieved per scenario
+from the 5-skill corpus. Incident recall is still provably inert (zero points
+in `sre_incidents_v2`), so the arm measures its verified-skill half only.
+Populating it means one **non-experiment** pass over the train split with
+`ACT_PHASE_ENABLED=true` — legitimate, since dev stays unseen; seeding from
+dev would be leakage.
 
 Six pairs per arm will likely report `NOT_DEMONSTRATED` with a non-empty
 `insufficient_evidence` list. Report that as ignorance, not a null.

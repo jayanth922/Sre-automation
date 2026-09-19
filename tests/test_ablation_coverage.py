@@ -139,10 +139,11 @@ def test_an_empty_incident_collection_is_called_out_even_when_skills_cover():
 
 # --- Which stack was measured -------------------------------------------------
 #
-# The preflight once reported COVERED 6/6 from an operator host while the agent
-# container got 3/6 from the same corpus, because the host had `qdrant-client`
-# installed and the agent image does not. A coverage number that depends on
-# where it was produced, and does not say so, is worse than none: it reassures.
+# The same corpus reported 6/6 under the agent's own interpreter and 3/6 under
+# the container's bare `python`, which has none of the project's dependencies
+# and silently falls back to keyword matching. The 3/6 looked exactly like a
+# finding and was quoted as one. A coverage number that depends on which
+# interpreter produced it, and does not say so, is worse than none.
 
 
 def test_the_retrieval_path_is_recorded_in_the_report():
