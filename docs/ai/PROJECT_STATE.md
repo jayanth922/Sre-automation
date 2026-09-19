@@ -126,6 +126,24 @@ No benchmark campaign has produced an `act_report` yet, so the HolmesGPT
 comparison still rests on design description and there is no real confidence
 calibration artifact.
 
+**#40, fixed `71041b9`, not yet deployed — the planner discarded every plan
+over a newline.** `RemediationPlan.actions` was already wired to
+`_decode_json_container`, and the deployed container coerces a clean
+stringified list correctly, yet on 2026-09-19 (incident `bc5c48b7`) planning
+still failed with `Input should be a valid list` — 1 of 1 invocations in 24h,
+the same signature as the four-for-four episode on 2026-09-14. `json.loads`
+is strict about control characters, and models leave literal newlines inside
+prose fields like `safety_check`; the string is structurally sound but
+unparseable, so the decoder handed it back and Pydantic raised the real
+error. Fixed by retrying with `strict=False`, and by logging why a decode was
+abandoned — Pydantic truncates the middle of the value, so the log showed a
+string well-formed at both ends with no reason attached, which is why this
+survived two incidents. This is what blocks Phase 1: the `escalate
+manual_review` fallback mutates nothing, so `EXECUTOR_LIVE` never engages, no
+objective verification exists, `eligible_for_success` stays false, and the
+corpus cannot be seeded. Third instance of the recurring root cause — the
+suite builds shapes production never sends.
+
 `ACT_PHASE_ENABLED=true` is now set in the Codespace `.env` (backup:
 `.env.bak-phase0`) and confirmed wired at runtime — `graph_builder.py:2123`
 logs the investigate ↔ reflect → planner → aggregate → approval_gate →
@@ -338,8 +356,13 @@ service=inventory-service`, and the same incident classifies
 `SEV3`/`autonomous=True` with it. Graph placement was proven separately by
 live incident `0d6fa6eb` at the prior revision, whose logs show `processing
 node: severity_telemetry` firing between the planner and the ACT write.
-**A full live incident has not been run since `d168d5f`** — the two halves
-are each verified, but not in one pass; Phase 1's first run will close that.
+Closed in one pass on 2026-09-19 during the Phase 1 pilot: organic incident
+`bc5c48b7` (`[api-gateway] PodOOMKilled`) logged `SeverityTelemetry: measured
+error_rate=0.0012, error_rate_slope=0.00024, saturation=0.207,
+slo_breached=False, slo_burn_rate=0.122 for service=api-gateway`, and the
+engine then scored `impact=0.02 × urgency=0.06 → SEV4; escalated to SEV3`
+instead of UNKNOWN. Measurement, classification and graph placement are now
+verified together on a real incident, not separately.
 
 Note SEV3 rather than SEV4: a separate, intentional escalation fires because
 diagnosis confidence is uncalibrated. SEV3 is still inside the autonomous
