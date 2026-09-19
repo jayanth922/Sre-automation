@@ -309,8 +309,111 @@ def test_live_runner_loads_selected_split_instead_of_inline_scenarios():
     assert "BENCH_FAULT_MODE" in source
     assert "MeridianAdminConfigAdapter" in source
     assert "dataset_sha256=DATASET.sha256" in source
-    assert "SCENARIOS = [" not in source
+    assert "SCENARIOS = DATASET.scenarios" in source
+    # The guard is against scenarios defined in the runner, which is the drift
+    # this test was added to catch. It used to be spelled `"SCENARIOS = [" not
+    # in source`, which also forbade *narrowing* the dataset's own list — so
+    # the smoke filter tripped it. Constructing a spec is the thing that must
+    # never happen here; the runner only ever annotates with the type.
+    assert "ScenarioSpec(" not in source
     # Every v2 fault target must be reachable or automatic mode cannot inject.
     manifest = json.loads((DATASETS / "v2" / "fixtures.json").read_text())
     for target in manifest["targets"]:
         assert f'"{target}"' in source
+
+
+# --- The smoke-run scenario filter -------------------------------------------
+#
+# `BENCH_SCENARIOS` narrows a run to a named subset so "does the ACT path work
+# at all" does not cost a whole split. Both of its refusals are load-bearing:
+# a typo that fell back to the full split would turn a slip into a bill, and a
+# subset accepted during a recorded experiment would emit trials stamped with
+# the full split's `dataset_sha256` in an order `BENCH_PAIR_SEED` no longer
+# controls.
+
+
+def _load_runner(monkeypatch, **env):
+    """Import `sre_bench` fresh under a controlled environment.
+
+    The filter runs at import time, next to the dataset load it narrows, so
+    there is no function to call — the module either builds a narrowed
+    `SCENARIOS` or raises.
+    """
+    for key in ("BENCH_SCENARIOS", "BENCH_EXPERIMENT_ID", "BENCH_CANDIDATE_ID",
+                "BENCH_TRIAL_RESULTS_PATH", "BENCH_CONFIDENCE_RESULTS_PATH",
+                "BENCH_CONFIG_FINGERPRINT", "BENCH_PAIR_SEED"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    spec = importlib.util.spec_from_file_location(
+        "sre_bench_under_test", BENCHMARKS / "sre_bench.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_no_filter_runs_the_whole_split(monkeypatch):
+    module = _load_runner(monkeypatch)
+
+    assert module.SCENARIO_FILTER == ()
+    assert len(module.SCENARIOS) == len(module.DATASET.scenarios)
+
+
+def test_a_named_scenario_narrows_the_run_to_itself(monkeypatch):
+    full = _load_runner(monkeypatch)
+    chosen = full.DATASET.scenarios[0].name
+
+    module = _load_runner(monkeypatch, BENCH_SCENARIOS=chosen)
+
+    assert [spec.name for spec in module.SCENARIOS] == [chosen]
+
+
+def test_whitespace_and_multiple_names_are_accepted(monkeypatch):
+    full = _load_runner(monkeypatch)
+    first, second = (spec.name for spec in full.DATASET.scenarios[:2])
+
+    module = _load_runner(monkeypatch, BENCH_SCENARIOS=f" {first} , {second} ")
+
+    assert {spec.name for spec in module.SCENARIOS} == {first, second}
+
+
+def test_an_unknown_name_raises_rather_than_running_everything(monkeypatch):
+    """Falling back to the full split would make a typo cost a whole run."""
+    with pytest.raises(RuntimeError, match="not in"):
+        _load_runner(monkeypatch, BENCH_SCENARIOS="no_such_scenario")
+
+
+def test_the_error_lists_what_was_available(monkeypatch):
+    with pytest.raises(RuntimeError, match="Available:"):
+        _load_runner(monkeypatch, BENCH_SCENARIOS="no_such_scenario")
+
+
+# Statistical recording is all-or-nothing: a partially-set experiment raises
+# its own error, whose text also contains "statistical recording". Matching
+# loosely here would let these two tests pass without the subset guard
+# existing at all, so they set every field and match on the subset wording.
+_EXPERIMENT_ENV = {
+    "BENCH_EXPERIMENT_ID": "exp-1",
+    "BENCH_CANDIDATE_ID": "full",
+    "BENCH_CONFIG_FINGERPRINT": "fingerprint-1",
+    "BENCH_PAIR_SEED": "seed-1",
+}
+
+
+def test_a_subset_is_refused_during_a_recorded_experiment(monkeypatch):
+    """The trials would carry the full split's sha in an unseeded order."""
+    full = _load_runner(monkeypatch)
+    chosen = full.DATASET.scenarios[0].name
+
+    with pytest.raises(RuntimeError, match="smoke-run filter"):
+        _load_runner(monkeypatch, BENCH_SCENARIOS=chosen, **_EXPERIMENT_ENV)
+
+
+def test_a_recorded_experiment_without_a_subset_is_untouched(monkeypatch):
+    module = _load_runner(monkeypatch, **_EXPERIMENT_ENV)
+
+    assert module.STATISTICAL_RECORDING is True
+    assert len(module.SCENARIOS) == len(module.DATASET.scenarios)
