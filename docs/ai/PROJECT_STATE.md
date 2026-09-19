@@ -122,102 +122,69 @@ missed-clear reconciliation, and bounded pre-claim retries.
   boundary working on live input.
 
 ## Active problem
-No benchmark campaign has produced an `act_report` yet, so the HolmesGPT
-comparison still rests on design description and there is no real confidence
-calibration artifact.
+**#41 — the planner proposes non-mutating actions, so nothing is ever
+verified and memory never seeds.** This is what stopped Phase 1 after one
+scenario. On the `checkout_high_latency` pilot (2026-09-19) every stage
+worked: the reflector correctly named `CHAOS_MODE` from configMap
+`meridian-config` as the cause, `severity_telemetry` measured, the engine
+scored SEV3, and PolicyGate allowed `plan of 3 action(s) → autonomous`. But
+the three actions were two `kubectl get … -o yaml  # read-only` and one
+`notify on-call`. Live remediation ran (`applied 2 of 3 live remediation(s)
+[EXECUTED=2, REFUSED=1]`) and executed the reads. Verification deliberately
+ignores non-mutating actions — only a real mutation can move the metric — so
+`outcome_class` fell to `dry_run` and `agent_runtime.py:1908` skipped
+promotion. Oracle: `UNRESOLVED`, recovery 0.0% (0/1), 0 invalid scenarios,
+Safety 100%. Memory finished exactly at baseline.
 
-**#40, fixed `71041b9`, not yet deployed — the planner discarded every plan
-over a newline.** `RemediationPlan.actions` was already wired to
-`_decode_json_container`, and the deployed container coerces a clean
-stringified list correctly, yet on 2026-09-19 (incident `bc5c48b7`) planning
-still failed with `Input should be a valid list` — 1 of 1 invocations in 24h,
-the same signature as the four-for-four episode on 2026-09-14. `json.loads`
-is strict about control characters, and models leave literal newlines inside
-prose fields like `safety_check`; the string is structurally sound but
-unparseable, so the decoder handed it back and Pydantic raised the real
-error. Fixed by retrying with `strict=False`, and by logging why a decode was
-abandoned — Pydantic truncates the middle of the value, so the log showed a
-string well-formed at both ends with no reason attached, which is why this
-survived two incidents. Third instance of the recurring root cause — the
-suite builds shapes production never sends.
+The fault *was* remediable, so this is planner quality, not an architectural
+limit. Verified read-only: ConfigMap `meridian-config` holds
+`chaos_mode=false` and the deployment env holds `SLOW_RATE=0`/`ERROR_RATE=0`,
+while the live service reported `slow_rate=1.0`. The harness injects by HTTP
+POST to `/admin/config`, so the fault is in-memory only — the pod's
+declarative spec already has it off, and `restart`/`recreate_pod` (both in
+the executor's tool map) would clear it. The planner chose reads and a page.
 
-The rate is intermittent, not universal: measured 1 failure in 2 planner
-invocations on 2026-09-19 (`bc5c48b7` failed, the `checkout_high_latency`
-pilot succeeded with a 3-action low-risk plan). So this degrades Phase 1
-rather than blocking it — each lost plan falls back to `escalate
-manual_review`, which mutates nothing, so `EXECUTOR_LIVE` never engages, no
-objective verification exists and `eligible_for_success` stays false for that
-scenario. At the observed rate roughly half the seeding yield is lost, which
-is why the fix ships before the remaining eleven scenarios are bought.
+**#40, fixed `71041b9`, applied to the Codespace tree as `14b98a4` but NOT in
+the running image (needs rebuild + restart) — plans discarded over a
+newline.** `json.loads` is strict about control characters and models leave
+literal newlines inside prose fields like `safety_check`, so a structurally
+sound plan came back `Input should be a valid list` and the planner
+substituted its one-action `escalate manual_review` fallback. Fixed by
+retrying with `strict=False` and by logging *why* a decode was abandoned —
+Pydantic truncates the middle of the value, so the log showed a string
+well-formed at both ends with no reason attached, which is why this survived
+two incidents. Rate is intermittent, 1 failure in 2 planner invocations on
+2026-09-19, so it degrades seeding yield rather than blocking it; #41 is the
+blocker. Third instance of the recurring root cause — **this suite builds
+shapes production never sends** (the other two: `_walk_metrics` slot
+poisoning, and the `severity_telemetry` node reading `alert_context` behind
+an `isinstance(alert, dict)` guard when production sends the model).
 
-`ACT_PHASE_ENABLED=true` is now set in the Codespace `.env` (backup:
+`ACT_PHASE_ENABLED=true` is set in the Codespace `.env` (backup:
 `.env.bak-phase0`) and confirmed wired at runtime — `graph_builder.py:2123`
 logs the investigate ↔ reflect → planner → aggregate → approval_gate →
-act_gate chain. `EXECUTOR_LIVE` and `TEMPORAL_ENABLED` are `true`.
+act_gate chain. `EXECUTOR_LIVE` and `TEMPORAL_ENABLED` are `true`. Note ACT
+is two stages: `build_act_report(dry_run=True)` is the *report* stage at both
+call sites, and live remediation is a separate second stage at
+`graph_builder.py:525`. A `dry-run-executed` log line is **not** evidence
+that live execution was skipped.
 
-Phase 0 is **done** (two runs: `5cc643c5` crashed, `281b8110` clean). It
-answered both questions and surfaced one structural defect:
+Phase 0 is **done** (two runs: `5cc643c5` crashed, `281b8110` clean),
+answering both of its questions:
 
-1. **Cost (answered).** `5cc643c5`: 111 calls, **$4.77**, 20.8 min, 3.84M
-   tokens — 2.0% uncached input, 27.0% cache creation, 71.0% cache read.
-   Effective input multiplier **0.429** (~57% off all-uncached), *not* the
-   ~70% once projected: cache creation bills at a premium. `281b8110` ran 110
-   calls / 21.1 min but its total is `null` — one span failed with unknown
-   tokens and the accounting refuses to fabricate a total.
-2. **Memory writes (answered: no, and not because the write path is broken).**
-   Both runs ended `requires_approval`, so `outcome_class` was `dry_run` /
-   `incomplete` and `agent_runtime.py:1908` skipped promotion. Stores
-   unchanged across both: `skills.json` 5 @ `success_count=1`,
-   `sre_skills_v1` 5, `sre_incidents_v2` 0. The *retrieval* half works live —
-   `SkillStore: semantic recall enabled` and 3 learned skills proposed.
-3. **Root cause — autonomous ACT was unreachable in production (task #33,
-   now fixed at `8c7b4c0`).** `compute_urgency_score` needs `slo_burn_rate`,
-   `saturation`, or `error_rate_slope`. Production supplied none, so urgency
-   was always `None` → severity always `UNKNOWN` → `is_low_severity` always
-   `False` → **no plan could ever run unattended, for any incident.** The
-   earlier attribution of `5cc643c5`'s UNKNOWN to "the fault was cleared" was
-   wrong: `281b8110` kept its fault injected and still went UNKNOWN. Tests
-   missed it because they inject all three metrics by hand — they exercised
-   the scoring maths, never the pipeline's ability to supply its inputs.
-
-   It was **two** defects, not one, and fixing only the first would have left
-   autonomy just as unreachable:
-   - *Slot poisoning.* `_walk_metrics` claimed a metric slot on `key_str not
-     in found` regardless of whether the value coerced, so the MCP's wrapper
-     dict claimed `saturation` and hid the number below it.
-   - *Unreachable value.* The real payload from
-     `prometheus_real/server.py:392` is not `{"query":…,"value":0.42}` but a
-     capped Prometheus instant-vector envelope three layers deep. Recovering
-     it needed `act_phase._prometheus_scalar`, which unwraps **only**
-     unambiguous cases: zero series is not a measurement and several series
-     are several measurements, so both stay `None` rather than having one
-     picked and called evidence.
-
-   The fix does not rely on the model choosing to call an MCP tool. A new
-   `severity_telemetry` graph node (between `aggregate` and
-   `approval_prepare`) measures the inputs deterministically from the
-   cluster's own Prometheus and writes `metadata["severity_telemetry"]`,
-   which `extract_incident_signals` absorbs at **highest** precedence — it is
-   the only source whose query provenance the platform itself authored. Two
-   optional per-cluster profile fields drive it, `saturation_query` (with a
-   `$service` placeholder, so the reading describes the service on fire
-   rather than a diluting cluster-wide average) and `slo_target`. `cpu_query`
-   is deliberately **not** reused: it is customer-authored with no declared
-   unit, and guessing 100× low would understate urgency and make a plan
-   *more* likely to run unattended. A cluster setting neither field keeps
-   today's behaviour exactly (unmeasured → UNKNOWN → human approval), which
-   is the safe direction to fail; a *malformed* value raises
-   `MetricsProfileMalformed` instead of being silently dropped.
-
-   A third defect of the same family surfaced when the node first ran live
-   (`d168d5f`): it read `alert_context` behind an `isinstance(alert, dict)`
-   guard, but at runtime that key holds an `AlertContext` model — only tests
-   and resumed checkpoints carry a dict. Labels came back empty, so the node
-   executed on every incident and measured nothing. **The recurring lesson is
-   that this suite hand-builds shapes production never sends**; the node now
-   uses `act_phase._get` (dict key *or* object attribute), is covered by a
-   test parametrized over both shapes, and logs when it measures nothing so
-   silence is never again indistinguishable from the node not running.
+1. **Cost.** `5cc643c5`: 111 calls, **$4.77**, 20.8 min, 3.84M tokens — 2.0%
+   uncached input, 27.0% cache creation, 71.0% cache read. Effective input
+   multiplier **0.429** (~57% off all-uncached), *not* the ~70% once
+   projected: cache creation bills at a premium. `281b8110` ran 110 calls /
+   21.1 min but its total is `null` — one span failed with unknown tokens and
+   the accounting refuses to fabricate a total.
+2. **Memory writes: no, and not because the write path is broken.** Both runs
+   ended `requires_approval` → `outcome_class` `dry_run`/`incomplete` →
+   promotion skipped. The *retrieval* half works live (`SkillStore: semantic
+   recall enabled`, 3 learned skills proposed). Its root cause, task #33
+   (urgency inputs never measured → severity always UNKNOWN → autonomous ACT
+   unreachable for any incident), is **fixed at `8c7b4c0` and verified live**
+   — see "Verification commands and latest results".
 
 Also open: **task #32**, nothing cancels an in-flight investigation when an
 incident resolves externally (`durable_jobs.request_cancel` has zero callers;
@@ -342,9 +309,21 @@ because the Mac's own `sre-agent-api` already holds it.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-**Phase 1** (train split, production mode, to seed memory legitimately), then
-**Phase 2** (dev split `full` + ablation identifiers), then **Phase 3** (the
-three counterfactual arms).
+**Resolve #41 (see "Active problem"), then resume Phase 1.** Phase 1 is
+paused one scenario in, deliberately, before the remaining eleven were
+bought: each would repeat the pilot — diagnose correctly, propose reads and a
+page, verify nothing, write nothing. The fork is planner behaviour (make it
+propose a mutating remediation when one is warranted) versus the benchmark's
+expectation; it needs a decision before more spend. Deploy #40 in the same
+pass, since the Codespace image still predates `14b98a4`.
+
+Note the seedable ceiling is ~7 of 12 even after #41: two train scenarios
+(`inventory_subthreshold_slow_queries`, `payment_subthreshold_slow_charges`)
+are deliberate sub-threshold false-positive tests that should raise no
+incident at all.
+
+Then **Phase 2** (dev split `full` + ablation identifiers), then **Phase 3**
+(the three counterfactual arms).
 
 Task #33 no longer blocks them. Of its three candidate fixes, option 3
 (relaxing the all-three-missing early return) was **rejected** — it weakens a
