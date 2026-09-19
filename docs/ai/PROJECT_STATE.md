@@ -386,12 +386,14 @@ seeds.
 Wait for any open `[checkout-service] CheckoutHighLatency` incident to close
 first — `alerts.py:892` dedups a new alert into an already-open incident, so
 a re-run launched too early is scored against the previous investigation.
-`8bc1de25` (07:29:33) was left open by the killed pilot; with the fault
-removed it should close itself through `reconcile_resolved_alert`'s
-`alert_cleared_external_lifecycle` path when Alertmanager clears. Confirm it
-reads `resolved` before launching. Do **not** force it with `/mark-resolved`:
-that endpoint's authority is deliberately "a human who says they handled it"
-(`approval_flow.py:900-911`).
+`8bc1de25` (07:29:33), left open by the killed pilot, **closed itself** once
+the fault was removed: p95 decayed 4.226s → 2.791s → under the 1.5s
+threshold, Alertmanager cleared, and `reconcile_resolved_alert`'s
+`alert_cleared_external_lifecycle` path resolved it. That is the route to
+use — do **not** force one with `/mark-resolved`, whose authority is
+deliberately "a human who says they handled it"
+(`approval_flow.py:900-911`). Budget ~10 min after fault removal for the
+rolling p95 window to flush before the incident reads `resolved`.
 
 Unrelated and still open: `a2cb603e` `[api-gateway] PodOOMKilled` (07:38:56),
 a genuine alert for the unraised 256Mi memory limit — not a benchmark
