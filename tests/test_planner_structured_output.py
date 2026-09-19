@@ -25,6 +25,10 @@ incomplete telemetry" — which is not why it escalated at all.
 from __future__ import annotations
 
 import json
+import logging
+
+import pytest
+from pydantic import ValidationError
 
 from sre_agent.agent_state import (
     ReflectorAnalysis,
@@ -116,6 +120,54 @@ def test_a_string_that_is_not_json_still_raises_the_real_error():
 
     with pytest.raises(ValidationError):
         _plan(actions="I could not determine any safe remediation.")
+
+
+def test_literal_newlines_inside_the_json_do_not_throw_the_plan_away():
+    """The 2026-09-19 recurrence (incident bc5c48b7).
+
+    `actions` was already wired to the decoder, and the deployed container
+    coerced a clean stringified list correctly — yet the planner still fell
+    back to `escalate manual_review`. A strict parse rejects literal control
+    characters inside string values, which models emit constantly in prose
+    fields like `safety_check`. The structure is sound; only the whitespace
+    is not, and a real remediation plan must not be discarded over it.
+    """
+    actions_with_a_raw_newline = (
+        '[{"action_type": "config_change", "target": "api-gateway", '
+        '"parameters": {"memory": "512Mi"}, '
+        '"safety_check": "Reversible.\nRollback restores 256Mi."}]'
+    )
+    # Precondition: this is exactly what a strict parse refuses.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(actions_with_a_raw_newline)
+
+    plan = _plan(actions=actions_with_a_raw_newline)
+
+    assert [a.action_type for a in plan.actions] == ["config_change"]
+    assert plan.actions[0].parameters == {"memory": "512Mi"}
+
+
+def test_an_undecodable_container_is_logged_before_it_is_handed_back(caplog):
+    """Silence is what made this take two incidents to find.
+
+    Pydantic truncates the middle of the offending value, so the log showed
+    a string that looked well-formed at both ends with no reason attached.
+    The decoder must say why it gave up.
+    """
+    with caplog.at_level(logging.WARNING, logger="sre_agent.agent_state"):
+        with pytest.raises(ValidationError):
+            _plan(actions='[{"action_type": "restart", "target": ')
+
+    assert [r for r in caplog.records if "Undecodable" in r.getMessage()]
+
+
+def test_prose_is_not_reported_as_an_undecodable_container(caplog):
+    """A field that was never meant to be a container is not a decode failure."""
+    with caplog.at_level(logging.WARNING, logger="sre_agent.agent_state"):
+        with pytest.raises(ValidationError):
+            _plan(actions="I could not determine any safe remediation.")
+
+    assert not [r for r in caplog.records if "Undecodable" in r.getMessage()]
 
 
 def test_the_reflectors_nested_evidence_is_decoded_the_same_way():
