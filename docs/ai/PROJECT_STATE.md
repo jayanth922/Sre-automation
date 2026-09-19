@@ -185,6 +185,16 @@ answered both questions and surfaced one structural defect:
    is the safe direction to fail; a *malformed* value raises
    `MetricsProfileMalformed` instead of being silently dropped.
 
+   A third defect of the same family surfaced when the node first ran live
+   (`d168d5f`): it read `alert_context` behind an `isinstance(alert, dict)`
+   guard, but at runtime that key holds an `AlertContext` model — only tests
+   and resumed checkpoints carry a dict. Labels came back empty, so the node
+   executed on every incident and measured nothing. **The recurring lesson is
+   that this suite hand-builds shapes production never sends**; the node now
+   uses `act_phase._get` (dict key *or* object attribute), is covered by a
+   test parametrized over both shapes, and logs when it measures nothing so
+   silence is never again indistinguishable from the node not running.
+
 Also open: **task #32**, nothing cancels an in-flight investigation when an
 incident resolves externally (`durable_jobs.request_cancel` has zero callers;
 the claim at `agent_runtime.py:1338` covers only the start-time backstop). An
@@ -316,9 +326,27 @@ Task #33 no longer blocks them. Of its three candidate fixes, option 3
 (relaxing the all-three-missing early return) was **rejected** — it weakens a
 safety property to buy a symptom — and options 1+2 were implemented instead,
 with per-cluster explicit configuration and a fail-safe default. Live cluster
-`bcbd9577-…` is configured and measuring; verified inside the running
-container that the same incident classifies `UNKNOWN`/`autonomous=False`
-without the telemetry and `SEV3`/`autonomous=True` with it. Baseline to diff every memory
+`bcbd9577-…` is configured and measuring (`saturation_query` scoped by
+`$service`, `slo_target=0.99`).
+
+Verification, and what it does and does not cover. Deployed at `56163c3`
+(parity `f73f0dce…`, 156 files). Inside the running container, against the
+real cluster row and real Prometheus, a production-shaped `AlertContext`
+drives the node to `SeverityTelemetry: measured … for
+service=inventory-service`, and the same incident classifies
+`UNKNOWN`/`autonomous=False` without the telemetry versus
+`SEV3`/`autonomous=True` with it. Graph placement was proven separately by
+live incident `0d6fa6eb` at the prior revision, whose logs show `processing
+node: severity_telemetry` firing between the planner and the ACT write.
+**A full live incident has not been run since `d168d5f`** — the two halves
+are each verified, but not in one pass; Phase 1's first run will close that.
+
+Note SEV3 rather than SEV4: a separate, intentional escalation fires because
+diagnosis confidence is uncalibrated. SEV3 is still inside the autonomous
+band, so it does not block ACT, but it means the calibration artifact is what
+now governs how far severity can fall.
+
+Baseline to diff every memory
 claim against, taken 2026-09-19 and still true after two runs: `skills.json`
 5 skills each at `success_count=1`, Qdrant `sre_skills_v1` 5 points,
 `sre_incidents_v2` **0 points**. The corpus already holds a
