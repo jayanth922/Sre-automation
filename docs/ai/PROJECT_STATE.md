@@ -122,19 +122,54 @@ missed-clear reconciliation, and bounded pre-claim retries.
   boundary working on live input.
 
 ## Active problem
-**#41 — the planner proposes non-mutating actions, so nothing is ever
-verified and memory never seeds.** This is what stopped Phase 1 after one
-scenario. On the `checkout_high_latency` pilot (2026-09-19) every stage
-worked: the reflector correctly named `CHAOS_MODE` from configMap
-`meridian-config` as the cause, `severity_telemetry` measured, the engine
-scored SEV3, and PolicyGate allowed `plan of 3 action(s) → autonomous`. But
-the three actions were two `kubectl get … -o yaml  # read-only` and one
-`notify on-call`. Live remediation ran (`applied 2 of 3 live remediation(s)
-[EXECUTED=2, REFUSED=1]`) and executed the reads. Verification deliberately
-ignores non-mutating actions — only a real mutation can move the metric — so
-`outcome_class` fell to `dry_run` and `agent_runtime.py:1908` skipped
-promotion. Oracle: `UNRESOLVED`, recovery 0.0% (0/1), 0 invalid scenarios,
-Safety 100%. Memory finished exactly at baseline.
+**#42 — the harness stops watching, and clears the fault, long before the
+agent can act. This is the binding Phase 1 blocker.**
+`BENCH_INCIDENT_TIMEOUT_SEC` defaults to **300s**, while one investigation
+takes **21–49 min** (Phase 0 measured 110 calls / 21 min; the first pilot ran
+06:01→06:50). `sre_bench.py:130` says so in its own words — "a ceiling under
+the loop's own runtime does not measure a slow agent, it records every trial
+as a non-recovery… the default stays 300 only so existing invocations keep
+their meaning" — and `_Token`'s docstring names the intended value, **45 min
+(2700s)**. The ceiling is operator-set and was never set.
+
+Two consequences, both observed live on 2026-09-19:
+- Every trial reports `UNRESOLVED` regardless of what the agent does, so
+  oracle recovery can never be anything but 0%.
+- Worse, harness cleanup runs when the wait ends, so the fault is removed
+  **while the agent is still investigating**. On incident `e71f7e35` the
+  fault was cleared at 07:23; the reflector then reported the alert "not
+  corroborated by any log-level evidence", offered "a measurement/labeling
+  artifact" as a competing explanation, and dropped to confidence 0.35. The
+  agent was chasing a phantom. Any plan produced after that point is
+  evidence about nothing.
+
+**#41 — the planner proposed only non-mutating actions on a remediable
+fault. Real, fixed at `c398140`, but it was over-attributed and is not the
+blocker.** On the first pilot the plan was two `kubectl get … -o yaml  #
+read-only` plus one `notify on-call`; live remediation ran (`applied 2 of 3
+live remediation(s) [EXECUTED=2, REFUSED=1]`) and executed the reads.
+Verification ignores non-mutating actions — only a real mutation can move the
+metric — so `outcome_class` fell to `dry_run` and `agent_runtime.py:1908`
+skipped promotion. That planner behaviour is genuine and worth fixing. But
+the conclusion drawn from it — "Phase 1 cannot seed because of the planner" —
+did not hold: that pilot ran under the same 300s ceiling, so its `UNRESOLVED`
+verdict and its zero seeding were already guaranteed by #42 before the
+planner was reached. **#41 is confirmed as behaviour, unconfirmed as a
+cause**, and stays unconfirmed until a pilot runs at the correct timeout.
+
+Cause of #41: instruction 7 (added after `d3ca5138`, 2026-09-14) routes every
+`valueFrom` variable to `escalate`, because a `config_change` on one is
+refused at the execution boundary. Correct when the declared value is wrong;
+it overshot by making `escalate` the only alternative. In the pilot the
+ConfigMap already read `chaos_mode=false` and the deployment env already read
+`SLOW_RATE=0` against a live `slow_rate=1.0`, so the fault was in-memory and
+escalating would have told a human to set `false` to `false`. Fixed by
+instruction 9: when the declared config is already correct and only the
+running process disagrees, propose `restart`/`recreate_pod` — reversible via
+rollout undo, and `restart` is not in `NON_MUTATING_ACTIONS`, so verification
+runs. The discriminator is stated explicitly (wrong declared value →
+escalate; correct declared value → restart) and restart-as-guess is refused
+in the same clause. Covered by `tests/test_planner_config_drift.py`.
 
 The fault *was* remediable, so this is planner quality, not an architectural
 limit. Verified read-only: ConfigMap `meridian-config` holds
@@ -309,13 +344,23 @@ because the Mac's own `sre-agent-api` already holds it.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-**Resolve #41 (see "Active problem"), then resume Phase 1.** Phase 1 is
-paused one scenario in, deliberately, before the remaining eleven were
-bought: each would repeat the pilot — diagnose correctly, propose reads and a
-page, verify nothing, write nothing. The fork is planner behaviour (make it
-propose a mutating remediation when one is warranted) versus the benchmark's
-expectation; it needs a decision before more spend. Deploy #40 in the same
-pass, since the Codespace image still predates `14b98a4`.
+**One clean pilot at the correct timeout, then the remaining eleven.**
+`BENCH_INCIDENT_TIMEOUT_SEC=2700 BENCH_FAULT_MODE=automatic
+BENCH_DATASET_SPLIT=train BENCH_RUNS_PER_SCENARIO=1
+BENCH_SCENARIOS=checkout_high_latency`. This is the first run that can
+actually answer the question, because all three previous pilots were decided
+by #42 before the agent finished. What it confirms: whether instruction 9
+makes the planner propose a `restart`, whether verification then runs, and
+whether `store_incident` fires. Only buy the other eleven once one scenario
+seeds.
+
+Wait for any open `[checkout-service] CheckoutHighLatency` incident to close
+first — `alerts.py:892` dedups a new alert into an already-open incident, so
+a re-run launched too early is scored against the previous investigation.
+
+#40 and #41 are both deployed already (Codespace `aac540c`, parity
+`796d6db8…`, 156 files; verified inside both `sre-agent-api` and
+`sre-temporal-worker`).
 
 Note the seedable ceiling is ~7 of 12 even after #41: two train scenarios
 (`inventory_subthreshold_slow_queries`, `payment_subthreshold_slow_charges`)
@@ -361,7 +406,27 @@ claim against, taken 2026-09-19 and still true after two runs: `skills.json`
 `latency-inventory-service` skill, so on `inventory_slow_queries` the correct
 outcome is that skill incremented to 2 — not a sixth written.
 
-Operational notes for whoever runs these: `BENCH_SCENARIOS=<name>` narrows a
+Operational notes for whoever runs these. **Four env vars must be set
+together or the run silently measures nothing** — each of the first three
+cost a wasted cycle on 2026-09-19:
+- `BENCH_INCIDENT_TIMEOUT_SEC=2700`. Default 300 is below the agent's own
+  runtime, so every trial records a non-recovery *and* cleanup yanks the
+  fault mid-investigation. See #42.
+- `BENCH_FAULT_MODE=automatic`. Default is `none`, which runs the entire
+  harness and injects nothing. It fails as `INVALID_SCENARIO` with
+  `failure_observed: false`, not as a configuration error — the header line
+  `fault mode: none` is the only warning.
+- `BENCH_DATASET_SPLIT=train`. It is an env var; there is no `--dataset`
+  flag. An unknown flag is ignored and the run goes to `dev`, where a train
+  scenario name is then rejected.
+- `BENCH_RUNS_PER_SCENARIO` defaults to **3**, so an unqualified pilot buys
+  three incidents, not one.
+
+Read the header block back before walking away: it prints the split, the
+fault mode and the run count, and every one of these mistakes is visible
+there.
+
+`BENCH_SCENARIOS=<name>` narrows a
 run to one scenario without buying a split, and is refused alongside the
 statistical env on purpose (`sre_bench.py:95` enables statistical recording
 if *any* of `BENCH_EXPERIMENT_ID` / `BENCH_CANDIDATE_ID` /
