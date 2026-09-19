@@ -229,10 +229,11 @@ def _coverage_gaps(arm: str, coverage: Optional[dict[str, Any]]) -> list[str]:
             "whether the component works"
         )
     if not coverage.get("retrieval_path"):
-        # Coverage measured on an operator host with the dev extras installed
-        # reported 6/6 where the agent container reported 3/6 on the same
-        # corpus. An artifact that does not name its retrieval path cannot be
-        # attributed to either stack.
+        # The same corpus reads as 6/6 under the agent's interpreter and 3/6
+        # under the container's bare `python`, which lacks the project's
+        # dependencies and silently falls back to keyword matching. An
+        # artifact that does not name its retrieval path cannot be attributed
+        # to either stack.
         gaps.append(
             "the corpus-coverage artifact does not record which retrieval path "
             "produced it, so it cannot be shown to describe the stack the agent "
