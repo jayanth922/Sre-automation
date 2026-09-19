@@ -78,14 +78,19 @@ async def _severity_telemetry_node(
     A cluster with no Prometheus URL or no observability profile measures
     nothing and keeps today's behaviour exactly.
     """
+    # `_get` reads a dict key *or* an object attribute: at runtime
+    # `alert_context` is an `AlertContext` instance, while tests and resumed
+    # checkpoints carry a plain dict. An isinstance(dict) guard silently read
+    # no labels from the real object, which left `service` empty and made this
+    # node a no-op in production while every test still passed.
+    from .act_phase import _get
     from .severity_telemetry import measure_for_incident
 
     metadata = dict(state.get("metadata", {}) or {})
-    alert = state.get("alert_context") or {}
-    labels = (alert.get("labels") if isinstance(alert, dict) else None) or {}
+    labels = _get(_get(state, "alert_context"), "labels", {}) or {}
     # Raw, not lower-cased: this becomes a Prometheus label matcher, and
     # Prometheus label values are case-sensitive.
-    service = str(labels.get("service") or labels.get("app") or "").strip()
+    service = str(_get(labels, "service") or _get(labels, "app") or "").strip()
 
     cluster_id = getattr(execution_context, "cluster_id", None)
     try:
@@ -97,6 +102,12 @@ async def _severity_telemetry_node(
         return {}
 
     if not telemetry:
+        logger.info(
+            "SeverityTelemetry: no measurement for service=%r cluster=%s; "
+            "severity stays unknown and the plan will need approval",
+            service,
+            cluster_id,
+        )
         return {}
     metadata["severity_telemetry"] = telemetry
     return {"metadata": metadata}
