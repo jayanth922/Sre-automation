@@ -28,10 +28,12 @@ Config via env (falls back to the bench_mttr defaults):
 """
 
 import asyncio
+import base64
+import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -195,10 +197,82 @@ async def _login(client: httpx.AsyncClient, creds) -> str:
     return r.json()["access_token"]
 
 
-async def _incident_ids(client: httpx.AsyncClient, jwt: str, creds) -> set[str]:
+# Renew once this much of the token's life is gone. Well clear of the expiry
+# even if a poll is slow, without re-logging in on every request.
+_TOKEN_RENEW_FRACTION = 0.6
+# Used only when the token carries no readable `exp`. Deliberately short: the
+# cost of renewing too often is one cheap request, the cost of renewing too
+# late is a dead campaign.
+_TOKEN_FALLBACK_LIFETIME = timedelta(minutes=5)
+
+
+def _token_lifetime(token: str, issued_at: datetime) -> Optional[timedelta]:
+    """How long this JWT has left, read from its own unverified `exp` claim.
+
+    Reading a token without verifying it is normally a mistake. Here it is
+    scheduling, not authentication: the server remains the only thing that
+    decides whether a token is accepted, and the worst a forged `exp` could do
+    is make this process renew at the wrong moment. Scheduling from the claim
+    rather than a constant means a deployment that changes
+    `ACCESS_TOKEN_EXPIRE_MINUTES` does not silently reintroduce the bug below.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        exp = json.loads(base64.urlsafe_b64decode(payload))["exp"]
+        return datetime.fromtimestamp(exp, tz=timezone.utc) - issued_at
+    except Exception:
+        return None
+
+
+class _Token:
+    """An access token that renews itself before the server stops taking it.
+
+    The runner used to log in once and reuse that string for the whole
+    campaign. Access tokens live 15 minutes (`ACCESS_TOKEN_EXPIRE_MINUTES`)
+    while a single incident is allowed 45 (`BENCH_INCIDENT_TIMEOUT_SEC`), so
+    any incident that ran longer than its token died mid-poll on a 401 —
+    after the fault was injected and the agent had already spent the money.
+    Nothing was scored and the fault was left in the cluster. Long runs are
+    the only runs this benchmark exists to do, so the single login was a bug
+    that grew with the value of the run.
+    """
+
+    def __init__(self, client: httpx.AsyncClient, creds) -> None:
+        self._client = client
+        self._creds = creds
+        self._value: Optional[str] = None
+        self._renew_at = datetime.min.replace(tzinfo=timezone.utc)
+
+    async def value(self) -> str:
+        if self._value is None or datetime.now(timezone.utc) >= self._renew_at:
+            await self._renew()
+        assert self._value is not None
+        return self._value
+
+    async def headers(self) -> dict:
+        return {"Authorization": f"Bearer {await self.value()}"}
+
+    async def _renew(self) -> None:
+        issued_at = datetime.now(timezone.utc)
+        value = await _login(self._client, self._creds)
+        lifetime = _token_lifetime(value, issued_at) or _TOKEN_FALLBACK_LIFETIME
+        if lifetime <= timedelta(0):
+            # Renewing on a schedule already in the past would turn every
+            # request into a login. Stop instead of hammering /auth/token.
+            raise RuntimeError(
+                "the platform issued an already-expired access token "
+                f"(exp is {-lifetime} in the past); check clock skew between "
+                "this host and the API before running a campaign"
+            )
+        self._value = value
+        self._renew_at = issued_at + lifetime * _TOKEN_RENEW_FRACTION
+
+
+async def _incident_ids(client: httpx.AsyncClient, jwt: _Token, creds) -> set[str]:
     r = await client.get(
         f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
-        headers={"Authorization": f"Bearer {jwt}"},
+        headers=await jwt.headers(),
     )
     r.raise_for_status()
     return {inc["id"] for inc in r.json()}
@@ -239,7 +313,7 @@ async def _wait_new_incident(client, jwt, known, creds) -> Optional[dict]:
         await asyncio.sleep(2)
         r = await client.get(
             f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
-            headers={"Authorization": f"Bearer {jwt}"},
+            headers=await jwt.headers(),
         )
         r.raise_for_status()
         for inc in r.json():
@@ -251,7 +325,7 @@ async def _wait_new_incident(client, jwt, known, creds) -> Optional[dict]:
 async def _fetch_incident(client, jwt, incident_id, creds) -> Optional[dict]:
     response = await client.get(
         f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
-        headers={"Authorization": f"Bearer {jwt}"},
+        headers=await jwt.headers(),
     )
     response.raise_for_status()
     return next(
@@ -317,7 +391,7 @@ async def _await_manual_cleanup(spec: ScenarioSpec) -> None:
 
 async def _wait_for_recovery(
     client: httpx.AsyncClient,
-    jwt: str,
+    jwt: _Token,
     incident: dict,
     oracle_client: PrometheusOracleClient,
     tracker: RecoveryOracleTracker,
@@ -354,7 +428,7 @@ async def _wait_for_recovery(
 async def _fetch_transcript(client, jwt, incident_id, creds) -> dict:
     r = await client.get(
         f"{creds.base_url}/api/v1/incidents/{incident_id}/transcript",
-        headers={"Authorization": f"Bearer {jwt}"},
+        headers=await jwt.headers(),
     )
     r.raise_for_status()
     return r.json()
@@ -365,7 +439,7 @@ async def _fetch_trace_completeness(client, jwt, incident_id, creds) -> dict:
     while True:
         response = await client.get(
             f"{creds.base_url}/api/v1/incidents/{incident_id}/agent-metrics",
-            headers={"Authorization": f"Bearer {jwt}"},
+            headers=await jwt.headers(),
         )
         response.raise_for_status()
         payload = response.json().get("trace_completeness")
@@ -563,7 +637,7 @@ def _record_confidence_observations(
 
 async def _run_trial(
     client: httpx.AsyncClient,
-    jwt: str,
+    jwt: _Token,
     oracle_client: PrometheusOracleClient,
     fault_adapter: Optional[MeridianAdminConfigAdapter],
     spec: ScenarioSpec,
@@ -706,7 +780,7 @@ async def run() -> None:
     )
     async with httpx.AsyncClient(timeout=30) as client:
         creds = await resolve_credentials(client)
-        jwt = await _login(client, creds)
+        jwt = _Token(client, creds)
         print(f"  logged in as {creds.admin_email}\n")
 
         by_name = {spec.name: spec for spec in SCENARIOS}
