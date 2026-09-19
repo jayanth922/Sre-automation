@@ -1893,6 +1893,28 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
        parameters.container. It mutates nothing, so it needs no approval and no
        rollback plan. Do not disguise an inspection as a 'config_change': that
        burns a human approval on a step that writes nothing.
+    9. If the DECLARED configuration is already correct and only the RUNNING
+       process disagrees, the drift is in the process, not in the
+       configuration — restart it. Concretely: evidence (an inspect result, a
+       k8s finding, the ConfigMap's own contents) shows the deployment's spec
+       or the ConfigMap key already holds the safe value, while live
+       behaviour, metrics or an admin/debug endpoint show the harmful value
+       in effect. Nothing about the configuration needs to change, so a
+       'config_change' has nothing to write and an 'escalate' sends a human
+       to re-set a value that already reads correctly. Propose
+       action_type='restart' on the deployment (or 'recreate_pod' for a
+       single pod), which reconciles the running state back to the declared
+       state and is reversible via rollout undo. Say in safety_check which
+       declared value you are restoring the process to, and which observation
+       shows it is not currently in effect.
+       This does NOT relax instruction 7. The two cases are distinguished by
+       what the evidence says about the DECLARED value: if the declared value
+       is itself wrong — the ConfigMap key really does say the harmful thing —
+       then a human must edit it and 'escalate' remains the answer. Restart
+       only reconciles a process to the configuration it already has; it
+       cannot fix a configuration. And it is not a remedy for an undiagnosed
+       problem: without evidence of that specific divergence, restarting is
+       guesswork and you should not propose it.
 
     Return plan in JSON format matching RemediationPlan schema.
     """
