@@ -196,8 +196,63 @@ def _verdict(interval: list[float]) -> str:
     return NOT_DEMONSTRATED
 
 
+def _coverage_gaps(arm: str, coverage: Optional[dict[str, Any]]) -> list[str]:
+    """Reasons the `no_memory` arm could not have observed what it removes.
+
+    Learned-memory writes are frozen for every arm during an experiment, so
+    whatever the control retrieves must pre-exist the run. A corpus that
+    matches nothing makes `full` and `no_memory` behaviourally identical, and
+    the resulting NOT_DEMONSTRATED is an artifact of the empty corpus rather
+    than a finding about learned memory. Underpowering is measured from the
+    trials; this is not visible there at all, so it has to be supplied.
+    """
+    if arm != "no_memory":
+        return []
+    if coverage is None:
+        return [
+            "no corpus-coverage evidence for the learned-memory arm; run "
+            "benchmarks/ablation_coverage.py and pass --memory-coverage to "
+            "show the control could retrieve anything to begin with"
+        ]
+    observable = coverage.get("observable_pairs")
+    total = coverage.get("scenario_count")
+    gaps: list[str] = []
+    if not observable:
+        gaps.append(
+            f"none of {total} scenarios could retrieve learned memory, so the "
+            "arm removed nothing the control actually had"
+        )
+    elif total and observable < total:
+        gaps.append(
+            f"only {observable} of {total} scenarios could retrieve learned "
+            "memory; the rest pull the paired delta toward zero regardless of "
+            "whether the component works"
+        )
+    if not coverage.get("retrieval_path"):
+        # Coverage measured on an operator host with the dev extras installed
+        # reported 6/6 where the agent container reported 3/6 on the same
+        # corpus. An artifact that does not name its retrieval path cannot be
+        # attributed to either stack.
+        gaps.append(
+            "the corpus-coverage artifact does not record which retrieval path "
+            "produced it, so it cannot be shown to describe the stack the agent "
+            "runs; re-run the preflight in the agent's environment"
+        )
+    if coverage.get("incident_memory_points") == 0:
+        gaps.append(
+            "incident recall was inert for every arm (no tenant-scoped points "
+            "in the collection); only the verified-skill half was measured"
+        )
+    return gaps
+
+
 def _evidence_gaps(
-    report: dict[str, Any], *, minimum_pairs: int, maximum_ci_width: float
+    report: dict[str, Any],
+    *,
+    minimum_pairs: int,
+    maximum_ci_width: float,
+    arm: str,
+    coverage: Optional[dict[str, Any]],
 ) -> list[str]:
     """Reasons a null result means "cannot tell" rather than "no effect".
 
@@ -205,7 +260,7 @@ def _evidence_gaps(
     every component and reads as a considered finding. It is the opposite:
     an experiment that could not have detected an effect if one existed.
     """
-    gaps: list[str] = []
+    gaps: list[str] = _coverage_gaps(arm, coverage)
     paired = report["paired"]
     if paired["pair_count"] < minimum_pairs:
         gaps.append(
@@ -237,6 +292,7 @@ def evaluate_arm(
     maximum_ci_width: float,
     pass_k: int,
     bootstrap_seed: int,
+    memory_coverage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Compare the full stack against one arm and say what it bought."""
     if arm not in ARMS:
@@ -309,7 +365,11 @@ def evaluate_arm(
         []
         if verdict == DEMONSTRATED
         else _evidence_gaps(
-            report, minimum_pairs=minimum_pairs, maximum_ci_width=maximum_ci_width
+            report,
+            minimum_pairs=minimum_pairs,
+            maximum_ci_width=maximum_ci_width,
+            arm=arm,
+            coverage=memory_coverage,
         )
     )
     notes: list[str] = []
@@ -367,6 +427,7 @@ def build_ablation_report(
     maximum_ci_width: float = 0.20,
     pass_k: int = 3,
     bootstrap_seed: int = 1729,
+    memory_coverage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if not arms:
         raise AblationEvalError("at least one ablation arm is required")
@@ -387,6 +448,7 @@ def build_ablation_report(
             maximum_ci_width=maximum_ci_width,
             pass_k=pass_k,
             bootstrap_seed=bootstrap_seed,
+            memory_coverage=memory_coverage,
         )
         for name, candidate_id, manifest in arms
     ]
@@ -464,6 +526,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--maximum-ci-width", type=float, default=0.20)
     parser.add_argument("--pass-k", type=int, default=3)
     parser.add_argument("--bootstrap-seed", type=int, default=1729)
+    parser.add_argument(
+        "--memory-coverage",
+        type=Path,
+        help=(
+            "Corpus-coverage artifact from benchmarks/ablation_coverage.py. "
+            "Without it a null result for the no_memory arm cannot be "
+            "distinguished from a corpus that never held anything to remove."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -481,6 +552,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             maximum_ci_width=args.maximum_ci_width,
             pass_k=args.pass_k,
             bootstrap_seed=args.bootstrap_seed,
+            memory_coverage=(
+                load_manifest(args.memory_coverage) if args.memory_coverage else None
+            ),
         )
     except (AblationEvalError, StatisticalEvalError) as exc:
         parser.error(str(exc))
