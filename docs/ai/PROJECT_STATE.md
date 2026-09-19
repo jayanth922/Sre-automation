@@ -322,6 +322,15 @@ because the Mac's own `sre-agent-api` already holds it.
 - Never stage the untracked secret backup `.env.local-backup-20260910`; the
   `.gitignore` `.env` pattern does not match it. Always use explicit paths in
   `git add`.
+- **Never run `docker compose` in `platform/` without `--env-file ../.env`.**
+  `env_file:` populates the *container*; `${POSTGRES_USER}` &co. in the
+  compose file are *interpolation*, which reads only compose's own env. Without
+  the flag they resolve to empty and `DATABASE_URL` becomes
+  `…@postgres:5432/` with no database name — and the container still reports
+  **healthy**, so the breakage is silent. Hit on 2026-09-19 recreating for the
+  cache-TTL change; fixed by re-running with the flag. `deploy_agent_runtimes.sh`
+  already passes `--env-file "$ROOT/.env"` — prefer the script over a direct
+  compose call.
 - The Meridian checkout baseline is restored **in the working tree only**.
   Two commits on `origin/master` of `jayanth922/meridian-shop` —
   `4ed89b2` (hash-slot 503s) and `7a6e223` (`int(order_id[-1])` on
@@ -370,6 +379,41 @@ because the Mac's own `sre-agent-api` already holds it.
   200k will under-reserve unless it is set.
 - tiktoken fetches its BPE file on first use; an air-gapped image without that
   cache silently degrades to the character heuristic.
+
+## Benchmark budget (2026-09-19)
+
+`ANTHROPIC_PROMPT_CACHE_TTL=1h` is now set in `.env` and live in both
+`sre-agent-api` and `sre-temporal-worker` (`cache_control_marker()` returns
+`{'type': 'ephemeral', 'ttl': '1h'}`). The `5m` default rebuilt the cached
+prefix 4–5× per 21–49 min incident; Phase 0's 2.0/27.0/71.0 split gives
+`0.02(1.0)+0.27(1.25)+0.71(0.1)=0.4285`, matching the measured 0.429. At 1h
+the projection is `0.02(1.0)+0.06(2.0)+0.92(0.1)=0.232`, ~46% off input.
+**Projected, not measured** — the validation run measures it.
+
+Costed campaign at a projected $3.00/incident (was $4.77):
+
+| step | trials | cost |
+|---|---|---|
+| validation run | 1 | $3 |
+| seed train split | 12 | $36 |
+| ablation stage 1 (6 pairs/arm) | 24 | $54 |
+| ablation stage 2 (top up to 20) | 56 | $125 |
+| **total** | **93** | **$218** (~$285 at 30% contingency) |
+
+`full` is the shared control for all three comparisons
+(`compare_candidates(baseline_id=arm, candidate_id=full)`), so 80 ablation
+trials — not 120. `single_agent` and `no_reflector` are cheaper than `full`
+but by an unmeasured amount; those two figures are estimates.
+
+Stage 1 is a **sample-size pilot**, not a publishable result: measure effect
+size, then compute the N each arm needs. `ablation_eval.py:526` sets
+`--minimum-pairs 20` to stop an underpowered null reading as a finding.
+
+Sequencing matters: `ablation_eval.py:320` rejects a comparison whose arm and
+control ran at different `code_sha`, so **freeze code after the validation
+run** — a fix landed mid-campaign invalidates every completed trial. Seed the
+train split in full; thinning it to save ~$15 would understate memory's
+effect in the arm being paid for.
 
 ## Next bounded task
 **Blocked on #43: add Anthropic API credits first. Then one clean pilot at
