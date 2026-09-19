@@ -1148,3 +1148,53 @@ budget.
 larger blast radius (the wrapper is what gives every agent `with_structured_output`
 and tool binding) for a number this system can compute exactly from data it
 already records.
+
+## The ReAct conversation prefix is cached, at a 5m TTL
+
+**Decision.** `cache_conversation_prefix` moves an Anthropic `cache_control`
+breakpoint to the tail of the transcript before every model call, via a new
+`prepare_for_model` hook on the compaction pre-model hook that runs *after*
+fitting. The requested TTL default is **5m, not 1h**, and `model_accounting`
+prices a cache write against whichever TTL was asked for.
+
+**Reason.** Caching is a billing mechanism, not a context mechanism: the cache
+is exact-prefix-match and server-side, so the model receives byte-identical
+tokens either way and output quality cannot move. Only the static system prompt
+and tool catalog were tagged, and those are not what a ReAct loop spends money
+on — the loop re-sends the whole transcript every iteration, so input cost is
+quadratic in turn count while the static part is flat. A turn only ever appends
+(ToolNode adds an AIMessage and a ToolMessage), so each turn's cached prefix is a
+strict prefix of the next turn's request and the read hits.
+
+The 5m default is load-bearing and was not the original choice. A write costs
+2x the base input rate at 1h against 1.25x at 5m, while a read costs 0.2x
+either way, so a longer TTL buys nothing unless entries survive to be read an
+hour later. Nothing here does: a loop rewrites its prefix every few seconds,
+and an arm's scenarios are minutes apart. Measured over three turns of a
+specialist loop, 1h cost **$0.167** against **$0.134** for the same calls with
+no caching at all — the write premium made caching a net loss — while 5m cost
+**$0.115**. The gap widens with turn count, since each written increment is
+then read by more subsequent turns.
+
+**Consequences.** Artifact `SCHEMA_VERSION` is 3. Records carry
+`tokens.cache_read` and `tokens.cache_creation` (a breakdown of `input`, never
+an addition; `None`, not `0`, when the provider does not report them), so a
+recorded cost can be recomputed from the record alone — which is how the
+mispricing below was caught. `_derived_cost` reads LiteLLM's
+`cache_creation_input_token_cost_above_1hr` key when the TTL is 1h; pricing
+every write at the 5m key understated writes by 60%, which was live for the
+whole of the previous window. The tagging is provider-gated to Anthropic in
+`agent_nodes.py`, and `prepare_for_model` itself is provider-agnostic.
+
+The `$8.32` re-pricing of the first live incident recorded in the decision
+above is an **upper bound, not a measurement**: it prices all 3.37M input
+tokens at the uncached rate although the static prefix was already cached. The
+~$50/arm and ~$140/four-arm figures derived from it inherit that bias and are
+now additionally stale, since the conversation body is cached too.
+
+**Rejected alternative.** Mixing TTLs — 1h on the static system prompt and tool
+catalog, 5m on the conversation. Anthropic allows it and the ordering rules
+happen to suit our layout, but the static block is a few thousand tokens and
+the difference across a six-scenario arm is a few cents, which does not pay for
+a second TTL to reason about. Also rejected: tagging before context fitting,
+which risks trimming away the breakpoint itself.

@@ -247,7 +247,7 @@ def _cache_write_rate(rates: dict[str, float], fallback: float) -> float:
 
         ttl = prompt_cache_ttl()
     except Exception:  # pragma: no cover - dependency-light environments
-        ttl = "1h"
+        ttl = "5m"  # mirrors the router's default
     if ttl == "1h":
         above_hour = rates.get("cache_creation_input_token_cost_above_1hr")
         if above_hour is not None:

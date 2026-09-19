@@ -565,13 +565,21 @@ def _prompt_cache_enabled() -> bool:
 def prompt_cache_ttl() -> str:
     """The cache lifetime the router asks Anthropic for.
 
-    Public because it is also a *pricing* input: Anthropic charges 1.25x the
-    base input rate to write a 5m entry and 2x to write a 1h one, so
-    ``model_accounting`` has to know which one was requested to price a cache
-    write correctly.
+    Defaults to 5m, and the default is load-bearing. Anthropic charges 1.25x
+    the base input rate to write a 5m entry and 2x for a 1h one, while a read
+    costs 0.2x either way — so a longer TTL buys nothing but a more expensive
+    write unless entries actually survive to be read an hour later. Nothing
+    here does: a ReAct loop rewrites its prefix every few seconds.
+
+    Measured on three turns of a specialist loop (see DECISIONS.md): 1h cost
+    $0.167 against $0.134 for the same calls with no caching at all, while 5m
+    cost $0.115. The long TTL was a net loss.
+
+    Public because it is also a *pricing* input — ``model_accounting`` has to
+    know which TTL was requested to price a cache write correctly.
     """
-    ttl = os.getenv("ANTHROPIC_PROMPT_CACHE_TTL", "1h").strip().lower()
-    return ttl if ttl in ("5m", "1h") else "1h"
+    ttl = os.getenv("ANTHROPIC_PROMPT_CACHE_TTL", "5m").strip().lower()
+    return ttl if ttl in ("5m", "1h") else "5m"
 
 
 def cache_control_marker() -> Optional[Dict[str, str]]:

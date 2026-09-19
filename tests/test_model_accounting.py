@@ -242,9 +242,9 @@ def _priced_cache_write(monkeypatch, ttl):
 
 
 def test_one_hour_cache_writes_are_priced_at_the_one_hour_rate(monkeypatch):
-    """A longer-lived cache entry costs more to write (2x base, not 1.25x), and
-    the router asks for 1h by default — pricing every write at LiteLLM's 5m key
-    would understate the bill."""
+    """A longer-lived cache entry costs more to write (2x base, not 1.25x).
+    5m is the router's default, but an operator can still ask for 1h, and
+    pricing that write at LiteLLM's 5m key would understate the bill by 60%."""
     record = _priced_cache_write(monkeypatch, "1h")
 
     assert record["cost_usd"] == pytest.approx(50 * 4e-6 + 4 * 1e-5)

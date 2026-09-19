@@ -163,9 +163,12 @@ def test_route_llm_raises_when_blocked():
 
 
 def test_cache_control_marker_default_enabled(monkeypatch):
+    """5m, not 1h, and the difference is money: a 1h write costs 2x the base
+    input rate against 1.25x for 5m, and nothing here lives an hour."""
     monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+    monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_TTL", raising=False)
     marker = model_router.cache_control_marker()
-    assert marker == {"type": "ephemeral", "ttl": "1h"}
+    assert marker == {"type": "ephemeral", "ttl": "5m"}
 
 
 def test_cache_control_marker_disabled(monkeypatch):
@@ -180,14 +183,14 @@ def test_cache_control_marker_custom_ttl(monkeypatch):
 
 def test_cache_control_marker_invalid_ttl_falls_back(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_TTL", "bogus")
-    assert model_router.cache_control_marker() == {"type": "ephemeral", "ttl": "1h"}
+    assert model_router.cache_control_marker() == {"type": "ephemeral", "ttl": "5m"}
 
 
 def test_cached_system_message_tags_content(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
     msg = model_router.cached_system_message("static system prompt")
     assert isinstance(msg.content, list)
-    assert msg.content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert msg.content[0]["cache_control"] == model_router.cache_control_marker()
     assert msg.content[0]["text"] == "static system prompt"
 
 
@@ -220,7 +223,7 @@ def test_cached_tools_tags_last_tool(monkeypatch):
 
     tagged = model_router.cached_tools([tool_a, tool_b])
     assert (tagged[0].extras or {}).get("cache_control") is None
-    assert tagged[1].extras.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+    assert tagged[1].extras.get("cache_control") == model_router.cache_control_marker()
     # Original list/tools are untouched (new list, copied last tool).
     assert (tool_b.extras or {}).get("cache_control") is None
 
@@ -272,7 +275,7 @@ def test_conversation_prefix_is_tagged_at_the_newest_tool_result(monkeypatch):
         {
             "type": "text",
             "text": "...50k of logs...",
-            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            "cache_control": model_router.cache_control_marker(),
         }
     ]
 
@@ -292,7 +295,7 @@ def test_tagging_walks_past_a_tool_calling_message_with_no_prose(monkeypatch):
     tagged = model_router.cache_conversation_prefix(messages)
 
     assert tagged[1].content == ""
-    assert tagged[0].content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert tagged[0].content[0]["cache_control"] == model_router.cache_control_marker()
 
 
 def test_tagging_does_not_mutate_the_caller_transcript(monkeypatch):
