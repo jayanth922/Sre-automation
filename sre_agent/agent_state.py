@@ -39,13 +39,43 @@ def _decode_json_container(value: Any) -> Any:
     Anything that is not a string, or is a string that does not parse, is
     handed back untouched so the field's own validation still produces the
     real error.
+
+    Two things learned on 2026-09-19, when the planner failed this way again
+    (incident `bc5c48b7`) despite `actions` being wired to this validator:
+
+    * A strict parse is too strict for this input. Models routinely leave
+      literal newlines and tabs inside the JSON *string* values they emit,
+      which `json.loads` rejects as `Invalid control character` even though
+      the structure is sound. `strict=False` accepts exactly that and nothing
+      structurally looser, so a plan is no longer thrown away over whitespace.
+    * A silent `except` made the cause unknowable. Pydantic's error truncates
+      the middle of the value, so the log showed a string that looked like
+      well-formed JSON at both ends and there was no record of *why* the parse
+      failed. The failure is now logged with the decoder's own reason and a
+      bounded head/tail, so the next occurrence is diagnosable from the log
+      instead of requiring a reproduction.
     """
     if not isinstance(value, str):
         return value
     try:
         return json.loads(value)
     except (ValueError, TypeError):
-        return value
+        # Only worth a second attempt — and a warning — if this was meant to
+        # be a container at all. A plain string field that happens to reach
+        # here is not a failed decode.
+        if value.lstrip()[:1] not in ("[", "{"):
+            return value
+        try:
+            return json.loads(value, strict=False)
+        except (ValueError, TypeError) as error:
+            logger.warning(
+                "Undecodable JSON container (%d chars): %s | head=%r tail=%r",
+                len(value),
+                error,
+                value[:120],
+                value[-120:],
+            )
+            return value
 
 
 # Pydantic Models for Structured State
