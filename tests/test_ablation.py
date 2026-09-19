@@ -284,7 +284,15 @@ def _corpus(
     return load_trials(trials_path)
 
 
-def _report(tmp_path, *, full_manifest, arm_manifest, arm="single_agent", **kwargs):
+def _report(
+    tmp_path,
+    *,
+    full_manifest,
+    arm_manifest,
+    arm="single_agent",
+    memory_coverage=None,
+    **kwargs,
+):
     trials, artifact = _corpus(
         tmp_path, full_manifest=full_manifest, arm_manifest=arm_manifest, **kwargs
     )
@@ -294,7 +302,17 @@ def _report(tmp_path, *, full_manifest, arm_manifest, arm="single_agent", **kwar
         full_candidate_id="full-v1",
         full_manifest=full_manifest,
         arms=[(arm, "arm-v1", arm_manifest)],
+        memory_coverage=memory_coverage,
     )
+
+
+def _coverage(scenario_count=6, observable=6, incident_points=12, path="semantic"):
+    return {
+        "scenario_count": scenario_count,
+        "observable_pairs": observable,
+        "incident_memory_points": incident_points,
+        "retrieval_path": path,
+    }
 
 
 def test_a_clear_benefit_is_reported_as_demonstrated(tmp_path):
@@ -344,6 +362,130 @@ def test_an_underpowered_null_is_flagged_rather_than_read_as_no_effect(tmp_path)
     assert arm["verdict"] == "NOT_DEMONSTRATED"
     assert any("paired trials" in gap for gap in arm["insufficient_evidence"])
     assert any("too thin" in note for note in arm["notes"])
+
+
+# --- Learned-memory corpus coverage -------------------------------------------
+#
+# Writes are frozen for every arm during an experiment, so whatever `full`
+# retrieves has to pre-exist the run. A corpus that matches nothing makes the
+# two arms behaviourally identical, and the NOT_DEMONSTRATED that follows reads
+# exactly like the finding "learned memory does not earn its complexity".
+
+
+def test_a_blind_corpus_makes_the_memory_arms_null_result_uninformative(tmp_path):
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_memory"),
+        arm="no_memory",
+        full_wins=18,
+        arm_wins=18,
+        memory_coverage=_coverage(observable=0, incident_points=0),
+    )
+    arm = report["arms"][0]
+    assert arm["verdict"] == "NOT_DEMONSTRATED"
+    assert any(
+        "removed nothing the control actually had" in gap
+        for gap in arm["insufficient_evidence"]
+    )
+
+
+def test_unproven_coverage_is_itself_an_evidence_gap(tmp_path):
+    """Absent coverage evidence is not evidence of coverage."""
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_memory"),
+        arm="no_memory",
+        full_wins=18,
+        arm_wins=18,
+    )
+    assert any(
+        "ablation_coverage.py" in gap
+        for gap in report["arms"][0]["insufficient_evidence"]
+    )
+
+
+def test_partial_coverage_is_flagged_as_dilution(tmp_path):
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_memory"),
+        arm="no_memory",
+        full_wins=18,
+        arm_wins=18,
+        memory_coverage=_coverage(scenario_count=6, observable=3),
+    )
+    assert any(
+        "only 3 of 6 scenarios" in gap
+        for gap in report["arms"][0]["insufficient_evidence"]
+    )
+
+
+def test_inert_incident_recall_is_named_separately_from_skills(tmp_path):
+    """Half the arm can be dead while the other half still measures."""
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_memory"),
+        arm="no_memory",
+        full_wins=18,
+        arm_wins=18,
+        memory_coverage=_coverage(observable=6, incident_points=0),
+    )
+    gaps = report["arms"][0]["insufficient_evidence"]
+    assert any("only the verified-skill half was measured" in gap for gap in gaps)
+    assert not any("removed nothing" in gap for gap in gaps)
+
+
+def test_full_coverage_adds_no_corpus_gap(tmp_path):
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_memory"),
+        arm="no_memory",
+        full_wins=18,
+        arm_wins=18,
+        memory_coverage=_coverage(),
+    )
+    gaps = report["arms"][0]["insufficient_evidence"]
+    assert not any("learned memory" in gap or "recall" in gap for gap in gaps)
+
+
+def test_coverage_of_unknown_provenance_is_not_accepted_as_evidence(tmp_path):
+    """The preflight answers differently depending on where it runs — 6/6 on an
+    operator host with the dev extras, 3/6 in the agent container without them.
+    An artifact that does not name its retrieval path cannot be attributed."""
+    coverage = _coverage()
+    del coverage["retrieval_path"]
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_memory"),
+        arm="no_memory",
+        full_wins=18,
+        arm_wins=18,
+        memory_coverage=coverage,
+    )
+    gaps = report["arms"][0]["insufficient_evidence"]
+    assert any("retrieval path" in gap for gap in gaps)
+
+
+def test_corpus_coverage_is_not_demanded_of_arms_that_keep_memory(tmp_path):
+    """`single_agent` and `no_reflector` both keep learned memory; asking them
+    for a corpus artifact would be noise on an unrelated arm."""
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("no_reflector"),
+        arm="no_reflector",
+        full_wins=18,
+        arm_wins=18,
+    )
+    assert not any(
+        "ablation_coverage.py" in gap
+        for gap in report["arms"][0]["insufficient_evidence"]
+    )
 
 
 def test_a_component_that_hurts_is_refuted_and_fails_the_run(tmp_path):

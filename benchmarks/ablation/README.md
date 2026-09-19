@@ -59,6 +59,50 @@ strawman.
 stay: they are authored knowledge, not learned, and removing them too would
 make the difference unattributable.
 
+## Before spending the budget: can `no_memory` observe anything?
+
+Learned-memory writes are frozen for **every** arm during an experiment, so
+whatever `full` retrieves has to pre-exist the run. If the corpus matches
+nothing on the split, `full` and `no_memory` make the same lookups, get the
+same nothing, and behave identically. That reports `NOT_DEMONSTRATED` — which
+is also how the considered finding "learned memory does not earn its
+complexity" reports. The artifact cannot tell the two apart, so measure it
+first:
+
+**Run it inside the agent container.** `SemanticSkillStore` degrades to
+keyword-only recall when `qdrant-client` is missing, Qdrant is unreachable, or
+the embedding model will not load — each time with a log line and no error.
+The agent image ships without `qdrant-client`; an operator host with the dev
+extras does not. On the same corpus and the same six dev scenarios that
+difference gave **6/6 coverage on the host and 3/6 in the container**.
+`--expect-retrieval-path` turns that into an error instead of a plausible
+number.
+
+`benchmarks/` is not in the agent image, so copy it in for the run and take it
+out again — this is a measurement, not a deployment:
+
+```bash
+docker cp benchmarks sre-agent-api:/app/benchmarks
+docker exec sre-agent-api python /app/benchmarks/ablation_coverage.py \
+  --split dev --organization-id "$ORG" --cluster-id "$CLUSTER" \
+  --qdrant-url http://qdrant:6333 \
+  --expect-retrieval-path keyword_only \
+  --output /tmp/ablation-memory-coverage.json
+docker cp sre-agent-api:/tmp/ablation-memory-coverage.json reports/
+docker exec sre-agent-api rm -rf /app/benchmarks
+```
+
+The preflight is read-only. `SemanticSkillStore.__init__` backfills the Qdrant
+skill index, which would have the preflight reporting on a corpus it had just
+written; `open_store_read_only()` suppresses that for the duration of
+construction and fails loudly if the method it suppresses is ever renamed.
+Verified on the host path with the real five-skill corpus: semantic recall
+active, zero Qdrant writes.
+
+Pass the artifact to the comparison as `--memory-coverage`. Without it, or
+with a blind or partial one, `no_memory` carries an `insufficient_evidence`
+entry and cannot report a clean null result.
+
 ## Running an experiment
 
 Every arm is an ordinary `sre_bench.py` run. The arms must share the
@@ -118,6 +162,7 @@ uv run python benchmarks/ablation_eval.py reports/ablation-trials.jsonl \
   --arm single_agent=single_agent=reports/manifest-single_agent.json \
   --arm no_reflector=no_reflector=reports/manifest-no_reflector.json \
   --arm no_memory=no_memory=reports/manifest-no_memory.json \
+  --memory-coverage reports/ablation-memory-coverage.json \
   --output reports/ablation.json
 ```
 

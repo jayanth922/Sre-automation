@@ -212,6 +212,18 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   only against manifest-derived fakes. Memory scenarios need a checkout pod
   restarted recently enough to sit under 150MB (`leak_kb_per_request` never
   frees its buffer).
+- **Semantic skill recall is off in the deployed agent.** `qdrant-client` is
+  not in the agent image, so `SemanticSkillStore._init_semantic` returns at
+  its `QDRANT_AVAILABLE` guard and `get_skill_store()` serves keyword-only
+  matches — logged at INFO, never raised. Skill *writes* still land in
+  `skills.json`; only the embedding-based second recall path is dead, so the
+  fixed failure-class keywords are the whole of retrieval. Measured effect on
+  the v2 dev split: 3 of 6 scenarios retrieve a skill, against 6 of 6 with
+  semantic recall available. Deliberately **not** fixed before the ablation —
+  installing the client would change the control arm's behaviour on the eve of
+  the run. `benchmarks/ablation_coverage.py --expect-retrieval-path` exists so
+  a coverage number can never again be quoted without saying which path
+  produced it.
 - `CONTEXT_WINDOW_TOKENS` is operator-declared; a model with a window under
   200k will under-reserve unless it is set.
 - tiktoken fetches its BPE file on first use; an air-gapped image without that
@@ -240,7 +252,17 @@ service URLs on `10.0.0.207`).
    `BENCH_CONFIG_FINGERPRINT`. Budget ~3h per arm.
 4. Capture each arm's manifest from
    `/api/v1/clusters/$BENCH_CLUSTER_ID/jobs/$JOB_ID/manifest` (verified
-   working: `comparable: true`, arm in `runtime`), then `ablation_eval.py`.
+   working: `comparable: true`, arm in `runtime`), then `ablation_eval.py`
+   with `--memory-coverage`.
+
+Run `benchmarks/ablation_coverage.py` **inside the agent container** before
+spending anything — `ablation_eval.py` records an `insufficient_evidence`
+entry for `no_memory` without it. Last measured there: `PARTIAL: 3/6`,
+`retrieval_path: keyword_only`, incident recall provably inert (zero
+tenant-scoped points in `sre_incidents_v2`). So half of what the arm removes
+is already absent from every arm, and half the pairs cannot observe the other
+half. Seeding the corpus from the **train** split before the run would fix
+this legitimately; seeding from dev would be leakage.
 
 Six pairs per arm will likely report `NOT_DEMONSTRATED` with a non-empty
 `insufficient_evidence` list. Report that as ignorance, not a null.
