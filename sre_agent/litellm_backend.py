@@ -124,8 +124,21 @@ def build_litellm_llm(
             "pip install litellm langchain-litellm"
         ) from e
 
+    # Lazy like the rest of this function's imports: the module stays loadable
+    # standalone (tests/test_litellm_backend.py execs it by path), so it keeps
+    # no package-relative imports at module scope.
+    from .llm_retry import llm_max_retries
+
     temperature = _resolve_temperature(model, temperature)
     kwargs: dict = {"model": model}
+    # ChatLiteLLM exposes no retry field of its own, so the setting travels via
+    # ``model_kwargs``, which its ``_default_params`` spreads straight into the
+    # underlying ``litellm.acompletion`` call. LiteLLM's client wrapper
+    # implements ``num_retries`` with an exponential backoff strategy, and its
+    # ``_should_retry`` already treats 429/500/503/529 as retryable — the 529
+    # that killed three investigations on 2026-09-19 was retryable all along
+    # and simply never had a budget. See sre_agent/llm_retry.py.
+    kwargs["model_kwargs"] = {"num_retries": llm_max_retries()}
     if temperature is not None:
         kwargs["temperature"] = temperature
     if max_tokens is not None:

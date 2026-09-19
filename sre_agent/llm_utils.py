@@ -13,6 +13,7 @@ import os
 from typing import Any, Dict
 
 from .constants import SREConstants
+from .llm_retry import llm_max_retries
 from .provider_config import DEFAULT_PROVIDER, SUPPORTED_PROVIDERS, require_supported_provider
 
 logger = logging.getLogger(__name__)
@@ -93,10 +94,15 @@ def _create_anthropic_llm(config: Dict[str, Any]):
             "ANTHROPIC_API_KEY not set. Get a key at https://console.anthropic.com"
         )
 
+    # Explicit rather than inherited: ChatAnthropic defaults to 2, which is a
+    # sensible library default and too thin for a 110-call investigation. Set
+    # from the same policy as the LiteLLM path so the two backends cannot drift
+    # into different overload behaviour. See sre_agent/llm_retry.py.
     return ChatAnthropic(
         model=config["model_id"],
         api_key=api_key,
         max_tokens=config.get("max_tokens", 4096),
+        max_retries=llm_max_retries(),
     )
 
 
