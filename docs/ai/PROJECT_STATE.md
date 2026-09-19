@@ -122,8 +122,40 @@ missed-clear reconciliation, and bounded pre-claim retries.
   boundary working on live input.
 
 ## Active problem
-**#43 — the Anthropic account is out of API credits. Nothing else can
-progress until a human adds credits; no code change works around it.** The
+**#44 — one transient 529 killed the whole investigation. Fixed at
+`bc18e30` (Codespace) / `c6d8208` (local); live verification pending.**
+Neither LLM backend configured any retry, so an Anthropic `overloaded_error`
+raised anywhere in the ReAct loop unwound past every stage to the catch-all
+at `agent_runtime.py:2069`, which logs `SaaS Background execution failed` and
+abandons the incident — alert left open, fault left live, no stated cause.
+On 2026-09-19 three consecutive investigations died inside four minutes
+(14:52:51, 14:54:02, 14:55:25; requests `req_011CfCzFjWoKEmPhPqb8uNPx`,
+`…MBinCA5aQHeSKShCR`, `…Sj64PRskw4aoyfvFh`) while the harness waited for a
+recovery that could no longer come. A full investigation makes ~110 calls
+over 21–49 min and counts only if every one lands, so even a 1% overload
+rate loses ~2 runs in 3 — and a 529 death inside a `no_reflector` trial is
+indistinguishable from a component effect, which would have silently
+corrupted the ablation campaign. LiteLLM already treats 429/500/503/529 as
+retryable with exponential backoff; the budget was simply never set.
+`sre_agent/llm_retry.py` now holds one policy (default 5, `LLM_MAX_RETRIES`)
+wired into **both** backends — `build_litellm_llm` via `model_kwargs`
+`num_retries`, `_create_anthropic_llm` via `max_retries` (library default 2
+is too thin here). One module because a retry on only one path is the same
+outage with a smaller blast radius. 12 tests assert the budget reaches the
+real call path (`ChatLiteLLM._default_params`, not our own kwargs dict),
+that both backends agree, and that 529 is still in LiteLLM's retryable set —
+the external assumption that could silently lapse on upgrade.
+
+**Still unproven: #41.** All five pilots to date were decided by an external
+cause before planner behaviour could be observed — three by #42's 300s
+timeout, one by #43's billing failure, one by #44. #41 remains confirmed as
+behaviour, unconfirmed as a cause.
+
+**#43 (resolved) — the Anthropic account ran out of API credits.** Credits
+were added by the user and confirmed live with a ~$0.00002 haiku probe
+(`STATUS 200`, `msg_011CfCyubgU163bamkwBExzK`). Probe the key before any
+long run: a rejected key makes the harness inject the fault and then fail
+every call for 45 minutes. The
 fourth pilot — the first one configured correctly (`dataset:
 sentinel-sre-v2/train`, `1 scenarios × 1 runs`, `fault mode: automatic`,
 `BENCH_INCIDENT_TIMEOUT_SEC=2700`, `slow_rate: 1.0` verified injected) —
@@ -416,16 +448,31 @@ train split in full; thinning it to save ~$15 would understate memory's
 effect in the arm being paid for.
 
 ## Next bounded task
-**Blocked on #43: add Anthropic API credits first. Then one clean pilot at
-the correct timeout, then the remaining eleven.**
+**In flight (launched 15:09, code_sha `bc18e30`): the validation pilot.**
 `BENCH_INCIDENT_TIMEOUT_SEC=2700 BENCH_FAULT_MODE=automatic
 BENCH_DATASET_SPLIT=train BENCH_RUNS_PER_SCENARIO=1
 BENCH_SCENARIOS=checkout_high_latency`. This is the first run that can
-actually answer the question, because all three previous pilots were decided
-by #42 before the agent finished. What it confirms: whether instruction 9
-makes the planner propose a `restart`, whether verification then runs, and
-whether `store_incident` fires. Only buy the other eleven once one scenario
-seeds.
+answer the question, because all five previous pilots were decided by an
+external cause — #42, #43, #44 — before the agent finished. It answers four
+things at once: does the planner now propose `restart` (#41), does
+verification run, does `store_incident` fire, and is the ~$3.00/incident
+1h-TTL projection real. If the cache saving lands nearer $4.50 than $3.00,
+every figure in the budget table scales up ~50%.
+
+**Then, before any seeding or ablation work — the pre-freeze window.**
+Land the #42 visibility fix on the Codespace: it exists only in the local
+repo (`MEASURED_INCIDENT_FLOOR_SEC`, 4 refs locally, **0 on the Codespace**),
+so the guard written to prevent the three-pilot loss is not live where runs
+actually happen. Task #37 was closed on a local-only change — the Codespace
+keeps its own commit history and files reach it by copy, so a local commit is
+not a deployment.
+
+**Then freeze.** `ablation_eval.py:320-325` rejects any arm-vs-control
+comparison at differing `code_sha`, so a fix landed mid-campaign invalidates
+every completed trial. Nothing may change after the first ablation trial
+starts.
+
+Only buy the other eleven scenarios once one seeds.
 
 Wait for any open `[checkout-service] CheckoutHighLatency` incident to close
 first — `alerts.py:892` dedups a new alert into an already-open incident, so
