@@ -122,8 +122,27 @@ missed-clear reconciliation, and bounded pre-claim retries.
   boundary working on live input.
 
 ## Active problem
+**#43 — the Anthropic account is out of API credits. Nothing else can
+progress until a human adds credits; no code change works around it.** The
+fourth pilot — the first one configured correctly (`dataset:
+sentinel-sre-v2/train`, `1 scenarios × 1 runs`, `fault mode: automatic`,
+`BENCH_INCIDENT_TIMEOUT_SEC=2700`, `slow_rate: 1.0` verified injected) —
+died at 07:36:08 on `litellm.BadRequestError: AnthropicException …
+invalid_request_error: "Your credit balance is too low to access the
+Anthropic API"` (`graph_builder.py:1970`, request `req_011CfCQwnczM2SmRbFbpvYXP`,
+17 occurrences). The planner fell back to its one-action `escalate
+manual_review`, PolicyGate cleared it autonomously, and promotion was skipped
+`(incomplete)` — all of that is the billing failure, not agent behaviour, and
+none of it is evidence about #41.
+
+Run was terminated and the cluster left clean: bench PIDs killed by explicit
+pid (never `pkill -f sre_bench.py` — it self-matches), and because SIGTERM
+skips harness cleanup the declared cleanup payload `{"slow_rate": 0.0}` was
+POSTed to `/admin/config` by hand. Verified `slow_rate=0.0`, health 200 at
+~1.1 ms.
+
 **#42 — the harness stops watching, and clears the fault, long before the
-agent can act. This is the binding Phase 1 blocker.**
+agent can act. This was the binding Phase 1 blocker until #43.**
 `BENCH_INCIDENT_TIMEOUT_SEC` defaults to **300s**, while one investigation
 takes **21–49 min** (Phase 0 measured 110 calls / 21 min; the first pilot ran
 06:01→06:50). `sre_bench.py:130` says so in its own words — "a ceiling under
@@ -179,9 +198,8 @@ POST to `/admin/config`, so the fault is in-memory only — the pod's
 declarative spec already has it off, and `restart`/`recreate_pod` (both in
 the executor's tool map) would clear it. The planner chose reads and a page.
 
-**#40, fixed `71041b9`, applied to the Codespace tree as `14b98a4` but NOT in
-the running image (needs rebuild + restart) — plans discarded over a
-newline.** `json.loads` is strict about control characters and models leave
+**#40, fixed `71041b9`, deployed and verified inside the running containers
+— plans discarded over a newline.** `json.loads` is strict about control characters and models leave
 literal newlines inside prose fields like `safety_check`, so a structurally
 sound plan came back `Input should be a valid list` and the planner
 substituted its one-action `escalate manual_review` fallback. Fixed by
@@ -344,7 +362,8 @@ because the Mac's own `sre-agent-api` already holds it.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-**One clean pilot at the correct timeout, then the remaining eleven.**
+**Blocked on #43: add Anthropic API credits first. Then one clean pilot at
+the correct timeout, then the remaining eleven.**
 `BENCH_INCIDENT_TIMEOUT_SEC=2700 BENCH_FAULT_MODE=automatic
 BENCH_DATASET_SPLIT=train BENCH_RUNS_PER_SCENARIO=1
 BENCH_SCENARIOS=checkout_high_latency`. This is the first run that can
@@ -357,6 +376,16 @@ seeds.
 Wait for any open `[checkout-service] CheckoutHighLatency` incident to close
 first — `alerts.py:892` dedups a new alert into an already-open incident, so
 a re-run launched too early is scored against the previous investigation.
+`8bc1de25` (07:29:33) was left open by the killed pilot; with the fault
+removed it should close itself through `reconcile_resolved_alert`'s
+`alert_cleared_external_lifecycle` path when Alertmanager clears. Confirm it
+reads `resolved` before launching. Do **not** force it with `/mark-resolved`:
+that endpoint's authority is deliberately "a human who says they handled it"
+(`approval_flow.py:900-911`).
+
+Unrelated and still open: `a2cb603e` `[api-gateway] PodOOMKilled` (07:38:56),
+a genuine alert for the unraised 256Mi memory limit — not a benchmark
+artifact, leave it open.
 
 #40 and #41 are both deployed already (Codespace `aac540c`, parity
 `796d6db8…`, 156 files; verified inside both `sre-agent-api` and
