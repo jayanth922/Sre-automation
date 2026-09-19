@@ -138,11 +138,17 @@ unparseable, so the decoder handed it back and Pydantic raised the real
 error. Fixed by retrying with `strict=False`, and by logging why a decode was
 abandoned — Pydantic truncates the middle of the value, so the log showed a
 string well-formed at both ends with no reason attached, which is why this
-survived two incidents. This is what blocks Phase 1: the `escalate
-manual_review` fallback mutates nothing, so `EXECUTOR_LIVE` never engages, no
-objective verification exists, `eligible_for_success` stays false, and the
-corpus cannot be seeded. Third instance of the recurring root cause — the
+survived two incidents. Third instance of the recurring root cause — the
 suite builds shapes production never sends.
+
+The rate is intermittent, not universal: measured 1 failure in 2 planner
+invocations on 2026-09-19 (`bc5c48b7` failed, the `checkout_high_latency`
+pilot succeeded with a 3-action low-risk plan). So this degrades Phase 1
+rather than blocking it — each lost plan falls back to `escalate
+manual_review`, which mutates nothing, so `EXECUTOR_LIVE` never engages, no
+objective verification exists and `eligible_for_success` stays false for that
+scenario. At the observed rate roughly half the seeding yield is lost, which
+is why the fix ships before the remaining eleven scenarios are bought.
 
 `ACT_PHASE_ENABLED=true` is now set in the Codespace `.env` (backup:
 `.env.bak-phase0`) and confirmed wired at runtime — `graph_builder.py:2123`
