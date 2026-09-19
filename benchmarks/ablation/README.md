@@ -139,6 +139,15 @@ Run the arms back to back against the same cluster, same models, same
 revision. A `git pull` between two arms invalidates the experiment, and the
 harness will say so rather than average over it.
 
+`BENCH_SCENARIOS=<name>[,<name>]` narrows a run to named scenarios, for
+answering "does this path work at all" without buying a whole split. It is a
+smoke knob and the harness refuses to combine it with the statistical env
+above: `build_trial_schedule` derives run order from the list of names handed
+to it, so a subset silently drops the run-order guarantee `BENCH_PAIR_SEED`
+exists to provide, while every trial would still be stamped with the full
+split's `dataset_sha256`. An unrecognised name is an error rather than a
+fallback to the full split.
+
 ### Capturing each arm's manifest
 
 `BENCH_CONFIG_FINGERPRINT` is operator-declared: `sre_bench.py` writes whatever

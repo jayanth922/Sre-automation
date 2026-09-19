@@ -149,6 +149,40 @@ DATASET = load_dataset(
 )
 SCENARIOS = DATASET.scenarios
 
+# A smoke knob, not a measurement one. One incident on this cluster costs real
+# money and 10-30 minutes, so "does the ACT path work at all" should not have
+# to buy a whole split to find out.
+#
+# It is refused during a recorded experiment on purpose. `build_trial_schedule`
+# derives run order from the *list of names it is handed*, so a filtered arm
+# and an unfiltered one would be ordered differently under the same
+# `BENCH_PAIR_SEED` — the seed exists to hold run order constant across arms,
+# and a subset silently removes that guarantee while still stamping every trial
+# with the full split's `dataset_sha256`. The resulting artifact would claim a
+# comparability it does not have.
+SCENARIO_FILTER = tuple(
+    name.strip() for name in os.getenv("BENCH_SCENARIOS", "").split(",") if name.strip()
+)
+if SCENARIO_FILTER:
+    if STATISTICAL_RECORDING:
+        raise RuntimeError(
+            "BENCH_SCENARIOS is a smoke-run filter and cannot be combined with "
+            "statistical recording: a subset breaks the run-order guarantee "
+            "BENCH_PAIR_SEED provides across arms, while the trials would still "
+            "carry the full split's dataset_sha256. Run the whole split, or drop "
+            "the statistical env (BENCH_EXPERIMENT_ID/BENCH_CANDIDATE_ID/…)."
+        )
+    _known = {spec.name for spec in SCENARIOS}
+    _unknown = sorted(set(SCENARIO_FILTER) - _known)
+    if _unknown:
+        # Degrading to the full split would turn a typo into a bill.
+        raise RuntimeError(
+            f"BENCH_SCENARIOS names {_unknown} which are not in "
+            f"{DATASET.dataset_version}/{DATASET.split}. Available: "
+            f"{sorted(_known)}"
+        )
+    SCENARIOS = [spec for spec in SCENARIOS if spec.name in SCENARIO_FILTER]
+
 
 async def _login(client: httpx.AsyncClient, creds) -> str:
     r = await client.post(
@@ -642,6 +676,11 @@ async def run() -> None:
         f"  dataset: {DATASET.dataset_version}/{DATASET.split} "
         f"sha256={DATASET.sha256[:12]}…"
     )
+    if SCENARIO_FILTER:
+        print(
+            f"  SMOKE RUN — {len(SCENARIOS)} of {len(DATASET.scenarios)} scenarios "
+            f"(BENCH_SCENARIOS); not a measurement of this split"
+        )
     print(f"  fault mode: {FAULT_MODE}")
     print(f"  oracle evidence: {ORACLE_RESULTS_PATH}")
     print(f"  grader evidence: {GRADER_RESULTS_PATH}")
