@@ -131,29 +131,44 @@ calibration artifact.
 logs the investigate ↔ reflect → planner → aggregate → approval_gate →
 act_gate chain. `EXECUTOR_LIVE` and `TEMPORAL_ENABLED` are `true`.
 
-The Phase 0 smoke run (incident `5cc643c5`, 2026-09-19) did **not** reach ACT.
-Two defects and one open design question came out of it:
+Phase 0 is **done** (two runs: `5cc643c5` crashed, `281b8110` clean). It
+answered both questions and surfaced one structural defect:
 
-1. **Fixed (`95ef01b`).** The runner logged in once and reused that JWT for
-   the whole campaign. Tokens live 15 min (`ACCESS_TOKEN_EXPIRE_MINUTES`),
-   incidents are allowed 45 (`BENCH_INCIDENT_TIMEOUT_SEC`), so the client
-   died on a 401 mid-poll at minute 17. Its cleanup then cleared the injected
-   fault, the alert went away, and the reconciler closed the incident while
-   the agent was still on investigation pass 3 — it never reached the planner.
-2. **Open (task #32).** Nothing cancels an in-flight investigation when an
-   incident resolves externally. `durable_jobs.request_cancel` has zero
-   callers repo-wide; the claim at `agent_runtime.py:1338` that "Resolution
-   now cancels in-flight investigations" describes only the *start-time*
-   backstop below it. Observed cost: the agent kept issuing Opus/Sonnet calls
-   against a resolved incident. An unconditional cancel is the wrong fix — a
-   flapping alert would abort a legitimate diagnosis — so this needs a
-   debounce or a verified-recovery condition.
-3. **Open, unquantified.** One incident spent ~100 model calls / ~120 tool
-   calls in 20 minutes without reaching the planner. The reflector ran its
-   full `MAX_INVESTIGATION_DEPTH=3` and confidence did not converge
-   (0.72 → 0.86 → 0.72, discrepancies 7 → 6 → 7) even though pass 2 had
-   already named the true root cause. At ~12h per ablation campaign this is
-   the dominant cost term and is worth a bound before the arms run.
+1. **Cost (answered).** `5cc643c5`: 111 calls, **$4.77**, 20.8 min, 3.84M
+   tokens — 2.0% uncached input, 27.0% cache creation, 71.0% cache read.
+   Effective input multiplier **0.429** (~57% off all-uncached), *not* the
+   ~70% once projected: cache creation bills at a premium. `281b8110` ran 110
+   calls / 21.1 min but its total is `null` — one span failed with unknown
+   tokens and the accounting refuses to fabricate a total.
+2. **Memory writes (answered: no, and not because the write path is broken).**
+   Both runs ended `requires_approval`, so `outcome_class` was `dry_run` /
+   `incomplete` and `agent_runtime.py:1908` skipped promotion. Stores
+   unchanged across both: `skills.json` 5 @ `success_count=1`,
+   `sre_skills_v1` 5, `sre_incidents_v2` 0. The *retrieval* half works live —
+   `SkillStore: semantic recall enabled` and 3 learned skills proposed.
+3. **Root cause — autonomous ACT is unreachable in production (task #33).**
+   `compute_urgency_score` needs `slo_burn_rate`, `saturation`, or
+   `error_rate_slope`. Production supplies none: the first two names appear
+   only in test fixtures and `examples/`, and the one real `saturation`
+   producer (`prometheus_real/server.py:392`) emits
+   `{"query":…, "value":…}`, which `_walk_metrics` captures as a dict and
+   `_as_float` turns into `None` — the `key_str not in found` guard then
+   blocks the nested number. No alert rule supplies them either. So urgency
+   is always `None` → severity always `UNKNOWN` → `is_low_severity` always
+   `False` → **no plan can ever run unattended, for any incident.** The
+   earlier attribution of `5cc643c5`'s UNKNOWN to "the fault was cleared" was
+   wrong: `281b8110` kept its fault injected and still went UNKNOWN. Tests
+   miss this because they inject all three metrics by hand.
+
+Also open: **task #32**, nothing cancels an in-flight investigation when an
+incident resolves externally (`durable_jobs.request_cancel` has zero callers;
+the claim at `agent_runtime.py:1338` covers only the start-time backstop). An
+unconditional cancel is wrong — a flapping alert would abort a legitimate
+diagnosis — so it needs a debounce or verified-recovery condition.
+
+Reflector cost is now **bounded, not unquantified**: ~110 calls and ~21 min
+per incident, both runs, ≈$4.8. Convergence improved run-over-run
+(0.72→0.86→0.72 vs 0.62→0.62→0.88, discrepancies 7→6→7 vs 6→6→5).
 
 Deferred, unrelated: digest-pin the Helm Temporal server image.
 
@@ -256,18 +271,33 @@ Deferred, unrelated: digest-pin the Helm Temporal server image.
   cache silently degrades to the character heuristic.
 
 ## Next bounded task
-Re-run Phase 0: one smoke incident that actually reaches ACT, now that the
-token bug is fixed. `BENCH_SCENARIOS=<name>` narrows a run to one scenario
-without buying a split; it is refused alongside the statistical env on
-purpose (see `benchmarks/ablation/README.md`). Report measured cost from
-`/api/v1/incidents/{id}/agent-metrics` — `model_accounting.cost_usd` and
-`tokens` are `null` until the trace finalises, so read them only after the
-job leaves `running` — and check both memory writes against this baseline,
-taken 2026-09-19 before the run: `skills.json` 5 skills each at
-`success_count=1`, Qdrant `sre_skills_v1` 5 points, `sre_incidents_v2`
-**0 points**. The corpus already holds a `latency-inventory-service` skill,
-so on `inventory_slow_queries` the correct outcome is that skill being
-retrieved and incremented to 2 — not a sixth being written.
+**Decide task #33** — the urgency-telemetry gap — because it blocks every
+downstream phase. Until urgency is measurable, no arm can produce an
+autonomous `act_report`, and a "no-memory" ablation is untestable since
+memory is never written in the first place. Three candidate fixes are in the
+task; option 3 (relaxing the all-three-missing early return) deliberately
+weakens a safety property and should not be taken casually.
+
+Blocked on that: **Phase 1** (train split, production mode, to seed memory
+legitimately), **Phase 2** (dev split `full` + ablation identifiers), and
+**Phase 3** (the three counterfactual arms). Baseline to diff every memory
+claim against, taken 2026-09-19 and still true after two runs: `skills.json`
+5 skills each at `success_count=1`, Qdrant `sre_skills_v1` 5 points,
+`sre_incidents_v2` **0 points**. The corpus already holds a
+`latency-inventory-service` skill, so on `inventory_slow_queries` the correct
+outcome is that skill incremented to 2 — not a sixth written.
+
+Operational notes for whoever runs these: `BENCH_SCENARIOS=<name>` narrows a
+run to one scenario without buying a split, and is refused alongside the
+statistical env on purpose (`sre_bench.py:95` enables statistical recording
+if *any* of `BENCH_EXPERIMENT_ID` / `BENCH_CANDIDATE_ID` /
+`BENCH_CONFIG_FINGERPRINT` / `BENCH_PAIR_SEED` is set, then demands all
+four). Read cost from `/api/v1/incidents/{id}/agent-metrics` only after the
+job leaves `running`; a single failed span nulls the whole total by design.
+The Codespace working tree carries `95ef01b`'s `benchmarks/sre_bench.py` as
+an uncommitted copy — deliberately left in place, since reverting would
+reintroduce the 401. `deploy_agent_runtimes.sh` refuses a dirty tracked tree,
+so land that commit in the Codespace before the next agent redeploy.
 
 Then the four ablation arms. Everything they need is in place: Codespace
 `cuddly-winner-659v67gv695hrxjw`, k3s up, Meridian healthy, and `~/bench.env`
