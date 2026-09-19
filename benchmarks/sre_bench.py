@@ -40,6 +40,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 from fault_adapter import MeridianAdminConfigAdapter  # noqa: E402
+from fixtures import resolve_credentials  # noqa: E402
 from recovery_oracle import (  # noqa: E402
     PrometheusOracleClient,
     RecoveryOracleTracker,
@@ -320,6 +321,7 @@ async def _wait_for_recovery(
     incident: dict,
     oracle_client: PrometheusOracleClient,
     tracker: RecoveryOracleTracker,
+    creds,
 ) -> dict:
     """Poll independent evidence; application status is context, never the oracle."""
     elapsed = 0
@@ -358,7 +360,7 @@ async def _fetch_transcript(client, jwt, incident_id, creds) -> dict:
     return r.json()
 
 
-async def _fetch_trace_completeness(client, jwt, incident_id) -> dict:
+async def _fetch_trace_completeness(client, jwt, incident_id, creds) -> dict:
     deadline = time.monotonic() + ACCOUNTING_WAIT_SEC
     while True:
         response = await client.get(
@@ -565,6 +567,7 @@ async def _run_trial(
     oracle_client: PrometheusOracleClient,
     fault_adapter: Optional[MeridianAdminConfigAdapter],
     spec: ScenarioSpec,
+    creds,
 ):
     known = await _incident_ids(client, jwt, creds)
     tracker = RecoveryOracleTracker(spec.recovery_probe, datetime.now(timezone.utc))
@@ -617,11 +620,11 @@ async def _run_trial(
             return score, "FAILED (no incident)", None
 
         latest_incident = await _wait_for_recovery(
-            client, jwt, incident, oracle_client, tracker
+            client, jwt, incident, oracle_client, tracker, creds
         )
         transcript = await _fetch_transcript(client, jwt, incident["id"], creds)
         trace_completeness = await _fetch_trace_completeness(
-            client, jwt, incident["id"]
+            client, jwt, incident["id"], creds
         )
         summary_text = transcript.get("summary") or latest_incident.get("summary") or ""
         events = transcript.get("events", [])
