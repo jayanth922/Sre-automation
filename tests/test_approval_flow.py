@@ -366,7 +366,14 @@ def test_graph_and_api_enforce_verified_synchronous_resume():
     api_source = (ROOT / "sre_agent" / "api" / "v1" / "mission_control.py").read_text()
 
     assert "interrupt(pending)" in graph_source
-    assert 'workflow.add_edge("aggregate", "approval_prepare")' in graph_source
+    # What matters is that a proposal is persisted between the investigation
+    # ending and the gate running, not the exact number of hops: severity
+    # telemetry was later inserted on this path so the gate has measurements
+    # to decide on. Assert the chain, so adding a node stays legal and
+    # removing `approval_prepare` from it does not.
+    assert 'workflow.add_edge("aggregate", "severity_telemetry")' in graph_source
+    assert 'workflow.add_edge("severity_telemetry", "approval_prepare")' in graph_source
+    assert 'workflow.add_edge("approval_prepare", "approval_gate")' in graph_source
     assert 'workflow.add_edge("approval_gate", "act_gate")' in graph_source
     assert "compute_action_hash(interrupt_report)" in api_source
     assert "if not durable_checkpointer_configured():" in api_source
