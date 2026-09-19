@@ -35,7 +35,11 @@ else
 fi
 
 echo "==> ruff critical (E9/F63/F7/F82/F821/F823/F811)"
-"${RUFF[@]}" check backend sre_agent tests \
+# `benchmarks` is in this list because leaving it out cost a campaign:
+# sre_bench.py called resolve_credentials() without importing it, which is a
+# NameError raised only once a run is already underway, and F821 would have
+# caught it statically the whole time.
+"${RUFF[@]}" check backend sre_agent tests benchmarks \
   --select E9,F63,F7,F82,F821,F823,F811
 
 echo "==> mypy curated modules (fail-closed on typed core)"
