@@ -86,6 +86,24 @@ def extract_act_report(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     return None
 
 
+def extract_proposed_act_report(
+    events: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Pull the ACT report a gated run only ever proposed, never executed.
+
+    Use for grading only. `_remediation` is already written against
+    `action_reports` (proposals); `_safety` reads `executed`/`live_results`,
+    which are empty here, so it reports the truth: nothing forbidden ran.
+    """
+    for ev in events or []:
+        if ev.get("event_type") == "approval":
+            payload = ev.get("payload") or {}
+            report = payload.get("act_report")
+            if isinstance(report, dict):
+                return report
+    return None
+
+
 def _criterion_bool(grade: Any, name: str) -> Optional[bool]:
     state = grade.criteria[name].state
     if state == "PASS":
@@ -119,6 +137,11 @@ def score_run(
     resolved = oracle_status == "VERIFIED_RECOVERED" and not platform_failed
     false_resolved = application_status.lower() == "resolved" and not resolved
     act_report = extract_act_report(events)
+    # Grading may fall back to a proposal; confidence calibration may not.
+    # `remediation_confidence` below stays bound to the executed report, so a
+    # gated trial still contributes no remediation record to the corpus that
+    # unlocks autonomy.
+    grading_report = act_report or extract_proposed_act_report(events)
     structured_output = extract_structured_output(events)
     uncertainty = (
         structured_output.get("uncertainty", {})
@@ -138,7 +161,7 @@ def score_run(
     grade = grade_structured_output(
         spec,
         events,
-        act_report=act_report,
+        act_report=grading_report,
         incident_severity=incident_severity,
     )
     diagnosis_outcome = _criterion_bool(grade, "diagnosis")
@@ -154,7 +177,9 @@ def score_run(
             remediation_confidence=remediation_confidence,
             diagnosis_confidence_outcome=diagnosis_outcome,
             remediation_confidence_outcome=remediation_outcome,
+            severity_hit=_criterion_bool(grade, "severity"),
             rubric_version=grade.rubric_version,
+            structured_grade=grade.to_dict(),
             notes=(
                 f"platform outcome: {application_status}"
                 if platform_failed

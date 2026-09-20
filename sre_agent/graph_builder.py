@@ -286,6 +286,12 @@ async def _prepare_approval_node(
                 "severity": report_payload.get("severity"),
                 "aggregate_decision": report_payload.get("aggregate_decision"),
                 "source": "approval_prepare",
+                # The graph interrupts at the gate below, so the `act` event
+                # never fires on a gated run and the proposal survives only as
+                # prose. Carry the structured report too, so an approval-gated
+                # trial is still gradable. Slack is unaffected: the live bus
+                # forwards only event_type, speaker_role, title and content.
+                "act_report": report_payload,
             },
         )
     record_span_from_state(
