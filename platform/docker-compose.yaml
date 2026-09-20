@@ -231,6 +231,9 @@ services:
       context: ../dashboard
       dockerfile: ../platform/Dockerfile.dashboard
     container_name: sre-dashboard
+    # Without this the dashboard is the one service that does not come back
+    # after a Codespace resume, and the UI reads as broken when it is not.
+    restart: unless-stopped
     ports:
       - "3002:3000"
     environment:

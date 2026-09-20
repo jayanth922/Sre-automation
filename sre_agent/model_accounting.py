@@ -346,6 +346,39 @@ def _actual_route(
     return provider or default_provider, model or default_model
 
 
+# Integrations that call some other provider on our behalf. LangChain names
+# the integration, not the route: a LiteLLM-backed chat model reports
+# ``litellm`` whatever it actually reaches. Only names observed in this
+# system's records belong here — an unlisted name is treated as a real
+# provider, which is the safe direction.
+_ROUTING_WRAPPERS = frozenset({"litellm"})
+
+
+def _split_qualified_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Split ``provider/model`` into its parts; ``(None, model)`` if unqualified."""
+    if model and "/" in model:
+        prefix, _, remainder = model.partition("/")
+        prefix, remainder = prefix.strip(), remainder.strip()
+        if prefix and remainder:
+            return prefix, remainder
+    return None, model
+
+
+def _effective_route(
+    provider: Optional[str],
+    model: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a wrapper's integration name to the provider that served the call.
+
+    Returns ``(None, model)`` when a wrapper names no recoverable provider: an
+    unknown route is not evidence of a fallback, and recording one would be the
+    same untrue claim in a new place.
+    """
+    if provider and provider.strip().lower() in _ROUTING_WRAPPERS:
+        return _split_qualified_model(model)
+    return provider, model
+
+
 class ModelAccountingRecorder:
     """Thread-safe in-process index backed by an append-only JSONL artifact."""
 
@@ -663,10 +696,16 @@ class ModelAccountingCallback(BaseCallbackHandler):
         if error is not None:
             reasons.append("call_failed")
         requested_model = self.identity.requested_model
+        # Compare the *route*, not the integration that carried it, and compare
+        # bare model ids on both sides so a router's ``provider/model`` id is
+        # not read as a model change. The record below keeps the observed
+        # values; only this inference is normalised.
+        routed_provider, routed_model = _effective_route(actual_provider, actual_model)
+        _, requested_bare = _split_qualified_model(requested_model)
         fallback = None
-        if actual_provider and actual_provider != self.identity.requested_provider:
+        if routed_provider and routed_provider != self.identity.requested_provider:
             fallback = self.identity.requested_provider
-        elif requested_model and actual_model and actual_model != requested_model:
+        elif requested_bare and routed_model and routed_model != requested_bare:
             fallback = f"{self.identity.requested_provider}/{requested_model}"
         record = {
             "schema_version": SCHEMA_VERSION,
