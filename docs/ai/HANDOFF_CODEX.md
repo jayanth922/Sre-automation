@@ -3,15 +3,23 @@
 Paste everything below the line into Codex as its opening instruction. It is
 written to be self-contained; everything it references is in this repo.
 
-Last updated 2026-09-19, after the four-phase pass and specialist-query
-hardening. `PROJECT_STATE.md` is the concise authority.
+Last updated 2026-09-19, after the four-phase pass, the Codex reconcile
+merge, and #53/#54. `PROJECT_STATE.md` is the concise authority.
+
+**All four phases are done and deployed.** The phase sections below are kept
+as the record of what was built and why; they are not your task list. Your
+task list is **"The current plan"**, further down — read that first and read
+it whole, because its Step 0 blocks everything after it.
 
 ---
 
 You are continuing work on **Sentinel**, a multi-tenant LangGraph SRE agent
 that investigates Kubernetes incidents for a demo tenant called **Meridian**,
 and asks a human to approve any cluster write over Slack. The repo is at
-`/Users/jayan/Downloads/Sre-automation`, branch `master`.
+`/Users/jayan/Downloads/Sre-automation`, branch **`merge/codex-reconcile`**
+(not `master`) — it carries Codex's 24 commits, the Codespace's 20, and the
+#53/#54 grading fixes, and it is pushed. Whether it becomes a PR into `master`
+is the user's decision, not yours.
 
 ## Read these first, in this order
 
@@ -206,18 +214,21 @@ worked, and that you should keep using:
 - End every commit message with the attribution footer your harness gives
   you, matching the existing convention in `git log`.
 
-## Two decisions that belong to the user — raise them, do not action them
+## Decisions that belong to the user — raise them, do not action them
 
-1. **Publish the four rewritten runbooks to Notion** (task #44). Until then
-   Phase B is inert at run time.
-2. **Revert `ANTHROPIC_PROMPT_CACHE_TTL` to `5m`** (task #47). It was set to
-   `1h` on a projection of ~$3.00/incident; the validation run measured
-   **$7.90 against a $4.77 baseline**. The split moved 2.0/27.0/71.0
-   (multiplier 0.429) → 2.0/41.0/57.0 (**0.897**): the longer TTL bought more
-   cache *creation*, which bills at a premium, not more reads. The code
-   default is already `5m` (`sre_agent/model_router.py:581`, commit
-   `1d4fe00`); the `1h` override lives in the **Codespace** `.env`, so the
-   revert is an env change plus an API restart there, not a code change.
+Both of the decisions this section used to carry are now **settled**: the four
+runbooks are published to Notion (a post-write dump scores 22/22), and
+`ANTHROPIC_PROMPT_CACHE_TTL` is back to `5m` on the Codespace — the `1h`
+override measured **$7.90 against a $4.77 baseline**, because the longer TTL
+bought more cache *creation*, which bills at a premium, not more reads.
+
+Three remain open, and none of them is yours to action:
+
+1. **Rebuild and redeploy the Codespace stack.** It restarts everything the
+   user is running. Asked on 2026-09-19 and not yet answered. See Step 0.
+2. **The campaign shape and budget** — roughly $88 for calibration support
+   versus the $194/$389/$583 paired-ablation tiers. See Step 4.
+3. **Whether `merge/codex-reconcile` becomes a PR into `master`.**
 
 ## Deferred backlog — real, unfixed, and not part of Phase C
 
@@ -305,6 +316,10 @@ and none is closed.
   Each change needs base64 → `docker cp` into `/app` → md5 → `py_compile` →
   `docker restart sre-agent-api`. No `curl` inside it.
 - DB: `docker exec -i sre-postgres psql`, user `sre_user`, db `sre_platform`.
+  Table names do not match the ORM class names you would guess: it is
+  **`incident_timeline_events`** (not `timeline_events`) and
+  **`approval_requests`** (not `approvals`). A wrong name returns a relation
+  error that is easy to misread as an empty table.
   `agent_audit_logs`' time column is **`timestamp`**, not `created_at`;
   `incidents` has no `resolution_type`; `clusters` has no `organization_id`;
   `approval_requests` has no `action_type`;
@@ -316,6 +331,230 @@ and none is closed.
   call that omits the namespace silently targets nothing.
 - Locally the interpreter is `.venv/bin/python`; bare `python` is not on
   PATH.
+- **There is no `pytest` anywhere on the Codespace** — not the host
+  `python3`, not `.venv`, not inside any container. The suite runs on the Mac
+  only. A Codespace-side session cannot verify a code change by testing it,
+  which is why #53 and #54 were proved with purpose-written before/after
+  harnesses against recorded trial bytes instead.
+- **The dashboard's data layer is axios, not `fetch`.** It is one shared
+  client, `export const api = axios.create({ baseURL: "/api/v1" })` in
+  `dashboard/lib/auth-context.tsx:54`, and `dashboard/next.config.ts` rewrites
+  `/api`, `/auth`, `/metrics` and `/agent` to `API_URL`. Grepping for
+  `fetch(` finds 3 hits and makes the UI look like an empty shell; the real
+  figure is **49 axios calls across ~25 endpoints**. Grep for `api.get(` /
+  `api.post(`, and scope the grep to `dashboard/app` and
+  `dashboard/components` — bare `dashboard/` drags in `node_modules`.
+  Likewise, `placeholder` in that tree is overwhelmingly the JSX
+  `placeholder=` prop, not a stub.
+
+## The current plan — backend, then frontend, then benchmark
+
+This section supersedes the ordering implied by everything below it. The user
+set it on 2026-09-19, verbatim:
+
+> my point is if the backend functionality is working as intended (every
+> component), we focus on wiring the frontend properly and then do
+> benchmarking
+
+Benchmarking is therefore **last**, even though it is the decision with money
+attached and the most tempting thing to plan for.
+
+### Step 0 — rebuild and redeploy — DONE 2026-09-20
+
+**Resolved.** `bash scripts/deploy_agent_runtimes.sh` ran clean in 94s and
+`check_runtime_parity.py` passed at
+`code_sha=9e7e3d55d07f9d364d8639ca25190461625e42c7`
+`fingerprint=9cf36dc029370f64e31a2b5c4e8282229acd6b1f89a7144e7fc181fc1dd731fc`
+`files=157` — a clean full sha equal to HEAD, with no `-dirty` suffix, on both
+the API and the Temporal worker. The stack is now running identifiable code
+and component checks against it mean something. Keep the rest of this step as
+the standing procedure and the reason it matters.
+
+Two things the rebuild surfaced, both now handled:
+
+- **k3s was down** — every `meridian` pod `Exited (255)`, the API server
+  refusing on 6443. `sudo bash scripts/codespace_boot.sh` recovered it; all 15
+  pods are `Running 1/1`. Always check this after a resume, and check it
+  *before* concluding anything about the agent's tools.
+- **The Codespace node IP had changed**, `10.0.1.129 → 10.0.1.58`, so the
+  Alertmanager webhook was pointing at an address that no longer exists.
+  `codespace_boot.sh` repoints it automatically — which is exactly why it must
+  be run rather than hand-starting k3s. Alert delivery was silently broken
+  until it ran.
+- `/app/reports` is not a volume, so it was copied to
+  `/home/vscode/reports-backup-20260920-060115/` (`run-trace.jsonl`,
+  `model-accounting.jsonl`, 464K) before the recreate. Do this every time.
+
+The original finding, kept because it is the reason this step exists — the
+Temporal worker's preflight used to report:
+
+```
+code_sha=bc18e30-dirty-p0p1fix
+fingerprint=ad5097880c74dbef95672455198119f65d9b14c26df3a518cfc723cd21a07b60
+files=157
+```
+
+`bc18e30` is 11+ commits behind `merge/codex-reconcile`, and the entire Codex
+merge lands after it. The `-dirty-p0p1fix` suffix is the worse half: the image
+was built from an uncommitted working tree, so **what is actually deployed
+cannot be recovered from the sha**. Every component you verify against this
+stack is a component verified against code nobody can name — which is exactly
+the failure mode the user's "is every component working as intended" question
+is trying to close.
+
+Rebuild with `bash scripts/deploy_agent_runtimes.sh` (it exports
+`SENTINEL_CODE_SHA` from git HEAD; a bare `docker compose build` bakes
+`code_sha=unknown`, and `ablation_eval.py:320` rejects an arm-vs-control
+comparison at differing `code_sha`). Then confirm with
+`python3 scripts/check_runtime_parity.py` on the Codespace host, and re-run
+the sweep in Step 2 — every number in it predates the rebuild.
+
+This restarts the user's stack, so it needs their go-ahead each time. It was
+given on 2026-09-20 for the rebuild above; it does not carry forward.
+
+### Step 1 — run the test suite, which has never run anywhere
+
+`merge/codex-reconcile` is Codex's 24 commits plus the Codespace's 20 plus
+#53 and #54, and **no `pytest` has executed against that tree on any machine**.
+The Codespace has no pytest at all, so this is Codex's to do on the Mac:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+The baseline is 1,975 passed / 37 known warnings. #54 added 7 tests, so the
+expected result is **1,982 passed and nothing else moving**. One caveat: the
+new `test_grader_read_only_set_matches_the_executor_and_the_policy_gate`
+imports `sre_agent.executor` and `sre_agent.policy_gate` from inside
+`tests/test_structured_grading.py` for the first time. It does so function-
+locally, mirroring `tests/test_policy_gate.py:233-236`. If that import turns
+out to be too heavy for the benchmark test module, fix the test — do not
+delete the assertion, because the read-only set is mirrored in three modules
+and nothing else stops them drifting.
+
+### Step 2 — verify the backend component by component
+
+A read-only sweep, first run 2026-09-19 and **re-run after the rebuild on
+2026-09-20 with every number unchanged**, finds the platform up and holding
+real data:
+
+| check | result |
+| --- | --- |
+| compose services | 14 of 15 healthy; `mcp-loki` declares no healthcheck, which is not a failure |
+| API | `/ping` → `{"status":"healthy"}` |
+| migrations | at head `e5f6a7b8c9d0`, 23 revision files on disk |
+| MCP servers | all 8 reachable |
+| Temporal | worker polling `sentinel-sandbox` |
+| Redis | `PONG` |
+| routes | 61 API paths across 20 route modules |
+
+Row counts: organizations 1, clusters 1, incidents 125,
+incident_timeline_events 1,468, agent_audit_logs 4,975, approval_requests 61,
+**remediation_gate_approvals 0**, evidence_artifacts 207, run_manifests 115,
+jobs 129, slos 1, users 2, checkpoints 10,554.
+
+Read that as "every component is **up** and the system has really been used",
+which is not the same claim as "every component works as intended". The sweep
+proves liveness and data; it proves no behaviour. These are the behavioural
+checks still owed, cheapest first:
+
+Three of these were **answered on 2026-09-20** against the rebuilt stack, at
+no cost. They are kept here with their answers, because each one was a wrong
+conclusion waiting to happen:
+
+- **`remediation_gate_approvals` is empty but NOT vestigial.** There is
+  exactly one writer, `sre_agent/approval_flow.py:460`
+  (`models.RemediationGateApproval(...)`), reachable from
+  `incident_remediation_workflow.py` and `api/v1/remediation_gates.py`, with
+  its own migration `e4f5a6b7c8d9`. So the gate is a real, distinct path that
+  **has never once fired**, while the 61 rows in `approval_requests` (44
+  expired, 17 approved) came through the ordinary approval flow. The likely
+  reason is that the gate belongs to autonomous remediation, which calibration
+  has never let run — consistent with everything else here, but confirm it
+  before relying on it. Do not settle this by writing a row.
+- **The Slack bot token is a per-org database column, not an env var.**
+  `organizations.slack_bot_token` is set (123 chars) with
+  `slack_team_id=T0C0FK431GA`. The env sweep that reported `SLACK_BOT_TOKEN`
+  "missing" was right and the inference from it would have been wrong: the
+  only Slack vars in the container are app-level (`SLACK_APP_TOKEN`,
+  `SLACK_OAUTH_SCOPES`, `SLACK_WAR_ROOM_CHANNEL`), because a per-tenant token
+  belongs to the tenant row. This is the correct multi-tenant design, not a
+  gap. Slack is the only communication channel this system has, so know where
+  its credentials live before touching anything near them.
+- **The litellm "fallback" is a label, not a fallback.** `actual_provider`
+  is read straight from LangChain's `ls_provider` metadata in
+  `sre_agent/model_accounting.py:566` (`_start`), falling back to
+  `identity.constructed_provider`. Calls go through the LiteLLM-backed chat
+  model, so LangChain reports `ls_provider="litellm"` while the configured
+  provider is `anthropic` — and the accounting layer then records that
+  difference as `fallback_from: anthropic`. Nothing actually routed away from
+  Anthropic: `llm_base_url` is NULL on the one cluster row (which is
+  `provider=anthropic model=claude-sonnet-5 router=true`), `LITELLM_BASE_URL`
+  is unset, and the measured cost matches Anthropic pricing.
+  **This is a real defect, just not a routing one**: every accounting record
+  claims a fallback that did not happen, which is precisely the kind of
+  untrue operator-facing claim this project exists to eliminate. Fix it by
+  comparing against the *integration* name rather than the configured provider
+  name. To settle it beyond doubt, assert the response's model id on one live
+  call.
+
+Still open, and both must be closed before paying for a campaign:
+- **`STATISTICAL_RECORDING` has never been set on this stack**, nor
+  `DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH`, nor `SENTINEL_CONFIG_FINGERPRINT`.
+  Prove that a recording run actually persists `cost_usd` and a diagnosis
+  confidence record **before** paying for ~40 incidents on the assumption it
+  does.
+- **Prove a below-support calibration artifact cannot spuriously set
+  `hypothesis_confidence_calibrated`** by returning non-None with a null
+  threshold. That is the specific failure mode in which ~$88 buys a false
+  positive and the autonomy gate opens on nothing.
+
+Only the last of these needs a live incident: one gated incident measured
+**$2.21** (smoke `b13ce2c5`, 69 model calls). Everything else is free.
+
+### Step 3 — wire the frontend
+
+Start by not repeating this session's near-miss: the dashboard is **not** a
+shell. It is 16 pages backed by 49 axios calls across ~25 endpoints, with
+types mirrored from `backend/schemas.py` ("Types mirror backend/schemas.py
+exactly so the UI renders real data" — `dashboard/lib/console.ts`, which is
+presentation helpers only and fetches nothing). See the environment section
+for why `grep -r "fetch("` gives the opposite impression.
+
+Two concrete gaps:
+
+1. **The dashboard has no restart policy.** `sre-dashboard` is the only
+   service in the compose file with `RestartPolicy=no`, where `sre-agent-api`
+   and `sre-postgres` are `unless-stopped`. It did **not** crash — its logs
+   show `Ready in 43s`, then `HEAD /login 200`, then `Exited (255)` when the
+   Codespace suspended. It simply never comes back on its own, so the UI
+   looks dead after every resume and the natural conclusion ("the dashboard is
+   broken") is wrong. `scripts/codespace_boot.sh` does bring it back as part
+   of "ensuring platform docker-compose stack is up" — verified 2026-09-20 —
+   so the gap is narrower than it first looks: the dashboard recovers only
+   when someone remembers to run the boot script. Still worth one line in
+   `platform/docker-compose.yaml`. It runs Next.js 16.1.6
+   with Turbopack in **dev** mode, 3002→3000, from image
+   `platform-dashboard:latest`.
+2. **Six API modules have no dashboard caller**: `invitations`, `jobs`,
+   `mission_control`, `ownership`, `tickets`, `ws_tickets`. This was matched
+   fuzzily by module name, so treat it as a lead and not as proof — but `jobs`
+   has 129 rows and `org_invitations` exists, so at least some real, exercised
+   backend function has no UI at all. Confirm each against
+   `sre_agent/api/v1/<module>.py` before building anything against it.
+
+### Step 4 — then, and only then, benchmark
+
+Unchanged, and still the user's call. Roughly **$88** buys calibration support
+from ~40 gated incidents, which needs no autonomy because the escalation gate
+reads the *diagnosis* artifact and a gated trial already emits a diagnosis
+observation. The full paired ablation is the **$194 / $389 / $583** tier at
+one, two and three trials per scenario.
+
+The budget constraint is explicit and repeated: *"i am not going to spend 632
+dollars"*, *"i cannot spend hundreds of dollars"* — alongside *"but i do need
+to do benchmarking"*. Both halves are real. Do not launch anything paid until
+the user names a stage and a budget.
 
 ## Before any benchmark run
 

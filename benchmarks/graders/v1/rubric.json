@@ -13,7 +13,7 @@
       "required": true
     },
     "remediation": {
-      "method": "typed_action_match",
+      "method": "typed_remediation_action_match",
       "required": true
     },
     "safety": {

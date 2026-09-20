@@ -345,6 +345,108 @@ def test_actual_provider_change_is_explicit_fallback_evidence():
     ]
 
 
+def test_router_integration_name_is_not_mistaken_for_a_fallback():
+    """LangChain reports the integration (``litellm``), never the served provider.
+
+    Every record on the live stack claimed ``fallback_from: anthropic`` while
+    reaching Anthropic exactly as requested. The route is recoverable from the
+    qualified model id the router emits.
+    """
+    callback = _instrument(
+        FakeModel(provider="litellm", model_name="anthropic/claude-sonnet-5"),
+        requested_provider="anthropic",
+        requested_model="claude-sonnet-5",
+    )
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-r1", metadata=TRACE)
+    callback.on_llm_end(
+        _response(provider="litellm", model="anthropic/claude-sonnet-5"),
+        run_id="call-r1",
+    )
+    accounting.get_model_accounting_recorder().finalize_trace(
+        "trace-123", status="success"
+    )
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    summary = accounting.get_model_accounting_recorder().summary(
+        root_trace_id="trace-123"
+    )
+
+    assert record["routing"]["fallback_from"] is None
+    assert summary["fallbacks"] == []
+    # What was observed is still recorded verbatim: the derived-cost lookup is
+    # keyed on the qualified model id, so normalising it here would be a
+    # pricing change disguised as a labelling fix.
+    assert record["routing"]["actual_provider"] == "litellm"
+    assert record["routing"]["actual_model"] == "anthropic/claude-sonnet-5"
+
+
+def test_router_reaching_another_provider_is_still_a_fallback():
+    """Resolving the wrapper must not blind the check it exists to perform."""
+    callback = _instrument(
+        FakeModel(provider="litellm", model_name="groq/llama-3.3-70b"),
+        requested_provider="anthropic",
+        requested_model="claude-sonnet-5",
+    )
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-r2", metadata=TRACE)
+    callback.on_llm_end(
+        _response(provider="litellm", model="groq/llama-3.3-70b"),
+        run_id="call-r2",
+    )
+    accounting.get_model_accounting_recorder().finalize_trace(
+        "trace-123", status="success"
+    )
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+    summary = accounting.get_model_accounting_recorder().summary(
+        root_trace_id="trace-123"
+    )
+
+    assert record["routing"]["fallback_from"] == "anthropic"
+    assert [item["from"] for item in summary["fallbacks"]] == ["anthropic"]
+
+
+def test_router_without_a_recoverable_provider_claims_nothing():
+    """An unknown route is unknown; it is not evidence of a fallback."""
+    callback = _instrument(
+        FakeModel(provider="litellm", model_name="claude-sonnet-5"),
+        requested_provider="anthropic",
+        requested_model="claude-sonnet-5",
+    )
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-r3", metadata=TRACE)
+    callback.on_llm_end(
+        _response(provider="litellm", model="claude-sonnet-5"),
+        run_id="call-r3",
+    )
+    accounting.get_model_accounting_recorder().finalize_trace(
+        "trace-123", status="success"
+    )
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+
+    assert record["routing"]["fallback_from"] is None
+
+
+def test_actual_model_change_is_explicit_fallback_evidence():
+    """A different model from the same provider is still a fallback."""
+    callback = _instrument(
+        FakeModel(provider="anthropic", model_name="claude-haiku-4-5"),
+        requested_provider="anthropic",
+        requested_model="claude-sonnet-5",
+    )
+    callback.on_chat_model_start({}, [["prompt"]], run_id="call-r4", metadata=TRACE)
+    callback.on_llm_end(
+        _response(provider="anthropic", model="claude-haiku-4-5"),
+        run_id="call-r4",
+    )
+    accounting.get_model_accounting_recorder().finalize_trace(
+        "trace-123", status="success"
+    )
+
+    record = accounting.get_model_accounting_recorder().records()[0]
+
+    assert record["routing"]["fallback_from"] == "anthropic/claude-sonnet-5"
+
+
 def test_error_and_missing_trace_are_incomplete_without_error_text_leakage():
     callback = _instrument(FakeModel())
     callback.on_llm_start({}, ["prompt"], run_id="call-4")
