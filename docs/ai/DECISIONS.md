@@ -879,9 +879,9 @@
   groups with a counted note, then hard-truncate. Cuts are always on turn-group
   boundaries because an orphaned `tool_result` is a hard provider rejection —
   the old `messages[-keep_recent:]` slice could produce exactly that.
-  `CONTEXT_ITERATION_MAX_TOKENS` defaults to the full ceiling: per-iteration
-  trimming exists to prevent a failed request, and degrading diagnosis quality
-  for cost has to be opted into. `tiktoken` is now a declared dependency; its
+  `CONTEXT_ITERATION_MAX_TOKENS` originally defaulted to the full ceiling —
+  **reversed on 2026-09-19, see the entry below.** `tiktoken` is now a declared
+  dependency; its
   first-use BPE fetch is attempted exactly once per process and never retried,
   so an air-gapped cluster degrades to the character heuristic instead of
   hanging a hot-path budget check (`CONTEXT_TOKENIZER=heuristic` skips it).
@@ -1198,3 +1198,378 @@ happen to suit our layout, but the static block is a few thousand tokens and
 the difference across a six-scenario arm is a few cents, which does not pay for
 a second TTL to reason about. Also rejected: tagging before context fitting,
 which risks trimming away the breakpoint itself.
+
+## The runbook reaches the agent as a rendered procedure, not as a search hit
+
+- **Decision:** `sre_agent/runbook_brief.py` parses the `search_runbooks`
+  envelope, picks the best hit, fetches that page's body with a **second**
+  `get_runbook_content` call, and renders a budgeted brief that is ordered by
+  section priority — remediation first, background last. `ContextBuilder`
+  attaches it as `annotations["runbook_context"]`, and
+  `resolve_runbook_context()` does the same for the SaaS path in
+  `agent_runtime`, which builds `AlertContext` itself. `narrative
+  .build_specialist_task_brief` renders it above the alert payload, inside
+  `wrap_untrusted`, with an instruction to work its steps in order.
+- **Reason:** Three independent defects made the operator's runbook the least
+  influential document in an investigation. `context_builder` sliced the search
+  result to `str(result)[:500]` — 500 bytes of minified JSON that stops
+  mid-key. `search_runbooks` returns only properties plus a 320-character
+  keyword excerpt, so even untruncated it never contained a procedure. And
+  `ContextBuilder` runs only in local fallback mode, so in production the
+  annotation was never set at all. The specialist prompt then never rendered
+  `runbook_context` even when present. Measured on the 2026-09-19 validation
+  run: the curated runbook reached the agent as 500 bytes while a single Loki
+  result reached it as 1,782,133 bytes — 1:3,564 in favour of noise.
+- **Consequences:** Two MCP calls per investigation instead of one, against a
+  corpus that is small and cached. Sections are dropped **by priority, never by
+  position** — a head-first byte budget spends its whole allowance on "Summary"
+  and "Background" and runs out exactly where the steps begin. Every omission
+  names what was dropped and the `get_runbook_content("<id>")` call that
+  retrieves it, so the brief is never silently lossy. An excerpt-only brief
+  says so explicitly, because an agent that mistakes a 320-character excerpt
+  for the whole procedure reports a partial fix as a complete one. The brief is
+  untrusted data: a Notion page is editable by anyone with write access, so it
+  goes through `wrap_untrusted` like any other external content, and the
+  specialist brief passes an explicit `max_len` because `prompt_guard`'s own
+  6000-char default would otherwise cut the verification section off a
+  full-size runbook. Every failure degrades — no runbook is a worse
+  investigation, an exception here would be no investigation.
+- **Rejected alternative:** Raising the 500-char slice to a larger slice.
+  Rejected because the search response contains no procedure at any length;
+  the missing call, not the missing bytes, was the defect.
+
+## Specialists are told what their peers already found
+
+- **Decision:** `agent_nodes` passes every other specialist's completed result
+  into `build_specialist_task_brief` as `prior_findings`, rendered under "do not
+  re-derive any of it", each finding bounded by `PRIOR_FINDING_MAX_CHARS`
+  (1500) and the set by `PRIOR_FINDINGS_MAX_CHARS` (4000).
+- **Reason:** Specialists ran as isolated `[system, user]` pairs with no view of
+  the shared transcript, so each one began from the raw alert. The logs
+  specialist re-derived, from open-ended discovery, what the runbooks and
+  metrics specialists had already established — and open-ended discovery is
+  what produces megabyte-scale tool results.
+- **Consequences:** Findings are re-bounded on the way in rather than forwarded
+  whole: a specialist report is capped at 12k chars for synthesis, and
+  forwarding four of those unbounded would add ~12k tokens to a prompt the ReAct
+  loop re-sends every iteration — paying for context engineering with the
+  blowup it exists to prevent. Ordering is the planner's; a specialist that runs
+  first simply receives nothing.
+- **Rejected alternative:** Sharing the full message list between specialists.
+  Rejected because it reintroduces exactly the quadratic transcript growth the
+  isolated-pair design exists to avoid, and most of a peer's transcript is raw
+  tool output the peer already summarized.
+
+## Tool results are capped on arrival, not once the transcript is already large
+
+- **Decision:** `fit_to_budget` gained a step 0 that caps any single tool
+  result at `CONTEXT_TOOL_RESULT_MAX_CHARS` (20,000, floored at the shrink
+  floor), applied to the newest turn group as well and run whether or not the
+  transcript is over budget. `CONTEXT_ITERATION_MAX_TOKENS` now defaults to
+  `min(60,000, hard ceiling)` instead of the hard ceiling itself, **reversing**
+  the decision recorded above.
+- **Reason:** Steps 1-3 are reactive — they shrink a transcript that has already
+  grown too large, which is one iteration too late. The ReAct loop re-sends the
+  whole transcript every iteration, so an unbounded result is paid for once per
+  remaining step. On the 2026-09-19 validation run 8 of 114 model calls (7%)
+  carried 1,295,598 input tokens — 37% of the run's input and **$3.68 of its
+  $7.90 (47%)**. The largest single tool result was 1,782,133 bytes; on the turn
+  it arrived the transcript was still under the 185,904-token ceiling, so
+  nothing trimmed it. The original reasoning — "trimming exists to prevent a
+  failed request, not to save money" — treated the ceiling as the only thing
+  worth defending, and missed that the cost of a payload is multiplied by the
+  loop length, not paid once.
+- **Consequences:** Nothing is lost. `fit_to_budget` rewrites only
+  `llm_input_messages`; graph state keeps the full transcript and the evidence
+  artifact is built from that, so the audit record is unaffected — which is why
+  the cap lives here and **not** in the MCP tool wrapper, where it would have
+  corrupted `_artifact_backed_trace_metadata`. The cap keeps head and tail and
+  elides the middle, because a log page's tail holds the most recent lines. It
+  is reported as `FitReport.capped_results` and logged per specialist. A
+  60,000-token working budget means trimming now engages routinely rather than
+  never; the specialist brief carries a matching instruction to issue narrow,
+  label-filtered, window-bounded queries, so the cap is a backstop and not the
+  primary control.
+- **Rejected alternative:** Capping at the tool wrapper boundary, which is
+  earlier and simpler. Rejected because the evidence artifact is built from the
+  same `ToolMessage` objects, so capping there would silently truncate the
+  audit record to save prompt tokens.
+
+## Meridian runbooks prescribe one branch per fault, and an audit script proves it
+
+**Decision.** The four curated Meridian runbooks are rewritten as branching
+decision procedures: a numbered set of measurements that selects exactly one
+`## Branch X — Action: ...` section, each branch naming the MCP tool to call
+(with `namespace="meridian"`), the actions it forbids and why, and a
+`## Verification` section carrying the benchmark's own recovery probe, its
+operator and threshold, and the two-consecutive-passes rule.
+`scripts/audit_runbook_coverage.py` grades every v2 scenario against this and
+`scripts/audit_runbook_controls.py` checks the grader by deleting properties
+and asserting the score drops.
+
+**Reason.** Measured on the live Notion corpus: retrieval was correct for
+22/22 scenarios, and prescriptiveness was **0/22**. Every scenario reached the
+right page and no page told the agent what to do — 22/22 carried no recovery
+probe in a verification section, 20/22 omitted at least one prohibition, and
+10/22 had no section that both prescribed an allowed action and ruled out the
+forbidden one. Retrieval quality had been standing in for runbook quality. The
+rewrites score 22/22 on the same grader.
+
+**Consequences.**
+- A runbook may only prescribe PromQL that `validate_promql` accepts. Writing
+  these found two real gaps in the allowlist (`clamp_min`, and `le` inside
+  `sum by (le)` read as an unknown metric) that made 16 of 22 recovery probes
+  unrunnable by the agent. Fixed in `sre_agent/nl_query.py`.
+- `DEFAULT_RUNBOOK_BRIEF_MAX_CHARS` rose 6000 → 9000. Every "Branch X —
+  Action:" heading scores priority 0, so five branches spent the whole budget
+  and Verification was dropped: the agent got every remediation option and
+  lost the probe that says whether the one it chose worked.
+- The corpus snapshot is committed at
+  `benchmarks/datasets/v2/runbook_corpus_snapshot.json` so the audit runs
+  offline. It is a point-in-time copy; Notion is still the source of truth.
+
+**Known limit.** The audit grades content, not routing. It finds a branch that
+satisfies the scenario's contract; it cannot tell that the decision procedure
+would send that fault to that branch, because several acting branches fit the
+same contract by letter ("restart, and do not scale" suits a provider outage
+and a bad deploy alike). One negative control stays deliberately blind for
+this reason rather than being closed with a scenario-to-branch mapping that
+would make the grader agree with its author by construction. Routing is
+measured by running the agent.
+
+**Rejected.** Scoring prescriptiveness document-wide. A first pass did, scored
+22/22, and a negative control showed it was blind to a deleted prohibition:
+Branch A's blanket "do not restart, scale or patch" satisfied the requirement
+for every acting branch too. The honest score at that moment was 12/22. Any
+grader tuned until it passes is measuring its own leniency.
+
+## Match HolmesGPT's context controls at Sentinel's actual boundaries
+
+**Decision.** Adopt HolmesGPT's source-side narrowing and measurable context
+budgets, but implement them at Sentinel's boundaries: specialist briefs require
+scoped time/label queries, aggregate/pattern tools before raw listings, and
+small explicit limits; every ReAct model call records a `FitReport`, aggregated
+per specialist under `metadata.context_fitting` and copied into the durable job
+result on success or failure. Elision markers say that the raw bytes are in the
+audit artifact but unavailable to the current model, and require a narrower
+re-query rather than an inference from the preview.
+
+**Reason.** HolmesGPT (reviewed at upstream commit
+`3bd44edf04f9587c778ee8e9b244965190c40fdf`) controls context in layers:
+server-side filters, optional result transforms, per-result limits, overflow to
+local storage, and LLM compaction before an over-window call. Sentinel already
+has the corresponding hard input reserve, per-result cap, deterministic
+old-result shrinking/whole-turn dropping, pre-run LLM summary, and a lossless
+content-addressed evidence artifact. Its missing pieces were prevention in the
+tool instructions and durable counters proving how much fitting changed the
+model view. Logs were also prompted to call nonexistent `search_logs(start=,
+end=)` instead of `query_logs(start_time=, end_time=, limit=)`.
+
+**Consequences.** The next validation can report model calls fitted, estimated
+message tokens before/after/avoided, maxima, capped results, truncations, drops,
+and any unfitted calls without storing prompts or evidence in telemetry. These
+exclude tool schemas and provider framing and are conservative local estimates,
+not provider-billed token counts; cost claims must still be reconciled with
+`model_accounting`/Langfuse. The audit artifact remains lossless and graph state
+remains untouched.
+
+**Rejected alternatives.** Do not copy HolmesGPT's local temp-file pointer:
+its shell tool can read that file, while Sentinel's remote MCP servers and
+multiple API/worker processes cannot rely on a worker-local path, and the file
+is not durable. Do not add an LLM summarization call inside every specialist
+loop: it adds spend, changes evidence semantically, and breaks exact-prefix
+prompt-cache reuse. Deterministic fitting is the cheaper live-loop control;
+LLM summary remains limited to resumed/follow-up history before a run.
+
+## Model-directed investigation reads are fail-closed and incident-scoped
+
+**Decision.** A task-local `investigation_scope` marks specialist ReAct calls.
+At the shared MCP wrapper, model-directed logs and metric reads require an
+affected target plus an explicit alert window (30 minutes maximum); commit
+history requires a three-hour maximum window; Kubernetes pod/event listings
+require the affected workload/object; and runbook fallback search requires an
+alert/runbook id or service plus incident type. Result counts are clamped.
+Broad Kubernetes inventory tools and nonexistent runbook/GitHub convenience
+tools are removed from specialist catalogs. Tenant namespace enforcement still
+applies to every caller.
+
+**Reason.** Prompt wording alone did not stop the Loki specialist from issuing
+open-ended searches, and the old metrics prompt named tools that do not exist
+while recommending canned values and placeholder services. The alert-aware
+brief already supplies exact service/job/pod/namespace labels, alert time,
+runbook procedure, and prior findings; the missing control was ensuring those
+inputs reach actual tool arguments instead of an expensive discovery query.
+
+**Consequences.** A rejected broad query is audited as `REFUSED` and returned
+to the model so it can retry narrowly without cancelling sibling tool calls.
+Deterministic runtime reads such as post-remediation alert verification are
+not model searches and therefore bypass the investigation breadth gate while
+retaining tenant isolation; this preserves process-death idempotency and Task
+#40's post-clear no-remediation invariant. Specialist Langfuse observations
+use stable role names (`logs_agent`, `metrics_agent`, and peers), so bounded
+calls and refusals can be attributed to the right role. The 20k model-view cap
+remains a backstop, not permission to issue a broad query.
+
+**Rejected alternatives.** Prompt-only limits are advisory and already failed
+in practice. Applying the incident-time gate globally would break deterministic
+verification calls that intentionally query current alert state. Enforcing
+only server defaults would also affect non-model callers and would not require
+the model to use the alert target. A live cost delta remains unproven until the
+changes are deployed and one bounded smoke trace is reconciled with provider
+accounting/Langfuse.
+
+## The GitHub server shapes commit payloads at the source, on a measured budget
+
+**Decision.** `edge_mcp_servers/mcp_servers/github_real/payload.py` bounds what
+a GitHub read puts in front of the model. `get_commit` returns up to 50 changed
+file rows (filename, status, additions, deletions, changes) ordered
+largest-change-first, reports the remainder, and spends whatever space those
+rows and the message leave over — measured on the encoded JSON, not on raw
+string lengths — on patch text
+in that same order, 2000 characters per file, targeting 18,000 characters
+against the 20,000-character model-view cap. `list_commits` passes
+`since`/`until`/`path` to GitHub as server-side filters and refuses an
+unparseable bound; `get_pull_request` caps the body at 4000 characters. Loss is
+always reported: `files_omitted`, `patch_chars_omitted`, `files_scan_truncated`,
+`body_truncated`, and a note repeating the elision contract.
+
+**Reason.** `get_commit` had never returned a diff. It read
+`commit.patch if hasattr(commit, "patch") else None`; `github.Commit.Commit`
+has no such property and `GithubObject` defines no `__getattr__`, so the guard
+always failed and the tool returned `"diff":null` on every call — while
+`list(commit.files)`, the paginated read that does hold the patch text, was
+walked and discarded except for its length. The tool description promised a
+diff, so the model paid for a call that could not answer its question and
+compensated with more calls. Simply returning `commit.files` would have been
+the opposite failure: GitHub serves up to 3000 files per commit, and the
+20,000-character head-and-tail elision downstream would then have kept the
+alphabetically first and last hunks — an ordering unrelated to which file
+caused the incident.
+
+**Consequences.** Structure, not a byte offset, decides what survives: within
+the 50-row reporting cap, a filename and its line counts are never sacrificed
+for another file's diff text, because knowing that `config/limits.yaml`
+changed is most of the finding. The budget is computed rather than constant
+because a fixed one was wrong in both directions — a repo with deep paths
+overflowed the cap (measured at 22,711 characters for 50 files) while a flat
+one left tokens unspent. File
+scanning stops at 300 entries (one page) and says so via
+`files_changed_is_lower_bound`, bounding the edge server's own API cost.
+`list_commits` keeps its substring `author` match client-side, since GitHub's
+server-side `author` is exact, and bounds that scan at 200 commits.
+
+**Rejected alternatives.** Leaving the payload unbounded and relying on the
+downstream cap discards the ranking that makes the response useful. Returning
+patches for the first N files by API order ranks by nothing. Raising the
+20,000-character cap for this one tool reintroduces the quadratic transcript
+cost the cap exists to control, since every ReAct iteration re-sends the
+result.
+
+## The scope gate reads the ToolCall's arguments, not the ToolCall
+
+**Decision.** `wrap_tool_with_namespace_scope` splits a LangChain ToolCall
+envelope (`{"name", "args", "id", "type"}`) from the arguments inside it,
+enforces tenant scope and the bounded-read policy on the inner mapping, and
+writes the result back into a copy of the envelope. A payload is treated as an
+envelope on the canonical `type == "tool_call"` marker, or on an exact
+`{name, args, id?, type?}` shape; anything else — including a tool whose own
+schema has an `args` parameter — takes the unchanged flat path.
+`enforce_tool_arguments` stays a pure function over a flat arguments mapping.
+
+**Reason.** LangGraph's ToolNode invokes a tool with the whole ToolCall. The
+wrapper passed that straight into the gate, so every lookup read the envelope:
+`args.get("label_selector")` was `None` however well-formed the model's call
+was. One smoke incident refused 126 of 142 tool calls, and three of four
+specialists produced no evidence at all. The gate logic was never wrong — the
+call site was one level off.
+
+**Consequences.** Tenant isolation on the investigation read path was also not
+being applied: for namespace-argument tools the read gate did not reject,
+`args["namespace"] = effective` was written onto the envelope, so the tenant
+namespace never reached the real arguments and `_scope_query` never scoped the
+real `query`/`logql`. Both are closed by the same change. Regression tests now
+drive a wrapped tool with a real ToolCall dict; the previous tests all called
+`enforce_tool_arguments` with flat arguments, which is exactly why this
+survived into production. The mutation path was checked and does not share the
+exposure — it reads `action.parameters` on a typed planner object, and the
+executor invokes tools with a flat dict.
+
+**Rejected alternative.** Teaching `namespace_scope.py` to look one level down
+when it sees an envelope. That spreads LangChain's call convention through a
+module whose whole value is being a small, testable policy function, and it
+would have to guess which level to write the enforced namespace back to.
+
+## A recovery probe must return zero, not nothing, when a counter is absent
+
+**Decision.** Counter-based recovery probes carry `or vector(0)` on the
+numerator and, for ratios, inside `clamp_min` on the denominator —
+parenthesised, since `/` binds tighter than `or`. Applied to 11 probe queries
+across all three v2 splits, including the frozen holdout. `nl_query`'s
+validator accepts that exact clause so the agent can run the same verification
+query its runbook prescribes.
+
+**Reason.** `sum(rate(http_errors_total{…}[5m]))` returns the empty vector
+when the counter has no series yet — which is the normal state of an error
+counter before a fault. The oracle then records "baseline returned no finite
+scalar", sets `baseline_healthy=null`, ignores every later observation and
+scores INVALID_SCENARIO. Measured against live Prometheus, 3 of 9 distinct
+probes were empty at rest, covering 10 of 22 scenarios: those scenarios could
+never be scored, whatever the agent did.
+
+**Consequences.** `holdout.json` is `frozen: true` and was changed anyway.
+The change is to the oracle's measuring instrument, not to scenario content,
+labels or difficulty, and without it the holdout split cannot be scored at
+all; the three `dataset.json` digests were regenerated. A probe whose series
+is permanently absent now reads 0 instead of erroring — for probes with
+`require_failure_observation`, the oracle still refuses to score a recovery it
+never saw fail, but for the others a genuinely dead exporter would now look
+healthy. That is a fault-injection question, not a probe question.
+
+**Rejected alternative.** Allowing `or` generally in the query validator.
+`_scope_query` injects the tenant namespace into the first selector block
+only, so a general `or` would let a model-authored query union in a second,
+unscoped selector. Only `or vector(<number>)` is stripped before the
+identifier allow-list check; a bare `or` is still rejected.
+
+## Autonomy is bootstrapped by the benchmark, not configured into it
+
+**Decision.** Treat "every benchmark trial ends `awaiting_approval` and
+`UNRESOLVED`" as the designed starting state of an uncalibrated system, and
+plan the campaign as the thing that produces calibration — not as a run that is
+blocked until calibration is configured.
+
+**Reason.** Measured on incident `b13ce2c5` (2026-09-19), the chain is entirely
+by-design. `severity_engine.py:311` escalates any severity one step while
+`hypothesis_confidence_calibrated` is false, so `impact=0.73 × urgency=0.42 →
+SEV2` became SEV1; `policy_gate` then returns `SEV1 (high severity) → human
+approval required` for the mutating action; the graph raises
+`GraphInterrupt(approval_required)`; `awaiting_approval` is in
+`TERMINAL_APPLICATION_STATUSES`, so the harness stops; `resolved=false` means
+`statistical_eval.py:229` *requires* `grader_status=NOT_APPLICABLE`.
+`benchmarks/confidence/README.md` states the premise plainly: no artifact is
+committed, and `sre_bench.py` is the only sanctioned producer of the
+`live_benchmark` records that may unlock autonomy. Nothing here is a bug to
+fix; a shortcut around any link in it would be fabricated autonomy evidence,
+which is exactly what the artifact contract exists to prevent.
+
+**Consequences.** The campaign has a mandatory two-stage shape.
+Stage 1 gathers *diagnosis* records — an unresolved trial still has both a
+confidence and an outcome (0.86 / false on this run), so the diagnosis corpus
+grows without autonomy. Stage 2 wires the resulting artifact via
+`DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH` + `SENTINEL_CONFIG_FINGERPRINT`, which
+stops the severity escalation and makes autonomous remediation reachable; only
+then do *remediation* records exist, because `remediation_confidence_outcome`
+comes from a grade criterion and the grade is NOT_APPLICABLE while unresolved.
+`minimum_threshold_support` defaults to 40, so one trial per scenario (22)
+cannot yield a non-null threshold — plan ≥2 trials per scenario for stage 1.
+Two recording gaps compound this: `_record_confidence_observations` and the
+trial record (and therefore `cost_usd`) both return early unless
+`STATISTICAL_RECORDING`, so **smoke runs produce no calibration evidence at
+all** and neither path has yet been exercised on the live stack.
+
+**Rejected alternative.** Setting `REMEDIATION_CONFIDENCE_CALIBRATION_PATH` to
+a hand-built artifact to unblock the campaign. `load_calibration_artifact`
+recomputes the threshold curve from the bins and re-derives the selected point
+from the recorded rule, rejecting any artifact whose threshold did not come
+from an all-`live_benchmark` corpus — a hand-edited and re-digested artifact
+fails to load. The contract is enforced, not advisory.

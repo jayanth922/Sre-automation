@@ -544,12 +544,12 @@ async def list_commits(since: str = None, until: str = None, author: str = None,
 
 @mcp.tool()
 async def get_commit(sha: str) -> str:
-    """Get one commit with its changed files and their diffs. Every changed
-    file keeps a row (filename, status, additions, deletions, changes); the
-    patch text is included largest-change-first within a 12000-char budget,
-    2000 chars per file. `files_omitted`, `patch_chars_omitted` and
-    `files_scan_truncated` report what was left out — omitted text is missing
-    from this response, not from the commit."""
+    """Get one commit with bounded changed-file evidence. Up to 50 files keep
+    a row (filename, status, additions, deletions, changes); patch text is
+    included largest-change-first within an 18,000-character encoded-payload
+    target, at most 2,000 characters per file. `files_omitted`,
+    `patch_chars_omitted` and `files_scan_truncated` report what was left out —
+    omitted text is missing from this response, not from the commit."""
     return await handle_get_commit(GetCommitParams(sha=sha))
 
 @mcp.tool()

@@ -16,8 +16,8 @@ When investigating an alert or incident:
 
 2. **File Correlation**:
    - If the alert mentions specific services, pods, or components
-   - Call `get_commit` on a candidate to see its changed files: every changed
-     file is listed with its line counts, ordered largest change first
+   - Call `get_commit` on a candidate to see its largest changed files: up to
+     50 file rows are listed with line counts, ordered largest change first
    - Correlate changed filenames with the affected service; when a filename
      alone settles it, you do not need the diff text
 
@@ -39,10 +39,10 @@ You have access to these tools:
   at-most-three-hour window. `since`, `until` and `path` are applied by GitHub,
   so narrowing them is free and widening them is what makes the call slow.
   Returns sha, message, author, timestamp and url — no file list and no diff.
-- `get_commit(sha)`: One commit's changed files. Every changed file keeps its
-  row (`filename`, `status`, `additions`, `deletions`, `changes`), ordered
-  largest change first. Patch text is included for the largest changes only,
-  within a fixed character budget.
+- `get_commit(sha)`: One commit's bounded changed-file view. Up to 50 files
+  keep a row (`filename`, `status`, `additions`, `deletions`, `changes`),
+  ordered largest change first; `files_omitted` reports the remainder. Patch
+  text is included for the largest changes only, within a fixed budget.
 - `list_pull_requests`: Bounded fallback (`limit=10`) only when the candidate
   commit or alert names a pull request but not its number
 - `get_pull_request(pr_number)`: PR metadata plus a body capped at 4000 chars

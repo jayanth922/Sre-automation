@@ -171,16 +171,24 @@ def test_working_budget_is_clamped_to_the_hard_ceiling(monkeypatch):
     assert cc.default_max_tokens() == 5000
 
 
-def test_iteration_budget_defaults_to_the_ceiling(monkeypatch):
-    """Per-iteration trimming exists to prevent a 400, not to save money.
+def test_iteration_budget_defaults_to_a_working_budget_not_the_ceiling(monkeypatch):
+    """Reversal of the original decision, forced by measurement.
 
-    Defaulting it to the small working budget would silently throw away
-    evidence on every call; degrading quality for cost is opt-in.
+    Defaulting to the hard ceiling (185,904 tokens on a 200k window) meant
+    trimming engaged only just before the provider would have rejected the
+    request. The 2026-09-19 validation run showed what that permits: 8 of 114
+    model calls carried 1,295,598 input tokens — 37% of the run's input and
+    $3.68 of its $7.90 — because the ReAct loop re-sends the whole transcript
+    every iteration, so one unbounded result is paid for once per remaining
+    step. A working budget bounds that multiplication; the ceiling only
+    prevents the 400.
     """
     monkeypatch.setenv("CONTEXT_WINDOW_TOKENS", "20000")
     monkeypatch.setenv("CONTEXT_RESERVED_OUTPUT_TOKENS", "4000")
     monkeypatch.setenv("CONTEXT_SAFETY_MARGIN_RATIO", "0.0")
     monkeypatch.setenv("CONTEXT_MAX_TOKENS", "1200")
+    # The ceiling here is 16000, below the working default, so it still wins:
+    # the budget is never allowed above what the provider will accept.
     assert cc.iteration_budget_tokens() == 16000
 
     monkeypatch.setenv("CONTEXT_ITERATION_MAX_TOKENS", "9000")
@@ -188,6 +196,13 @@ def test_iteration_budget_defaults_to_the_ceiling(monkeypatch):
 
     monkeypatch.setenv("CONTEXT_ITERATION_MAX_TOKENS", "999999")
     assert cc.iteration_budget_tokens() == 16000
+
+
+def test_iteration_budget_is_the_working_default_on_a_real_window(monkeypatch):
+    monkeypatch.delenv("CONTEXT_ITERATION_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("CONTEXT_WINDOW_TOKENS", "200000")
+    assert cc.hard_input_ceiling_tokens() > cc.DEFAULT_ITERATION_BUDGET_TOKENS
+    assert cc.iteration_budget_tokens() == cc.DEFAULT_ITERATION_BUDGET_TOKENS
 
 
 def test_junk_env_values_fall_back_to_defaults(monkeypatch):
@@ -276,6 +291,8 @@ def test_fit_shrinks_old_tool_results_first():
     # Head and tail of the payload both survive; the middle is what goes.
     assert out[2]["content"].startswith("A" * 100)
     assert out[2]["content"].endswith("A" * 100)
+    assert "unavailable in the current model view" in out[2]["content"]
+    assert "Re-query with narrower" in out[2]["content"]
 
 
 def test_fit_drops_whole_turn_groups_and_says_so():
@@ -343,6 +360,101 @@ def test_fit_report_round_trips_to_a_dict():
     assert payload["fitted"] is True
 
 
+# ── The per-result ceiling ──────────────────────────────────────────────────
+#
+# Steps 1-3 of the fitter are reactive: they shrink a transcript that has
+# already grown too large. That is too late. In the 2026-09-19 validation run
+# a single Loki query returned 1,782,133 bytes; the transcript was still under
+# the 185,904-token ceiling on the turn it arrived, so nothing trimmed it, and
+# it was then re-sent at full price on every remaining iteration of that
+# specialist. A ceiling applied on arrival is the only one that prevents the
+# blowup rather than reporting it afterwards.
+
+
+def test_an_oversized_result_is_capped_even_when_the_transcript_fits():
+    """The defect exactly: one huge result, nothing else, budget to spare."""
+    msgs = [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", "L" * 1_800_000)]
+    out, report = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+
+    assert report.capped_results == 1
+    assert len(cc._content(out[2])) <= cc.tool_result_max_chars() + 200
+    assert report.changed is True
+    assert any("capped" in action for action in report.actions)
+
+
+def test_the_cap_reaches_the_newest_turn():
+    """Steps 1-2 protect the newest turn group, and on the iteration a giant
+    result arrives it *is* the newest turn. Exempting it would mean the cap
+    never applies on the one turn that matters."""
+    msgs = [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", "L" * 900_000)]
+    out, report = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    assert report.capped_results == 1
+    assert len(cc._content(out[-1])) < 900_000
+
+
+def test_the_cap_keeps_both_ends_of_the_payload():
+    """A log page's tail holds the most recent lines — usually the error."""
+    payload = "HEAD" + ("x" * 900_000) + "TAIL"
+    msgs = [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", payload)]
+    out, _ = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    content = cc._content(out[2])
+    assert content.startswith("HEAD") and content.endswith("TAIL")
+    assert "elided" in content
+
+
+def test_a_result_under_the_cap_is_untouched():
+    msgs = [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", "ok" * 100)]
+    out, report = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    assert report.capped_results == 0
+    assert out == msgs and report.changed is False
+
+
+def test_only_tool_results_are_capped():
+    """A long assistant message is reasoning, not evidence; it is bounded by
+    max_tokens at generation time and is not the source of the blowup."""
+    msgs = [_msg("system", "p"), _msg("ai", "A" * 900_000)]
+    _, report = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    assert report.capped_results == 0
+
+
+def test_the_cap_is_operator_overridable(monkeypatch):
+    monkeypatch.setenv("CONTEXT_TOOL_RESULT_MAX_CHARS", "5000")
+    assert cc.tool_result_max_chars() == 5000
+    msgs = [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", "L" * 50_000)]
+    out, report = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    assert report.capped_results == 1
+    assert len(cc._content(out[2])) <= 5200
+
+
+def test_the_cap_never_falls_below_the_shrink_floor(monkeypatch):
+    """A ceiling under the floor would make step 1 re-expand what step 0
+    capped, and the two would fight on every iteration."""
+    monkeypatch.setenv("CONTEXT_TOOL_RESULT_MAX_CHARS", "10")
+    assert cc.tool_result_max_chars() >= cc.tool_result_floor_chars()
+
+
+def test_capping_does_not_mutate_graph_state():
+    """The whole reason the cap lives here and not in the tool wrapper.
+
+    `fit_to_budget` rewrites `llm_input_messages` only. The graph's own
+    message list — and the evidence artifact built from it — must keep the
+    full payload, or capping would silently destroy the audit record.
+    """
+    original = _tool_result("t1", "L" * 1_800_000)
+    msgs = [_msg("system", "p"), _ai_call("t1"), original]
+    cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    assert len(original["content"]) == 1_800_000
+
+
+def test_the_cap_is_reported_for_observability():
+    msgs = [_msg("system", "p")]
+    for i in range(3):
+        msgs += [_ai_call(f"t{i}"), _tool_result(f"t{i}", "L" * 500_000)]
+    _, report = cc.fit_to_budget(msgs, budget_tokens=10_000_000)
+    assert report.capped_results == 3
+    assert report.as_dict()["capped_results"] == 3
+
+
 # ── The pre-model hook ──────────────────────────────────────────────────────
 
 
@@ -371,6 +483,58 @@ def test_pre_model_hook_reports_only_when_it_changed_something():
     hook = cc.make_pre_model_hook(budget_tokens=200, on_report=seen.append)
     hook({"messages": [_msg("system", "p"), _ai_call("t1"), _tool_result("t1", "A" * 40000)]})
     assert len(seen) == 1 and seen[0].truncated_results >= 1
+
+
+def test_capture_records_every_model_call_not_only_changed_calls():
+    """A zero-change call is required to calculate engagement rate honestly."""
+    hook = cc.make_pre_model_hook(budget_tokens=500)
+    with cc.capture_fit_reports() as reports:
+        hook({"messages": [_msg("user", "short")]})
+        hook(
+            {
+                "messages": [
+                    _msg("system", "p"),
+                    _ai_call("t1"),
+                    _tool_result("t1", "A" * 40000),
+                ]
+            }
+        )
+
+    assert len(reports) == 2
+    summary = cc.summarize_fit_reports(reports)
+    assert summary["schema_version"] == 1
+    assert summary["specialist_invocations"] == 1
+    assert summary["model_calls"] == 2
+    assert summary["changed_calls"] == 1
+    assert summary["fitted_calls"] == 2
+    assert summary["unfitted_calls"] == 0
+    assert summary["estimated_message_tokens_before"] > summary[
+        "estimated_message_tokens_after"
+    ]
+    assert summary["estimated_message_tokens_avoided"] > 0
+    assert summary["capped_results"] == 1
+
+
+def test_fit_report_capture_is_scoped_and_mergeable():
+    hook = cc.make_pre_model_hook(budget_tokens=100000)
+    with cc.capture_fit_reports() as first:
+        hook({"messages": [_msg("user", "one")]})
+    with cc.capture_fit_reports() as second:
+        hook({"messages": [_msg("user", "two")]})
+        hook({"messages": [_msg("user", "three")]})
+
+    merged = cc.merge_fit_summaries(
+        cc.summarize_fit_reports(first), cc.summarize_fit_reports(second)
+    )
+    assert len(first) == 1 and len(second) == 2
+    assert merged["specialist_invocations"] == 2
+    assert merged["model_calls"] == 3
+    assert merged["changed_calls"] == 0
+    assert merged["budget_tokens"] == [100000]
+
+    # The collector was reset when the context manager exited.
+    hook({"messages": [_msg("user", "outside")]})
+    assert len(second) == 2
 
 
 def test_pre_model_hook_survives_a_budgeting_failure(monkeypatch):

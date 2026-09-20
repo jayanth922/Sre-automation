@@ -24,10 +24,10 @@ to hundreds of kilobytes. Handing that to the model would blow straight past the
 head-and-tail elision would then keep the alphabetically first and last hunks —
 an ordering with no relationship to which file caused the incident.
 
-So the payload is shaped here instead of being cut downstream: every filename
-and every stat survives, and the patch budget is spent largest-change-first.
-The result is sized to land under the downstream cap so that the structure,
-not a byte offset, decides what the model sees.
+So the payload is shaped here instead of being cut downstream: up to fifty
+filename/stat rows survive, omitted rows are counted, and the patch budget is
+spent largest-change-first. The result is sized to land under the downstream
+cap so that the structure, not a byte offset, decides what the model sees.
 """
 
 from __future__ import annotations
@@ -181,9 +181,9 @@ def shape_commit(
     Files are ordered by how much they changed, not by name, and the patch
     budget is spent in that order: the agent's job is to name the change that
     plausibly caused the incident, so the largest change is the one whose text
-    is worth the tokens. Files past the patch budget keep their row — the
-    filename and the line counts — and lose only their patch, because knowing
-    that ``config/limits.yaml`` changed is most of the finding.
+    is worth the tokens. Within the reported-row cap, files past the patch
+    budget keep their row and lose only their patch; rows past the cap are
+    counted in ``files_omitted``.
 
     ``scan_truncated`` says the caller stopped reading pages of ``files``
     before the commit ran out of them, so both ``files_changed`` and the

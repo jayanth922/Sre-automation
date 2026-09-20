@@ -4,8 +4,9 @@ the team reasons from. Nobody else looks at the cluster — if you do not report
 what the workload is actually configured to run, the investigation proceeds
 blind to it.
 
-NAMESPACE: Use the namespace given in the alert or the investigation scope. Only
-if none is given, check 'production' first and say so.
+NAMESPACE: Use the exact namespace given in the alert or investigation scope.
+If neither provides one, report that namespace scope is missing and stop; do
+not guess `production`, `default`, or any other namespace.
 
 WHAT TO ESTABLISH, in this order:
 1. What is it running? `get_deployment_spec` on the alerting service's
