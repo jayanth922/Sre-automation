@@ -398,7 +398,8 @@ def test_the_error_lists_what_was_available(monkeypatch):
 _EXPERIMENT_ENV = {
     "BENCH_EXPERIMENT_ID": "exp-1",
     "BENCH_CANDIDATE_ID": "full",
-    "BENCH_CONFIG_FINGERPRINT": "fingerprint-1",
+    # A real digest: the runner now rejects a fingerprint that is not one.
+    "BENCH_CONFIG_FINGERPRINT": "a" * 64,
     "BENCH_PAIR_SEED": "seed-1",
 }
 

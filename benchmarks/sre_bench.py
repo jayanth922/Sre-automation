@@ -98,6 +98,20 @@ if STATISTICAL_RECORDING and not all(STATISTICAL_CONFIG.values()):
     raise RuntimeError(
         f"statistical recording requires all BENCH experiment fields; missing={missing}"
     )
+# Both record writers parse this as a lowercase SHA-256, and the confidence
+# corpus is grouped by it. Without this check a typo is still fatal -- just
+# fatal at the first write, which happens after an incident has been
+# provisioned, investigated and paid for, and it aborts the run there. The
+# shape is knowable before any of that.
+if STATISTICAL_RECORDING and (
+    len(CONFIG_FINGERPRINT) != 64
+    or any(character not in "0123456789abcdef" for character in CONFIG_FINGERPRINT)
+):
+    raise RuntimeError(
+        "BENCH_CONFIG_FINGERPRINT must be a lowercase 64-character SHA-256 digest; "
+        f"got {len(CONFIG_FINGERPRINT)} characters. Every trial row and every "
+        "confidence observation is keyed on it."
+    )
 DATASET_ROOT = Path(
     os.getenv(
         "BENCH_DATASET_ROOT",
