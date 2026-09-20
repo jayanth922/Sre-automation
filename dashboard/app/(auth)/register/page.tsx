@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, type CSSProperties } from "react"
+import { useEffect, useState, type CSSProperties } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 
@@ -20,8 +20,29 @@ export default function RegisterPage() {
   const [form, setForm] = useState({ email: "", password: "", fullName: "", organizationName: "" })
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const [closed, setClosed] = useState<boolean | null>(null)
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+
+  // Two things make this page moot: an install nobody has claimed yet (the
+  // claim page handles that, and signs you in afterwards) and an install that
+  // has been claimed, where joining is by invitation only.
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/v1/setup/status")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status) => {
+        if (cancelled || !status) return
+        if (status.needs_setup) router.replace("/setup")
+        else setClosed(!status.open_registration)
+      })
+      .catch(() => {
+        if (!cancelled) setClosed(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [router])
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -50,6 +71,26 @@ export default function RegisterPage() {
     }
   }
 
+  if (closed) {
+    return (
+      <div style={shell}>
+        <div style={{ width: "100%", maxWidth: 420 }}>
+          <div className="sx-wordmark" style={{ fontSize: 22, marginBottom: 4 }}>
+            <span className="tick" /> Sentinel
+          </div>
+          <h1 style={{ fontSize: 24, fontWeight: 600, margin: "18px 0 6px" }}>Registration is closed</h1>
+          <p style={{ color: "var(--ink2)", fontSize: 13.5, marginTop: 0, marginBottom: 24, lineHeight: 1.6 }}>
+            This installation has already been set up. Members join an existing organization by
+            invitation — ask one of its administrators to send you one.
+          </p>
+          <Link href="/login" className="sx-btn primary" style={{ maxWidth: 140 }}>
+            Sign in
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={shell}>
       <div style={{ width: "100%", maxWidth: 420 }}>
@@ -58,7 +99,9 @@ export default function RegisterPage() {
         </div>
         <h1 style={{ fontSize: 24, fontWeight: 600, margin: "18px 0 6px" }}>Create your account</h1>
         <p style={{ color: "var(--ink2)", fontSize: 13.5, marginTop: 0, marginBottom: 24, lineHeight: 1.6 }}>
-          The first person to register an organization becomes its admin. Others join by registering with the same organization name.
+          This creates a new organization with you as its admin. To join one that already exists,
+          ask an administrator for an invitation — entering its name here would make a second,
+          separate organization rather than joining theirs.
         </p>
 
         <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: 16 }}>

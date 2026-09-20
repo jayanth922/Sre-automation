@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -15,6 +16,22 @@ router = APIRouter(
     prefix="/auth",
     tags=["auth"],
 )
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def open_registration_enabled() -> bool:
+    """Whether a stranger may create an organisation without an invitation.
+
+    Off by default. A self-hosted install is claimed once by its first admin
+    (see the /setup router) and everyone after that joins by invitation, which
+    crud.create_user already documents as the only way into an existing
+    organisation. Left open, /auth/register would let anyone who can reach the
+    dashboard mint their own tenant on someone else's box. Hosted deployments
+    that genuinely want public sign-up set ALLOW_OPEN_REGISTRATION=true.
+    """
+    return (os.getenv("ALLOW_OPEN_REGISTRATION") or "").strip().lower() in _TRUTHY
 
 
 def _build_access_token(user: models.User) -> str:
@@ -54,11 +71,27 @@ async def _issue_refresh(db: AsyncSession, response: Response, user: models.User
 
 @router.post("/register", response_model=schemas.UserResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def register(user: schemas.UserCreate, db: AsyncSession = Depends(database.get_db)):
+    """Create an organisation and its founding admin.
+
+    While the install is unclaimed this is simply the claim by another name, so
+    it stays open; the dashboard uses /api/v1/setup/claim, which additionally
+    signs the new admin in. Once a user exists it is closed, because joining an
+    existing organisation is exclusively an invitation flow.
+    """
+    await crud.lock_for_claim(db)
+    if await crud.count_users(db) > 0 and not open_registration_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Self-serve registration is closed on this installation. Ask an "
+                "administrator for an invitation."
+            ),
+        )
+
     db_user = await crud.get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create new user and org
+
     return await crud.create_user(db=db, user=user)
 
 

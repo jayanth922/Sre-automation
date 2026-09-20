@@ -34,7 +34,7 @@ from .logging_config import configure_logging
 from .multi_agent_langgraph import create_multi_agent_system
 
 # SaaS API Imports
-from sre_agent.api.v1 import clusters, incidents, invitations
+from sre_agent.api.v1 import clusters, incidents, invitations, setup as setup_router
 from backend import crud, database, models
 from backend.routers import auth as auth_router
 from backend.models import IncidentStatus, JobStatus
@@ -116,6 +116,9 @@ app.include_router(incidents.router, prefix="/api/v1")
 app.include_router(invitations.organization_router, prefix="/api/v1")
 app.include_router(invitations.router, prefix="/api/v1")
 app.include_router(auth_router.router)
+# First-run claim. Unauthenticated on purpose: it is what the login page asks
+# before any account exists.
+app.include_router(setup_router.router, prefix="/api/v1")
 
 # Job Queue Router
 from sre_agent.api.v1 import jobs as jobs_router

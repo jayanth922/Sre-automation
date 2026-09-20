@@ -9,7 +9,9 @@ export function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl
 
     // Define public paths that don't depend on auth
-    const isPublicPath = pathname === '/login' || pathname === '/register' || pathname.startsWith('/_next') || pathname.startsWith('/api') || pathname.startsWith('/static') || pathname.startsWith('/auth')
+    // /setup is public because an unclaimed install has no account to sign in
+    // with; the page itself redirects away once the install has been claimed.
+    const isPublicPath = pathname === '/login' || pathname === '/register' || pathname === '/setup' || pathname.startsWith('/_next') || pathname.startsWith('/api') || pathname.startsWith('/static') || pathname.startsWith('/auth')
 
     if (!isPublicPath && !token) {
         // Redirect to login if accessing protected route without token
@@ -17,7 +19,7 @@ export function middleware(request: NextRequest) {
         return NextResponse.redirect(loginUrl)
     }
 
-    if (isPublicPath && token && (pathname === '/login' || pathname === '/register')) {
+    if (isPublicPath && token && (pathname === '/login' || pathname === '/register' || pathname === '/setup')) {
         // Redirect to dashboard if already logged in and trying to access auth pages
         const dashboardUrl = new URL('/', request.url)
         return NextResponse.redirect(dashboardUrl)

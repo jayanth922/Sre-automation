@@ -13,6 +13,12 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+class SetupStatus(BaseModel):
+    """What the login page needs before anyone can hold credentials."""
+
+    needs_setup: bool
+    open_registration: bool
+
 class TokenData(BaseModel):
     user_id: Optional[str] = None
     email: Optional[str] = None

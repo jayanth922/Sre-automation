@@ -98,6 +98,42 @@ async def set_org_langfuse_config(
     return org
 
 
+# Arbitrary, but every process that claims must agree on it.
+_CLAIM_LOCK_KEY = 8273641905
+
+
+async def count_users(db: AsyncSession) -> int:
+    """How many accounts exist anywhere on this installation.
+
+    Zero is the definition of "unclaimed" for the first-run setup route, so
+    this deliberately counts across every organisation rather than within one.
+    """
+    result = await db.execute(select(func.count()).select_from(models.User))
+    return int(result.scalar_one())
+
+
+async def lock_for_claim(db: AsyncSession) -> None:
+    """Make concurrent first-run claims mutually exclusive.
+
+    Two requests arriving together would each see an empty users table and each
+    create an organisation, leaving the install with two founding admins who
+    cannot see each other's data. The lock is held until the transaction that
+    creates the first user commits, so the loser of the race then observes that
+    user and is refused.
+
+    Postgres-only; on any other dialect this is a no-op, which is correct,
+    because nothing there runs the API as concurrent processes.
+    """
+    try:
+        dialect = db.get_bind().dialect.name
+    except Exception:  # pragma: no cover - a session with no bind yet
+        return
+    if dialect == "postgresql":
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": _CLAIM_LOCK_KEY}
+        )
+
+
 async def create_user(db: AsyncSession, user: schemas.UserCreate):
     """Register a founding admin in a new organization.
 

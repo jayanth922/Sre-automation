@@ -1,7 +1,8 @@
 "use client"
 
-import { useState, type CSSProperties } from "react"
+import { useEffect, useState, type CSSProperties } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useAuth } from "@/lib/auth-context"
 
 const shell: CSSProperties = {
@@ -17,10 +18,28 @@ const shell: CSSProperties = {
 
 export default function LoginPage() {
   const { login } = useAuth()
+  const router = useRouter()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+
+  // A brand-new install has no account to sign in with, so send the very
+  // first visitor to the claim page instead of a form they cannot satisfy.
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/v1/setup/status")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status) => {
+        if (!cancelled && status?.needs_setup) router.replace("/setup")
+      })
+      .catch(() => {
+        /* the API being unreachable is the login form's problem, not ours */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [router])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
