@@ -52,6 +52,14 @@ interface GraphStatus {
   } | null
 }
 
+// The POST answers with the issue key alone, so the panel refetches the GET,
+// which assembles the browse URL from the cluster's Jira base.
+interface Ticket {
+  jira_configured: boolean
+  jira_issue_key: string | null
+  jira_issue_url: string | null
+}
+
 const LIVE_STATUS_TONE: Record<string, string> = {
   EXECUTED: "ok",
   SUCCESS: "ok",
@@ -160,6 +168,9 @@ export default function IncidentConsolePage() {
   const [agent, setAgent] = useState<AgentMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [gates, setGates] = useState<GateApproval[]>([])
+  const [ticket, setTicket] = useState<Ticket | null>(null)
+  const [ticketBusy, setTicketBusy] = useState(false)
+  const [ticketErr, setTicketErr] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number>(Date.now())
   const lastLive = useRef(0)
 
@@ -202,17 +213,43 @@ export default function IncidentConsolePage() {
     }
   }, [incidentId])
 
+  const loadTicket = useCallback(async () => {
+    try {
+      const { data } = await api.get<Ticket>(`/clusters/${id}/incidents/${incidentId}/ticket`)
+      setTicket(data)
+    } catch {
+      /* the panel stays hidden unless this cluster has Jira configured */
+    }
+  }, [id, incidentId])
+
+  const createTicket = async () => {
+    setTicketBusy(true)
+    setTicketErr(null)
+    try {
+      await api.post(`/clusters/${id}/incidents/${incidentId}/ticket`, {
+        severity: tx?.incident.severity,
+      })
+      await loadTicket()
+    } catch (e) {
+      const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      setTicketErr(typeof d === "string" ? d : "Could not create the ticket.")
+    } finally {
+      setTicketBusy(false)
+    }
+  }
+
   useEffect(() => {
     loadTranscript()
     loadStatus()
     loadAgent()
     loadGates()
+    loadTicket()
     const t = setInterval(() => {
       loadStatus()
       loadGates()
     }, 8000)
     return () => clearInterval(t)
-  }, [loadTranscript, loadStatus, loadAgent, loadGates])
+  }, [loadTranscript, loadStatus, loadAgent, loadGates, loadTicket])
 
   // A new WebSocket frame for this incident → refetch canonical transcript.
   useEffect(() => {
@@ -222,8 +259,9 @@ export default function IncidentConsolePage() {
       loadStatus()
       loadAgent()
       loadGates()
+      loadTicket()
     }
-  }, [liveEvents.length, loadTranscript, loadStatus, loadAgent, loadGates])
+  }, [liveEvents.length, loadTranscript, loadStatus, loadAgent, loadGates, loadTicket])
 
   const freshness = useFreshness(updatedAt)
 
@@ -518,6 +556,53 @@ export default function IncidentConsolePage() {
               )}
               {awaitingApproval && (
                 <div className="sx-dry">Reply "approve fix" in the incident's Slack thread to run it.</div>
+              )}
+            </div>
+          )}
+
+          {ticket?.jira_configured && (
+            <div className="sx-remedy">
+              <div className="h">◆ Jira</div>
+              {ticket.jira_issue_key ? (
+                <div className="sx-kv">
+                  <span className="k">Issue</span>
+                  <span className="v">
+                    {ticket.jira_issue_url ? (
+                      <a
+                        href={ticket.jira_issue_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: "var(--ink)" }}
+                      >
+                        {ticket.jira_issue_key}
+                      </a>
+                    ) : (
+                      ticket.jira_issue_key
+                    )}
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <div className="sx-action" style={{ marginBottom: 10 }}>
+                    <div className="at">
+                      <span className="sx-badge sel">unlinked</span> No Jira issue for this incident
+                    </div>
+                    <div className="ad">
+                      Sentinel opens one automatically for incidents raised after Jira was
+                      configured. This one predates that, or the automatic open failed.
+                    </div>
+                  </div>
+                  <div className="sx-btnrow">
+                    <button className="sx-btn" onClick={createTicket} disabled={ticketBusy}>
+                      {ticketBusy ? "Creating…" : "Create ticket"}
+                    </button>
+                  </div>
+                </>
+              )}
+              {ticketErr && (
+                <div className="sx-dry" style={{ textAlign: "left", color: "var(--crit)" }}>
+                  {ticketErr}
+                </div>
               )}
             </div>
           )}

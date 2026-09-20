@@ -65,7 +65,7 @@ gated trial already emits — so ~40 incidents, ≈**$88**.
 - Operations and rationale: `docs/ai/HANDOFF_CODEX.md`, `DECISIONS.md`.
 
 ## Verification commands and latest results
-- CI on `master`, run 35529233941 (2026-09-20): all 18 checks green.
+- CI on `master`, run 35530262953 (2026-09-20): all 18 checks green.
 - No pytest on this host or in `sentinel/api:local`; benchmark tests run in
   a throwaway container via a shim. `test_scenario_dataset` 29,
   `test_statistical_eval` 14, `test_statistical_recording` 9 — all pass.
@@ -93,12 +93,13 @@ The user's order: backend verified, then frontend, then benchmarking. (0),
 (1), (2) and the zero-env work are done — both `STATISTICAL_RECORDING` checks
 are closed.
 
-**(3) then the frontend.** Six API modules have no caller (`invitations`,
-`jobs`, `mission_control`, `ownership`, `tickets`, `ws_tickets`). The data
-layer is axios, not `fetch` — 49 calls across ~25 endpoints, so the UI is far
-more wired than a `fetch(` grep suggests.
+**(3) the frontend is wired.** The earlier orphan list was wrong:
+`ownership` is a shared dependency, `ws_tickets` is called from
+`useLiveStream`, and mission control's `/approve` and `/mark-resolved` are
+Slack-only by design. The three real orphans are done — `invitations`
+(403d4e7), `jobs` and `tickets`.
 
-**(4)** Only then the campaign shape, ~$88 versus the $194+ tier, and not
-without the user's stage and budget.
+**(4)** Benchmarking next: the campaign shape, ~$88 versus the $194+ tier,
+needs the user's stage and budget.
 
 `docs/ai/HANDOFF_CODEX.md` → "The current plan" holds the evidence and traps.
