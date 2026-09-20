@@ -8,16 +8,12 @@ agents:
     tools:
       - check_k8s_health
       - get_pod_status
-      - list_namespaces
       - list_pods
-      - list_services
-      - list_deployments
       - list_events
       - get_service_endpoints
       - get_pod_logs
       - get_deployment_status
       - get_deployment_spec
-      - get_node_status
 
   logs_agent:
     name: "Application Logs Agent"
@@ -41,10 +37,7 @@ agents:
     description: "Provides operational procedures and troubleshooting guides"
     tools:
       - search_runbooks
-      - get_incident_playbook
-      - get_troubleshooting_guide
-      - get_escalation_procedures
-      - get_common_resolutions
+      - get_runbook_content
 
   # Read-only, like every other specialist. It used to also hold
   # create_revert_pr, comment_on_pr and revert_pr — real GitHub writes, with
@@ -82,16 +75,12 @@ agents:
       # kubernetes_agent
       - check_k8s_health
       - get_pod_status
-      - list_namespaces
       - list_pods
-      - list_services
-      - list_deployments
       - list_events
       - get_service_endpoints
       - get_pod_logs
       - get_deployment_status
       - get_deployment_spec
-      - get_node_status
       # logs_agent
       - query_logs
       - get_error_logs
@@ -103,10 +92,7 @@ agents:
       - get_golden_signals
       # runbooks_agent
       - search_runbooks
-      - get_incident_playbook
-      - get_troubleshooting_guide
-      - get_escalation_procedures
-      - get_common_resolutions
+      - get_runbook_content
       # github_agent
       - list_commits
       - get_commit
@@ -116,4 +102,3 @@ agents:
 # Global tools available to all agents
 # Tools are now discovered from MCP servers (K8s, Logs, Metrics, Runbooks, GitHub, Memory)
 global_tools: []
-

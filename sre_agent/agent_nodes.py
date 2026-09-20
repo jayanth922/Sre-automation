@@ -16,6 +16,11 @@ from .agent_state import AgentState
 from .act_phase import measured_evidence_for_trace
 from .audit_context import set_audit_context, clear_audit_context
 from .constants import AgentMetadata
+from .context_compaction import (
+    capture_fit_reports,
+    merge_fit_summaries,
+    summarize_fit_reports,
+)
 from .evidence_artifacts import persist_specialist_trace
 from .incident_timeline import (
     build_specialist_finding_content,
@@ -266,6 +271,7 @@ class BaseAgentNode:
                 on_report=lambda report: logger.info(
                     f"[{self.name}] context fit: {report.before_tokens} → "
                     f"{report.after_tokens} tokens (budget {report.budget_tokens}); "
+                    f"{report.capped_results} oversized result(s) capped, "
                     f"{report.truncated_results} tool result(s) truncated, "
                     f"{report.dropped_messages} message(s) elided"
                 ),
@@ -356,11 +362,23 @@ class BaseAgentNode:
             specialist_role = SPECIALIST_LABELS.get(
                 agent_key, self.name.replace("_", " ").title()
             )
+            # Prior specialists' reports travel forward. Specialists still run
+            # on isolated message lists (see the note above — sharing raw
+            # transcripts breaks tool-call validation and causes cross-agent
+            # hallucination), but their *conclusions* are exactly what stops
+            # the next one re-deriving the same fact from raw evidence. This
+            # forwards the compact report only, re-bounded inside the brief.
+            prior_findings = {
+                key: value
+                for key, value in (state.get("agent_results") or {}).items()
+                if key != agent_key and value
+            }
             agent_prompt = build_specialist_task_brief(
                 specialist_role=specialist_role,
                 objective=state.get("current_query", "") or self.name,
                 alert_context=state.get("alert_context"),
                 auto_approve=bool(state.get("auto_approve_plan", False)),
+                prior_findings=prior_findings,
             )
 
             # We'll collect all messages and the final response
@@ -402,8 +420,13 @@ class BaseAgentNode:
             if not incident_id:
                 incident_id = state.get("metadata", {}).get("incident_id")
             
-            set_audit_context(incident_id=incident_id, agent_name=self.name)
+            set_audit_context(
+                incident_id=incident_id,
+                agent_name=self.name,
+                investigation_scope=True,
+            )
 
+            fit_reports = []
             try:
                 # Add timeout to prevent infinite hanging (120 seconds)
                 timeout_seconds = 120
@@ -534,7 +557,8 @@ class BaseAgentNode:
                 logger.info(
                     f"{self.name} - Executing agent with timeout of {timeout_seconds} seconds"
                 )
-                await asyncio.wait_for(execute_agent(), timeout=timeout_seconds)
+                with capture_fit_reports() as fit_reports:
+                    await asyncio.wait_for(execute_agent(), timeout=timeout_seconds)
                 logger.info(f"{self.name} - Agent execution completed")
 
             except asyncio.TimeoutError:
@@ -569,6 +593,19 @@ class BaseAgentNode:
                 raw_response=agent_response,
                 tool_failures=tool_failures,
             )
+            # The fitter used to log only changed calls, so there was no
+            # durable way to measure how often it engaged or how many input
+            # tokens it kept out of repeated ReAct turns. Persist aggregate
+            # counters only — never prompt or tool content — alongside the
+            # specialist evidence references.
+            context_fitting = dict(
+                artifact_metadata.get("context_fitting", {}) or {}
+            )
+            context_fitting[agent_key] = merge_fit_summaries(
+                context_fitting.get(agent_key),
+                summarize_fit_reports(fit_reports),
+            )
+            artifact_metadata["context_fitting"] = context_fitting
             state_agent_response = (
                 _bounded_agent_result(agent_response)
                 if artifact_reference is not None

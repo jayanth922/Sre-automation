@@ -43,6 +43,12 @@ logger = logging.getLogger(__name__)
 NOTION_VERSION = "2022-06-28"
 _BASE = "https://api.notion.com/v1"
 
+# Notion returns at most 100 results per call and signals the rest with
+# `has_more`. Ignoring it drops the tail of a long page, and a runbook's tail
+# is where Verification lives — the agent would get every remediation branch
+# and lose the probe that decides whether the one it chose worked.
+NOTION_PAGE_SIZE = 100
+
 _STATIC_API_KEY = os.getenv("NOTION_API_KEY")
 _STATIC_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
@@ -126,10 +132,20 @@ def _page_to_runbook(page: Dict[str, Any]) -> Dict[str, Any]:
 
 def _blocks_to_markdown(blocks: List[Dict[str, Any]]) -> str:
     lines: List[str] = []
+    ordinal = 0
     for b in blocks:
         t = b.get("type", "")
         rich = (b.get(t) or {}).get("rich_text", []) if isinstance(b.get(t), dict) else []
         text = "".join(x.get("plain_text", "") for x in rich)
+        if t == "numbered_list_item":
+            # Notion stores no number; it renders position. A literal "1." per
+            # item turned a five-step procedure into "1. 1. 1. 1. 1." by the
+            # time the agent read it, discarding the ordering — which in a
+            # remediation procedure is the instruction.
+            ordinal += 1
+            lines.append(f"{ordinal}. {text}")
+            continue
+        ordinal = 0
         if t == "heading_1":
             lines.append(f"# {text}")
         elif t == "heading_2":
@@ -138,10 +154,15 @@ def _blocks_to_markdown(blocks: List[Dict[str, Any]]) -> str:
             lines.append(f"### {text}")
         elif t == "bulleted_list_item":
             lines.append(f"- {text}")
-        elif t == "numbered_list_item":
-            lines.append(f"1. {text}")
+        elif t == "quote":
+            lines.append(f"> {text}")
         elif t == "code":
             lines.append(f"```\n{text}\n```")
+        elif t == "paragraph":
+            # Including empty ones: a blank paragraph is how a blank line
+            # survives, and blank lines separate the sections that
+            # `runbook_brief` prioritises.
+            lines.append(text)
         elif text:
             lines.append(text)
     return "\n".join(lines)
@@ -163,14 +184,24 @@ async def _query_database(api_key: str, database_id: str) -> List[Dict[str, Any]
     if cached and (time.monotonic() - cached[0]) < _DB_CACHE_TTL_SECONDS:
         return cached[1]
 
+    pages: List[Dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=12.0) as client:
-        resp = await client.post(
-            f"{_BASE}/databases/{database_id}/query",
-            headers=_headers(api_key),
-            json={"page_size": 100},
-        )
-        resp.raise_for_status()
-        pages = resp.json().get("results", [])
+        cursor: Optional[str] = None
+        while True:
+            body: Dict[str, Any] = {"page_size": NOTION_PAGE_SIZE}
+            if cursor:
+                body["start_cursor"] = cursor
+            resp = await client.post(
+                f"{_BASE}/databases/{database_id}/query",
+                headers=_headers(api_key),
+                json=body,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            pages.extend(payload.get("results", []))
+            cursor = payload.get("next_cursor")
+            if not payload.get("has_more") or not cursor:
+                break
 
     if len(_DB_CACHE) >= _DB_CACHE_MAX and cache_key not in _DB_CACHE:
         _DB_CACHE.pop(next(iter(_DB_CACHE)))
@@ -179,15 +210,27 @@ async def _query_database(api_key: str, database_id: str) -> List[Dict[str, Any]
 
 
 async def _fetch_page_content(api_key: str, page_id: str) -> Tuple[Dict[str, Any], str]:
+    blocks: List[Dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=12.0) as client:
         page_resp = await client.get(f"{_BASE}/pages/{page_id}", headers=_headers(api_key))
         page_resp.raise_for_status()
         page = page_resp.json()
-        blocks_resp = await client.get(
-            f"{_BASE}/blocks/{page_id}/children", headers=_headers(api_key), params={"page_size": 100}
-        )
-        blocks_resp.raise_for_status()
-        blocks = blocks_resp.json().get("results", [])
+        cursor: Optional[str] = None
+        while True:
+            params: Dict[str, Any] = {"page_size": NOTION_PAGE_SIZE}
+            if cursor:
+                params["start_cursor"] = cursor
+            blocks_resp = await client.get(
+                f"{_BASE}/blocks/{page_id}/children",
+                headers=_headers(api_key),
+                params=params,
+            )
+            blocks_resp.raise_for_status()
+            payload = blocks_resp.json()
+            blocks.extend(payload.get("results", []))
+            cursor = payload.get("next_cursor")
+            if not payload.get("has_more") or not cursor:
+                break
     return page, _blocks_to_markdown(blocks) or "(empty runbook)"
 
 

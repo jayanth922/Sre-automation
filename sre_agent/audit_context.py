@@ -15,6 +15,9 @@ _organization_id_ctx: ContextVar[Optional[str]] = ContextVar(
 )
 _cluster_id_ctx: ContextVar[Optional[str]] = ContextVar("cluster_id", default=None)
 _run_id_ctx: ContextVar[Optional[str]] = ContextVar("run_id", default=None)
+_investigation_scope_ctx: ContextVar[bool] = ContextVar(
+    "investigation_scope", default=False
+)
 _audit_write_failure_ctx: ContextVar[Optional[str]] = ContextVar(
     "audit_write_failure", default=None
 )
@@ -27,6 +30,7 @@ def set_audit_context(
     organization_id: Optional[str] = None,
     cluster_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    investigation_scope: Optional[bool] = None,
 ):
     """Set the current audit context for the running task.
 
@@ -44,6 +48,8 @@ def set_audit_context(
         _cluster_id_ctx.set(cluster_id)
     if run_id is not None:
         _run_id_ctx.set(run_id)
+    if investigation_scope is not None:
+        _investigation_scope_ctx.set(bool(investigation_scope))
 
 
 def get_audit_context() -> (
@@ -57,6 +63,11 @@ def get_audit_context() -> (
         _cluster_id_ctx.get(),
         _run_id_ctx.get(),
     )
+
+
+def investigation_scope_active() -> bool:
+    """Return whether the current task is running a read-only investigator."""
+    return _investigation_scope_ctx.get()
 
 
 def note_audit_write_failure(error: str) -> None:
@@ -82,4 +93,5 @@ def clear_audit_context():
     _organization_id_ctx.set(None)
     _cluster_id_ctx.set(None)
     _run_id_ctx.set(None)
+    _investigation_scope_ctx.set(False)
     _audit_write_failure_ctx.set(None)

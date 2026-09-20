@@ -45,7 +45,7 @@ from sre_agent.mcp_tool_wrapper import (
     policy_refusals,
     wrap_tool_with_audit,
 )
-from sre_agent.namespace_scope import NamespaceScopeError
+from sre_agent.namespace_scope import InvestigationQueryScopeError, NamespaceScopeError
 
 
 def _exhausted(tool="get_metric"):
@@ -64,8 +64,12 @@ def _exhausted(tool="get_metric"):
 # What counts as a refusal
 # ---------------------------------------------------------------------------
 
-def test_both_refusal_types_are_named():
-    assert set(policy_refusals()) == {ToolNotAuthorizedError, NamespaceScopeError}
+def test_all_refusal_types_are_named():
+    assert set(policy_refusals()) == {
+        ToolNotAuthorizedError,
+        NamespaceScopeError,
+        InvestigationQueryScopeError,
+    }
 
 
 def test_a_bare_permission_error_is_not_a_refusal():
@@ -80,6 +84,7 @@ def test_a_bare_permission_error_is_not_a_refusal():
     [
         (ToolNotAuthorizedError("create_revert_pr"), "REFUSED"),
         (NamespaceScopeError("cluster-wide listing is unavailable"), "REFUSED"),
+        (InvestigationQueryScopeError("query window is too broad"), "REFUSED"),
         (asyncio.CancelledError(), "CANCELLED"),
         (ConnectionError("prometheus down"), "FAILURE"),
         (_exhausted(), "FAILURE"),
@@ -236,6 +241,7 @@ def test_the_live_terminal_has_a_line_for_an_abandoned_call():
     [
         ToolNotAuthorizedError("create_revert_pr"),
         NamespaceScopeError("cluster-wide listing is unavailable"),
+        InvestigationQueryScopeError("query window is too broad"),
         _exhausted(),
     ],
 )
@@ -298,6 +304,7 @@ def _batch_graph(first_exc):
     [
         ToolNotAuthorizedError("create_revert_pr"),
         NamespaceScopeError("cluster-wide listing is unavailable"),
+        InvestigationQueryScopeError("query window is too broad"),
     ],
 )
 def test_a_refusal_leaves_the_sibling_read_alone(exc):

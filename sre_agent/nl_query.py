@@ -36,7 +36,15 @@ _ALLOWED_METRICS = {
     "payment_failures_total", "payment_provider_up", "process_memory_bytes_simulated",
     "db_query_duration_seconds_bucket",
 }
-_ALLOWED_FUNCS = {"rate", "sum", "avg", "max", "min", "histogram_quantile", "by", "increase"}
+_ALLOWED_FUNCS = {
+    "rate", "sum", "avg", "max", "min", "histogram_quantile", "by", "without",
+    "increase",
+    # clamp_min guards a ratio against a zero denominator. Every error-ratio
+    # recovery probe in the v2 benchmark uses it, so without it the agent
+    # cannot run the very query its runbook tells it to run to confirm
+    # recovery — it would have to improvise a different one.
+    "clamp_min", "clamp_max",
+}
 
 _KNOWN_SERVICES = {
     "checkout": "checkout-service", "checkout-service": "checkout-service",
@@ -173,6 +181,18 @@ def _identifiers_to_check(query: str) -> List[str]:
     q = re.sub(r'"[^"]*"', "", query)      # strip quoted label values
     q = re.sub(r"\{[^}]*\}", "", q)         # strip label-selector blocks (label keys)
     q = re.sub(r"\[[^\]]*\]", "", q)         # strip range windows
+    # Grouping clauses name label keys too, just in parentheses rather than
+    # braces: `sum by (le)` is the standard way to aggregate a histogram
+    # before histogram_quantile. Leaving `le` in place made it look like an
+    # unknown metric and rejected every percentile query in the benchmark.
+    q = re.sub(r"\b(?:by|without)\s*\([^)]*\)", " by ", q)
+    # `or vector(0)` is the only way in PromQL to turn the empty vector an
+    # absent counter returns into a zero, which every error-ratio recovery
+    # probe needs to have a baseline at all. Only that exact clause is
+    # stripped: a bare `or` between two selectors stays an unknown identifier
+    # and is still rejected, because _scope_query injects the tenant namespace
+    # into the first selector block only.
+    q = re.sub(r"\bor\s+vector\s*\(\s*[0-9.]+\s*\)", " ", q)
     return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", q)
 
 
