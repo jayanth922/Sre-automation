@@ -65,7 +65,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Sync dependencies
-        run: uv sync --frozen --extra dev --extra temporal
+        run: uv sync --frozen --extra dev --extra temporal --extra anthropic
       - name: Apply database migrations
         run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
