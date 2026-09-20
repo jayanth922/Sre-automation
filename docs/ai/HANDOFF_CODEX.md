@@ -460,7 +460,7 @@ real data:
 | --- | --- |
 | compose services | 14 of 15 healthy; `mcp-loki` declares no healthcheck, which is not a failure |
 | API | `/ping` → `{"status":"healthy"}` |
-| migrations | at head `e5f6a7b8c9d0`, 23 revision files on disk |
+| migrations | at head `a7b8c9d0e1f2`, 24 revision files on disk |
 | MCP servers | all 8 reachable |
 | Temporal | worker polling `sentinel-sandbox` |
 | Redis | `PONG` |

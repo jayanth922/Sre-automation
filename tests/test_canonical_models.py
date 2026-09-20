@@ -112,4 +112,4 @@ def test_alembic_has_one_canonical_head():
     cfg = Config(str(ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["e5f6a7b8c9d0"], heads
+    assert heads == ["a7b8c9d0e1f2"], heads
