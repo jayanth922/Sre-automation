@@ -118,6 +118,59 @@ def test_service_label_key_is_not_flagged():
     assert ok, reason
 
 
+def test_grouping_label_is_not_mistaken_for_a_metric():
+    """`sum by (le)` is how you aggregate a histogram before taking a
+    quantile. `le` is a label key, exactly like the ones already stripped out
+    of `{...}` — but in a grouping clause it is in parentheses, so it survived
+    as a bare identifier and every percentile query in the v2 benchmark was
+    rejected as referencing an unknown metric."""
+    ok, reason = nl.validate_promql(
+        "histogram_quantile(0.90, sum by (le) "
+        '(rate(db_query_duration_seconds_bucket{job="inventory-service"}[5m])))'
+    )
+    assert ok, reason
+    assert nl.validate_promql(
+        "histogram_quantile(0.95, sum without (instance, job) "
+        '(rate(http_request_duration_seconds_bucket{service="payment-service"}[5m])))'
+    )[0]
+
+
+def test_clamp_min_is_allowed_so_a_ratio_can_guard_its_denominator():
+    ok, reason = nl.validate_promql(
+        'sum(rate(http_errors_total{service="checkout-service"}[5m])) '
+        '/ clamp_min(sum(rate(http_requests_total{service="checkout-service"}[5m])), 1)'
+    )
+    assert ok, reason
+
+
+def test_every_v2_recovery_probe_query_is_runnable_by_the_agent():
+    """A runbook that names the verification query is only prescriptive if the
+    agent is actually permitted to run it. These are the exact queries the
+    recovery oracle uses to decide whether an incident recovered; if the query
+    tool rejects one, the agent has to invent a different check and the
+    runbook has stopped removing decisions from the model."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "benchmarks" / "datasets" / "v2"
+    queries = {
+        (s.get("recovery_probe") or {}).get("query", "")
+        for split in ("train", "dev", "holdout")
+        for s in json.loads((root / f"{split}.json").read_text())["scenarios"]
+    }
+    queries.discard("")
+    assert queries, "no recovery probes found — dataset layout changed"
+    rejected = {q: nl.validate_promql(q)[1] for q in queries if not nl.validate_promql(q)[0]}
+    assert not rejected, f"agent cannot run its own verification queries: {rejected}"
+
+
+def test_grouping_clause_does_not_smuggle_in_a_metric():
+    """Stripping the grouping clause must not become a hole: the stripped span
+    is replaced, not deleted, and identifiers outside it are still checked."""
+    ok, reason = nl.validate_promql("sum by (le) (rate(secret_admin_metric[5m]))")
+    assert not ok and "non-allow-listed" in reason
+
+
 def test_reject_non_allowlisted_metric():
     ok, reason = nl.validate_promql("rate(secret_admin_metric[5m])")
     assert not ok and "non-allow-listed" in reason
@@ -467,3 +520,23 @@ def test_run_nl_query_with_llm_fallback_executes_generated_query():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_or_vector_zero_is_allowed_but_a_bare_or_is_not():
+    """An absent counter returns the empty vector, so the oracle can never
+    establish a baseline; `or vector(0)` is the only PromQL that fixes it.
+    Only that clause is permitted — a general `or` would let a query union in
+    a second selector block, which _scope_query does not namespace-scope."""
+    ok, reason = nl.validate_promql(
+        '(sum(rate(http_errors_total{service="checkout-service"}[5m])) or vector(0)) '
+        '/ clamp_min(sum(rate(http_requests_total{service="checkout-service"}[5m])) '
+        "or vector(0), 1)"
+    )
+    assert ok, reason
+
+    ok, reason = nl.validate_promql(
+        'sum(rate(http_errors_total{service="checkout-service"}[5m])) '
+        "or sum(rate(secret_admin_metric[5m]))"
+    )
+    assert not ok
+    assert "or" in reason and "secret_admin_metric" in reason
