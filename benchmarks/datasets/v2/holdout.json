@@ -308,7 +308,7 @@
       "recovery_probe": {
         "name": "payment_error_ratio",
         "operator": "lt",
-        "query": "sum(rate(http_errors_total{service=\"payment-service\"}[5m])) / clamp_min(sum(rate(http_requests_total{service=\"payment-service\"}[5m])), 1)",
+        "query": "(sum(rate(http_errors_total{service=\"payment-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"payment-service\"}[5m])) or vector(0), 1)",
         "require_failure_observation": false,
         "required_consecutive_passes": 2,
         "threshold": 0.1,
