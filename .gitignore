@@ -137,3 +137,7 @@ deploy/terraform/ci.tfplan
 *.env.*
 !.env.example
 !*.env.example
+# Tracked on purpose: shipped, secret-free defaults that let a fresh
+# clone boot with no configuration at all. `*.env` above would
+# otherwise ignore it.
+!platform/defaults.env

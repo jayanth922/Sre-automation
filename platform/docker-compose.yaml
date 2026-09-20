@@ -1,3 +1,13 @@
+# Shipped defaults first, the operator's optional overrides second: compose
+# applies env_file entries in order and later entries win. `../.env` is
+# `required: false`, which is what lets a fresh clone boot with no
+# configuration at all -- everything else is set in the dashboard's Settings.
+x-env-files: &sentinel-env-files
+  - path: ./defaults.env
+    required: true
+  - path: ../.env
+    required: false
+
 x-sentinel-api-image: &sentinel-api-image
   platform: linux/amd64
   image: sentinel/api:local
@@ -46,8 +56,7 @@ services:
     image: postgres:15.19-alpine@sha256:a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd
     container_name: sre-postgres
     hostname: postgres
-    env_file:
-      - ../.env
+    env_file: *sentinel-env-files
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -131,14 +140,13 @@ services:
       sh -c "uv run python -m sre_agent.provider_config && uv run alembic upgrade head && exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080"
     ports:
       - "8080:8080"
-    env_file:
-      - ../.env
+    env_file: *sentinel-env-files
     environment:
       # Topological fixed values that shouldn't be overridden via user .env
       - AGENT_MODE=api
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
       - PYTHONPATH=/app
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
@@ -155,6 +163,10 @@ services:
 
     volumes:
       - skill_store_data:/app/data
+      # Secrets generated on first boot (sre_agent/bootstrap_secrets.py).
+      # Shared with temporal-worker so both processes read the same keys --
+      # if they disagreed, one could not decrypt what the other wrote.
+      - sentinel_keys:/var/lib/sentinel
     networks:
       sre-network:
         aliases:
@@ -189,16 +201,18 @@ services:
     hostname: temporal-worker
     profiles: ["local-temporal"]
     command: uv run python -m sre_agent.sandbox_worker
-    env_file:
-      - ../.env
+    env_file: *sentinel-env-files
     environment:
       - AGENT_MODE=api
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
       - PYTHONPATH=/app
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
+    volumes:
+      # Same keystore the API uses; see the note on that mount.
+      - sentinel_keys:/var/lib/sentinel
     healthcheck:
       test: ["CMD", "/app/.venv/bin/python", "-m", "sre_agent.runtime_preflight", "--role", "worker"]
       interval: 30s
@@ -260,6 +274,11 @@ networks:
     name: sre-shared-network
 
 volumes:
+  # SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY and MCP_SERVICE_TOKEN, generated on
+  # first boot. Back this up alongside postgres_data: without it, credentials
+  # saved through Settings cannot be decrypted.
+  sentinel_keys:
+    driver: local
   redis_data:
     driver: local
   qdrant_data:

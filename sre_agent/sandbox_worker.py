@@ -24,6 +24,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from sre_agent.bootstrap_secrets import ensure_secrets
+
+# A fourth process that has to agree with the API on SECRET_KEY and the
+# credential encryption key. It reads them from the same mounted keystore;
+# the call only generates anything when the store is genuinely empty.
+ensure_secrets()
+
 logger = logging.getLogger(__name__)
 
 

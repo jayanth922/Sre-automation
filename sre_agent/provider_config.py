@@ -109,6 +109,21 @@ def validate_startup_config(
 
     Returns the normalized ``LLM_PROVIDER`` when LLM checks run.
     """
+    if environ is None:
+        # A fresh install has no .env at all: SECRET_KEY, the credential
+        # encryption key and the MCP service token are generated into a
+        # persisted keystore on first boot instead of being hand-written.
+        # Only for the real process environment -- a caller passing an
+        # explicit mapping is validating a hypothetical config and must see
+        # it exactly as given. bootstrap_secrets is stdlib-only, so this
+        # module still is.
+        from sre_agent.bootstrap_secrets import BootstrapError, ensure_secrets
+
+        try:
+            ensure_secrets()
+        except BootstrapError as exc:
+            raise ProviderConfigError(str(exc)) from exc
+
     source: Mapping[str, str] = environ if environ is not None else os.environ
 
     secret = _env(source, "SECRET_KEY")

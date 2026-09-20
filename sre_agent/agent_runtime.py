@@ -8,6 +8,15 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Must precede the `backend.*` imports below: backend/auth.py reads SECRET_KEY
+# at import time, and on a fresh install that value does not exist until the
+# keystore generates it. Not redundant with the entrypoint's preflight --
+# uvicorn is a separate process, and os.environ does not cross that boundary.
+from sre_agent.bootstrap_secrets import ensure_secrets  # noqa: E402
+
+ensure_secrets()
+
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
