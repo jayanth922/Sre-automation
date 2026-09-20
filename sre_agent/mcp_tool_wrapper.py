@@ -19,6 +19,7 @@ import functools
 import json
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 from datetime import datetime, timezone
 import uuid
@@ -120,9 +121,13 @@ def policy_refusals() -> tuple:
     an environment failure the on-call needs to see as a failure, not as our
     own policy. So the two are named.
     """
-    from .namespace_scope import NamespaceScopeError
+    from .namespace_scope import InvestigationQueryScopeError, NamespaceScopeError
 
-    return (ToolNotAuthorizedError, NamespaceScopeError)
+    return (
+        ToolNotAuthorizedError,
+        NamespaceScopeError,
+        InvestigationQueryScopeError,
+    )
 
 
 def handle_tool_execution_error(exc: Exception) -> str:
@@ -650,6 +655,31 @@ def wrap_tool_with_circuit_breaker(tool: Any) -> Any:
     return tool
 
 
+def _split_tool_call(payload: Any) -> tuple[Optional[Mapping[str, Any]], Any]:
+    """Separate a LangChain ToolCall envelope from the arguments inside it.
+
+    LangGraph's ToolNode invokes a tool with the whole ToolCall —
+    ``{"name", "args", "id", "type"}`` — not with the arguments the model
+    produced. Enforcing scope on that envelope reads keys that live one level
+    down: every selector looks absent, so gated reads are refused whatever the
+    model sent, and an injected tenant namespace lands on the envelope instead
+    of on the query. Returns ``(envelope, arguments)``, with ``envelope`` None
+    when the payload is already the arguments mapping.
+    """
+    if not isinstance(payload, Mapping):
+        return None, payload
+    inner = payload.get("args")
+    if not isinstance(inner, Mapping):
+        return None, payload
+    if payload.get("type") == "tool_call":
+        return payload, inner
+    # Callers that omit "type" are accepted only on an exact ToolCall shape,
+    # so a tool that genuinely takes an "args" parameter is left alone.
+    if "name" in payload and set(payload) <= {"name", "args", "id", "type"}:
+        return payload, inner
+    return None, payload
+
+
 def wrap_tool_with_namespace_scope(tool: Any, context: Any) -> Any:
     """Enforce the execution context on namespaced MCP tool inputs."""
     from .namespace_scope import enforce_tool_arguments
@@ -658,19 +688,24 @@ def wrap_tool_with_namespace_scope(tool: Any, context: Any) -> Any:
     original_invoke = getattr(tool, "invoke", None)
     original_ainvoke = getattr(tool, "ainvoke", None)
 
+    def enforce(payload: Any) -> Any:
+        envelope, arguments = _split_tool_call(payload)
+        enforced = enforce_tool_arguments(tool_name, arguments, context)
+        if envelope is None:
+            return enforced
+        scoped = dict(envelope)
+        scoped["args"] = enforced
+        return scoped
+
     def scoped_call(call_args, call_kwargs):
         args = list(call_args)
         kwargs = dict(call_kwargs)
         if args:
-            args[0] = enforce_tool_arguments(tool_name, args[0], context)
+            args[0] = enforce(args[0])
         elif "input" in kwargs:
-            kwargs["input"] = enforce_tool_arguments(
-                tool_name, kwargs["input"], context
-            )
+            kwargs["input"] = enforce(kwargs["input"])
         elif "tool_input" in kwargs:
-            kwargs["tool_input"] = enforce_tool_arguments(
-                tool_name, kwargs["tool_input"], context
-            )
+            kwargs["tool_input"] = enforce(kwargs["tool_input"])
         else:
             args.append(enforce_tool_arguments(tool_name, {}, context))
         return tuple(args), kwargs

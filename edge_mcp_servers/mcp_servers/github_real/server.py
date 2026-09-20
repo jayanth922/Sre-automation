@@ -18,6 +18,15 @@ from github.GithubException import GithubException
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+from payload import (
+    MAX_COMMITS_SCANNED,
+    MAX_FILES_SCANNED,
+    parse_iso,
+    shape_commit,
+    shape_commit_summary,
+    shape_pull_request,
+)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -178,7 +187,13 @@ class GetRepositoryFileParams(BaseModel):
 
 async def handle_list_commits(params: ListCommitsParams) -> str:
     """List commits from repository."""
-    logger.info(f"Listing commits (limit: {params.limit})")
+    logger.info(
+        "Listing commits (since=%s until=%s path=%s limit=%s)",
+        params.since,
+        params.until,
+        params.path,
+        params.limit,
+    )
 
     repo = _active_repo()
     if not repo:
@@ -186,41 +201,66 @@ async def handle_list_commits(params: ListCommitsParams) -> str:
 
     loop = asyncio.get_event_loop()
 
+    # `since`/`until`/`path` are server-side filters on GitHub's commits
+    # endpoint. They used to be applied here instead: `repo.get_commits()` with
+    # no arguments returns a lazy page over the repository's *entire* history,
+    # and a non-matching commit hit `continue`, so a window with no commits in
+    # it walked every commit in the repo — one API call per page — before
+    # returning an empty list. Path filtering was a literal `pass`.
     try:
-        # Get commits
-        commits = await loop.run_in_executor(None, repo.get_commits)
+        since = parse_iso(params.since)
+        until = parse_iso(params.until)
+    except ValueError as exc:
+        # Dropping an unparseable bound would silently restore the full-history
+        # walk, which is the defect, so refuse instead.
+        return f"Error listing commits: invalid since/until ({exc})"
 
-        # Filter and format
+    kwargs: Dict[str, Any] = {}
+    if since:
+        kwargs["since"] = since
+    if until:
+        kwargs["until"] = until
+    if params.path:
+        kwargs["path"] = params.path
+
+    try:
+        commits = await loop.run_in_executor(
+            None, lambda: repo.get_commits(**kwargs)
+        )
+
         results = []
-        count = 0
+        scanned = 0
         for commit in commits:
-            if count >= params.limit:
+            if len(results) >= params.limit:
+                break
+            # `author` stays a client-side substring match — GitHub's
+            # server-side `author` is exact, and narrowing that silently
+            # would turn a partial name into an empty result. A filter that
+            # matches nothing must not page through the window forever, so
+            # the scan itself is bounded.
+            scanned += 1
+            if scanned > MAX_COMMITS_SCANNED:
                 break
 
-            # Apply filters
-            if params.since and commit.commit.author.date.isoformat() < params.since:
-                continue
-            if params.until and commit.commit.author.date.isoformat() > params.until:
-                continue
             if params.author and params.author.lower() not in commit.commit.author.email.lower():
                 if params.author.lower() not in (commit.author.login.lower() if commit.author else ""):
                     continue
-            if params.path:
-                 pass  # Skip path filtering for now
 
-            commit_data = {
-                "sha": commit.sha,
-                "message": commit.commit.message,
-                "author": {
-                    "name": commit.commit.author.name,
-                    "email": commit.commit.author.email,
-                    "login": commit.author.login if commit.author else None,
-                },
-                "timestamp": commit.commit.author.date.isoformat(),
-                "url": commit.html_url,
-            }
-            results.append(commit_data)
-            count += 1
+            results.append(
+                shape_commit_summary(
+                    {
+                        "sha": commit.sha,
+                        "message": commit.commit.message,
+                        "author": {
+                            "name": commit.commit.author.name,
+                            "email": commit.commit.author.email,
+                            "login": commit.author.login if commit.author else None,
+                        },
+                        "timestamp": commit.commit.author.date.isoformat(),
+                        "url": commit.html_url,
+                    }
+                )
+            )
 
         return json.dumps({"commits": results}, separators=(",", ":"))
     except Exception as e:
@@ -240,25 +280,48 @@ async def handle_get_commit(params: GetCommitParams) -> str:
     try:
         commit = await loop.run_in_executor(None, repo.get_commit, params.sha)
 
-        # Get diff (patch)
-        patch = commit.patch if hasattr(commit, "patch") else None
-        files = list(commit.files)
+        # The diff lives on the per-file entries, not on the commit.
+        # `commit.patch` used to be read here behind a `hasattr` guard;
+        # `github.Commit.Commit` has no such property and `GithubObject`
+        # defines no `__getattr__`, so the guard always failed and this tool
+        # returned `"diff":null` on every call while `list(commit.files)` —
+        # the data that does hold the patches — was walked and discarded.
+        def _scan_files():
+            rows = []
+            truncated = False
+            for entry in commit.files:
+                if len(rows) >= MAX_FILES_SCANNED:
+                    truncated = True
+                    break
+                rows.append(
+                    {
+                        "filename": entry.filename,
+                        "status": entry.status,
+                        "additions": entry.additions,
+                        "deletions": entry.deletions,
+                        "changes": entry.changes,
+                        "patch": entry.patch,
+                    }
+                )
+            return rows, truncated
 
-        result = {
-            "sha": commit.sha,
-            "message": commit.commit.message,
-            "author": {
+        files, scan_truncated = await loop.run_in_executor(None, _scan_files)
+
+        result = shape_commit(
+            sha=commit.sha,
+            message=commit.commit.message,
+            author={
                 "name": commit.commit.author.name,
                 "email": commit.commit.author.email,
                 "login": commit.author.login if commit.author else None,
             },
-            "timestamp": commit.commit.author.date.isoformat(),
-            "url": commit.html_url,
-            "files_changed": len(files),
-            "additions": commit.stats.additions,
-            "deletions": commit.stats.deletions,
-            "diff": patch,
-        }
+            timestamp=commit.commit.author.date.isoformat(),
+            url=commit.html_url,
+            files=files,
+            additions=commit.stats.additions,
+            deletions=commit.stats.deletions,
+            scan_truncated=scan_truncated,
+        )
 
         return json.dumps(result, separators=(",", ":"))
     except Exception as e:
@@ -320,20 +383,22 @@ async def handle_get_pull_request(params: GetPullRequestParams) -> str:
     try:
         pr = await loop.run_in_executor(None, repo.get_pull, params.pr_number)
 
-        result = {
-            "number": pr.number,
-            "title": pr.title,
-            "state": pr.state,
-            "author": pr.user.login,
-            "created_at": pr.created_at.isoformat(),
-            "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
-            "base_branch": pr.base.ref,
-            "head_branch": pr.head.ref,
-            "url": pr.html_url,
-            "body": pr.body,
-            "mergeable": pr.mergeable,
-            "merged": pr.merged,
-        }
+        result = shape_pull_request(
+            {
+                "number": pr.number,
+                "title": pr.title,
+                "state": pr.state,
+                "author": pr.user.login,
+                "created_at": pr.created_at.isoformat(),
+                "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
+                "base_branch": pr.base.ref,
+                "head_branch": pr.head.ref,
+                "url": pr.html_url,
+                "body": pr.body,
+                "mergeable": pr.mergeable,
+                "merged": pr.merged,
+            }
+        )
 
         return json.dumps(result, separators=(",", ":"))
     except Exception as e:
@@ -468,14 +533,23 @@ async def handle_get_repository_file(params: GetRepositoryFileParams) -> str:
 
 @mcp.tool()
 async def list_commits(since: str = None, until: str = None, author: str = None, path: str = None, limit: int = 50) -> str:
-    """List commits from the repository with optional filtering."""
+    """List commits, newest first. `since`/`until` (ISO 8601) and `path` are
+    applied by GitHub, so narrowing them costs nothing and widening them is
+    what makes this call slow. Each entry carries sha, message (capped at
+    2000 chars), author, timestamp and url — no diff; call get_commit for
+    that."""
     return await handle_list_commits(
         ListCommitsParams(since=since, until=until, author=author, path=path, limit=limit)
     )
 
 @mcp.tool()
 async def get_commit(sha: str) -> str:
-    """Get detailed information about a specific commit including diff."""
+    """Get one commit with its changed files and their diffs. Every changed
+    file keeps a row (filename, status, additions, deletions, changes); the
+    patch text is included largest-change-first within a 12000-char budget,
+    2000 chars per file. `files_omitted`, `patch_chars_omitted` and
+    `files_scan_truncated` report what was left out — omitted text is missing
+    from this response, not from the commit."""
     return await handle_get_commit(GetCommitParams(sha=sha))
 
 @mcp.tool()
@@ -487,7 +561,8 @@ async def list_pull_requests(state: str = "all", author: str = None, limit: int 
 
 @mcp.tool()
 async def get_pull_request(pr_number: int) -> str:
-    """Get detailed information about a specific pull request."""
+    """Get one pull request: number, title, state, author, branches, merge
+    status and body (capped at 4000 chars, flagged with `body_truncated`)."""
     return await handle_get_pull_request(GetPullRequestParams(pr_number=pr_number))
 
 @mcp.tool()

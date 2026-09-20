@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
 COPY mcp_servers/github_real/server.py .
+COPY mcp_servers/github_real/payload.py .
 COPY mcp_auth.py .
 COPY relay_credentials.py .
 

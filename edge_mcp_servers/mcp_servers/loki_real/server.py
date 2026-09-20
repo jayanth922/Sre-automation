@@ -144,11 +144,12 @@ def query_logs(
     )  # Default: last 1 hour
 
     # Build Loki query parameters
+    bounded_limit = min(max(limit, 1), 1000)
     query_params = {
         "query": logql,
         "start": start_ns,
         "end": end_ns,
-        "limit": min(max(limit, 1), 1000),  # Clamp between 1 and 1000
+        "limit": bounded_limit,
     }
 
     try:
@@ -172,7 +173,7 @@ def query_logs(
 
         result = {
             "query": logql,
-            **_cap_logs(logs[:limit], len(logs)),
+            **_cap_logs(logs[:bounded_limit], len(logs)),
         }
 
         return json.dumps(result, separators=(",", ":"))
@@ -189,6 +190,8 @@ def get_error_logs(
     level: str = "error",
     limit: int = 100,
     since: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
 ) -> str:
     """
     Get error logs filtered by application, namespace, and log level.
@@ -198,7 +201,9 @@ def get_error_logs(
         namespace: Namespace filter
         level: Log level (error, warn, fatal)
         limit: Maximum number of log lines (1-1000)
-        since: Time range (e.g., '1h', '30m')
+        since: Relative start time for legacy callers (e.g., '30m')
+        start_time: Explicit incident-window start (preferred)
+        end_time: Explicit incident-window end (preferred)
     
     Returns:
         JSON string with error logs
@@ -223,7 +228,8 @@ def get_error_logs(
     return query_logs(
         logql=logql_query,
         limit=limit,
-        start_time=since if since else "1h",
+        start_time=start_time or since or "1h",
+        end_time=end_time,
     )
 
 
@@ -232,6 +238,8 @@ def analyze_log_patterns(
     logql: str,
     pattern: Optional[str] = None,
     limit: int = 1000,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
 ) -> str:
     """
     Analyze log patterns by querying logs and searching for regex patterns.
@@ -239,7 +247,9 @@ def analyze_log_patterns(
     Args:
         logql: LogQL query string
         pattern: Regex pattern to search for
-        limit: Maximum number of log lines to analyze (1-5000)
+        limit: Maximum number of log lines to analyze (1-1000)
+        start_time: Explicit incident-window start
+        end_time: Explicit incident-window end
     
     Returns:
         JSON string with pattern analysis results
@@ -247,7 +257,12 @@ def analyze_log_patterns(
     logger.info(f"Analyzing log patterns: {logql}")
 
     # Query logs
-    logs_result = query_logs(logql=logql, limit=min(max(limit, 1), 5000), start_time="1h")
+    logs_result = query_logs(
+        logql=logql,
+        limit=min(max(limit, 1), 1000),
+        start_time=start_time or "1h",
+        end_time=end_time,
+    )
     
     # Parse logs
     logs_data = json.loads(logs_result)
