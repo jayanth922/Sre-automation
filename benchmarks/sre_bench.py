@@ -132,6 +132,37 @@ POLL_INTERVAL_SEC = 5
 # trial as a non-recovery — so the ceiling is operator-set, and the default
 # stays 300 only so existing invocations keep their meaning.
 TIMEOUT_SEC = int(os.getenv("BENCH_INCIDENT_TIMEOUT_SEC", "300"))
+# The fastest complete investigation ever measured on the live cluster: Phase 0
+# on 2026-09-19, 110 LLM calls in 21.1 minutes. A ceiling below even the
+# quickest observed run cannot be waiting for a real outcome, so the header
+# says so out loud. Deliberately the measured *floor* and not the 49-minute
+# ceiling — this flags invocations that cannot work, not ones that might be
+# tight. Three pilots on 2026-09-19 were silently voided by this before anyone
+# noticed the default was still 300.
+MEASURED_INCIDENT_FLOOR_SEC = 1260
+
+
+def timeout_warning(fault_mode: str, timeout_sec: int) -> str | None:
+    """The header's warning when the ceiling makes recovery unmeasurable.
+
+    Not an error, and deliberately not fatal: the ceiling is operator-set on
+    purpose, and a short one is legitimate when smoke-testing the harness
+    itself or running with no fault at all. It is fatal to a *measurement*,
+    though, and silently so — the trial records a non-recovery whatever the
+    agent did, and cleanup pulls the fault while the agent is still looking
+    at it, so the tail of the investigation is spent on a fault that is no
+    longer there and any plan produced after that point is evidence about
+    nothing.
+    """
+    if fault_mode == "none" or timeout_sec >= MEASURED_INCIDENT_FLOOR_SEC:
+        return None
+    return (
+        f"  ⚠ WARNING: {timeout_sec}s is below the {MEASURED_INCIDENT_FLOOR_SEC}s "
+        f"({MEASURED_INCIDENT_FLOOR_SEC // 60} min) floor measured on this cluster.\n"
+        f"    Every trial will record a non-recovery regardless of agent behaviour,\n"
+        f"    and fault cleanup will fire mid-investigation. This run cannot\n"
+        f"    measure recovery. Set BENCH_INCIDENT_TIMEOUT_SEC=2700 for a real one."
+    )
 COOLDOWN_SEC = 30
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
@@ -759,6 +790,10 @@ async def run() -> None:
             f"(BENCH_SCENARIOS); not a measurement of this split"
         )
     print(f"  fault mode: {FAULT_MODE}")
+    print(f"  incident timeout: {TIMEOUT_SEC}s (BENCH_INCIDENT_TIMEOUT_SEC)")
+    unmeasurable = timeout_warning(FAULT_MODE, TIMEOUT_SEC)
+    if unmeasurable:
+        print(unmeasurable)
     print(f"  oracle evidence: {ORACLE_RESULTS_PATH}")
     print(f"  grader evidence: {GRADER_RESULTS_PATH}")
     if STATISTICAL_RECORDING:
