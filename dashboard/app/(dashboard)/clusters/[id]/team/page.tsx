@@ -15,6 +15,15 @@ interface Member {
   created_at: string
 }
 
+// The raw token comes back exactly once, on creation. Nothing can reissue it.
+interface Invitation {
+  id: string
+  email: string
+  role: "admin" | "member"
+  expires_at: string
+  token: string
+}
+
 export default function TeamPage() {
   const { user } = useAuth()
   const isAdmin = (user?.role ?? "member") === "admin"
@@ -32,6 +41,60 @@ export default function TeamPage() {
   const [langfuseHost, setLangfuseHost] = useState("")
   const [langfuseSaving, setLangfuseSaving] = useState(false)
   const [langfuseErr, setLangfuseErr] = useState<string | null>(null)
+  const [inviteEmail, setInviteEmail] = useState("")
+  const [inviteRole, setInviteRole] = useState<"admin" | "member">("member")
+  const [inviteHours, setInviteHours] = useState("72")
+  const [inviteSaving, setInviteSaving] = useState(false)
+  const [inviteErr, setInviteErr] = useState<string | null>(null)
+  const [invite, setInvite] = useState<Invitation | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [origin, setOrigin] = useState("")
+
+  const orgId = user?.org_id ?? ""
+  const inviteLink = invite
+    ? `${origin}/accept-invite?token=${encodeURIComponent(invite.token)}`
+    : ""
+
+  useEffect(() => {
+    setOrigin(window.location.origin)
+  }, [])
+
+  const createInvitation = async () => {
+    if (!orgId) return
+    setInviteSaving(true)
+    setInviteErr(null)
+    setCopied(false)
+    try {
+      const { data } = await api.post<Invitation>(`/organizations/${orgId}/invitations`, {
+        email: inviteEmail.trim(),
+        role: inviteRole,
+        expires_in_hours: Number(inviteHours),
+      })
+      setInvite(data)
+      setInviteEmail("")
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      setInviteErr(
+        typeof detail === "string"
+          ? detail
+          : Array.isArray(detail)
+            ? "That doesn't look like a valid email address."
+            : "Could not create this invitation.",
+      )
+    } finally {
+      setInviteSaving(false)
+    }
+  }
+
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink)
+      setCopied(true)
+    } catch {
+      // Clipboard access needs a secure context. The field is selectable.
+      setInviteErr("Could not reach the clipboard — select the link and copy it by hand.")
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -196,6 +259,107 @@ export default function TeamPage() {
         {langfuseErr && <ErrorNote>{langfuseErr}</ErrorNote>}
 
         <SectionTitle
+          title="Invitations"
+          meta={isAdmin ? "the only way to add someone to this organization" : "admins invite new teammates"}
+        />
+
+        {isAdmin ? (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 8 }}>
+              <input
+                className="sx-input"
+                type="email"
+                placeholder="teammate@example.com"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                disabled={inviteSaving}
+                style={{ flex: 1, minWidth: 200, maxWidth: 300 }}
+                aria-label="Email address to invite"
+              />
+              <select
+                className="sx-input"
+                style={{ width: 118, padding: "5px 8px", fontSize: 12 }}
+                value={inviteRole}
+                disabled={inviteSaving}
+                onChange={(e) => setInviteRole(e.target.value as "admin" | "member")}
+                aria-label="Role for the invited teammate"
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+              <select
+                className="sx-input"
+                style={{ width: 138, padding: "5px 8px", fontSize: 12 }}
+                value={inviteHours}
+                disabled={inviteSaving}
+                onChange={(e) => setInviteHours(e.target.value)}
+                aria-label="How long the invitation stays valid"
+              >
+                <option value="24">Valid 24 hours</option>
+                <option value="72">Valid 3 days</option>
+                <option value="168">Valid 7 days</option>
+                <option value="720">Valid 30 days</option>
+              </select>
+              <button
+                className="sx-btn"
+                style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+                disabled={inviteSaving || !inviteEmail.trim() || !orgId}
+                onClick={createInvitation}
+              >
+                {inviteSaving ? "Creating…" : "Create invitation"}
+              </button>
+            </div>
+            <div className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)", marginBottom: invite ? 10 : 18 }}>
+              Nothing is emailed — you get a single-use link to pass on yourself. Inviting the same
+              address again revokes the earlier link.
+            </div>
+            {inviteErr && <ErrorNote>{inviteErr}</ErrorNote>}
+            {invite && (
+              <div className="sx-empty" style={{ textAlign: "left", padding: 14, marginBottom: 18 }}>
+                <div style={{ fontWeight: 500, marginBottom: 6 }}>
+                  Invitation for {invite.email} · {invite.role === "admin" ? "Admin" : "Member"}
+                </div>
+                <div className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)", marginBottom: 8 }}>
+                  Shown once — it cannot be retrieved later. Expires{" "}
+                  {new Date(invite.expires_at).toLocaleString()}.
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <input
+                    className="sx-input sx-mono"
+                    readOnly
+                    value={inviteLink}
+                    onFocus={(e) => e.currentTarget.select()}
+                    style={{ flex: 1, minWidth: 240, fontSize: 11 }}
+                    aria-label="Invitation link"
+                  />
+                  <button
+                    className="sx-btn"
+                    style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+                    onClick={copyInvite}
+                  >
+                    {copied ? "Copied" : "Copy link"}
+                  </button>
+                  <button
+                    className="sx-btn"
+                    style={{ flex: "none", padding: "6px 12px", fontSize: 12 }}
+                    onClick={() => {
+                      setInvite(null)
+                      setCopied(false)
+                    }}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <p style={{ color: "var(--ink2)", fontSize: 12.5, margin: "10px 0 18px", lineHeight: 1.6 }}>
+            Only admins can invite new teammates.
+          </p>
+        )}
+
+        <SectionTitle
           title="Members"
           meta={isAdmin ? "assign roles and manage access" : "everyone in your organization"}
         />
@@ -282,9 +446,11 @@ export default function TeamPage() {
         <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 22, lineHeight: 1.6, maxWidth: 620 }}>
           {isAdmin ? (
             <>
-              New teammates join by registering with your organization name. They start as members —
-              promote anyone to admin here. The last active admin can&apos;t be demoted or deactivated,
-              so your organization can never lock itself out.
+              Open registration closed when this installation was claimed, so an invitation is the
+              only way in — someone registering with your organization&apos;s name would create a
+              second, separate organization instead of joining yours. Roles can be changed here
+              afterwards. The last active admin can&apos;t be demoted or deactivated, so your
+              organization can never lock itself out.
             </>
           ) : (
             <>Only admins can assign roles or manage access. Ask an admin if you need a role change.</>

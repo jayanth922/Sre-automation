@@ -5,12 +5,14 @@ This route group contains the public login and registration pages. It sits outsi
 ## Pages
 
 - [login/page.tsx](login/page.tsx) posts credentials to `/auth/token`, stores the bearer token through the auth context, and redirects into the app.
-- [register/page.tsx](register/page.tsx) creates a new account and organization through the auth API.
+- [setup/page.tsx](setup/page.tsx) claims an unclaimed installation, creating its first admin and organization. It closes permanently once a user exists.
+- [register/page.tsx](register/page.tsx) creates a new account and organization. It refuses once the installation is claimed, because joining an existing organization goes through an invitation instead.
+- [accept-invite/page.tsx](accept-invite/page.tsx) redeems an invitation token into an account. The email address and role come from the server-side invitation record, so the page only collects a password.
 
 ## Behavior
 
 - These pages are intentionally lightweight and do not use the protected dashboard chrome.
-- The login form expects the seeded admin credentials from the backend seed flow unless you have created your own user.
+- There is no seed account. The first admin comes from the claim page; everyone after that arrives by invitation.
 - The auth context syncs the token into a cookie so the middleware can allow access to protected routes.
 - Once the token is present, the app should transition into the protected dashboard shell without forcing a manual reload.
 
@@ -20,7 +22,7 @@ The auth pages are intentionally minimal because their job is to establish trust
 
 ## Extension Notes
 
-If you add another public auth screen, keep it in this route group so it remains accessible before login. If a future auth page needs dashboard chrome or cluster context, it probably belongs in the protected route group instead.
+If you add another public auth screen, keep it in this route group **and add its path to `isPublicPath` in `middleware.ts`** — otherwise the middleware redirects every unauthenticated visitor to `/login` before the page renders. If a future auth page needs dashboard chrome or cluster context, it probably belongs in the protected route group instead.
 
 ## Related Docs
 

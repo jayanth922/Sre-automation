@@ -153,3 +153,45 @@ def test_invitation_routers_are_mounted():
     source = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
     assert 'app.include_router(invitations.organization_router, prefix="/api/v1")' in source
     assert 'app.include_router(invitations.router, prefix="/api/v1")' in source
+
+
+def _public_path_expression() -> str:
+    """The one line in the dashboard middleware that decides what is public."""
+    source = (_ROOT / "dashboard" / "middleware.ts").read_text()
+    for line in source.splitlines():
+        if line.strip().startswith("const isPublicPath"):
+            return line
+    raise AssertionError("middleware.ts no longer declares isPublicPath")
+
+
+def test_the_accept_page_is_reachable_without_a_session():
+    """An invitee has no session cookie -- that is the entire point of one.
+
+    If /accept-invite is not public the middleware redirects them to /login
+    before the page renders, and the invitation is unusable. Neither the type
+    check nor the production build notices: both pass on a page nobody can
+    reach.
+    """
+    assert "'/accept-invite'" in _public_path_expression()
+
+
+def test_the_dashboard_calls_both_invitation_endpoints():
+    """Mounted routers with no caller is the state this flow was just in."""
+    team_page = (
+        _ROOT
+        / "dashboard"
+        / "app"
+        / "(dashboard)"
+        / "clusters"
+        / "[id]"
+        / "team"
+        / "page.tsx"
+    ).read_text()
+    accept_page = (
+        _ROOT / "dashboard" / "app" / "(auth)" / "accept-invite" / "page.tsx"
+    ).read_text()
+    assert "api.post<Invitation>(`/organizations/${orgId}/invitations`" in team_page
+    assert 'fetch("/api/v1/invitations/accept"' in accept_page
+    # The raw token is returned exactly once, so the page has to hand it over
+    # rather than assume it can be fetched again.
+    assert "Shown once" in team_page

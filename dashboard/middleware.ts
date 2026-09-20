@@ -11,7 +11,9 @@ export function middleware(request: NextRequest) {
     // Define public paths that don't depend on auth
     // /setup is public because an unclaimed install has no account to sign in
     // with; the page itself redirects away once the install has been claimed.
-    const isPublicPath = pathname === '/login' || pathname === '/register' || pathname === '/setup' || pathname.startsWith('/_next') || pathname.startsWith('/api') || pathname.startsWith('/static') || pathname.startsWith('/auth')
+    // /accept-invite is public for the same reason: the invitee has no account
+    // yet, so bouncing them to /login would make the invitation unusable.
+    const isPublicPath = pathname === '/login' || pathname === '/register' || pathname === '/setup' || pathname === '/accept-invite' || pathname.startsWith('/_next') || pathname.startsWith('/api') || pathname.startsWith('/static') || pathname.startsWith('/auth')
 
     if (!isPublicPath && !token) {
         // Redirect to login if accessing protected route without token
