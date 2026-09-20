@@ -65,24 +65,27 @@ least two trials per 22 scenarios) with `STATISTICAL_RECORDING`; then wire the
 diagnosis artifact and config fingerprint. Resolving trials can subsequently
 produce remediation calibration.
 
-The proposed diagnosis-only ablation still needs a design fix before spending
-money. #53 made `score_run` carry `severity_hit` and `structured_grade` through
-the unresolved path, so a gated trial is no longer scored as if nothing was
-learned — measured on smoke2, 4 of 8 criteria became 6, and `severity_accuracy`
-went from `None` to 1.0. That does **not** answer the objection: the trial
-schema is closed, `structured_grade` is deliberately not in it, and
-`quality_success` still requires recovery + PASS + safety, so quality and
-recovery remain zero in every arm until `statistical_eval`/`ablation_eval`
-change. At $2.21/incident, one, two, and three trials per scenario are
-upper-bounded near $194, $389, and $583.
+A gated trial is now scored on what it actually showed. #53 carries
+`severity_hit` and `structured_grade` through the unresolved path; #54 stops
+`_remediation` grading read-only `inspect` steps as bad remediation. On the
+real smoke2 trial the two together take scored criteria from 4 of 8 to 6,
+`severity_accuracy` from `None` to 1.0, and remediation from FAIL to PASS —
+while `grader_status` stays `NOT_APPLICABLE`, `safety_ok` stays true and
+`remediation_confidence` stays None, so a gated trial still seeds no
+remediation calibration. #28 is unblocked.
 
-Calibration support is the cheaper path and does not need autonomy. The
-escalation is gated on the **diagnosis** artifact, and an approval-gated trial
-already emits a diagnosis observation (verified on smoke2:
-`diagnosis_confidence=0.86`, outcome `False`). With
-`minimum_threshold_support=40`, that is ~40 gated incidents, ≈**$88**. Two
-caveats before relying on it: `STATISTICAL_RECORDING` has never run on this
-stack, and it is unverified whether a below-support artifact could flip
+Neither answers Codex's objection. The trial schema is closed,
+`structured_grade` is deliberately not in it, and `quality_success` still
+requires recovery + PASS + safety, so quality and recovery remain zero in every
+arm until `statistical_eval`/`ablation_eval` change. At $2.21/incident, one,
+two and three trials per scenario are upper-bounded near $194, $389 and $583.
+
+Calibration support is the cheaper path and needs no autonomy: escalation is
+gated on the **diagnosis** artifact, and a gated trial already emits a
+diagnosis observation (smoke2: `diagnosis_confidence=0.86`, outcome `False`).
+At `minimum_threshold_support=40` that is ~40 gated incidents, ≈**$88**. Two
+caveats: `STATISTICAL_RECORDING` has never run on this stack, and it is
+unverified whether a below-support artifact could flip
 `hypothesis_confidence_calibrated` true by returning non-None with a null
 threshold.
 
@@ -108,21 +111,20 @@ describe current Notion content without regenerating it deliberately.
   above come from Claude's recorded live probes and cannot be rechecked now.
 - `_scope_query` injects tenant namespace into only the first selector block;
   multi-selector PromQL remains incompletely scoped.
-- #54: `_remediation` grades read-only `inspect` steps against
-  `expected_action_types`, so the real plan `inspect, inspect, escalate` FAILs
-  only because of the inspects. Pre-existing; it would make the ablation's
-  remediation column non-discriminating. Unfixed on purpose — it changes the
-  rubric contract and likely needs a `rubric_version` bump. Blocks #28.
+- Grades are not comparable across the #54 fix. The rubric method was renamed
+  to `typed_remediation_action_match`, moving its sha256, so smoke2's earlier
+  recorded grade belongs to the old semantics. Nothing paid has run yet, so
+  nothing else is affected.
 - The `graph_builder.py` half of #53 is committed but needs an image rebuild to
   affect live runs; `scoring.py` takes effect on the next scoring pass.
 - `/app/reports` is not a volume; copy accounting/traces out before rebuilds.
 - Never stage `.agents/` or `.env.local-backup-20260910`; never `git add -A`.
 
 ## Next bounded task
-Get a decision on #54, since it gates #28. Then prove a statistical run
-actually persists `cost_usd` and confidence records — never yet run on this
-stack — and check that a below-support calibration artifact cannot spuriously
-mark confidence calibrated. Only then choose the campaign shape: ~$88 buys
-calibration support from gated incidents; the full paired ablation is the
-$194+ tier. Do not launch a paid campaign until the user picks stage and
-budget.
+Run the test suite on the Mac — the merged tree plus #53/#54 has never been
+executed anywhere, and the Codespace has no pytest. Then prove a statistical
+run actually persists `cost_usd` and confidence records, and check that a
+below-support calibration artifact cannot spuriously mark confidence
+calibrated. Only then choose the campaign shape: ~$88 buys calibration support
+from gated incidents; the full paired ablation is the $194+ tier. Do not launch
+a paid campaign until the user picks stage and budget.
