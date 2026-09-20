@@ -21,13 +21,54 @@ def test_benchmarks_do_not_ship_static_cluster_tokens():
         assert not re.search(r'ADMIN_PASSWORD\s*=\s*"admin"', text), path.name
 
 
-def test_env_example_has_no_seed_secrets():
+def test_env_example_ships_no_seed_account():
+    """The SEED_* block advertised a path no code ever implemented.
+
+    Six variables described an auto-seeded admin and cluster; nothing in this
+    repo has ever read one of them. The first admin now comes from the
+    first-run claim page, so the block is gone -- and must not come back. A
+    documented seed account is precisely the default credential the claim page
+    exists to avoid, and one that never worked is worse than one that did.
+    """
     text = (ROOT / ".env.example").read_text()
-    assert not re.search(r'SEED_ADMIN_PASSWORD="admin"', text)
-    assert 'SEED_ADMIN_PASSWORD=""' in text
-    assert 'SEED_CLUSTER_TOKEN=""' in text
-    # Reject any committed seed token shaped like cl_<hex> without embedding one here.
-    assert not re.search(r'SEED_CLUSTER_TOKEN="cl_[0-9a-f]{20,}"', text)
+    for dead in (
+        "SEED_ADMIN_EMAIL",
+        "SEED_ADMIN_PASSWORD",
+        "SEED_ADMIN_ORG",
+        "SEED_CLUSTER_TOKEN",
+        "SEED_CLUSTER_NAME",
+        "SEED_CLUSTER_STATUS",
+    ):
+        assert dead not in text, dead
+
+    # CLUSTER_TOKEN survives the cull: agent_runtime.py reads it for the
+    # self-hosted single-cluster runtime. It must still ship empty.
+    assert 'CLUSTER_TOKEN=""' in text
+    assert not re.search(r'CLUSTER_TOKEN="cl_[0-9a-f]{20,}"', text)
+
+
+def test_env_example_is_declared_optional():
+    """A fresh install needs no .env at all, and the file has to say so.
+
+    Every secret it used to demand is either generated into the keystore
+    volume or configured per-cluster in the dashboard. If this file goes back
+    to reading like a required checklist, the zero-config first run stops
+    being discoverable even though it still works.
+    """
+    text = (ROOT / ".env.example").read_text()
+    assert "OPTIONAL" in text.splitlines()[1]
+    assert "claim page" in text
+
+
+def test_env_example_does_not_advertise_the_dead_act_switch():
+    """ACT_PHASE_ENABLED gates nothing.
+
+    graph_builder._act_phase_enabled() returns True unconditionally, so
+    documenting an off-by-default switch told operators the system was a
+    read-only advisor when it had not been one for some time.
+    """
+    text = (ROOT / ".env.example").read_text()
+    assert "ACT_PHASE_ENABLED" not in text
 
 
 def test_architecture_readme_points_at_canonical_runtime():
