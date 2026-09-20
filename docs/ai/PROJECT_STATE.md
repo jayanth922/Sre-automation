@@ -93,11 +93,15 @@ describe current Notion content without regenerating it deliberately.
 - `check_python_quality.sh`, `check_eval_smoke.sh`, secret scan → pass.
 
 ## Known blockers or risks
-- **The deployed image is stale and unidentifiable.** Worker preflight reports
-  `code_sha=bc18e30-dirty-p0p1fix` — 11+ commits behind the branch, and built
-  from an uncommitted tree, so what is running cannot be recovered from the
-  sha. Any component "verified" against the live stack is verified against
-  code nobody can name. Rebuild before believing a component check.
+- Model accounting records `fallback_from: anthropic → actual_provider:
+  litellm` on every call, but **no fallback occurs**: `actual_provider` is
+  LangChain's `ls_provider` integration name
+  (`model_accounting.py:566`), not the route. Cosmetic in cost terms, an
+  untrue operator-facing claim in honesty terms. Unfixed.
+- `remediation_gate_approvals` has a single writer
+  (`sre_agent/approval_flow.py:460`) that has never fired, against 61
+  `approval_requests` (44 expired, 17 approved). Probably because autonomous
+  remediation has never run; unconfirmed.
 - `_scope_query` injects tenant namespace into only the first selector block;
   multi-selector PromQL remains incompletely scoped.
 - Grades are not comparable across the #54 fix. The rubric method was renamed
@@ -111,13 +115,15 @@ describe current Notion content without regenerating it deliberately.
 
 ## Next bounded task
 The user set the order: every backend component working as intended, then
-the frontend wired, then benchmarking. **(0)** Rebuild and redeploy — the
-running image is stale, and this needs the user's go-ahead. **(1)** Run
+the frontend wired, then benchmarking. **(0)** Done 2026-09-20: rebuilt at
+`code_sha=9e7e3d5…`, parity passed, k3s recovered and the Alertmanager webhook
+repointed after the node IP moved. **(1)** Run
 `pytest` on the Mac; the merged tree plus #53/#54 has executed nowhere and
 the Codespace has no pytest (expect 1,982, up 7). **(2)** Verify components
-against the rebuilt stack: `remediation_gate_approvals` empty against 61
-`approval_requests`, the Slack credentials' source unexplained, a litellm
-fallback on every model call, `STATISTICAL_RECORDING` never run here.
+against the rebuilt stack — three answered already (the gate's writer never
+fires; the Slack token is `organizations.slack_bot_token`, not an env var; the
+litellm "fallback" is a label bug), leaving `STATISTICAL_RECORDING`, which has
+never run here, and the below-support calibration check.
 **(3)** Frontend: no restart policy on the dashboard, six API modules with no
 caller. **(4)** Only then the campaign shape, ~$88 versus the $194+ tier, and
 not without the user's stage and budget.

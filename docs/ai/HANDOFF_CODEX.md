@@ -359,10 +359,34 @@ set it on 2026-09-19, verbatim:
 Benchmarking is therefore **last**, even though it is the decision with money
 attached and the most tempting thing to plan for.
 
-### Step 0 — rebuild and redeploy; the running image is stale
+### Step 0 — rebuild and redeploy — DONE 2026-09-20
 
-**This blocks every step after it.** The Temporal worker's preflight on the
-live stack reports:
+**Resolved.** `bash scripts/deploy_agent_runtimes.sh` ran clean in 94s and
+`check_runtime_parity.py` passed at
+`code_sha=9e7e3d55d07f9d364d8639ca25190461625e42c7`
+`fingerprint=9cf36dc029370f64e31a2b5c4e8282229acd6b1f89a7144e7fc181fc1dd731fc`
+`files=157` — a clean full sha equal to HEAD, with no `-dirty` suffix, on both
+the API and the Temporal worker. The stack is now running identifiable code
+and component checks against it mean something. Keep the rest of this step as
+the standing procedure and the reason it matters.
+
+Two things the rebuild surfaced, both now handled:
+
+- **k3s was down** — every `meridian` pod `Exited (255)`, the API server
+  refusing on 6443. `sudo bash scripts/codespace_boot.sh` recovered it; all 15
+  pods are `Running 1/1`. Always check this after a resume, and check it
+  *before* concluding anything about the agent's tools.
+- **The Codespace node IP had changed**, `10.0.1.129 → 10.0.1.58`, so the
+  Alertmanager webhook was pointing at an address that no longer exists.
+  `codespace_boot.sh` repoints it automatically — which is exactly why it must
+  be run rather than hand-starting k3s. Alert delivery was silently broken
+  until it ran.
+- `/app/reports` is not a volume, so it was copied to
+  `/home/vscode/reports-backup-20260920-060115/` (`run-trace.jsonl`,
+  `model-accounting.jsonl`, 464K) before the recreate. Do this every time.
+
+The original finding, kept because it is the reason this step exists — the
+Temporal worker's preflight used to report:
 
 ```
 code_sha=bc18e30-dirty-p0p1fix
@@ -385,8 +409,8 @@ comparison at differing `code_sha`). Then confirm with
 `python3 scripts/check_runtime_parity.py` on the Codespace host, and re-run
 the sweep in Step 2 — every number in it predates the rebuild.
 
-This restarts the user's stack, so it needs their go-ahead. It was asked for
-on 2026-09-19 and not answered. Ask again; do not assume.
+This restarts the user's stack, so it needs their go-ahead each time. It was
+given on 2026-09-20 for the rebuild above; it does not carry forward.
 
 ### Step 1 — run the test suite, which has never run anywhere
 
@@ -410,8 +434,9 @@ and nothing else stops them drifting.
 
 ### Step 2 — verify the backend component by component
 
-A read-only sweep on 2026-09-19 (pre-rebuild, so re-run it) found the platform
-up and holding real data:
+A read-only sweep, first run 2026-09-19 and **re-run after the rebuild on
+2026-09-20 with every number unchanged**, finds the platform up and holding
+real data:
 
 | check | result |
 | --- | --- |
@@ -433,28 +458,47 @@ which is not the same claim as "every component works as intended". The sweep
 proves liveness and data; it proves no behaviour. These are the behavioural
 checks still owed, cheapest first:
 
-- **`remediation_gate_approvals` has 0 rows while `approval_requests` has 61.**
-  Either the gate table is vestigial and approvals flow entirely through
-  `approval_requests`, or a write path is dead. Settle it from
-  `sre_agent/api/v1/remediation_gates.py` and the model definition. Do not
-  settle it by writing a row — see the hard constraints on approval state.
-- **Find where the Slack credentials actually come from.** `SLACK_BOT_TOKEN`,
-  `SLACK_SIGNING_SECRET` and `SLACK_CHANNEL_ID` are **not** in
-  `sre-agent-api`'s environment, and yet Slack demonstrably works: 61 approval
-  requests exist and the user approves in Slack. So the config is loaded from
-  somewhere the env sweep did not look. Slack is the only communication
-  channel this system has, so a config path nobody can point at is a real
-  operational risk, not trivia. (Do not report this as "Slack is broken" — an
-  earlier pass nearly did.)
-- **Explain `fallback_from: anthropic → actual_provider: litellm` with
-  `fallback_allowed: false`, which appears on every model call.**
-  `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` is set (108 chars), while
-  `LLM_MODEL` and `LITELLM_BASE_URL` are unset in the container env — so the
-  litellm route is not coming from the environment. The lead worth checking
-  first: a cluster row carries its own `llm_provider`, `llm_model`,
-  `llm_base_url` and `llm_router_enabled` (see the `Cluster` type in
-  `dashboard/lib/console.ts`, mirrored from `backend/schemas.py`), and there
-  is exactly **1** cluster row. Read that row before reading any more code.
+Three of these were **answered on 2026-09-20** against the rebuilt stack, at
+no cost. They are kept here with their answers, because each one was a wrong
+conclusion waiting to happen:
+
+- **`remediation_gate_approvals` is empty but NOT vestigial.** There is
+  exactly one writer, `sre_agent/approval_flow.py:460`
+  (`models.RemediationGateApproval(...)`), reachable from
+  `incident_remediation_workflow.py` and `api/v1/remediation_gates.py`, with
+  its own migration `e4f5a6b7c8d9`. So the gate is a real, distinct path that
+  **has never once fired**, while the 61 rows in `approval_requests` (44
+  expired, 17 approved) came through the ordinary approval flow. The likely
+  reason is that the gate belongs to autonomous remediation, which calibration
+  has never let run — consistent with everything else here, but confirm it
+  before relying on it. Do not settle this by writing a row.
+- **The Slack bot token is a per-org database column, not an env var.**
+  `organizations.slack_bot_token` is set (123 chars) with
+  `slack_team_id=T0C0FK431GA`. The env sweep that reported `SLACK_BOT_TOKEN`
+  "missing" was right and the inference from it would have been wrong: the
+  only Slack vars in the container are app-level (`SLACK_APP_TOKEN`,
+  `SLACK_OAUTH_SCOPES`, `SLACK_WAR_ROOM_CHANNEL`), because a per-tenant token
+  belongs to the tenant row. This is the correct multi-tenant design, not a
+  gap. Slack is the only communication channel this system has, so know where
+  its credentials live before touching anything near them.
+- **The litellm "fallback" is a label, not a fallback.** `actual_provider`
+  is read straight from LangChain's `ls_provider` metadata in
+  `sre_agent/model_accounting.py:566` (`_start`), falling back to
+  `identity.constructed_provider`. Calls go through the LiteLLM-backed chat
+  model, so LangChain reports `ls_provider="litellm"` while the configured
+  provider is `anthropic` — and the accounting layer then records that
+  difference as `fallback_from: anthropic`. Nothing actually routed away from
+  Anthropic: `llm_base_url` is NULL on the one cluster row (which is
+  `provider=anthropic model=claude-sonnet-5 router=true`), `LITELLM_BASE_URL`
+  is unset, and the measured cost matches Anthropic pricing.
+  **This is a real defect, just not a routing one**: every accounting record
+  claims a fallback that did not happen, which is precisely the kind of
+  untrue operator-facing claim this project exists to eliminate. Fix it by
+  comparing against the *integration* name rather than the configured provider
+  name. To settle it beyond doubt, assert the response's model id on one live
+  call.
+
+Still open, and both must be closed before paying for a campaign:
 - **`STATISTICAL_RECORDING` has never been set on this stack**, nor
   `DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH`, nor `SENTINEL_CONFIG_FINGERPRINT`.
   Prove that a recording run actually persists `cost_usd` and a diagnosis
@@ -483,9 +527,13 @@ Two concrete gaps:
    service in the compose file with `RestartPolicy=no`, where `sre-agent-api`
    and `sre-postgres` are `unless-stopped`. It did **not** crash — its logs
    show `Ready in 43s`, then `HEAD /login 200`, then `Exited (255)` when the
-   Codespace suspended. It simply never comes back, so the UI looks dead after
-   every resume and the natural conclusion ("the dashboard is broken") is
-   wrong. One line in `platform/docker-compose.yaml`. It runs Next.js 16.1.6
+   Codespace suspended. It simply never comes back on its own, so the UI
+   looks dead after every resume and the natural conclusion ("the dashboard is
+   broken") is wrong. `scripts/codespace_boot.sh` does bring it back as part
+   of "ensuring platform docker-compose stack is up" — verified 2026-09-20 —
+   so the gap is narrower than it first looks: the dashboard recovers only
+   when someone remembers to run the boot script. Still worth one line in
+   `platform/docker-compose.yaml`. It runs Next.js 16.1.6
    with Turbopack in **dev** mode, 3002→3000, from image
    `platform-dashboard:latest`.
 2. **Six API modules have no dashboard caller**: `invitations`, `jobs`,
