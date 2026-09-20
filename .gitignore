@@ -125,3 +125,15 @@ deploy/terraform/*.tfstate.*
 deploy/terraform/terraform.tfvars
 deploy/terraform/*.tfplan
 deploy/terraform/ci.tfplan
+
+# Secrets: every .env variant, however it is suffixed.
+# `.env` under "Virtual environments" above matches only that exact name, so
+# backups like `.env.bak-phase0` or `.env.local-backup-20260910` slipped past
+# it while holding live SECRET_KEY / CREDENTIAL_ENCRYPTION_KEY values.
+# `.env.example` is the one that must stay tracked.
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
