@@ -16,9 +16,11 @@ it whole, because its Step 0 blocks everything after it.
 You are continuing work on **Sentinel**, a multi-tenant LangGraph SRE agent
 that investigates Kubernetes incidents for a demo tenant called **Meridian**,
 and asks a human to approve any cluster write over Slack. The repo is at
-`/Users/jayan/Downloads/Sre-automation`, branch **`merge/codex-reconcile`**
-(not `master`) — it carries Codex's 24 commits, the Codespace's 20, and the
-#53/#54 grading fixes, and it is pushed. Whether it becomes a PR into `master`
+`/Users/jayan/Downloads/Sre-automation`, branch **`master`** (`2ba66f4`) —
+PR #55 merged the reconciliation on 2026-09-20 with all 18 CI checks green,
+so Codex's 24 commits, the Codespace's 20, #53/#54 and the routing fix are
+all on `master`. Every other branch was fully contained in it and has been
+deleted; `master` is the only branch on the remote. Whether it becomes a PR into `master`
 is the user's decision, not yours.
 
 ## Read these first, in this order
@@ -228,7 +230,8 @@ Three remain open, and none of them is yours to action:
    user is running. Asked on 2026-09-19 and not yet answered. See Step 0.
 2. **The campaign shape and budget** — roughly $88 for calibration support
    versus the $194/$389/$583 paired-ablation tiers. See Step 4.
-3. **Whether `merge/codex-reconcile` becomes a PR into `master`.**
+3. ~~Whether the reconciliation branch becomes a PR into `master`.~~
+   Settled 2026-09-20: merged as PR #55, branches cleaned up.
 
 ## Deferred backlog — real, unfixed, and not part of Phase C
 
@@ -394,7 +397,7 @@ fingerprint=ad5097880c74dbef95672455198119f65d9b14c26df3a518cfc723cd21a07b60
 files=157
 ```
 
-`bc18e30` is 11+ commits behind `merge/codex-reconcile`, and the entire Codex
+`bc18e30` was 11+ commits behind the reconciliation branch, and the entire Codex
 merge lands after it. The `-dirty-p0p1fix` suffix is the worse half: the image
 was built from an uncommitted working tree, so **what is actually deployed
 cannot be recovered from the sha**. Every component you verify against this
@@ -412,11 +415,26 @@ the sweep in Step 2 — every number in it predates the rebuild.
 This restarts the user's stack, so it needs their go-ahead each time. It was
 given on 2026-09-20 for the rebuild above; it does not carry forward.
 
-### Step 1 — run the test suite, which has never run anywhere
+### Step 1 — run the test suite — DONE 2026-09-20, by CI
 
-`merge/codex-reconcile` is Codex's 24 commits plus the Codespace's 20 plus
-#53 and #54, and **no `pytest` has executed against that tree on any machine**.
-The Codespace has no pytest at all, so this is Codex's to do on the Mac:
+**Resolved, and not the way this step expected.** The suite had never run
+against the reconciled tree on any machine, and the Codespace has no pytest —
+but PR #55 ran it in CI: **1,966 passed** plus 19 integration tests, 41
+warnings, 65% coverage, all 18 checks green (run `35494662328`).
+
+That first run also found why nobody had seen a green suite: the backend job
+sets `LLM_PROVIDER=anthropic` and an `ANTHROPIC_API_KEY`, but synced only the
+`dev` and `temporal` extras. `langchain-anthropic` lives in the optional
+`anthropic` extra, so seven tests — the four ablation graph-shape tests, the
+reflector-loop wiring test and both `llm_retry` backend tests — had been
+failing on **every** run, `master` included, with `ModuleNotFoundError`. CI
+had never exercised the backend production runs on. Fixed by syncing
+`--extra anthropic`; `uv.lock` already pinned it, so `--frozen` still
+resolves.
+
+**Use CI as the test gate from here.** Push the branch and read the checks;
+a local run is no longer the only option. The original instructions are kept
+below for the case where you need to run it on the Mac anyway:
 
 ```bash
 .venv/bin/python -m pytest -q

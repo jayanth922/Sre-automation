@@ -11,15 +11,16 @@ deployed to Codespace `cuddly-winner-659v67gv695hrxjw` (2026-09-19):
 
 - Four Meridian runbooks published to Notion; a post-write dump scores
   22/22. Backups: `~/Downloads/notion-runbook-backups/`.
-- Specialists receive the full selected procedure, exact alert labels/time
-  and bounded prior findings; tool results cap at 20k chars, histories at 60k
-  tokens, and durable evidence stays lossless. Model-directed reads are
-  fail-closed on target/window/limit. Detail lives in `HANDOFF_CODEX.md`
+- Specialists get the full procedure, exact alert labels/time and bounded
+  prior findings; tool results cap at 20k chars, histories at 60k tokens,
+  model-directed reads are fail-closed. Detail: `HANDOFF_CODEX.md`
   → "Phase C — implemented result".
 
-All of it is merged and pushed as **`merge/codex-reconcile`** (`f45b6e4`):
-Codex's 24 commits, the Codespace's 20, and #53/#54. Whether that branch
-becomes a PR into `master` is the user's call.
+All of it is on **`master`** (`2ba66f4`) via PR #55 — Codex's 24 commits,
+the Codespace's 20, #53/#54 and the routing fix, merged 2026-09-20 with all
+18 CI checks green. Every other branch was fully contained in `master` and
+has been deleted; `master` is now the only branch on the remote. The running
+stack matches it: `code_sha=2ba66f4…`, parity passed.
 
 ## Current architecture and invariants
 - `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
@@ -35,15 +36,20 @@ becomes a PR into `master` is the user's call.
   cancelling sibling calls.
 
 ## Completed or verified work
-- #48 unwraps LangChain ToolCall envelopes before argument enforcement; live
-  smoke improved from 16/142 successful tools to 53/59.
-- #49 adds `or vector(0)` to counter probes so healthy absent counters produce
-  zero; v2 split digests were regenerated. #50 allows only that exact clause
-  through the PromQL validator.
-- Notion pagination now returns all four runbooks in the live container.
+- #48 unwraps ToolCall envelopes before argument enforcement; live smoke went
+  from 16/142 successful tools to 53/59. #49 adds `or vector(0)` to counter
+  probes and #50 admits only that clause through the PromQL validator; v2
+  split digests were regenerated. Notion pagination returns all four runbooks.
 - Anthropic prompt-cache TTL is live at 5m, not the costlier 1h override.
 - Current smoke `b13ce2c5`: $2.2079, 69 model calls, stopped correctly at human
   approval; this is a floor for a resolving trial.
+- Model accounting no longer claims a fallback on every call. `ls_provider`
+  names the *integration* (`litellm`), not the route; `_effective_route`
+  resolves it from the router's qualified model id. Replaying the 163 real
+  records: 163 false claims → 0, with genuine fallbacks still caught.
+- CI set `LLM_PROVIDER=anthropic` but never synced the `anthropic` extra, so
+  7 tests failed on every run, `master` included. Now syncs it.
+- The dashboard has the `restart: unless-stopped` the rest of the stack had.
 
 ## Active problem
 Autonomy is gated by calibration, not a runtime bug. Uncalibrated confidence
@@ -53,12 +59,9 @@ least two trials per 22 scenarios) with `STATISTICAL_RECORDING`; then wire the
 diagnosis artifact and config fingerprint. Resolving trials can subsequently
 produce remediation calibration.
 
-A gated trial is now scored on what it showed: #53 carries `severity_hit`
-and `structured_grade` through the unresolved path, #54 stops `_remediation`
-grading read-only `inspect` steps as bad remediation. On smoke2 the pair moves
-scored criteria from 4 of 8 to 6, `severity_accuracy` from `None` to 1.0, and
-remediation from FAIL to PASS — while a gated trial still seeds no remediation
-calibration. #28 is unblocked.
+#53 and #54 made a gated trial carry its full structured grade (smoke2: 4 of
+8 scored criteria to 6, `severity_accuracy` `None` to 1.0, remediation FAIL to
+PASS), which unblocked #28 without seeding remediation calibration.
 
 Neither answers Codex's objection. The trial schema is closed,
 `structured_grade` is deliberately not in it, and `quality_success` still
@@ -75,8 +78,8 @@ unverified whether a below-support artifact could flip
 `hypothesis_confidence_calibrated` true by returning non-None with a null
 threshold.
 
-The local runbook corpus snapshot is pre-publish and stale; do not use it to
-describe current Notion content without regenerating it deliberately.
+The local runbook corpus snapshot is pre-publish and stale; regenerate it
+before using it to describe Notion.
 
 ## Relevant files
 - Query/context: `sre_agent/{namespace_scope,mcp_tool_wrapper,agent_nodes,
@@ -87,46 +90,46 @@ describe current Notion content without regenerating it deliberately.
 - Operations and rationale: `docs/ai/HANDOFF_CODEX.md`, `DECISIONS.md`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → 1,975 passed, 37 warnings.
+- CI on `master` (run 35494662328, 2026-09-20), all 18 checks green:
+  **1,966 passed** + 19 integration, 41 warnings, 65% coverage. This is the
+  first green run — the suite had been red since before the reconciliation.
 - `scripts/audit_runbook_coverage.py` → 22/22 against the fresh live dump.
 - `scripts/audit_runbook_controls.py` → 4 detected, 1 known blind.
 - `check_python_quality.sh`, `check_eval_smoke.sh`, secret scan → pass.
 
 ## Known blockers or risks
-- Model accounting records `fallback_from: anthropic → actual_provider:
-  litellm` on every call, but **no fallback occurs**: `actual_provider` is
-  LangChain's `ls_provider` integration name
-  (`model_accounting.py:566`), not the route. Cosmetic in cost terms, an
-  untrue operator-facing claim in honesty terms. Unfixed.
 - `remediation_gate_approvals` has a single writer
   (`sre_agent/approval_flow.py:460`) that has never fired, against 61
   `approval_requests` (44 expired, 17 approved). Probably because autonomous
   remediation has never run; unconfirmed.
 - `_scope_query` injects tenant namespace into only the first selector block;
   multi-selector PromQL remains incompletely scoped.
-- Grades are not comparable across the #54 fix. The rubric method was renamed
-  to `typed_remediation_action_match`, moving its sha256, so smoke2's earlier
-  recorded grade belongs to the old semantics. Nothing paid has run yet, so
-  nothing else is affected.
-- The `graph_builder.py` half of #53 is committed but needs an image rebuild to
-  affect live runs; `scoring.py` takes effect on the next scoring pass.
+- Grades are not comparable across the #54 fix: the rubric method was renamed
+  to `typed_remediation_action_match`, moving its sha256, so smoke2's recorded
+  grade belongs to the old semantics. Nothing paid has run, so nothing else is.
 - `/app/reports` is not a volume; copy accounting/traces out before rebuilds.
 - Never stage `.agents/` or `.env.local-backup-20260910`; never `git add -A`.
 
 ## Next bounded task
 The user set the order: every backend component working as intended, then
-the frontend wired, then benchmarking. **(0)** Done 2026-09-20: rebuilt at
-`code_sha=9e7e3d5…`, parity passed, k3s recovered and the Alertmanager webhook
-repointed after the node IP moved. **(1)** Run
-`pytest` on the Mac; the merged tree plus #53/#54 has executed nowhere and
-the Codespace has no pytest (expect 1,982, up 7). **(2)** Verify components
-against the rebuilt stack — three answered already (the gate's writer never
-fires; the Slack token is `organizations.slack_bot_token`, not an env var; the
-litellm "fallback" is a label bug), leaving `STATISTICAL_RECORDING`, which has
-never run here, and the below-support calibration check.
-**(3)** Frontend: no restart policy on the dashboard, six API modules with no
-caller. **(4)** Only then the campaign shape, ~$88 versus the $194+ tier, and
-not without the user's stage and budget.
+the frontend wired, then benchmarking.
+
+**(0) and (1) are done** — deployed at `code_sha=2ba66f4…` with parity
+passing, and CI runs the suite green, so use CI as the gate rather than a
+local pytest run.
+
+**(2) has two checks left.** Prove `STATISTICAL_RECORDING`, which has never
+run on this stack, persists `cost_usd` and confidence records; and check
+whether a below-support calibration artifact can spuriously set
+`hypothesis_confidence_calibrated`.
+
+**(3) then the frontend.** Six API modules have no caller (`invitations`,
+`jobs`, `mission_control`, `ownership`, `tickets`, `ws_tickets`). The data
+layer is axios, not `fetch` — 49 calls across ~25 endpoints, so the UI is far
+more wired than a `fetch(` grep suggests.
+
+**(4)** Only then the campaign shape, ~$88 versus the $194+ tier, and not
+without the user's stage and budget.
 
 `docs/ai/HANDOFF_CODEX.md` → "The current plan" holds the evidence, the sweep
 numbers and the trap for each step.
