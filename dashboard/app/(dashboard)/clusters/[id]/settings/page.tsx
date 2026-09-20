@@ -81,6 +81,8 @@ export default function SettingsPage() {
     llm_base_url: "",
     llm_api_key: "",
     llm_router_enabled: false,
+    environment: "",
+    approval_ttl_minutes: "",
   })
   const [models, setModels] = useState<{ id: string; display_name: string }[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -127,6 +129,9 @@ export default function SettingsPage() {
     if (!cluster) return
     setEndpoints({
       name: cluster.name ?? "",
+      environment: cluster.environment ?? "",
+      approval_ttl_minutes:
+        cluster.approval_ttl_minutes == null ? "" : String(cluster.approval_ttl_minutes),
       prometheus_url: cluster.prometheus_url ?? "",
       loki_url: cluster.loki_url ?? "",
       github_repo: cluster.github_repo ?? "",
@@ -220,6 +225,12 @@ export default function SettingsPage() {
         llm_base_url: endpoints.llm_base_url,
         llm_api_key: endpoints.llm_api_key || undefined,
         llm_router_enabled: endpoints.llm_router_enabled,
+        // Blank means "inherit the deployment default", so these go as null
+        // rather than being dropped -- omitting them could never clear one.
+        environment: endpoints.environment || null,
+        approval_ttl_minutes: endpoints.approval_ttl_minutes.trim()
+          ? Number(endpoints.approval_ttl_minutes)
+          : null,
       })
       setSaved(true)
       setTimeout(() => window.location.reload(), 700)
@@ -353,6 +364,49 @@ export default function SettingsPage() {
               <div>
                 <label className="sx-label" htmlFor="set-ns">Namespace</label>
                 <input id="set-ns" className="sx-input sx-mono" style={{ fontSize: 12 }} placeholder="e.g. production" value={endpoints.namespace} onChange={(e) => setEndpoints({ ...endpoints, namespace: e.target.value })} />
+              </div>
+            </div>
+
+            <SectionTitle title="Operations" meta="how this cluster is labelled and how long approvals live" />
+            <p style={{ color: "var(--ink2)", fontSize: 12.5, marginTop: 8, lineHeight: 1.6 }}>
+              Optional. Leave either blank to inherit the deployment default. These are per-cluster
+              because one setting shared by every cluster cannot describe a staging namespace and a
+              production one served by the same platform.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12, maxWidth: 320 }}>
+              <div>
+                <label className="sx-label" htmlFor="set-env">Environment</label>
+                <select
+                  id="set-env"
+                  className="sx-input"
+                  value={endpoints.environment}
+                  onChange={(e) => setEndpoints({ ...endpoints, environment: e.target.value })}
+                >
+                  <option value="">(deployment default)</option>
+                  <option value="production">production</option>
+                  <option value="staging">staging</option>
+                  <option value="development">development</option>
+                  <option value="testing">testing</option>
+                </select>
+                <div className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)", marginTop: 6 }}>
+                  Labels this cluster&apos;s traces and run manifests. An unrecognised value always
+                  reads back as production, so this never silently downgrades a production cluster.
+                </div>
+              </div>
+              <div>
+                <label className="sx-label" htmlFor="set-ttl">Approval window (minutes)</label>
+                <input
+                  id="set-ttl"
+                  className="sx-input sx-mono"
+                  style={{ fontSize: 12 }}
+                  inputMode="numeric"
+                  placeholder="(deployment default: 30)"
+                  value={endpoints.approval_ttl_minutes}
+                  onChange={(e) => setEndpoints({ ...endpoints, approval_ttl_minutes: e.target.value })}
+                />
+                <div className="sx-mono" style={{ fontSize: 11, color: "var(--ink3)", marginTop: 6 }}>
+                  How long a proposed remediation stays approvable before it goes stale.
+                </div>
               </div>
             </div>
           </div>

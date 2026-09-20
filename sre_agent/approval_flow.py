@@ -25,8 +25,17 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def approval_ttl() -> timedelta:
-    raw = os.getenv("APPROVAL_TTL_MINUTES", "30")
+def approval_ttl(cluster: Any = None) -> timedelta:
+    """How long a proposed remediation stays approvable.
+
+    The cluster's own setting wins; APPROVAL_TTL_MINUTES remains as the
+    fleet-wide default for deployments that never set one per cluster. A
+    cluster of None (or one predating the column) is the env-var path
+    unchanged.
+    """
+    raw = getattr(cluster, "approval_ttl_minutes", None) if cluster is not None else None
+    if raw is None:
+        raw = os.getenv("APPROVAL_TTL_MINUTES", "30")
     try:
         minutes = max(1, int(raw))
     except (TypeError, ValueError):
@@ -343,6 +352,9 @@ async def create_or_reuse_pending_approval(
             await db.flush()
             request = None
 
+        # The cluster's own approval window, when it sets one; approval_ttl
+        # falls back to the deployment default for a cluster that does not.
+        cluster = await db.get(models.Cluster, cluster_uuid)
         created = request is None
         if created:
             request = models.ApprovalRequest(
@@ -352,7 +364,7 @@ async def create_or_reuse_pending_approval(
                 organization_id=organization_uuid,
                 cluster_id=cluster_uuid,
                 status=models.ApprovalStatus.PENDING,
-                expires_at=now + approval_ttl(),
+                expires_at=now + approval_ttl(cluster),
             )
             db.add(request)
 
@@ -1152,7 +1164,8 @@ async def decide_action_approval(
         # only fires while status is still "pending": an already
         # approved/rejected/expired-and-superseded row is untouched.
         if pending.status == models.ApprovalStatus.PENDING and is_expired(pending.expires_at, now):
-            pending.expires_at = now + approval_ttl()
+            cluster = await db.get(models.Cluster, uuid.UUID(str(cluster_id)))
+            pending.expires_at = now + approval_ttl(cluster)
             await db.flush()
 
         # Slack's "approve fix" only names the incident, not the action hash —

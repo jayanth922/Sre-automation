@@ -69,6 +69,20 @@ def _value(source: Any, name: str) -> Optional[str]:
     return str(value).strip()
 
 
+def cluster_environment(cluster: Any) -> str:
+    """This cluster's own environment label, falling back to the operator's.
+
+    Per-cluster because one process-wide env var cannot describe a platform
+    where every Cluster row is a different tenant's namespace. The fallback
+    order ends in _normalized_environment, so an unset column, an unset env
+    var and an unrecognised value all still resolve to "production": a typo
+    cannot quietly relabel a production cluster as staging.
+    """
+    return _normalized_environment(
+        _value(cluster, "environment") or os.getenv("SENTINEL_CLUSTER_ENVIRONMENT")
+    )
+
+
 def is_production_runtime() -> bool:
     environment = (
         os.getenv("SENTINEL_ENV")
@@ -156,7 +170,7 @@ class ExecutionContext:
             llm_model=llm["model"],
             llm_base_url=llm["base_url"],
             llm_router_enabled=bool(getattr(cluster, "llm_router_enabled", False)),
-            environment=operator_cluster_environment(),
+            environment=cluster_environment(cluster),
             key_version=int(getattr(cluster, "key_version", 1) or 1),
             context_version=int(getattr(cluster, "execution_context_version", 1) or 1),
         )

@@ -316,7 +316,11 @@ def build_run_manifest(
             "model_router_enabled": os.getenv("MODEL_ROUTER_ENABLED", "true").lower(),
             "model_router_backend": os.getenv("MODEL_ROUTER_BACKEND", "provider"),
             "executor_live": os.getenv("EXECUTOR_LIVE", "false").lower(),
-            "act_phase_enabled": os.getenv("ACT_PHASE_ENABLED", "false").lower(),
+            # The OODA act phase is unconditional -- graph_builder
+            # ._act_phase_enabled() returns True and nothing reads the old env
+            # var. Recording os.getenv(..., "false") here stamped every
+            # manifest with "false" for a phase that always ran.
+            "act_phase_enabled": "true",
             # `runtime` is fingerprinted, so recording the arm here is what
             # makes two ablation arms structurally incomparable: the paired
             # evaluator refuses matching fingerprints, and no operator has to

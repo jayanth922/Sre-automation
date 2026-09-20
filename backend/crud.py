@@ -306,12 +306,17 @@ async def update_cluster(
     # field too, leaving the cluster with no explicit LLM provider — there is
     # no platform-default fallback, so investigations refuse clearly at run
     # time (resolve_authorized_llm) until one is set again.
+    # Policy settings clear the same way: sending them empty means "stop
+    # overriding", which puts the cluster back on the deployment default
+    # rather than pinning whatever the default happened to be on save day.
     for field in (
         "namespace",
         "llm_provider",
         "llm_model",
         "llm_base_url",
         "llm_api_key",
+        "environment",
+        "approval_ttl_minutes",
     ):
         if field in data:
             setattr(cluster, field, data[field] or None)

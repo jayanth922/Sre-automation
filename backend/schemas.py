@@ -151,6 +151,13 @@ class OrgResponse(BaseModel):
 # Cluster Schemas
 # ----------------------------------------------------------------------
 
+# The canonical environment labels. Anything else normalises to
+# "production" downstream (execution_context._normalized_environment), so
+# constraining the input here is what turns a typo into a 422 the admin can
+# see instead of a cluster quietly relabelled as production.
+ClusterEnvironment = Literal["production", "staging", "development", "testing"]
+
+
 class ClusterCreate(BaseModel):
     name: str
     # Customer infrastructure endpoints (platform calls these directly)
@@ -176,6 +183,9 @@ class ClusterCreate(BaseModel):
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_router_enabled: Optional[bool] = None
+    # Operational policy. Null leaves the cluster on the deployment default.
+    environment: Optional[ClusterEnvironment] = None
+    approval_ttl_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
 
 class ClusterUpdate(BaseModel):
     name: Optional[str] = None
@@ -198,6 +208,8 @@ class ClusterUpdate(BaseModel):
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_router_enabled: Optional[bool] = None
+    environment: Optional[ClusterEnvironment] = None
+    approval_ttl_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
 
 class ClusterResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -224,6 +236,10 @@ class ClusterResponse(BaseModel):
     llm_model: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_router_enabled: bool = False
+    # Null here means "inheriting the deployment default", which the settings
+    # page shows as such rather than inventing a value the row does not hold.
+    environment: Optional[str] = None
+    approval_ttl_minutes: Optional[int] = None
 
 class LlmModelsRequest(BaseModel):
     # Optional: lets the dashboard list models for a key the admin just typed

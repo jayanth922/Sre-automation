@@ -24,6 +24,9 @@ export interface Cluster {
   llm_model: string | null
   llm_base_url: string | null
   llm_router_enabled: boolean
+  // null = inheriting the deployment default rather than holding a value.
+  environment: string | null
+  approval_ttl_minutes: number | null
 }
 
 export interface Org {

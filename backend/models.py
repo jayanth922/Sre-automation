@@ -211,6 +211,20 @@ class Cluster(Base):
         Boolean, nullable=False, server_default=text("false")
     )
 
+    # Operational policy for this cluster. Both are nullable because null
+    # means "no per-cluster opinion, use the deployment default" -- the
+    # operator env vars stay as a fleet-wide fallback rather than being
+    # replaced by a value every cluster would otherwise have to restate.
+    #
+    # environment labels traces, run manifests and the context fingerprint.
+    # It is per-cluster because one process-wide SENTINEL_CLUSTER_ENVIRONMENT
+    # cannot describe a platform where each Cluster row is a different
+    # tenant's namespace -- staging and production clusters served by the
+    # same API were both being labelled identically.
+    environment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # How long a proposed remediation stays approvable before it goes stale.
+    approval_ttl_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="clusters")
     incidents: Mapped[List["Incident"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
