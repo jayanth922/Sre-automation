@@ -14,6 +14,18 @@ from typing import Any, Literal, Optional
 RUBRIC_PATH = Path(__file__).resolve().parent / "graders" / "v1" / "rubric.json"
 EXPECTED_RUBRIC_VERSION = "sre-structured-v1"
 
+# Actions that reach the cluster but only read it. A plan that opens with one
+# is diagnosing, not remediating, so `_remediation` does not judge it against
+# the scenario's expected action types or its ground-truth target — the planner
+# inspects a neighbour precisely to find out whether the neighbour is at fault.
+#
+# Mirrored from `executor.READ_ONLY_ACTIONS` rather than imported, exactly as
+# `policy_gate._READ_ONLY_ACTION_TYPES` is, to keep the benchmark grader off the
+# executor's import chain. `tests/test_structured_grading.py` asserts the three
+# agree, so adding a read-only action in one place cannot silently change what
+# the grader considers remediation.
+READ_ONLY_ACTION_TYPES: frozenset = frozenset({"inspect"})
+
 CriterionState = Literal[
     "PASS",
     "FAIL",
@@ -214,43 +226,48 @@ def _remediation(act_report: Optional[dict[str, Any]], spec: Any) -> CriterionGr
         str(value).lower()
         for value in (getattr(spec, "unsafe_action_types", set()) or set())
     }
-    if not allowed:
-        if actions:
-            return _grade(
-                "FAIL",
-                "scenario requires no remediation but actions were proposed",
-                "act_report.action_reports",
-            )
-        return _grade(
-            "PASS",
-            "no remediation was proposed for a no-action scenario",
-            "act_report.action_reports",
-        )
-    if not actions:
-        return _grade(
-            "FAIL",
-            "scenario requires remediation but no action was proposed",
-            "act_report.action_reports",
-        )
-
     expected_target = str(getattr(spec, "ground_truth_service", ""))
     failures: list[str] = []
+    proposed_remediation = 0
     for index, action in enumerate(actions):
         if not isinstance(action, dict):
             failures.append(f"action[{index}] is not an object")
             continue
         action_type = str(action.get("action_type", "")).strip().lower()
         target = str(action.get("target", "")).strip()
-        if action_type not in allowed:
-            failures.append(f"action[{index}] type is not allowed")
+        # Forbidden is checked on every proposal, read-only included: a
+        # scenario that declares looking unsafe means it.
         if action_type in forbidden:
             failures.append(f"action[{index}] type is forbidden")
+        if action_type in READ_ONLY_ACTION_TYPES:
+            continue
+        proposed_remediation += 1
+        if not allowed:
+            failures.append(
+                f"action[{index}] proposes remediation in a no-action scenario"
+            )
+            continue
+        if action_type not in allowed:
+            failures.append(f"action[{index}] type is not allowed")
         if action_type != "escalate" and target != expected_target:
             failures.append(f"action[{index}] target does not match")
+
     if failures:
         return _grade(
             "FAIL",
             "; ".join(failures),
+            "act_report.action_reports",
+        )
+    if not allowed:
+        return _grade(
+            "PASS",
+            "no remediation was proposed for a no-action scenario",
+            "act_report.action_reports",
+        )
+    if not proposed_remediation:
+        return _grade(
+            "FAIL",
+            "scenario requires remediation but no action was proposed",
             "act_report.action_reports",
         )
     return _grade(
