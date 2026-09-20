@@ -476,12 +476,27 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
 
     # Raw reflector confidence is retained as evidence but cannot affect
     # severity until a diagnosis-specific calibration artifact maps it.
+    #
+    # "Maps it" has to mean an artifact that certified an operating point.
+    # build_calibration_artifact deliberately emits a valid artifact with
+    # autonomy_threshold=None -- plus a blocked reason -- when its corpus is
+    # below minimum_threshold_support or was not observed live, and
+    # calibrate_confidence still returns a mapping from one. So accepting any
+    # non-None result admitted exactly the artifacts that had refused to
+    # certify themselves, and the model's own self-report then switched off
+    # "when unsure, round up". build_act_report already requires the
+    # threshold for the remediation path; severity requires it too.
     reflector = _get(state, "reflector_analysis")
     raw_confidence = _raw_probability(_get(reflector, "confidence"))
     calibrated = _configured_confidence(
         raw_confidence,
         task="diagnosis",
         environment_variable="DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH",
+    )
+    certified = (
+        calibrated
+        if calibrated is not None and calibrated.autonomy_threshold is not None
+        else None
     )
 
     # Prefer structured metrics from investigation results over labels.
@@ -547,6 +562,17 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
                 unknown=True,
             )
         )
+    if certified is not None:
+        # The number severity policy actually reads. The raw link above stays
+        # so an operator can see how far the model's self-report sat from the
+        # empirical mapping that overruled it.
+        links.append(
+            evidence(
+                "hypothesis_confidence_calibrated",
+                certified.calibrated_probability,
+                source=f"calibration_artifact:{certified.artifact_version}",
+            )
+        )
 
     return IncidentSignals(
         affected_services=measured["affected_services"],
@@ -562,9 +588,11 @@ def extract_incident_signals(state: Any) -> IncidentSignals:
         error_rate_slope=measured["error_rate_slope"],
         saturation=measured["saturation"],
         still_escalating=measured["still_escalating"],
-        hypothesis_confidence=confidence,
+        hypothesis_confidence=(
+            certified.calibrated_probability if certified is not None else confidence
+        ),
         evidence=links,
-        hypothesis_confidence_calibrated=calibrated is not None,
+        hypothesis_confidence_calibrated=certified is not None,
     )
 
 
