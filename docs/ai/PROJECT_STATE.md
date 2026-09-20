@@ -9,24 +9,17 @@ control writes, approvals, status transitions, and operator-facing claims.
 The four-phase context/runbook pass and follow-up specialist hardening are
 deployed to Codespace `cuddly-winner-659v67gv695hrxjw` (2026-09-19):
 
-- Four Meridian runbooks were published to Notion. A post-write dump scores
-  22/22; exactly four bodies changed, properties and 16 `RB-AUTO-*` pages did
-  not. Backups are under `~/Downloads/notion-runbook-backups/`.
-- Specialists receive the full selected procedure, exact alert labels/time,
-  and bounded prior findings. Tool results enter the model at 20k characters
-  maximum and histories at 60k tokens; durable evidence remains lossless.
-- Model-directed logs, metrics, GitHub, Kubernetes, and fallback runbook reads
-  are fail-closed on target/window/limit. Source servers also bound payloads;
-  full runbook bodies are deliberately exempt.
-- `github_real` now returns bounded, largest-change-first file/patch evidence.
-- Stable Langfuse observation names identify each specialist role.
+- Four Meridian runbooks published to Notion; a post-write dump scores
+  22/22. Backups: `~/Downloads/notion-runbook-backups/`.
+- Specialists receive the full selected procedure, exact alert labels/time
+  and bounded prior findings; tool results cap at 20k chars, histories at 60k
+  tokens, and durable evidence stays lossless. Model-directed reads are
+  fail-closed on target/window/limit. Detail lives in `HANDOFF_CODEX.md`
+  → "Phase C — implemented result".
 
-The work is committed and pushed. Codex's 24 commits are `origin/master`
-(`5117955`); the Codespace's 20 are `pr/context-engineering-and-gated-grading`,
-merged with Codex's in that branch. The two histories diverged at `1d4fe000`
-and duplicated twelve commits, but 52 of 59 shared files were byte-identical,
-so only four conflicted — three were prose-only and took Codex's wording
-because it matched the code.
+All of it is merged and pushed as **`merge/codex-reconcile`** (`f45b6e4`):
+Codex's 24 commits, the Codespace's 20, and #53/#54. Whether that branch
+becomes a PR into `master` is the user's call.
 
 ## Current architecture and invariants
 - `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
@@ -40,8 +33,6 @@ because it matched the code.
   but bypasses model-search breadth limits.
 - Scope refusals are audited as `REFUSED` and returned to the model without
   cancelling sibling calls.
-- `SENTINEL_ABLATION_ARM=full` is the shared control; four arms mean 88
-  incidents per one-trial/scenario campaign, not 132.
 
 ## Completed or verified work
 - #48 unwraps LangChain ToolCall envelopes before argument enforcement; live
@@ -53,9 +44,6 @@ because it matched the code.
 - Anthropic prompt-cache TTL is live at 5m, not the costlier 1h override.
 - Current smoke `b13ce2c5`: $2.2079, 69 model calls, stopped correctly at human
   approval; this is a floor for a resolving trial.
-- Latest recorded suite: 1,975 passed, 37 known warnings; runbooks 22/22;
-  controls 4 detected plus 1 documented known blind; quality, 45-test eval
-  smoke, and secret scan pass.
 
 ## Active problem
 Autonomy is gated by calibration, not a runtime bug. Uncalibrated confidence
@@ -65,14 +53,12 @@ least two trials per 22 scenarios) with `STATISTICAL_RECORDING`; then wire the
 diagnosis artifact and config fingerprint. Resolving trials can subsequently
 produce remediation calibration.
 
-A gated trial is now scored on what it actually showed. #53 carries
-`severity_hit` and `structured_grade` through the unresolved path; #54 stops
-`_remediation` grading read-only `inspect` steps as bad remediation. On the
-real smoke2 trial the two together take scored criteria from 4 of 8 to 6,
-`severity_accuracy` from `None` to 1.0, and remediation from FAIL to PASS —
-while `grader_status` stays `NOT_APPLICABLE`, `safety_ok` stays true and
-`remediation_confidence` stays None, so a gated trial still seeds no
-remediation calibration. #28 is unblocked.
+A gated trial is now scored on what it showed: #53 carries `severity_hit`
+and `structured_grade` through the unresolved path, #54 stops `_remediation`
+grading read-only `inspect` steps as bad remediation. On smoke2 the pair moves
+scored criteria from 4 of 8 to 6, `severity_accuracy` from `None` to 1.0, and
+remediation from FAIL to PASS — while a gated trial still seeds no remediation
+calibration. #28 is unblocked.
 
 Neither answers Codex's objection. The trial schema is closed,
 `structured_grade` is deliberately not in it, and `quality_success` still
@@ -107,8 +93,11 @@ describe current Notion content without regenerating it deliberately.
 - `check_python_quality.sh`, `check_eval_smoke.sh`, secret scan → pass.
 
 ## Known blockers or risks
-- The only live stack is the Codespace, currently `Shutdown`; deployment facts
-  above come from Claude's recorded live probes and cannot be rechecked now.
+- **The deployed image is stale and unidentifiable.** Worker preflight reports
+  `code_sha=bc18e30-dirty-p0p1fix` — 11+ commits behind the branch, and built
+  from an uncommitted tree, so what is running cannot be recovered from the
+  sha. Any component "verified" against the live stack is verified against
+  code nobody can name. Rebuild before believing a component check.
 - `_scope_query` injects tenant namespace into only the first selector block;
   multi-selector PromQL remains incompletely scoped.
 - Grades are not comparable across the #54 fix. The rubric method was renamed
@@ -121,10 +110,17 @@ describe current Notion content without regenerating it deliberately.
 - Never stage `.agents/` or `.env.local-backup-20260910`; never `git add -A`.
 
 ## Next bounded task
-Run the test suite on the Mac — the merged tree plus #53/#54 has never been
-executed anywhere, and the Codespace has no pytest. Then prove a statistical
-run actually persists `cost_usd` and confidence records, and check that a
-below-support calibration artifact cannot spuriously mark confidence
-calibrated. Only then choose the campaign shape: ~$88 buys calibration support
-from gated incidents; the full paired ablation is the $194+ tier. Do not launch
-a paid campaign until the user picks stage and budget.
+The user set the order: every backend component working as intended, then
+the frontend wired, then benchmarking. **(0)** Rebuild and redeploy — the
+running image is stale, and this needs the user's go-ahead. **(1)** Run
+`pytest` on the Mac; the merged tree plus #53/#54 has executed nowhere and
+the Codespace has no pytest (expect 1,982, up 7). **(2)** Verify components
+against the rebuilt stack: `remediation_gate_approvals` empty against 61
+`approval_requests`, the Slack credentials' source unexplained, a litellm
+fallback on every model call, `STATISTICAL_RECORDING` never run here.
+**(3)** Frontend: no restart policy on the dashboard, six API modules with no
+caller. **(4)** Only then the campaign shape, ~$88 versus the $194+ tier, and
+not without the user's stage and budget.
+
+`docs/ai/HANDOFF_CODEX.md` → "The current plan" holds the evidence, the sweep
+numbers and the trap for each step.
