@@ -1492,6 +1492,10 @@ async def _run_graph_impl(
     runtime = None
     root_trace_id = None
     api_key_token = None
+    # Keep a safe empty value for startup failures that happen before the
+    # graph state is built. Once specialists run, this becomes the source of
+    # their durable context-fitting telemetry on both success and failure.
+    current_execution_state: Dict[str, Any] = {}
     try:
         runtime = await initialize_agent(cluster_id)
         agent_graph, tools = runtime.graph, runtime.tools
@@ -1552,6 +1556,29 @@ async def _run_graph_impl(
             normalised_severity = "info"
         else:
             normalised_severity = "warning"
+
+        # Attach the operator's runbook before the graph starts. This path
+        # builds AlertContext straight from the incident row and never runs
+        # ContextBuilder, so the runbook was reaching the agent only in local
+        # fallback mode — i.e. never in production. Without it every
+        # specialist opens with open-ended discovery and re-derives, from raw
+        # evidence, a procedure somebody already wrote down.
+        if not effective_annotations.get("runbook_context"):
+            try:
+                from .context_builder import resolve_runbook_context
+
+                runbook_context = await resolve_runbook_context(
+                    tools,
+                    alert_name=alert_name,
+                    severity=normalised_severity,
+                    labels=effective_labels,
+                )
+                if runbook_context:
+                    effective_annotations["runbook_context"] = runbook_context
+            except Exception as runbook_err:
+                # A missing runbook degrades the investigation; an exception
+                # here would cancel it.
+                logger.warning(f"Runbook enrichment skipped: {runbook_err}")
 
         try:
             built_alert_context = AlertContext(
@@ -1928,6 +1955,12 @@ async def _run_graph_impl(
             root_trace_id=root_trace_id,
             model_accounting=model_accounting,
         )
+        context_fitting = dict(
+            ((current_execution_state.get("metadata") or {}).get(
+                "context_fitting", {}
+            ))
+            or {}
+        )
 
         # Update Incident and Job in Postgres with RICH DATA
         effective_status = computed_status
@@ -1977,6 +2010,7 @@ async def _run_graph_impl(
                     "verification": verification_serializable,
                     "model_accounting": model_accounting,
                     "trace_completeness": trace_completeness,
+                    "context_fitting": context_fitting,
                 }
                 if audit_failure:
                     result_payload["audit_persist_failed"] = True
@@ -2203,6 +2237,12 @@ async def _run_graph_impl(
                          "error": str(e),
                          "model_accounting": failed_model_accounting,
                          "trace_completeness": failed_trace_completeness,
+                         "context_fitting": dict(
+                             ((current_execution_state.get("metadata") or {}).get(
+                                 "context_fitting", {}
+                             ))
+                             or {}
+                         ),
                      }
                  )
                  terminal_failure = await record_investigation_job_failure(

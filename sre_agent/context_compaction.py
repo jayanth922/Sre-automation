@@ -48,8 +48,10 @@ import copy
 import json
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +86,45 @@ _PER_MESSAGE_OVERHEAD_TOKENS = 8
 # point the fitter drops whole turns instead of shaving further.
 DEFAULT_TOOL_RESULT_FLOOR_CHARS = 1500
 
+# No single tool result may enter the model's view larger than this, even when
+# the transcript is otherwise well under budget.
+#
+# Measured on the 2026-09-19 validation run (job ea5d1744, $7.90): one
+# `logs_agent` trace came back at 1,782,133 bytes — 77% of all evidence
+# gathered in the whole investigation. The ReAct loop re-sends the transcript
+# on every iteration, so that one payload was billed again on each subsequent
+# step of that specialist. 8 of 114 model calls (7%) carried 1,295,598 input
+# tokens and $3.68 of the $7.90 bill (47%).
+#
+# The budget below could not stop it: the newest turn group is protected from
+# trimming (steps 1 and 2), and the total only exceeded the ceiling after the
+# payload had already been sent. A per-result ceiling applies on arrival
+# instead, so the blowup never starts. 20,000 characters is ~5k tokens —
+# roughly 500 log lines or a full `kubectl get -o json` for a deployment, and
+# two orders of magnitude below the payload that caused this.
+#
+# Nothing is lost: this rewrites only `llm_input_messages`. Graph state keeps
+# the full transcript, and the lossless copy is in the run's evidence artifact.
+DEFAULT_TOOL_RESULT_MAX_CHARS = 20_000
+
+# Working budget for one iteration of an agent's tool loop. Not the structural
+# ceiling — see `iteration_budget_tokens`.
+DEFAULT_ITERATION_BUDGET_TOKENS = 60_000
+
 # Never hand back a ceiling so small the request is pointless.
 _MIN_INPUT_CEILING_TOKENS = 1000
 
 _ELISION_ROLE = "system"
+
+# A specialist can run concurrently with other specialists in the same
+# process. A module-level list would mix their reports; a ContextVar gives
+# every async invocation its own collector while still reaching the
+# synchronous LangGraph pre-model hook executed inside that invocation.
+_fit_report_collector: ContextVar[Optional[List["FitReport"]]] = ContextVar(
+    "context_fit_report_collector", default=None
+)
+
+CONTEXT_FITTING_SCHEMA_VERSION = 1
 
 
 # --------------------------------------------------------------------------
@@ -166,20 +203,38 @@ def default_max_tokens() -> int:
 def iteration_budget_tokens() -> int:
     """Budget enforced before each model call inside an agent loop.
 
-    Defaults to the hard ceiling: the loop's job is to not blow up the request,
-    and trimming a specialist's evidence for cost reasons is an explicit choice
-    an operator opts into with ``CONTEXT_ITERATION_MAX_TOKENS``, not a default
-    that silently degrades diagnosis quality.
+    This used to default to the hard ceiling, on the reasoning that
+    per-iteration trimming exists to prevent a failed request and that
+    degrading diagnosis quality for cost should be opted into. The 2026-09-19
+    validation run measured what that costs: the ceiling is ~186k tokens, and
+    a budget that only binds there binds *after* the expensive call, not
+    before it — 7% of model calls carried 37% of all input tokens and 47% of
+    the bill.
+
+    So the default is now a working budget, not a structural one. The ceiling
+    still applies on top; ``CONTEXT_ITERATION_MAX_TOKENS`` still overrides.
+    The quality argument survives because the sacrifice order is unchanged
+    (oldest tool results first, newest turn protected) and because the full
+    transcript stays in graph state and in the evidence artifact — this trims
+    the model's view of old evidence, not the record of it.
     """
     ceiling = hard_input_ceiling_tokens()
     configured = os.getenv("CONTEXT_ITERATION_MAX_TOKENS", "").strip()
     if not configured:
-        return ceiling
+        return min(DEFAULT_ITERATION_BUDGET_TOKENS, ceiling)
     return min(_int_env("CONTEXT_ITERATION_MAX_TOKENS", ceiling), ceiling)
 
 
 def tool_result_floor_chars() -> int:
     return _int_env("CONTEXT_TOOL_RESULT_FLOOR_CHARS", DEFAULT_TOOL_RESULT_FLOOR_CHARS)
+
+
+def tool_result_max_chars() -> int:
+    """Hard per-result ceiling, applied on arrival regardless of the budget."""
+    return max(
+        _int_env("CONTEXT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS),
+        tool_result_floor_chars(),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -406,6 +461,11 @@ class FitReport:
     before_tokens: int
     after_tokens: int
     truncated_results: int = 0
+    # Results that hit the per-result ceiling on arrival. Counted apart from
+    # `truncated_results` because they are a different event: that one means
+    # "the transcript was over budget", this one means "one payload was too
+    # big to admit in the first place".
+    capped_results: int = 0
     dropped_messages: int = 0
     dropped_groups: int = 0
     fitted: bool = True
@@ -413,7 +473,9 @@ class FitReport:
 
     @property
     def changed(self) -> bool:
-        return bool(self.truncated_results or self.dropped_messages)
+        return bool(
+            self.truncated_results or self.capped_results or self.dropped_messages
+        )
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -421,11 +483,111 @@ class FitReport:
             "before_tokens": self.before_tokens,
             "after_tokens": self.after_tokens,
             "truncated_results": self.truncated_results,
+            "capped_results": self.capped_results,
             "dropped_messages": self.dropped_messages,
             "dropped_groups": self.dropped_groups,
             "fitted": self.fitted,
             "actions": list(self.actions),
         }
+
+
+@contextmanager
+def capture_fit_reports() -> Iterator[List[FitReport]]:
+    """Capture every model-call fit report in the current async context.
+
+    The yielded list is intentionally mutable: child asyncio tasks inherit the
+    ContextVar value and append to the same invocation-owned list. Resetting
+    the token on exit prevents a later specialist from inheriting stale data.
+    """
+    reports: List[FitReport] = []
+    token = _fit_report_collector.set(reports)
+    try:
+        yield reports
+    finally:
+        _fit_report_collector.reset(token)
+
+
+def _record_fit_report(report: FitReport) -> None:
+    collector = _fit_report_collector.get()
+    if collector is not None:
+        collector.append(report)
+
+
+def summarize_fit_reports(reports: List[FitReport]) -> Dict[str, Any]:
+    """Build a compact, durable summary for one specialist invocation."""
+    before = sum(report.before_tokens for report in reports)
+    after = sum(report.after_tokens for report in reports)
+    return {
+        "schema_version": CONTEXT_FITTING_SCHEMA_VERSION,
+        "specialist_invocations": 1,
+        "model_calls": len(reports),
+        "changed_calls": sum(1 for report in reports if report.changed),
+        "fitted_calls": sum(1 for report in reports if report.fitted),
+        "unfitted_calls": sum(1 for report in reports if not report.fitted),
+        "estimated_message_tokens_before": before,
+        "estimated_message_tokens_after": after,
+        "estimated_message_tokens_avoided": sum(
+            max(report.before_tokens - report.after_tokens, 0)
+            for report in reports
+        ),
+        "max_message_tokens_before": max(
+            (report.before_tokens for report in reports), default=0
+        ),
+        "max_message_tokens_after": max(
+            (report.after_tokens for report in reports), default=0
+        ),
+        "budget_tokens": sorted({report.budget_tokens for report in reports}),
+        "capped_results": sum(report.capped_results for report in reports),
+        "truncated_results": sum(
+            report.truncated_results for report in reports
+        ),
+        "dropped_messages": sum(report.dropped_messages for report in reports),
+        "dropped_groups": sum(report.dropped_groups for report in reports),
+    }
+
+
+def merge_fit_summaries(
+    previous: Optional[Dict[str, Any]], current: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Merge repeated invocations of the same specialist without raw logs."""
+    if not previous:
+        return copy.deepcopy(current)
+
+    additive = (
+        "specialist_invocations",
+        "model_calls",
+        "changed_calls",
+        "fitted_calls",
+        "unfitted_calls",
+        "estimated_message_tokens_before",
+        "estimated_message_tokens_after",
+        "estimated_message_tokens_avoided",
+        "capped_results",
+        "truncated_results",
+        "dropped_messages",
+        "dropped_groups",
+    )
+    merged: Dict[str, Any] = {
+        "schema_version": CONTEXT_FITTING_SCHEMA_VERSION,
+    }
+    for key in additive:
+        merged[key] = int(previous.get(key, 0) or 0) + int(
+            current.get(key, 0) or 0
+        )
+    for key in ("max_message_tokens_before", "max_message_tokens_after"):
+        merged[key] = max(
+            int(previous.get(key, 0) or 0), int(current.get(key, 0) or 0)
+        )
+    merged["budget_tokens"] = sorted(
+        {
+            int(value)
+            for value in [
+                *(previous.get("budget_tokens", []) or []),
+                *(current.get("budget_tokens", []) or []),
+            ]
+        }
+    )
+    return merged
 
 
 def _shrink_text(text: str, floor_chars: int) -> str:
@@ -441,8 +603,9 @@ def _shrink_text(text: str, floor_chars: int) -> str:
     tail = max(floor_chars - head, 0)
     removed = len(text) - head - tail
     marker = (
-        f"\n… [{removed} characters elided to fit the model's context budget; "
-        "the full tool output is preserved in this run's evidence artifact] …\n"
+        f"\n… [{removed} chars elided; full output is only in the audit evidence "
+        "artifact and unavailable in the current model view. Re-query with narrower "
+        "labels/time/limit if needed; never infer absence.] …\n"
     )
     return text[:head] + marker + (text[-tail:] if tail else "")
 
@@ -477,7 +640,33 @@ def fit_to_budget(
     total = sum(costs)
     report = FitReport(budget_tokens=budget, before_tokens=total, after_tokens=total)
 
+    # 0. Cap every oversized tool result, including the protected newest turn,
+    #    and do it whether or not the transcript is over budget. The steps
+    #    below cannot reach this case: they exempt the newest turn group, and
+    #    by the time a single multi-megabyte payload pushes the total over the
+    #    ceiling it has already been sent once at full price and will be
+    #    re-sent on every following iteration. A ceiling that applies on
+    #    arrival is the only one that prevents that rather than reporting it.
+    ceiling = tool_result_max_chars()
+    for index, message in enumerate(working):
+        if not _is_tool_result(message):
+            continue
+        text = _content(message)
+        if len(text) <= ceiling:
+            continue
+        working[index] = _with_content(message, _shrink_text(text, ceiling))
+        total -= costs[index]
+        costs[index] = message_tokens(working[index])
+        total += costs[index]
+        report.capped_results += 1
+    if report.capped_results:
+        report.actions.append(
+            f"capped {report.capped_results} oversized tool result(s) at {ceiling} chars"
+        )
+
+    report.after_tokens = total
     if total <= budget or not working:
+        report.fitted = True
         return working, report
 
     groups = turn_groups(working)
@@ -518,7 +707,9 @@ def fit_to_budget(
                 f"[{report.dropped_groups} earlier tool round(s) "
                 f"({report.dropped_messages} messages) elided to fit the model's "
                 "context budget; the full transcript is preserved in this run's "
-                "evidence artifact]"
+                "audit evidence artifact but is not available in the current model view. "
+                "Re-query the source narrowly if the omitted evidence matters; "
+                "never infer absence from this preview]"
             )
             kept = [m for i, m in enumerate(working) if i not in dropped]
             working = kept[:protected_head] + [note] + kept[protected_head:]
@@ -611,6 +802,7 @@ def make_pre_model_hook(
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("context budgeting skipped (non-fatal): %s", exc)
             return {"llm_input_messages": _prepare(list(messages or []))}
+        _record_fit_report(report)
         if on_report is not None and report.changed:
             try:
                 on_report(report)

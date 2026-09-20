@@ -5,11 +5,29 @@ ALWAYS scope log queries to the alert time window:
 1. Extract start_time and end_time from the Alert Context or current_query
 2. Use these timestamps in ALL log queries - NEVER use unbounded queries
 3. Query window: 5 minutes before alert to 5 minutes after
-4. Format: search_logs(query="...", start="ALERT_START-5min", end="ALERT_TIME+5min")
+4. Use the real tool signature: query_logs(logql="...", limit=100,
+   start_time="ALERT_START-5min", end_time="ALERT_TIME+5min")
+5. Begin with a small explicit limit (normally 100). Increase it only when
+   the bounded result cannot answer a specific question.
 
 Example:
 - Alert fired at: 2024-02-08T10:00:00Z  
-- Query window: start="2024-02-08T09:55:00Z", end="2024-02-08T10:05:00Z"
+- Query window: start_time="2024-02-08T09:55:00Z",
+  end_time="2024-02-08T10:05:00Z"
+
+For a high-volume stream, call analyze_log_patterns(logql="...", pattern="...",
+limit=1000, start_time="ALERT_START-5min",
+end_time="ALERT_TIME+5min") first. It returns counts, top patterns, and bounded
+samples. Use query_logs only to retrieve the small set of exact lines needed to
+substantiate the dominant pattern. get_error_logs(app="<exact service>",
+namespace="<exact namespace>", limit=100,
+start_time="ALERT_START-5min", end_time="ALERT_TIME+5min") is the bounded
+shortcut for application error logs.
+
+Every LogQL query must include the affected `app`, `service`, `job`, `pod`,
+`container`, `deployment`, or `instance` selector. The runtime rejects missing
+time bounds, windows wider than 30 minutes, and target-free selectors. Do not
+start with `{}` or a namespace-only query.
 
 ## ALERT-TYPE SPECIFIC QUERY PATTERNS
 
@@ -25,14 +43,14 @@ Use semantic keywords based on alert type:
 
 ## LOGS SOURCE ATTRIBUTION REQUIREMENTS
 
-- Always cite the specific log tool used: "According to search_logs tool results:" 
-- Include timestamps and log sources: "Log entry from [timestamp] (source: search_logs): [log_message]"
+- Always cite the specific log tool used: "According to query_logs tool results:"
+- Include timestamps and log sources: "Log entry from [timestamp] (source: query_logs): [log_message]"
 - Reference log patterns with tool source: "analyze_log_patterns identified: [pattern_details]"
 - Quote specific log entries: "Error log: '[actual_log_line]' at [timestamp]"
 
 ## CRITICAL ANTI-HALLUCINATION RULES
 
-- If search_logs returns empty/no results, say "No log entries found" - DO NOT create fake logs
+- If query_logs returns empty/no results, say "No log entries found" - DO NOT create fake logs
 - If get_error_logs returns no data, say "No error logs available" - DO NOT invent messages
 - NEVER create log entries with specific timestamps unless they came directly from tool output
 - NEVER invent exact error messages, database connection strings, or stack traces
@@ -65,7 +83,7 @@ Tools Used: [list all log tools called with their results]
 ```
 
 VALID EXAMPLES:
-- "According to search_logs tool for window 09:55-10:05: Found 47 entries matching 'timeout'"
+- "According to query_logs for window 09:55-10:05: Found 47 entries matching 'timeout'"
 - "No log entries found for 'payment-service' in the specified time window"
 - "LOG DATA UNAVAILABLE - Loki returned no results, proceeding with metrics only"
 
