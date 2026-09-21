@@ -1573,3 +1573,44 @@ recomputes the threshold curve from the bins and re-derives the selected point
 from the recorded rule, rejecting any artifact whose threshold did not come
 from an all-`live_benchmark` corpus — a hand-edited and re-digested artifact
 fails to load. The contract is enforced, not advisory.
+
+
+## The console shows approvals; Slack makes them
+
+**Decision.** `POST /api/v1/incidents/{id}/approve`,
+`POST /api/v1/incidents/{id}/mark-resolved` and
+`POST /api/v1/incidents/{id}/remediation-gates/{gate}/decide` have no
+dashboard caller **on purpose**. The console renders approval *state* and
+routes the approval *action* to the incident's Slack thread. Do not add
+approval buttons to the dashboard.
+
+**Reason.** The standing product constraint is that Slack is the only
+communication surface, and the dashboard already says so in words rather than
+by omission: `clusters/[id]/incidents/[incidentId]/page.tsx:493` renders
+`Approve or deny from the incident's Slack thread ("approve {gate}" / "deny
+{gate}")` and `:558` renders `Reply "approve fix" in the incident's Slack
+thread to run it.` Gate status is typed and displayed
+(`PENDING | APPROVED | REJECTED | EXPIRED`), and `components/console/Rail.tsx:51`
+carries an `awaitingApproval` badge on every page. One decision surface also
+means one audit story: `approval_flow.py` reconciles the HTTP and Slack paths
+deliberately so "mark-resolved and Slack's `mark resolved` / `acknowledge`
+cannot drift" (`approval_flow.py:749`).
+
+**Consequences.** Any endpoint-coverage audit will flag these three as
+uncalled, and they will keep looking like the most alarming finding in the
+report — an SRE console that cannot approve. That reading is wrong, and this
+entry exists so the next audit does not spend its budget "fixing" it. A
+path-level audit on 2026-09-20 found 42 of 56 v1 endpoints called; of the 14
+without a caller, exactly one was a genuine gap (the emergency lock, now
+wired). The other thirteen were this decision, the Alertmanager webhook, two
+endpoints whose data already arrives embedded in a list response, and three
+absences that are themselves deliberate — one of which,
+`POST /clusters/{id}/jobs/trigger`, is pinned by an assertion that it stays
+absent (`tests/test_console_wiring.py:38`).
+
+**Rejected alternative.** Adding buttons "for parity", leaving Slack as one of
+two ways to approve. Two writable surfaces for the same state transition means
+two audit paths, two idempotency stories and a race at the gate, in exchange
+for convenience on a flow whose whole point is that a human is deliberately in
+it. The cheap half of the value — seeing what is waiting, and on what — is
+already delivered read-only.

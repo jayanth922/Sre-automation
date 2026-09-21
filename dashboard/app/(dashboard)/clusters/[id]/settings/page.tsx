@@ -5,6 +5,7 @@ import { useParams } from "next/navigation"
 import { api, useAuth } from "@/lib/auth-context"
 import { useCluster } from "@/components/console/ClusterContext"
 import { ConsolePage } from "@/components/console/ConsolePage"
+import { BreakGlassControl } from "@/components/console/BreakGlass"
 import { SectionTitle } from "@/components/console/ui"
 
 interface ConnCheck {
@@ -100,7 +101,7 @@ export default function SettingsPage() {
   const [err, setErr] = useState<string | null>(null)
   const [conns, setConns] = useState<ConnCheck[] | null>(null)
   const [checking, setChecking] = useState(false)
-  const [tab, setTab] = useState<"infra" | "integrations" | "ai">("infra")
+  const [tab, setTab] = useState<"infra" | "integrations" | "ai" | "safety">("infra")
 
   const checkConnections = useCallback(async () => {
     setChecking(true)
@@ -291,6 +292,7 @@ export default function SettingsPage() {
           <button className={tab === "infra" ? "on" : ""} onClick={() => setTab("infra")}>Infrastructure</button>
           <button className={tab === "integrations" ? "on" : ""} onClick={() => setTab("integrations")}>Integrations</button>
           <button className={tab === "ai" ? "on" : ""} onClick={() => setTab("ai")}>AI &amp; metrics</button>
+          <button className={tab === "safety" ? "on" : ""} onClick={() => setTab("safety")}>Safety</button>
         </div>
 
         {tab === "infra" && (
@@ -634,29 +636,36 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {tab === "safety" && <BreakGlassControl clusterId={id} />}
+
         {err && <div className="sx-empty" style={{ borderColor: "var(--crit-t)", color: "var(--crit)", padding: 14, marginTop: 18 }}>{err}</div>}
       </div>
 
-      <div
-        style={{
-          position: "sticky",
-          bottom: 0,
-          marginTop: 28,
-          maxWidth: 620,
-          padding: "14px 0",
-          background: "var(--paper)",
-          borderTop: "1px solid var(--rule2)",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-        }}
-      >
-        <button className="sx-btn primary" style={{ flex: "none", padding: "7px 18px" }} onClick={save} disabled={!isAdmin || saving}>
-          {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
-        </button>
-        {!isAdmin && <span className="sx-dry" style={{ textAlign: "left" }}>Only admins can change cluster settings.</span>}
-        <span style={{ color: "var(--ink3)", fontSize: 11 }}>Applies to all tabs above.</span>
-      </div>
+      {/* The break glass acts the moment it is clicked, so the save bar would be
+          lying if it sat under it -- "Applies to all tabs above" is exactly the
+          claim that tab breaks. */}
+      {tab !== "safety" && (
+        <div
+          style={{
+            position: "sticky",
+            bottom: 0,
+            marginTop: 28,
+            maxWidth: 620,
+            padding: "14px 0",
+            background: "var(--paper)",
+            borderTop: "1px solid var(--rule2)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <button className="sx-btn primary" style={{ flex: "none", padding: "7px 18px" }} onClick={save} disabled={!isAdmin || saving}>
+            {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
+          </button>
+          {!isAdmin && <span className="sx-dry" style={{ textAlign: "left" }}>Only admins can change cluster settings.</span>}
+          <span style={{ color: "var(--ink3)", fontSize: 11 }}>Applies to all tabs above.</span>
+        </div>
+      )}
     </ConsolePage>
   )
 }

@@ -22,6 +22,58 @@ _INCIDENT_PAGE = (
     / "[incidentId]"
     / "page.tsx"
 )
+_BREAK_GLASS = _DASH / "components" / "console" / "BreakGlass.tsx"
+_CLUSTER_LAYOUT = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "layout.tsx"
+_SETTINGS_PAGE = (
+    _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "settings" / "page.tsx"
+)
+
+
+def test_the_console_can_reach_the_emergency_lock():
+    """Both lock endpoints have a caller.
+
+    This is the pair a path-level audit found stranded. It is enforced for
+    real -- `mutation_gateway.py` rejects every mutation with `cluster_locked`
+    while it is set -- and Slack has no command for it, whose vocabulary is
+    `approve fix`, `deny`, `acknowledge` and `mark resolved`. Until these call
+    sites existed, pulling the break glass meant hand-rolling an authenticated
+    HTTP request.
+    """
+    src = _BREAK_GLASS.read_text()
+    assert "`/clusters/${clusterId}/lock`" in src
+    assert "api.post(`/clusters/${clusterId}/lock`, { locked: next })" in src
+
+
+def test_an_unknown_lock_state_is_never_rendered_as_released():
+    """`locked === null` is a third state, and collapsing it is the bug.
+
+    The backend read fails open -- `is_cluster_locked` returns False when Redis
+    is down -- so "false" and "we could not ask" arrive looking identical
+    unless `state_available` is consulted. The banner renders on `=== true`
+    only, and the control refuses to offer a toggle it cannot ground.
+    """
+    src = _BREAK_GLASS.read_text()
+    assert "data.state_available !== false" in src
+    assert "if (locked !== true) return null" in src
+    assert "disabled={!isAdmin || locked === null}" in src
+
+
+def test_the_lock_is_visible_from_every_cluster_page():
+    """A banner only on Settings would be a banner nobody sees in an incident."""
+    layout = _CLUSTER_LAYOUT.read_text()
+    assert "<LockProvider clusterId={id}>" in layout
+    assert "<BreakGlassBanner />" in layout
+
+
+def test_the_break_glass_does_not_sit_under_the_save_bar():
+    """The settings save bar claims "Applies to all tabs above".
+
+    The lock acts on click, so that claim is false for its tab and the bar is
+    excluded from it rather than left to imply the toggle needs saving.
+    """
+    page = _SETTINGS_PAGE.read_text()
+    assert '{tab === "safety" && <BreakGlassControl clusterId={id} />}' in page
+    assert '{tab !== "safety" && (' in page
 
 
 def test_the_console_reaches_every_jobs_endpoint_it_should():

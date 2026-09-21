@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Rail } from "@/components/console/Rail"
 import { ClusterContext } from "@/components/console/ClusterContext"
+import { BreakGlassBanner, LockProvider } from "@/components/console/BreakGlass"
 import { IncidentToasts } from "@/components/console/IncidentToasts"
 import { useLiveStream } from "@/lib/useLiveStream"
 import { api } from "@/lib/auth-context"
@@ -106,11 +107,18 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
 
   return (
     <ClusterContext.Provider value={cluster}>
-      <div className="sx-app">
-        <Rail cluster={cluster} openIncidents={openIncidents} awaitingApproval={awaitingApproval} />
-        <main className="sx-main sx-scroll">{children}</main>
-        <IncidentToasts />
-      </div>
+      <LockProvider clusterId={id}>
+        <div className="sx-app">
+          <Rail cluster={cluster} openIncidents={openIncidents} awaitingApproval={awaitingApproval} />
+          <main className="sx-main sx-scroll">
+            {/* Every page, not just Settings: an operator watching the agent's
+                fixes get refused needs to find out why where they already are. */}
+            <BreakGlassBanner />
+            {children}
+          </main>
+          <IncidentToasts />
+        </div>
+      </LockProvider>
     </ClusterContext.Provider>
   )
 }

@@ -179,11 +179,23 @@ async def get_cluster_lock(
     db: AsyncSession = Depends(database.get_db),
     owned_cluster: models.Cluster = Depends(get_owned_cluster),
 ):
-    """Check if cluster is locked."""
+    """Report the emergency lock, and whether that report can be trusted.
+
+    `is_cluster_locked` fails open: it returns False when Redis is unavailable,
+    which is indistinguishable from a cluster that is genuinely unlocked. The
+    mutation gateway does not have that problem -- it rejects with
+    `state_unavailable` *before* it ever consults the lock -- but a console
+    reading this endpoint alone would tell an operator "not locked" at the one
+    moment nobody can say. So `state_available` travels with the answer and the
+    caller decides what to render.
+    """
     from sre_agent.redis_state_store import get_state_store
     storage = get_state_store()
-    is_locked = storage.is_cluster_locked(str(cluster_id))
-    return {"locked": is_locked}
+    available = not hasattr(storage, "is_available") or bool(storage.is_available())
+    return {
+        "locked": storage.is_cluster_locked(str(cluster_id)) if available else False,
+        "state_available": available,
+    }
 
 @router.post("/{cluster_id}/lock")
 async def set_cluster_lock(

@@ -3,8 +3,30 @@
 Paste everything below the line into Codex as its opening instruction. It is
 written to be self-contained; everything it references is in this repo.
 
-Last updated 2026-09-19, after the four-phase pass, the Codex reconcile
-merge, and #53/#54. `PROJECT_STATE.md` is the concise authority.
+Last updated **2026-09-20**, after job-completion ownership, the #44 retry
+proof, the Temporal hang-guard fix, dataset v3, and the path-level frontend
+audit that closed the emergency-lock gap. `PROJECT_STATE.md` is the concise
+authority.
+
+> ### ⚠ Start here: what landed, and what did not
+>
+> The emergency-lock wiring described in **Step 3** below is **committed** on
+> `master`, on top of `5e88747`, and the tree is clean. It is green:
+> **2090 passed, 6 skipped**, `tsc --noEmit` clean, no new eslint errors. Run
+> the suite before you change anything, so you know whether a later failure is
+> yours.
+>
+> **The backend half is not live.** `sre_agent/api/v1/clusters.py` is baked
+> into the API image, so the new `state_available` field needs
+> `docker compose build api && docker compose up -d api` — which also applies
+> migration `a7b8c9d0e1f2` to the live `sre_platform`. **Deploy is not
+> authorized.** Until then the console treats the absent field as "available"
+> and degrades to the old behaviour rather than breaking.
+>
+> **Still uncommitted, in a different repo:** the `metrics_enabled` knob in
+> `jayanth922/meridian-shop` (`services/checkout-service/app.py`). The user
+> **declined** a commit there. Do not retry it. It is why dataset v3 is not
+> yet runnable.
 
 **All four phases are done and deployed.** The phase sections below are kept
 as the record of what was built and why; they are not your task list. Your
@@ -29,8 +51,8 @@ is the user's decision, not yours.
    and current. Its **Active problem**, **Known blockers or risks** and
    **Next bounded task** sections are the authority on everything below.
 2. `docs/ai/DECISIONS.md` — search it for the topic you are touching; do not
-   load it whole. The newest entry ("Meridian runbooks prescribe one branch
-   per fault") covers Phase B including its known limit.
+   load it whole. The newest entry ("The console shows approvals; Slack makes
+   them") is the one most likely to save you from a wrong fix.
 3. Only then open source files, and only the ones on the call path.
 
 Do not start by scanning the repo. The state file already names the files
@@ -629,27 +651,95 @@ exactly so the UI renders real data" — `dashboard/lib/console.ts`, which is
 presentation helpers only and fetches nothing). See the environment section
 for why `grep -r "fetch("` gives the opposite impression.
 
-Two concrete gaps:
+Both gaps recorded here were checked on 2026-09-20 and both were wrong.
+They are kept, struck through, because the *way* they were wrong is the
+useful part.
 
-1. **The dashboard has no restart policy.** `sre-dashboard` is the only
-   service in the compose file with `RestartPolicy=no`, where `sre-agent-api`
-   and `sre-postgres` are `unless-stopped`. It did **not** crash — its logs
-   show `Ready in 43s`, then `HEAD /login 200`, then `Exited (255)` when the
-   Codespace suspended. It simply never comes back on its own, so the UI
-   looks dead after every resume and the natural conclusion ("the dashboard is
-   broken") is wrong. `scripts/codespace_boot.sh` does bring it back as part
-   of "ensuring platform docker-compose stack is up" — verified 2026-09-20 —
-   so the gap is narrower than it first looks: the dashboard recovers only
-   when someone remembers to run the boot script. Still worth one line in
-   `platform/docker-compose.yaml`. It runs Next.js 16.1.6
-   with Turbopack in **dev** mode, 3002→3000, from image
-   `platform-dashboard:latest`.
-2. **Six API modules have no dashboard caller**: `invitations`, `jobs`,
-   `mission_control`, `ownership`, `tickets`, `ws_tickets`. This was matched
-   fuzzily by module name, so treat it as a lead and not as proof — but `jobs`
-   has 129 rows and `org_invitations` exists, so at least some real, exercised
-   backend function has no UI at all. Confirm each against
-   `sre_agent/api/v1/<module>.py` before building anything against it.
+1. ~~**The dashboard has no restart policy.**~~ **Already closed when this was
+   written.** `platform/docker-compose.yaml:252-270` gives `dashboard`
+   `restart: unless-stopped`, with a comment saying exactly why, and the live
+   container reports `RestartPolicy=unless-stopped Status=running`. The
+   surviving fact: it runs Next.js 16.1.6 with Turbopack in **dev** mode,
+   3002→3000, from image `platform-dashboard:latest`.
+2. ~~**Six API modules have no dashboard caller**: `invitations`, `jobs`,
+   `mission_control`, `ownership`, `tickets`, `ws_tickets`.~~ **Wrong on all
+   six.** `invitations`, `tickets` and `ws_tickets` are fully wired; `jobs`
+   and `mission_control` are partly wired; `ownership.py` exposes no routes at
+   all — it is dependency helpers (`get_owned_cluster`) and is in no
+   `include_router` call. The entry said to treat it as a lead, and that was
+   right: module names cannot see a half-wired module in either direction.
+
+**Matched on paths instead** — every route decorator under
+`sre_agent/api/v1` (17 modules, 56 endpoints) against every real call site in
+`dashboard/{app,lib,components}`. Note for whoever redoes this: the dominant
+call form is `api.get<SLO[]>(...)`, so a pattern requiring `.get(` reports two
+thirds of the dashboard as unwired. Both sides normalise `{cluster_id}` and
+`${clusterId}` to the same placeholder.
+
+**42 of 56 endpoints have a caller.** Fully wired: `analytics`,
+`invitations`, `members`, `recommendations`, `runbooks`, `services`, `setup`,
+`slos`, `tickets`, `ws_tickets`. The other 14 sort into four kinds, and only
+the last is a gap:
+
+- **Not for a browser (1).** `POST /alerts/webhook` — Alertmanager posts it.
+- **Deliberately Slack-only (3).** `POST /incidents/{id}/approve`,
+  `POST /incidents/{id}/mark-resolved`,
+  `POST /incidents/{id}/remediation-gates/{gate}/decide`. The incident page
+  *renders the instruction* rather than a button: "Approve or deny from the
+  incident's Slack thread (\"approve {gate}\" / \"deny {gate}\")" and "Reply
+  \"approve fix\" in the incident's Slack thread to run it"
+  (`clusters/[id]/incidents/[incidentId]/page.tsx:493,558`). The dashboard
+  shows gate state and an `awaitingApproval` count
+  (`components/console/Rail.tsx:51`) and routes the decision to Slack, which
+  is the standing "Slack is the only method of all types of communication"
+  constraint working as intended. **Do not build approval buttons.**
+- **Deliberately absent, one of them test-enforced (3).**
+  `POST /clusters/{id}/jobs/trigger` —
+  `tests/test_console_wiring.py:38` asserts `"/jobs/trigger" not in page`,
+  because "a durable job is created by the alert pipeline, and hand-starting
+  one from the console would produce an investigation with no incident behind
+  it". `POST /clusters/{id}/trigger` (incidents) is the same argument and is
+  *not* pinned by a test. `POST /chat` is task #7's own parenthesis —
+  "Slack-adjacent, **no chat**" — but the router is still mounted
+  (`agent_runtime.py:342-343`) and any signed-in org member can spend a
+  120-second agent invocation on it. Decide whether that stays mounted; it is
+  a surface question, not a wiring one.
+- **Redundant — the data already arrives another way (2).**
+  `GET /clusters/{id}/health` returns `heartbeat_payload(...)` built from
+  `status`, `last_heartbeat`, `heartbeat_source` and `heartbeat_reason`, and
+  `ClusterResponse` already carries all four (`backend/schemas.py:214-222`).
+  `GET /clusters/{id}/jobs/{job_id}/manifest` is embedded as
+  `JobResponse.run_manifest` in the list the jobs page already fetches — and
+  `manifest/compare` *is* called.
+- ~~**A real gap (2 endpoints, 1 feature).**~~ **CLOSED 2026-09-20.** `GET`
+  and `POST /clusters/{id}/lock` — the **Emergency Lock (Break Glass)** — were
+  the only pair the audit found genuinely stranded. Not decorative:
+  `mutation_gateway.py:312` rejects *every* mutation with
+  `MutationRejected("cluster_locked", ...)` while it is set, it is admin-only,
+  and it writes an `EMERGENCY_LOCK_TOGGLE` audit event. Slack has no command
+  for it either — the vocabulary is `approve fix`, `deny`, `acknowledge`,
+  `mark resolved` (`approval_flow.py:185`, `narration_grounding.py:67-109`) —
+  so pulling the break glass meant hand-rolling an authenticated request.
+
+  Now `dashboard/components/console/BreakGlass.tsx` holds the feature:
+  `LockProvider` polls the lock from the cluster layout, `BreakGlassBanner`
+  renders on *every* cluster page while it is engaged, and
+  `BreakGlassControl` is the admin-only two-step toggle on Settings → Safety
+  (excluded from the save bar, since it acts on click and the bar claims
+  "Applies to all tabs above").
+
+  **The endpoint had to change first.** `is_cluster_locked` fails open — it
+  returns False when Redis is down — so `GET /lock` said "not locked" at the
+  one moment nobody could say. The gateway never had that flaw; it rejects
+  with `state_unavailable` *before* consulting the lock. The read now carries
+  `state_available` beside `locked`, and the console keeps `locked === null`
+  as a real third state rather than rendering it as released.
+
+`tests/test_console_wiring.py` is the pattern for pinning a call site ("A
+mounted router with no caller is a feature nobody can reach"). It covered
+jobs and tickets; it now covers the lock too, plus
+`tests/test_cluster_lock_read.py` for the fail-open read. Extend it rather
+than re-running the audit by hand.
 
 ### Step 4 — then, and only then, benchmark
 
@@ -684,7 +774,7 @@ the user names a stage and a budget.
 ## Verification — run all of these before claiming anything is done
 
 ```bash
-.venv/bin/python -m pytest -q                                  # 1975 passed, 37 known warnings
+.venv/bin/python -m pytest -q                                  # 2090 passed, 6 skipped
 .venv/bin/python scripts/audit_runbook_controls.py             # 4 of 5 detected, 1 documented KNOWN_BLIND
 .venv/bin/python scripts/audit_runbook_coverage.py \
     --corpus benchmarks/datasets/v2/runbook_corpus_snapshot.json  # 22/22
