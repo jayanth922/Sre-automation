@@ -277,17 +277,65 @@ was being read as current and is where the wrong claims came from.
   unfixed is narrower — `burn_rate_1h`/`burn_rate_6h` are hardcoded `None` at
   `slos.py:112-113` even though the severity path already computes a burn
   rate, there is no latency SLI, and no SLO tool is exposed to the agent.
-- Artifact-backed context instead of stuffing context into state;
-  observability semantics; no single owner of job completion.
+- ~~Artifact-backed context instead of stuffing context into state;
+  observability semantics; no single owner of job completion.~~ **CLOSED
+  2026-09-20, all three clauses.** They had drifted apart and were checked
+  separately.
+  - *Artifact-backed context* — done by Phase C. Large tool results no longer
+    ride in state; they are capped on the way into the ReAct transcript
+    (task #47) and the specialist prefix is cached rather than re-sent
+    (`agent_nodes.py:241-244`). Measured against the pre-Phase-C baseline on
+    the same workload: uncached input tokens −67%, cache creation −86%, cost
+    per model call −62%.
+  - *Observability semantics* — done by `b96a40e` ("close eight Langfuse
+    instrumentation gaps found by trace audit") and `eb7c0c1` ("name Langfuse
+    specialist observations"). `sre_agent/tracing.py` is 757 lines covering
+    trace identity, the root observation, export-stage masking and span
+    filtering, with 40 tests in `tests/test_tracing.py`, no TODO markers, and
+    per-org Langfuse project isolation that does **not** fall back to an
+    operator default.
+  - *Single owner of job completion* — done. `update_job_status` and
+    `JobStatusUpdate` are deleted outright, so the second writer cannot come
+    back; `record_investigation_job_success` in `agent_runtime.py` is now the
+    only path that writes a terminal state, and it raises `DurableJobError`
+    after commit rather than letting a losing writer overwrite. Six tests in
+    `tests/test_job_completion_ownership.py`.
 - An MCP server that returns an **error string** still launders a failure
   into an apparent success at the boundary #35 did not cover.
 - The planner sometimes emits **duplicate mutating actions** in one plan.
 - A human `mark resolved` writes **no timeline event**.
-- Unproven under live fire: #44 (LLM retry, deployed, never seen under a real
-  529) and #41 (planner proposes only non-mutating actions — confirmed as
-  behaviour, unconfirmed as a cause).
-- Missing-data is measured by no corpus; v2 is frozen and SHA-pinned, so
-  closing that needs a v3.
+- Unproven under live fire: **#41 only** (planner proposes only non-mutating
+  actions — confirmed as behaviour, unconfirmed as a cause).
+  **#44 no longer needs live fire.** Waiting for a real 529 meant waiting for
+  an outage we do not control, so `tests/test_llm_retry.py` drives the real
+  chain — our env, our builder, the SDK's retry — against a fake transport
+  that returns `[529, 529, 200]` and asserts the investigation survives with
+  all three requests actually sent. A paired zero-budget test
+  (`test_a_zero_budget_really_does_fail_on_the_first_529`) proves the harness
+  can fail, so a green result is not the test declining to look; 429, 500 and
+  503 are covered by the same parametrize.
+- ~~Missing-data is measured by no corpus; v2 is frozen and SHA-pinned, so
+  closing that needs a v3.~~ **v3 authored 2026-09-20; not yet runnable.**
+  `benchmarks/datasets/v3/` is v2's 22 scenarios plus three
+  `taxonomy.category = missing_data`, one per split, and it validates under
+  the strict loader (`--version v3`, digests repin to byte-identical). v2 is
+  untouched and stays the `BENCH_DATASET_VERSION` default.
+  Two things worth knowing before touching it:
+  - **The enabling change is in a different repo and is not shipped.** No
+    existing knob could produce absent telemetry — every one of them degrades
+    behaviour and leaves the exporter up. The new `metrics_enabled` knob makes
+    checkout's `/metrics` answer 503 while the service keeps serving, so the
+    target's `up` drops to 0 and its series go *absent, not zero*. It lives in
+    `jayanth922/meridian-shop` (`services/checkout-service/app.py`),
+    uncommitted and unpushed, and the checkout image has not been rebuilt.
+    **Until that ships, injecting the knob is a no-op and a v3 run would
+    silently measure nothing.**
+  - **A missing-data probe must never read the service it silenced.** The
+    recovery oracle fails closed on an empty result, so such a probe voids the
+    trial with `INVALID_SCENARIO` before the agent is graded at all. Every
+    scenario in the category therefore puts the fault on one service and the
+    dead exporter on another. Asserted by
+    `tests/test_scenario_mix_coverage.py::test_a_missing_data_probe_never_reads_the_service_it_silenced`.
 
 ## Environment — the traps that have cost time
 
@@ -540,19 +588,37 @@ conclusion waiting to happen:
   name. To settle it beyond doubt, assert the response's model id on one live
   call.
 
-Still open, and both must be closed before paying for a campaign:
-- **`STATISTICAL_RECORDING` has never been set on this stack**, nor
-  `DIAGNOSIS_CONFIDENCE_CALIBRATION_PATH`, nor `SENTINEL_CONFIG_FINGERPRINT`.
-  Prove that a recording run actually persists `cost_usd` and a diagnosis
-  confidence record **before** paying for ~40 incidents on the assumption it
-  does.
-- **Prove a below-support calibration artifact cannot spuriously set
-  `hypothesis_confidence_calibrated`** by returning non-None with a null
-  threshold. That is the specific failure mode in which ~$88 buys a false
-  positive and the autonomy gate opens on nothing.
+Both preconditions on paying for a campaign were **closed 2026-09-20, at no
+cost**, by making them deterministic rather than by running the campaign:
+- ~~`STATISTICAL_RECORDING` has never been set on this stack~~ — the question
+  was never "is the variable set", it was "does a recording run actually
+  persist `cost_usd` and a diagnosis confidence record". That is now proven in
+  `tests/test_statistical_recording.py`, which imports `sre_bench` fresh
+  (it reads its recording config at import) and asserts the rows:
+  `test_a_complete_trace_records_the_cost`, and — importantly for where we
+  actually are — `test_a_gated_trial_still_contributes_a_diagnosis_observation`,
+  since every trial today stops at the human approval gate and would otherwise
+  contribute nothing to the corpus that unlocks autonomy. It also pins the
+  fail-closed half: an incomplete or missing trace records **no** cost and says
+  why, a confidence without a graded outcome is not recorded at all, and a
+  malformed or uppercase config fingerprint is refused *before* the run rather
+  than at the first write, one paid incident too late.
+- ~~Prove a below-support calibration artifact cannot spuriously set
+  `hypothesis_confidence_calibrated`~~ — it could, and it did. Commit `2de46bb`
+  ("a diagnosis artifact that blocked itself still counted as calibration")
+  fixed the exact failure mode named here, and
+  `tests/test_diagnosis_calibration_gate.py::test_a_self_blocked_artifact_does_not_count_as_calibration`
+  holds it shut: a null threshold reads as **not** calibrated and the severity
+  engine still rounds up, exactly as with no artifact at all. The paired
+  `test_a_certified_artifact_suppresses_the_round_up` stops the fix from
+  degenerating into "never calibrated".
 
-Only the last of these needs a live incident: one gated incident measured
-**$2.21** (smoke `b13ce2c5`, 69 model calls). Everything else is free.
+So the ~$88 no longer buys the answer to either question, and no remaining
+behavioural check on this list needs a paid incident. The one measured figure
+is still a single gated incident at **$2.21** (smoke `b13ce2c5`, 69 model
+calls) — taken *before* Phase C cut cost per model call 62%, so treat it as a
+stale ceiling rather than a current estimate. Nothing has re-measured a full
+incident since.
 
 ### Step 3 — wire the frontend
 
