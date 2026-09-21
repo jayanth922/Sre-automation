@@ -368,12 +368,6 @@ class JobCreate(BaseModel):
     job_type: JobType = JobType.INVESTIGATION
     payload: Optional[str] = None  # JSON string
 
-class JobStatusUpdate(BaseModel):
-    status: JobStatus
-    result: Optional[str] = None  # JSON string
-    logs: Optional[str] = None
-
-
 class RunManifestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -1211,6 +1211,10 @@ async def run_graph_background_saas(
             alert_annotations,
             alert_starts_at,
             alert_severity,
+            # The queue's worker id, not the admission fallback: this is
+            # compared against `jobs.lease_owner`, and `runtime:<sid>` would
+            # never match one. None here means nobody leased this run.
+            job_owner=admission_owner,
         )
     finally:
         try:
@@ -1323,6 +1327,73 @@ async def record_investigation_job_failure(
     return current_status != JobStatus.PENDING
 
 
+async def record_investigation_job_success(
+    db: Any,
+    job_id: uuid.UUID,
+    *,
+    worker_id: Optional[str],
+    status: Any,
+    result_json: str,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Write the terminal row for a run that finished. Returns: did it stick?
+
+    The mirror of `record_investigation_job_failure`, and the other half of an
+    invariant only the failure half was keeping: a terminal job row belongs to
+    whoever still holds the lease. `job_store.complete_job` says that by
+    raising. This says it with a WHERE, because the runtime owns the
+    successful transition on purpose -- it is the only place holding the
+    incident status, the verification outcome, the trace summary and the
+    dashboard payload, and it writes them inside the incident's own
+    transaction. Deciding ownership in Python first would mean re-reading a
+    row another worker may already have taken.
+
+    Every predicate is reachable:
+
+    * still RUNNING -- a lease that lapses mid-run (a paused container, a DB
+      blip, an event loop starved by a long model call) is returned to PENDING
+      by `reclaim_expired_leases`, and PENDING is the queue having already
+      granted another attempt. Stamping COMPLETED over that is the same retry
+      bypass `record_investigation_job_failure` documents two live cases of.
+    * still ours -- once the row is back on the queue another worker claims it
+      and sets *itself* RUNNING, so a status check alone would let this run's
+      late write land on that run's row. The second worker's own `fail_job`
+      then finds a row it no longer owns, raises, and `_execute_and_finalize`
+      swallows it, which is how a duplicate paid investigation leaves no trace.
+    * no cancel pending -- `cancel_incident_investigations` deliberately only
+      sets the flag on a RUNNING job and leaves the terminal write to the
+      worker's failure path, which turns it into CANCELLED. A COMPLETED stamp
+      arriving first strands the flag for good, because `fail_job` cannot
+      reach a row that is no longer RUNNING.
+
+    `worker_id` is None for runs nobody leased -- the quarantined entry point,
+    a direct call from a test. Those still may not overwrite a row the queue
+    has already decided, so they keep the other two predicates.
+
+    Does not commit. The caller is mid-transaction with the incident write and
+    the two land together or not at all.
+    """
+    guards = [
+        models.Job.id == job_id,
+        models.Job.status == JobStatus.RUNNING,
+        models.Job.cancel_requested_at.is_(None),
+    ]
+    if worker_id:
+        guards.append(models.Job.lease_owner == worker_id)
+
+    written = await db.execute(
+        models.Job.__table__
+        .update()
+        .where(*guards)
+        .values(
+            status=status,
+            completed_at=now or datetime.now(timezone.utc),
+            result=result_json,
+        )
+    )
+    return bool(written.rowcount)
+
+
 async def _run_graph_impl(
     incident_id: uuid.UUID,
     cluster_id: uuid.UUID,
@@ -1332,6 +1403,7 @@ async def _run_graph_impl(
     alert_annotations: Optional[Dict[str, str]] = None,
     alert_starts_at: Optional[str] = None,
     alert_severity: str = "warning",
+    job_owner: Optional[str] = None,
 ):
     """SaaS-aware background execution that writes the full timeline to Postgres.
 
@@ -2009,6 +2081,7 @@ async def _run_graph_impl(
             )
 
             # Update Job with structured results for the Dashboard "Action Deck"
+            job_is_still_ours = True
             if job_id:
                 from backend.models import JobStatus
 
@@ -2043,18 +2116,41 @@ async def _run_graph_impl(
                         )
                     )
 
-                await db.execute(
-                    models.Job.__table__
-                    .update()
-                    .where(models.Job.id == job_id)
-                    .values(
-                        status=job_status,
-                        completed_at=datetime.now(timezone.utc),
-                        result=json.dumps(result_payload),
-                    )
+                job_is_still_ours = await record_investigation_job_success(
+                    db,
+                    job_id,
+                    worker_id=job_owner,
+                    status=job_status,
+                    result_json=json.dumps(result_payload),
                 )
 
             await db.commit()
+
+        if not job_is_still_ours:
+            # The same hand-off the pre-flight cancel guard above uses: hand
+            # the row back and let the worker's failure path re-read it and
+            # record what actually happened -- CANCELLED for a cancel, a lost
+            # lease otherwise -- rather than have this run assert it finished
+            # a job it no longer owns.
+            #
+            # The incident was committed just above, so the investigation's
+            # findings are kept; what is refused is only the claim on the job
+            # row. Returning normally would additionally let a run that lost
+            # its lease announce this resolution to Jira, Slack and the event
+            # bus below while the worker that now owns the incident is still
+            # working on it.
+            from .durable_jobs import DurableJobError
+
+            logger.warning(
+                "Job %s is no longer this run's to finish (worker=%s); "
+                "incident %s was written, terminal job state left to the queue",
+                job_id,
+                job_owner,
+                incident_id,
+            )
+            raise DurableJobError(
+                f"job {job_id} was reclaimed or cancelled before it finished"
+            )
 
         # Transition the incident's linked Jira issue (no-op unless Jira is
         # configured and an issue was created at open time). On resolve,

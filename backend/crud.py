@@ -809,28 +809,15 @@ async def get_job_by_id(db: AsyncSession, job_id: uuid.UUID) -> Optional[models.
     return result.scalars().first()
 
 
-async def update_job_status(
-    db: AsyncSession, job_id: uuid.UUID, status_update: schemas.JobStatusUpdate
-) -> Optional[models.Job]:
-    job = await get_job_by_id(db, job_id)
-    if not job:
-        return None
-
-    job.status = status_update.status
-    if status_update.result:
-        job.result = status_update.result
-    if status_update.logs:
-        # Append logs if existing
-        job.logs = (job.logs or "") + status_update.logs
-
-    if status_update.status == models.JobStatus.RUNNING and not job.started_at:
-        job.started_at = datetime.now(timezone.utc)
-    elif status_update.status in (models.JobStatus.COMPLETED, models.JobStatus.FAILED):
-        job.completed_at = datetime.now(timezone.utc)
-
-    await db.commit()
-    await db.refresh(job)
-    return job
+# `update_job_status` lived here and set any status on any job, including a
+# terminal one, with no lease check -- the one thing a job row must never
+# accept. It had no callers; what it had was a convenient name in the module
+# people reach into, one import away from stranding a running worker.
+#
+# Terminal investigation state has exactly one owner per outcome:
+# `job_store.complete_job` / `fail_job` for the queue, and
+# `agent_runtime.record_investigation_job_success` for the run that has the
+# rich result. All three refuse a job whose lease has moved on.
 
 
 async def get_jobs_for_cluster(db: AsyncSession, cluster_id: uuid.UUID):
