@@ -437,5 +437,117 @@ def test_the_specialist_records_the_failure_it_is_handed():
     assert getattr(fine, "status", "success") == "success"
 
 
+# ---------------------------------------------------------------------------
+# The other half: a tool that RETURNS its failure
+# ---------------------------------------------------------------------------
+# MCP's own flag for this is `isError`, and the adapter raises `ToolException`
+# on it. Our servers never set it -- they answer 200 with an error-shaped body
+# -- so every consequence above came back through a door the first fix did not
+# cover.
+
+
+class PayloadFailingTool:
+    """A server that is up, answers 200, and says the tool failed."""
+
+    def __init__(self, value, name: str = "prometheus_query", fail_times: int = 99):
+        self.name = name
+        self.calls = 0
+        self._value = value
+        self._fail_times = fail_times
+
+    def invoke(self, *_a, **_k):
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            return self._value
+        return {"metric_names": ["up"]}
+
+    async def ainvoke(self, *_a, **_k):
+        return self.invoke()
+
+
+def test_a_server_that_returns_its_failure_as_a_payload_still_raises():
+    tool = PayloadFailingTool(
+        {"metric_names": [], "error": "Could not connect to Prometheus"}
+    )
+    wrapped = wrap_tool_with_retry(tool, max_attempts=3)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        wrapped.invoke({})
+
+    # The server's own words survive to the agent; only the framing changes.
+    assert "Could not connect to Prometheus" in str(caught.value)
+    assert caught.value.tool_error.retry_count == 3
+
+
+def test_the_payload_failure_is_retried_because_that_is_what_it_is():
+    """A connection error the server swallowed into a body is still a
+    connection error. Retrying it is the whole point of this wrapper, and it
+    was dead for every failure reported this way."""
+    tool = PayloadFailingTool({"error": "Could not connect to Prometheus"}, fail_times=2)
+    wrapped = wrap_tool_with_retry(tool, max_attempts=3)
+
+    assert wrapped.invoke({}) == {"metric_names": ["up"]}
+    assert tool.calls == 3
+
+
+def test_a_failure_wrapped_in_a_content_block_is_still_read():
+    """Adapter results are `[{"type": "text", "text": "<json>"}]`, not the
+    dict the server wrote. Reading only the dict shape would miss every real
+    call."""
+    tool = PayloadFailingTool(
+        [{"type": "text", "text": '{"error": "Loki query failed: timeout"}'}],
+        name="loki_query",
+    )
+    wrapped = wrap_tool_with_retry(tool, max_attempts=1)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        wrapped.invoke({})
+
+    assert "Loki query failed: timeout" in str(caught.value)
+
+
+def test_an_error_inside_the_data_is_data():
+    """The counterweight. A log line about a 500, or a pod in phase Failed,
+    is a working tool answering correctly -- raising there would open the
+    breaker on a healthy server and blind the investigation to real evidence."""
+    tool = PayloadFailingTool(
+        {
+            "status": "Failed",
+            "reason": "OOMKilled",
+            "series": [{"labels": {"error": "500"}, "values": [1]}],
+        },
+        name="loki_query",
+    )
+    wrapped = wrap_tool_with_retry(tool, max_attempts=1)
+
+    assert wrapped.invoke({})["reason"] == "OOMKilled"
+    assert tool.calls == 1
+
+
+def test_the_payload_failure_reaches_the_breaker_and_the_audit_row(audit):
+    """The point of raising: the layers above are built to notice an
+    exception, and none of them could see this failure before."""
+    tool = PayloadFailingTool({"error": "Could not connect to Prometheus"})
+    wrapped = wrap_all_tools_with_retry([tool], max_attempts=2)[0]
+
+    with pytest.raises(ToolExecutionError):
+        wrapped.invoke({})
+
+    assert _statuses(audit) == ["PENDING", "FAILURE"]
+    assert w._CIRCUIT_BREAKER_STATE["failures"].get("prometheus_query") == 1
+
+
+@pytest.mark.asyncio
+async def test_the_async_path_reads_it_too():
+    tool = PayloadFailingTool({"error": "No Notion credentials configured"},
+                              name="get_runbook")
+    wrapped = wrap_tool_with_retry(tool, max_attempts=1)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        await wrapped.ainvoke({})
+
+    assert "No Notion credentials configured" in str(caught.value)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

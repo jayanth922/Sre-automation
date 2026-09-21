@@ -189,6 +189,85 @@ def _attempts_made(exc: "RetryError", default: int) -> int:
     return getattr(last, "attempt_number", default) or default
 
 
+class MCPServerReportedFailure(RuntimeError):
+    """An MCP call that succeeded at the protocol level and failed at the tool.
+
+    `ToolExecutionError` closed one half of this: a tool that *raises* no
+    longer reads as success. The other half is a tool that *returns* its own
+    failure. MCP has a flag for exactly that -- `CallToolResult.isError` --
+    and the adapter already honours it (`langchain_mcp_adapters/tools.py:180`
+    raises `ToolException`), but none of our own servers set it. They answer
+    200 with an error-shaped body:
+
+        prometheus_real/server.py:436   {"metric_names": [], "error": "Could not connect to Prometheus"}
+        loki_real/server.py:183         {"error": "Loki query failed: ..."}
+        runbooks_notion/server.py:445   {"error": "No Notion credentials configured for this cluster"}
+
+    Nothing above the wrapper read those, so a dead Prometheus arrived at the
+    specialist as a finding, `record_failure` was never called, the audit row
+    said SUCCESS, and the supervisor's "I concluded this with the metrics tool
+    down" caveat could not fire -- the same four consequences
+    `ToolExecutionError` documents, reached through the other door.
+
+    Raised *inside* the retry loop on purpose. "Could not connect to
+    Prometheus" is precisely what the retry wrapper exists for, and a server
+    swallowing that into a payload is what made those retries dead.
+    """
+
+
+def _result_payload(result: Any) -> Optional[Mapping[str, Any]]:
+    """Unwrap an MCP tool result to the JSON object the server sent, if any.
+
+    Adapter results arrive as content blocks -- `[{"type": "text", "text":
+    "<json>"}]` -- not as the dict the server wrote; the same unwrap
+    `nl_query._parsed_tool_result` needs. Anything that is not a JSON object
+    cannot be a failure report, so it is left alone rather than guessed at.
+    """
+    if isinstance(result, (list, tuple)) and result:
+        first = result[0]
+        if isinstance(first, Mapping) and "text" in first:
+            result = first["text"]
+        elif hasattr(first, "text"):
+            result = first.text
+    if isinstance(result, str):
+        text = result.strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            result = json.loads(text)
+        except ValueError:
+            return None
+    return result if isinstance(result, Mapping) else None
+
+
+def server_reported_failure(result: Any) -> Optional[str]:
+    """The message an MCP server used to report its own failure, or None.
+
+    Deliberately narrow: a non-empty top-level `error` string, and nothing
+    else. Every failure branch in `edge_mcp_servers/` writes that key and no
+    success branch does.
+
+    A top-level `status` is not read here, even though `executor_real` marks
+    its failures with `"status": "ERROR"`. On a read tool a status field is
+    usually describing the cluster rather than the call -- a pod in phase
+    `Failed`, a container whose reason is `Error` -- and treating those as
+    tool failures would open the circuit breaker on a server that is working
+    and answering correctly. The executor's failures do not need it: they
+    travel the ACT path, which is not wrapped here and already reads `status`
+    itself (`executor.py:725`).
+
+    An `error` nested inside the data is data -- a log line, an error budget,
+    a label value -- and is left alone for the same reason.
+    """
+    payload = _result_payload(result)
+    if payload is None:
+        return None
+    error = payload.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return None
+
+
 def is_tool_error(result: Any) -> bool:
     """Check if a result is a ToolError (object, raised error, or JSON string)."""
     if isinstance(result, ToolExecutionError):
@@ -261,7 +340,11 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
     def safe_invoke(*args, **kwargs) -> Any:
         @retry_decorator
         def invoke_with_retry():
-            return original_invoke(*args, **kwargs)
+            result = original_invoke(*args, **kwargs)
+            reported = server_reported_failure(result)
+            if reported is not None:
+                raise MCPServerReportedFailure(reported)
+            return result
         
         try:
             result = invoke_with_retry()
@@ -289,7 +372,11 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
         async def safe_ainvoke(*args, **kwargs) -> Any:
             @retry_decorator
             async def ainvoke_with_retry():
-                return await original_ainvoke(*args, **kwargs)
+                result = await original_ainvoke(*args, **kwargs)
+                reported = server_reported_failure(result)
+                if reported is not None:
+                    raise MCPServerReportedFailure(reported)
+                return result
             
             try:
                 result = await ainvoke_with_retry()
