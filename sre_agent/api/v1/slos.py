@@ -1,4 +1,5 @@
 """SLO Management API."""
+import asyncio
 import uuid
 import logging
 from typing import List, Optional
@@ -36,6 +37,40 @@ async def _query_current_value(prometheus_url: str, promql: str) -> Optional[flo
     except Exception:
         logger.warning("slo_prometheus_query_failed", extra={"promql": promql})
     return None
+
+async def _burn_rate(
+    prometheus_url: str, sli_metric: str, target_fraction: float, window: str
+) -> Optional[float]:
+    """How many times faster than "exactly on budget" the SLO is burning.
+
+    1.0 means the error budget runs out precisely at the end of the
+    compliance window; 14.4 is the page-now figure in the standard
+    multiwindow scheme, because it empties a 30-day budget in two days. This
+    is the number that makes `budget_consumed_percent` actionable -- 40%
+    consumed is fine at a burn rate of 1 and an emergency at 14.
+
+    The window comes from a subquery, `avg_over_time((<sli_metric>)[1h:])`,
+    rather than from rewriting a range inside the query: `sli_metric` is
+    user-authored PromQL for the *current* success rate and may not contain a
+    range at all. Returns None on the same terms as `_query_current_value` --
+    an unreachable Prometheus, a query Prometheus rejects, or an empty result
+    leaves the burn rate unavailable rather than wrong.
+    """
+    budget = 1.0 - target_fraction
+    if budget <= 0:
+        # A 100% target has no budget to burn. Both 0 and infinity would be
+        # claims the data cannot support.
+        return None
+    average = await _query_current_value(
+        prometheus_url, f"avg_over_time(({sli_metric})[{window}:])"
+    )
+    if average is None:
+        return None
+    # sli_metric is a percentage by the contract above, and a success rate
+    # above 100 (or below 0) is a broken query, not a negative burn.
+    error_rate = min(1.0, max(0.0, 1.0 - average / 100.0))
+    return error_rate / budget
+
 
 @router.post("", response_model=schemas.SLOResponse, status_code=201)
 async def create_slo(
@@ -103,14 +138,31 @@ async def get_slo_status(
     budget_consumed_pct = (consumed / total_budget * 100.0) if total_budget > 0 else 0.0
     budget_remaining_pct = max(0.0, 100.0 - min(budget_consumed_pct, 100.0))
 
+    # Two windows, not one: a burn rate over a single window cannot separate
+    # "a short spike that is already over" from "still burning", which is the
+    # distinction the on-call is actually making. Both are best-effort and
+    # concurrent, so a slow Prometheus costs one round trip rather than two,
+    # and a failing one leaves the field null exactly as before.
+    burn_rate_1h: Optional[float] = None
+    burn_rate_6h: Optional[float] = None
+    if owned_cluster.prometheus_url:
+        burn_rate_1h, burn_rate_6h = await asyncio.gather(
+            _burn_rate(
+                owned_cluster.prometheus_url, owned_slo.sli_metric, target, "1h"
+            ),
+            _burn_rate(
+                owned_cluster.prometheus_url, owned_slo.sli_metric, target, "6h"
+            ),
+        )
+
     if live_value is not None:
         await crud.update_slo_metrics(db, slo_id, live_value, budget_remaining_pct)
 
     return schemas.SLOStatusResponse(
         slo=schemas.SLOResponse.model_validate(owned_slo),
         budget_consumed_percent=min(budget_consumed_pct, 100.0),
-        burn_rate_1h=None,  # Populated by Prometheus integration
-        burn_rate_6h=None,
+        burn_rate_1h=burn_rate_1h,
+        burn_rate_6h=burn_rate_6h,
         is_breaching=budget_consumed_pct > 100.0
     )
 
