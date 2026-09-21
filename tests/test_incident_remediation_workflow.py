@@ -38,8 +38,30 @@ from sre_agent.sandbox_workflow import (  # noqa: E402
 )
 
 
+# Every wait in this file is a hang guard, not a latency assertion: the
+# assertions below are all on returned values, never on how long they took.
+# So the bound has to clear the worst case, and the worst case is not the
+# happy path. A replacement worker runs with `max_cached_workflows=0`, which
+# makes it replay the entire workflow history from scratch, and the
+# time-skipping environment is a separate process whose RPCs queue behind
+# whatever else the suite is doing.
+#
+# At ten seconds the restart test failed roughly one full-suite run in three
+# while passing every time when this file was run on its own. The suite is not
+# randomised -- pytest's default file order, no `pytest-randomly` -- so this
+# was never an ordering problem: the wait simply expired against an external
+# server on a shared VM once two thousand other tests had been through it.
+#
+# Raising the ceiling costs a passing run nothing -- each of these returns the
+# moment the workflow does -- and only changes how long a genuine hang takes
+# to report.
+_HANG_GUARD_SECONDS = 60
+
+
 async def _wait_for_phase(handle, phase: str) -> None:
-    for _ in range(200):
+    clock = asyncio.get_running_loop()
+    deadline = clock.time() + _HANG_GUARD_SECONDS
+    while clock.time() < deadline:
         if await handle.query(IncidentRemediationWorkflow.phase) == phase:
             return
         await asyncio.sleep(0.01)
@@ -365,7 +387,7 @@ async def test_worker_restart_preserves_pending_gate_and_denial_stops_pipeline()
         )
         await _wait_for_phase(handle, "AWAITING_START_FIX")
         await worker_one.shutdown()
-        await asyncio.wait_for(worker_one_task, timeout=10)
+        await asyncio.wait_for(worker_one_task, timeout=_HANG_GUARD_SECONDS)
 
         async with Worker(
             env.client,
@@ -378,7 +400,9 @@ async def test_worker_restart_preserves_pending_gate_and_denial_stops_pipeline()
                 IncidentRemediationWorkflow.decide_start_fix,
                 args=[False, "replacement-worker-operator"],
             )
-            result = await asyncio.wait_for(handle.result(), timeout=10)
+            result = await asyncio.wait_for(
+                handle.result(), timeout=_HANG_GUARD_SECONDS
+            )
 
     assert result.status == "DENIED_START_FIX"
     assert result.verification_status is None

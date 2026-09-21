@@ -24,6 +24,26 @@ from sre_agent.incident_remediation_workflow import (  # noqa: E402
 )
 
 
+# Every wait in this file is a hang guard, not a latency assertion: the
+# assertions below are all on returned values, never on how long they took.
+# So the bound has to clear the worst case, and the worst case is not the
+# happy path. A replacement worker runs with `max_cached_workflows=0`, which
+# makes it replay the entire workflow history from scratch, and the
+# time-skipping environment is a separate process whose RPCs queue behind
+# whatever else the suite is doing.
+#
+# At ten seconds the restart test failed roughly one full-suite run in three
+# while passing every time when this file was run on its own. The suite is not
+# randomised -- pytest's default file order, no `pytest-randomly` -- so this
+# was never an ordering problem: the wait simply expired against an external
+# server on a shared VM once two thousand other tests had been through it.
+#
+# Raising the ceiling costs a passing run nothing -- each of these returns the
+# moment the workflow does -- and only changes how long a genuine hang takes
+# to report.
+_HANG_GUARD_SECONDS = 60
+
+
 def _request(index: int) -> dict:
     return {
         "action_index": index,
@@ -101,15 +121,19 @@ async def test_worker_death_does_not_replay_success_and_clear_stops_later_action
             task_queue=task_queue,
         )
 
-        await asyncio.wait_for(first_action_returned.wait(), timeout=10)
-        for _ in range(100):
+        await asyncio.wait_for(
+            first_action_returned.wait(), timeout=_HANG_GUARD_SECONDS
+        )
+        clock = asyncio.get_running_loop()
+        deadline = clock.time() + _HANG_GUARD_SECONDS
+        while clock.time() < deadline:
             if await handle.query(LiveRemediationWorkflow.phase) == "CHECKPOINTED_ACTION_0":
                 break
             await asyncio.sleep(0.01)
         else:
             raise AssertionError("action 0 completion never reached workflow history")
         await worker_one.shutdown()
-        await asyncio.wait_for(worker_one_task, timeout=10)
+        await asyncio.wait_for(worker_one_task, timeout=_HANG_GUARD_SECONDS)
         incident["resolved"] = True
 
         async with Worker(
@@ -119,7 +143,9 @@ async def test_worker_death_does_not_replay_success_and_clear_stops_later_action
             activities=[replacement_worker_activity],
             max_cached_workflows=0,
         ):
-            result = await asyncio.wait_for(handle.result(), timeout=20)
+            result = await asyncio.wait_for(
+                handle.result(), timeout=_HANG_GUARD_SECONDS
+            )
 
     assert result.status == "SUPPRESSED_ALERT_CLEARED"
     assert external_mutations == [0]
