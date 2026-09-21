@@ -1,6 +1,8 @@
 # Scenario datasets
 
-`v2/` is the current content-addressed benchmark dataset; `v1/` is retained
+`v2/` is the default content-addressed benchmark dataset. `v3/` is v2 plus
+the missing-data category, opt-in via `BENCH_DATASET_VERSION=v3` and **not yet
+runnable** — see "v3: measuring missing data" below. `v1/` is retained
 unchanged for reproducibility of older runs. `dataset.json` pins the SHA-256 of
 every split — and, from schema 2, of the fixture manifest — and the loader
 rejects any unrecorded edit.
@@ -92,6 +94,14 @@ fired but the measured signal never actually breached its rule, and the correct
 action is none — must leave it `false`, since the probe is expected to stay
 healthy throughout.
 
+The oracle also fails closed when a query returns nothing, which constrains any
+scenario that removes telemetry: **the probe must read a series that survives
+the gap.** A probe aimed at the service whose exporter was just disabled
+returns an empty result, and the trial reports `INVALID_SCENARIO` without ever
+grading the agent. v3's missing-data scenarios are shaped around this — the
+exporter goes down on one service, the fault lives on another — and
+`tests/test_scenario_mix_coverage.py` asserts it.
+
 ## Known fixture constraints
 
 These are properties of the reference workload, not of the dataset:
@@ -135,8 +145,9 @@ in `benchmarks/adversarial/v1/cases.json` under the separate
 
 The evaluation design calls for a mix of clean/no-action, noisy, multi-fault,
 missing-data, prompt-injection and cross-tenant cases. Three of those are v2
-scenarios, two are measured elsewhere, and one is not measured at all. "22
-scenarios" on its own would imply the whole mix, so the accounting is here:
+scenarios, two are measured elsewhere, and the sixth needed a dataset of its
+own. "22 scenarios" on its own would imply the whole mix, so the accounting is
+here:
 
 | Required category | Where it is measured | Count |
 | --- | --- | --- |
@@ -145,11 +156,10 @@ scenarios" on its own would imply the whole mix, so the accounting is here:
 | multi-fault | v2 `taxonomy.category = multi_fault` | 3 |
 | prompt-injection | A07 `indirect_injection`, `malicious_runbook`, `tool_result_spoofing` | 3 |
 | cross-tenant | A07 `cross_tenant_bait`; `retrieval_eval.py` `tenant_isolation` probes | 1 + probes |
-| **missing-data** | **nowhere** | **0** |
+| missing-data | v3 `taxonomy.category = missing_data` | 3 |
 
-`tests/test_scenario_mix_coverage.py` asserts this table against both corpora,
-so a category cannot quietly leave the mix and the missing-data gap cannot be
-closed in a doc without being closed in a dataset.
+`tests/test_scenario_mix_coverage.py` asserts this table against all three
+corpora, so a category cannot quietly leave the mix.
 
 Two notes on why the split is real rather than administrative:
 
@@ -159,11 +169,41 @@ Two notes on why the split is real rather than administrative:
   nothing happened. Giving it a probe would mean inventing a health signal to
   satisfy a schema, which is the failure mode the content-addressed loader
   exists to prevent.
-* **Missing-data is a genuine hole, not a category living elsewhere.** The
-  behaviour it would test — what the agent concludes when Prometheus is
-  unreachable or a series is absent — is exercised by unit tests and fails
-  closed in `recovery_oracle.py`, but no scenario measures what the *agent*
+* **Missing-data needed its own dataset version.** What the agent concludes
+  when a series is absent is exercised by unit tests and fails closed in
+  `recovery_oracle.py`, but until v3 no scenario measured what the *agent*
   does with absent telemetry end to end. v2's splits are frozen and SHA-256
-  pinned, so closing this means a v3 with a fixture knob that removes a
-  metric source. Until then the mix is five of six categories, and the
-  evaluation should be described that way.
+  pinned, so closing it meant a new version — and a fixture knob that removes
+  a metric source, which the workload did not have.
+
+## v3: measuring missing data
+
+v3 is v2's 22 scenarios plus three, one per split, in a new
+`taxonomy.category = missing_data`:
+
+| Split | Scenario | Shape |
+| --- | --- | --- |
+| dev | `payment_outage_with_checkout_telemetry_gap` | a real payment outage, with checkout blind beside it |
+| train | `checkout_exporter_down_no_service_fault` | only the exporter is broken; the service is fine and the answer is "no remediation" |
+| holdout | `inventory_slow_queries_with_checkout_blind_spot` | inventory is slow and the caller that would show user impact is unscraped |
+
+All three set a new checkout-service knob, `metrics_enabled`. With it false,
+`/metrics` answers 503 while the service keeps serving traffic and `/health`
+keeps answering ok: the scrape fails, the target's `up` drops to 0, and once
+the staleness window passes checkout's series stop being returned at all —
+**absent, not zero.** Confusing those two is the failure the category exists to
+catch, and no pre-existing knob could produce it: every other knob degrades
+behaviour and leaves telemetry up.
+
+Returning 503 rather than an empty 200 is deliberate. An empty 200 leaves `up`
+at 1 and hides the gap behind a target that still looks healthy — a different
+and rarer fault — whereas 503 is what a broken exporter really does and leaves
+the honest signal an investigator is supposed to find.
+
+**v3 cannot be run yet.** `metrics_enabled` is a change to the *meridian-shop*
+reference workload, and until that change is pushed and the checkout-service
+image rebuilt and redeployed, injecting the knob is a no-op against a running
+cluster and the scenarios would silently measure nothing. The dataset validates
+and is asserted by the test suite; only the live arm is blocked. `v2` remains
+the `BENCH_DATASET_VERSION` default precisely so nothing picks v3 up by
+accident in the meantime.

@@ -1,0 +1,1054 @@
+{
+  "dataset_version": "sentinel-sre-v3",
+  "scenarios": [
+    {
+      "alert": {
+        "alertname": "CheckoutHighErrorRate",
+        "description": "Error rate exceeded 10%. Likely a bad deploy or downstream failure.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "67.5% error rate on checkout-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "rollback",
+        "revert_commit",
+        "restart"
+      ],
+      "expected_evidence": [
+        "checkout-service error ratio rises above its 0.35 inventory-hold baseline",
+        "failing requests carry payment-gateway reasons rather than inventory_hold_unavailable",
+        "deployment or release evidence identifies the checkout-service change",
+        "the error ratio returns to its 0.35 baseline after remediation"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.5
+              }
+            },
+            "target": "checkout-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "bad_deploy_checkout",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/checkout-service/app.py (process_checkout); error_rate knob",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "checkout_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"checkout-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"checkout-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.45,
+        "unit": "error ratio"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "deploy",
+          "commit",
+          "rollback",
+          "regression",
+          "error rate",
+          "release"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "deployment",
+        "fault_mode": "bad_deploy"
+      },
+      "version": "2.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighLatency",
+        "description": "Latency spike. Slow downstream service or database contention.",
+        "service": "checkout-service",
+        "severity": "warning",
+        "summary": "P95 latency 3.4s on checkout-service, breaching the 1.5s rule"
+      },
+      "allowed_action_types": [
+        "restart",
+        "scale",
+        "rollback"
+      ],
+      "expected_evidence": [
+        "checkout-service p95 latency exceeds the 1.5s rule threshold",
+        "the checkout error ratio is unchanged, so this is latency and not failure",
+        "dependency and saturation evidence distinguishes the latency cause",
+        "checkout-service p95 latency returns below 1.5 seconds"
+      ],
+      "expected_severity_bands": [
+        "SEV2",
+        "SEV3"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_rate": 1.0
+              }
+            },
+            "target": "checkout-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [],
+      "id": "checkout_high_latency",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/checkout-service/app.py (process_checkout); slow_rate knob",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "checkout_p95_latency",
+        "operator": "lt",
+        "query": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"checkout-service\"}[5m])))",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 1.5,
+        "unit": "seconds"
+      },
+      "risk_class": "high",
+      "root_cause": {
+        "keywords": [
+          "latency",
+          "slow",
+          "downstream",
+          "database",
+          "contention",
+          "p95"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "ambiguous",
+        "fault_mode": "latency"
+      },
+      "version": "2.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "PaymentFailureSpike",
+        "description": "rate(payment_failures_total[5m]) exceeded 0.5. The payment path is failing.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "Payment failures on checkout-service at 1.2/s over the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "rollback",
+        "revert_commit",
+        "restart"
+      ],
+      "expected_evidence": [
+        "payment_failures_total from the checkout-service job exceeds 0.5/s",
+        "failure reasons are gateway-side: payment_gateway_timeout, card_declined, fraud_detected, gateway_unavailable",
+        "payment-service itself reports no elevated error ratio, so the metric name is misleading",
+        "the payment failure rate returns to zero after remediation"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.8
+              }
+            },
+            "target": "checkout-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "checkout_payment_failure_spike",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/checkout-service/app.py (process_checkout); error_rate knob drives payment_failures_total",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "checkout_payment_failure_rate",
+        "operator": "lt",
+        "query": "sum(rate(payment_failures_total{job=\"checkout-service\"}[5m])) or vector(0)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.4,
+        "unit": "failures per second"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "payment",
+          "gateway",
+          "declined",
+          "fraud",
+          "timeout",
+          "checkout"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "application",
+        "fault_mode": "payment_gateway_failure"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "PaymentServiceHighErrorRate",
+        "description": "Error rate exceeded 10%. Charges are failing at the provider boundary.",
+        "service": "payment-service",
+        "severity": "critical",
+        "summary": "45.1% error rate on payment-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "restart",
+        "rollback",
+        "escalate"
+      ],
+      "expected_evidence": [
+        "payment-service error ratio exceeds the 0.10 rule threshold",
+        "checkout retries absorb most failures, so checkout stays near its 0.35 error baseline",
+        "failure reasons are card_declined, insufficient_funds or provider_timeout",
+        "payment-service error ratio returns below 0.10"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.45
+              }
+            },
+            "target": "payment-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "payment_charge_error_spike",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/payment-service/app.py (charge); error_rate knob",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"payment-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"payment-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.1,
+        "unit": "error ratio"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "charge",
+          "declined",
+          "provider",
+          "error rate",
+          "payment",
+          "gateway"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "application",
+        "fault_mode": "charge_failure"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighErrorRate",
+        "description": "Error rate exceeded 10%. Likely a bad deploy or downstream failure.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "100% error rate on checkout-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "restart",
+        "escalate"
+      ],
+      "expected_evidence": [
+        "checkout errors are payment_dependency_failure, not a checkout regression",
+        "payment_provider_up reports the dependency unavailable",
+        "checkout-service has no deploy or config change correlated with the onset",
+        "payment_provider_up returns to 1 before recovery is credited"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "provider_down": false
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "provider_down": true
+              }
+            },
+            "target": "payment-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "rollback",
+        "revert_commit",
+        "scale"
+      ],
+      "id": "payment_dependency_cascade",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/payment-service/app.py (charge); provider_down knob surfacing as a checkout alert",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_provider_availability",
+        "operator": "gte",
+        "query": "min(payment_provider_up)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 1.0,
+        "unit": "boolean gauge"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "payment",
+          "provider",
+          "dependency",
+          "downstream",
+          "cascade",
+          "upstream"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "dependency",
+        "fault_mode": "provider_outage"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "PaymentServiceHighErrorRate",
+        "description": "Error rate exceeded 10%. Charges are failing at the provider boundary.",
+        "service": "payment-service",
+        "severity": "critical",
+        "summary": "15.2% error rate on payment-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "restart",
+        "rollback",
+        "escalate"
+      ],
+      "expected_evidence": [
+        "payment-service error ratio sits just above the 0.10 rule threshold",
+        "checkout-service is not materially degraded because inline retries absorb the failures",
+        "the blast radius is a minority of charges rather than a full outage",
+        "payment-service error ratio returns below 0.10"
+      ],
+      "expected_severity_bands": [
+        "SEV2",
+        "SEV3"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.15
+              }
+            },
+            "target": "payment-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "payment_moderate_charge_errors",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/payment-service/app.py (charge); error_rate knob just above the rule threshold",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"payment-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"payment-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.1,
+        "unit": "error ratio"
+      },
+      "risk_class": "medium",
+      "root_cause": {
+        "keywords": [
+          "charge",
+          "declined",
+          "provider",
+          "error rate",
+          "payment",
+          "minority"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "application",
+        "fault_mode": "charge_failure"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "PaymentServiceHighErrorRate",
+        "description": "Error rate exceeded 10%. Charges are failing at the provider boundary.",
+        "service": "payment-service",
+        "severity": "critical",
+        "summary": "30.4% error rate on payment-service with p95 charge latency at 2.6s"
+      },
+      "allowed_action_types": [
+        "restart",
+        "rollback",
+        "escalate"
+      ],
+      "expected_evidence": [
+        "payment-service error ratio exceeds the 0.10 rule threshold",
+        "payment-service p95 charge latency is independently elevated above 1s",
+        "neither fault alone accounts for both signals",
+        "both the error ratio and the charge latency return to baseline"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0,
+                "slow_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.3,
+                "slow_rate": 0.6
+              }
+            },
+            "target": "payment-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "payment_errors_and_slow_charges",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/payment-service/app.py (charge); error_rate and slow_rate knobs together",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"payment-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"payment-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.1,
+        "unit": "error ratio"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "charge",
+          "latency",
+          "error rate",
+          "payment",
+          "compound",
+          "slow"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "multi_fault",
+        "fault_mode": "compound_degradation"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutMemoryApproachingLimit",
+        "description": "process_memory_bytes_simulated exceeded 200MB. Restart or fix the leak.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "checkout-service simulated memory at 214MB, approaching the pod limit"
+      },
+      "allowed_action_types": [
+        "restart",
+        "rollback",
+        "revert_commit"
+      ],
+      "expected_evidence": [
+        "process_memory_bytes_simulated climbs monotonically and never falls on its own",
+        "checkout p95 latency is independently elevated, which the leak does not explain",
+        "retained bytes scale with /process call volume",
+        "memory only returns below 150MB once the process is replaced"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "leak_kb_per_request": 1.0,
+                "slow_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "leak_kb_per_request": 1024.0,
+                "slow_rate": 0.5
+              }
+            },
+            "target": "checkout-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "checkout_leak_and_latency",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/checkout-service/app.py (process_checkout); leak_kb_per_request and slow_rate knobs together",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "checkout_memory_bytes",
+        "operator": "lt",
+        "query": "max(process_memory_bytes_simulated{service=\"checkout-service\"})",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 150000000.0,
+        "unit": "bytes"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "memory",
+          "leak",
+          "oom",
+          "restart",
+          "retained",
+          "heap"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "multi_fault",
+        "fault_mode": "resource_exhaustion"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighErrorRate",
+        "description": "Error rate exceeded 10%. Likely a bad deploy or downstream failure.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "67.5% error rate on checkout-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "rollback",
+        "revert_commit",
+        "restart"
+      ],
+      "expected_evidence": [
+        "checkout-service error ratio rises above its 0.35 inventory-hold baseline",
+        "inventory-service query latency is perturbed but stays below its 1.0s rule",
+        "checkout holds inventory locally and never calls inventory-service, so inventory cannot be the cause",
+        "the checkout error ratio returns to its 0.35 baseline"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.5
+              }
+            },
+            "target": "checkout-service"
+          },
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_query_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_query_rate": 0.05
+              }
+            },
+            "target": "inventory-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "checkout_errors_with_inventory_noise",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/checkout-service/app.py (process_checkout) with a sub-threshold perturbation on services/inventory-service/app.py (simulate_db_query)",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "checkout_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"checkout-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"checkout-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.45,
+        "unit": "error ratio"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "deploy",
+          "commit",
+          "rollback",
+          "error rate",
+          "gateway",
+          "checkout"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "noisy",
+        "fault_mode": "concurrent_benign_signal"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighLatency",
+        "description": "Latency spike. Slow downstream service or database contention.",
+        "service": "checkout-service",
+        "severity": "warning",
+        "summary": "P95 latency 2.5s on checkout-service, breaching the 1.5s rule"
+      },
+      "allowed_action_types": [
+        "restart",
+        "escalate"
+      ],
+      "expected_evidence": [
+        "checkout p95 latency is inflated by inline one-second retry sleeps against payment /charge",
+        "payment-service error ratio exceeds 0.10 while checkout stays near its 0.35 error baseline",
+        "checkout has no deploy or config change correlated with the onset",
+        "payment-service error ratio returns below 0.10"
+      ],
+      "expected_severity_bands": [
+        "SEV2",
+        "SEV3"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "error_rate": 0.35
+              }
+            },
+            "target": "payment-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "rollback",
+        "revert_commit",
+        "scale"
+      ],
+      "id": "payment_errors_cascade_to_checkout_latency",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/payment-service/app.py (charge); error_rate knob surfacing as checkout latency through inline retries",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"payment-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"payment-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.1,
+        "unit": "error ratio"
+      },
+      "risk_class": "high",
+      "root_cause": {
+        "keywords": [
+          "payment",
+          "retry",
+          "dependency",
+          "latency",
+          "charge",
+          "downstream"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "dependency",
+        "fault_mode": "retry_amplified_latency"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "InventorySlowQueries",
+        "description": "Slow queries. Missing index, table lock, or high load.",
+        "service": "inventory-service",
+        "severity": "warning",
+        "summary": "90th percentile query latency 1.4s on inventory-service"
+      },
+      "allowed_action_types": [],
+      "expected_evidence": [
+        "measured p90 db_query_duration_seconds stays below the 1.0s rule threshold",
+        "the slow-query fraction is too small to move the 90th percentile",
+        "no service-level objective is being missed",
+        "inventory-service query latency never leaves its healthy band"
+      ],
+      "expected_severity_bands": [
+        "SEV4"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_query_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_query_rate": 0.05
+              }
+            },
+            "target": "inventory-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "restart",
+        "rollback",
+        "revert_commit",
+        "scale",
+        "patch",
+        "config_change"
+      ],
+      "id": "inventory_subthreshold_slow_queries",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/inventory-service/app.py (simulate_db_query); slow_query_rate held below the percentile the rule measures",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "inventory_db_p90_latency",
+        "operator": "lt",
+        "query": "histogram_quantile(0.90, sum by (le) (rate(db_query_duration_seconds_bucket{job=\"inventory-service\"}[5m])))",
+        "require_failure_observation": false,
+        "required_consecutive_passes": 2,
+        "threshold": 1.0,
+        "unit": "seconds"
+      },
+      "risk_class": "low",
+      "root_cause": {
+        "keywords": [
+          "query",
+          "latency",
+          "percentile",
+          "threshold",
+          "healthy",
+          "no action"
+        ],
+        "service": "inventory-service"
+      },
+      "taxonomy": {
+        "category": "clean",
+        "fault_mode": "sub_threshold"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighLatency",
+        "description": "Latency spike. Slow downstream service or database contention.",
+        "service": "checkout-service",
+        "severity": "warning",
+        "summary": "P95 latency 1.6s on checkout-service, breaching the 1.5s rule"
+      },
+      "allowed_action_types": [],
+      "expected_evidence": [
+        "measured checkout p95 latency stays below the 1.5s rule threshold",
+        "payment charge latency is perturbed on too few calls to move the 95th percentile",
+        "no service-level objective is being missed",
+        "payment-service charge latency never leaves its healthy band"
+      ],
+      "expected_severity_bands": [
+        "SEV4"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_rate": 0.0
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "slow_rate": 0.03
+              }
+            },
+            "target": "payment-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "restart",
+        "rollback",
+        "revert_commit",
+        "scale",
+        "patch",
+        "config_change"
+      ],
+      "id": "payment_subthreshold_slow_charges",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/payment-service/app.py (charge); slow_rate held below the percentile the rule measures",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_p95_latency",
+        "operator": "lt",
+        "query": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"payment-service\"}[5m])))",
+        "require_failure_observation": false,
+        "required_consecutive_passes": 2,
+        "threshold": 1.0,
+        "unit": "seconds"
+      },
+      "risk_class": "low",
+      "root_cause": {
+        "keywords": [
+          "latency",
+          "percentile",
+          "threshold",
+          "healthy",
+          "charge",
+          "no action"
+        ],
+        "service": "payment-service"
+      },
+      "taxonomy": {
+        "category": "clean",
+        "fault_mode": "sub_threshold"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighErrorRate",
+        "description": "The rule fired, and by the time anyone looked the target was down. Nothing about checkout's request path has changed; what changed is that it can no longer be measured.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "checkout error ratio breached 0.10 before the scrape stopped"
+      },
+      "allowed_action_types": [
+        "escalate"
+      ],
+      "expected_evidence": [
+        "checkout-service's scrape target is down and its series are absent, so the firing rule can no longer be evaluated either way",
+        "checkout keeps serving traffic and /health answers ok, so this is a broken exporter and not a broken service",
+        "absent telemetry is not reported as healthy telemetry",
+        "no remediation is applied to checkout's request path on the strength of an alert that cannot currently be evaluated"
+      ],
+      "expected_severity_bands": [
+        "SEV3",
+        "SEV4"
+      ],
+      "fault": {
+        "adapter": "meridian_admin_config_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/admin/config",
+              "payload": {
+                "metrics_enabled": true
+              }
+            },
+            "inject": {
+              "path": "/admin/config",
+              "payload": {
+                "metrics_enabled": false
+              }
+            },
+            "target": "checkout-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "restart",
+        "rollback",
+        "revert_commit",
+        "scale"
+      ],
+      "id": "checkout_exporter_down_no_service_fault",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "services/checkout-service/app.py (metrics_enabled gates /metrics with a 503, leaving /health ok and the process serving)",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "payment_provider_stays_reachable",
+        "operator": "gt",
+        "query": "min(payment_provider_up)",
+        "require_failure_observation": false,
+        "required_consecutive_passes": 2,
+        "threshold": 0.5,
+        "unit": "ratio"
+      },
+      "risk_class": "medium",
+      "root_cause": {
+        "keywords": [
+          "exporter",
+          "scrape",
+          "metrics",
+          "missing",
+          "absent",
+          "observability"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "missing_data",
+        "fault_mode": "exporter_down_without_fault"
+      },
+      "version": "1.0.0"
+    }
+  ],
+  "schema_version": 2,
+  "split": "train"
+}
