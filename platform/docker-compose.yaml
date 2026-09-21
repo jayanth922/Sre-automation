@@ -167,6 +167,13 @@ services:
       # Shared with temporal-worker so both processes read the same keys --
       # if they disagreed, one could not decrypt what the other wrote.
       - sentinel_keys:/var/lib/sentinel
+      # WORKDIR is /app, so the relative "reports/..." defaults in
+      # sre_agent/trace_evidence.py and sre_agent/model_accounting.py land
+      # here. Those two files are the run-trace evidence the release gate
+      # reads and the per-call cost ledger; on the container filesystem they
+      # are deleted by the next `docker compose build`, which is exactly when
+      # you most want the before-and-after numbers.
+      - reports_data:/app/reports
     networks:
       sre-network:
         aliases:
@@ -213,6 +220,9 @@ services:
     volumes:
       # Same keystore the API uses; see the note on that mount.
       - sentinel_keys:/var/lib/sentinel
+      # Same image, same relative paths: the worker appends to the same
+      # ledger rather than to a copy that dies with the container.
+      - reports_data:/app/reports
     healthcheck:
       test: ["CMD", "/app/.venv/bin/python", "-m", "sre_agent.runtime_preflight", "--role", "worker"]
       interval: 30s
@@ -284,6 +294,10 @@ volumes:
   qdrant_data:
     driver: local
   skill_store_data:
+    driver: local
+  # Run-trace evidence and the model cost ledger. Append-only JSONL, and the
+  # only record of what a benchmark campaign actually spent.
+  reports_data:
     driver: local
   temporal_data:
     driver: local

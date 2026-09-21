@@ -121,3 +121,22 @@ def test_runtime_base_image_is_digest_pinned():
         "FROM python:3.12-slim-bookworm@sha256:"
         "782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254"
     ) in dockerfile
+
+
+@pytest.mark.integration
+def test_the_reports_directory_survives_a_rebuild():
+    """sre_agent/trace_evidence.py and sre_agent/model_accounting.py default to
+    a relative "reports/..." path, and WORKDIR is /app. Without a volume there,
+    the run-trace evidence the release gate reads and the per-call cost ledger
+    live on the container filesystem, which `docker compose build` discards --
+    losing exactly the before-and-after numbers a rebuild exists to produce.
+    The worker runs the same image, so it has to append to the same ledger.
+    """
+    compose = (ROOT / "platform" / "docker-compose.yaml").read_text()
+
+    assert compose.count("- reports_data:/app/reports") == 2
+    assert "\n  reports_data:\n    driver: local\n" in compose
+
+    for module in ("trace_evidence", "model_accounting"):
+        source = (ROOT / "sre_agent" / f"{module}.py").read_text()
+        assert 'Path("reports/' in source or '"reports/' in source
