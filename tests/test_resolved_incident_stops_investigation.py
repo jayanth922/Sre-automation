@@ -772,3 +772,143 @@ async def test_an_uncancelled_failure_still_gets_its_retry():
 
     assert job.status == models.JobStatus.PENDING
     assert job.completed_at is None
+
+
+# --- A human closing an incident has to leave a trace ------------------------
+# The external alert-clear path writes its own row (`api/v1/alerts.py:723`,
+# event_type "alert_resolved"). The human path wrote the status and nothing
+# else, so the one closure that carries real human authority -- "I checked it
+# myself" -- was the one closure the incident record could not show, and after
+# the fact a manual close was indistinguishable from an alert that stopped
+# firing on its own.
+
+
+def _resolution_harness(monkeypatch, *, cancelled_jobs=0):
+    """Stub what `fire_resolution_side_effects` reaches for, and capture the
+    timeline event it writes."""
+    from backend import database
+    from sre_agent import incident_timeline, job_store
+
+    events: list[dict] = []
+
+    class _NullSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_cancel(_db, _incident_id, **_kw):
+        return [uuid.uuid4() for _ in range(cancelled_jobs)]
+
+    async def fake_emit(
+        incident_id, event_type, speaker_role, title, content, payload=None
+    ):
+        events.append(
+            {
+                "incident_id": incident_id,
+                "event_type": event_type,
+                "speaker_role": speaker_role,
+                "title": title,
+                "content": content,
+                "payload": payload,
+            }
+        )
+        return None
+
+    async def noop(*_a, **_kw):
+        return None
+
+    async def post(*_a, **_kw):
+        return True
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", _NullSession)
+    monkeypatch.setattr(job_store, "cancel_incident_investigations", fake_cancel)
+    monkeypatch.setattr(incident_timeline, "emit_timeline_event", fake_emit)
+    monkeypatch.setattr(
+        "sre_agent.war_room_service.post_to_incident_thread", post, raising=False
+    )
+    for target in (
+        "sre_agent.war_room_service.close_war_room",
+        "sre_agent.live_events.publish_lifecycle_event",
+        "sre_agent.integrations.jira.transition_jira_issue",
+    ):
+        monkeypatch.setattr(target, noop, raising=False)
+    return events
+
+
+class _ResolvedIncident:
+    def __init__(self):
+        self.id = uuid.uuid4()
+        self.title = "InventorySlowQueries"
+        self.summary = "cleared"
+
+
+@pytest.mark.asyncio
+async def test_a_human_close_is_written_to_the_incident_timeline(monkeypatch):
+    from sre_agent import approval_flow
+
+    events = _resolution_harness(monkeypatch, cancelled_jobs=2)
+    incident = _ResolvedIncident()
+
+    await approval_flow.fire_resolution_side_effects(
+        incident,
+        str(uuid.uuid4()),
+        str(uuid.uuid4()),
+        actor="oncall@meridian.test",
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["incident_id"] == str(incident.id)
+    assert event["event_type"] == "incident_resolved"
+    assert event["speaker_role"] == "user"
+    assert event["title"] == "Marked resolved by a human"
+    assert "oncall@meridian.test" in event["content"]
+    # The agent verified nothing here. A reader six weeks later must not be
+    # able to mistake this for a fix the pipeline confirmed.
+    assert "did not verify" in event["content"]
+    assert "2 in-flight investigation job(s) were stopped." in event["content"]
+    assert event["payload"]["resolution"] == "mark_resolved"
+    assert len(event["payload"]["cancelled_jobs"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_acknowledged_fix_is_not_recorded_as_a_manual_close(monkeypatch):
+    """`acknowledge` and `mark resolved` are different claims about who fixed
+    it, and this row is the only place that distinction survives."""
+    from sre_agent import approval_flow
+
+    events = _resolution_harness(monkeypatch)
+
+    await approval_flow.fire_resolution_side_effects(
+        _ResolvedIncident(),
+        str(uuid.uuid4()),
+        str(uuid.uuid4()),
+        actor="oncall@meridian.test",
+        resolution="acknowledged",
+    )
+
+    event = events[0]
+    assert event["title"] == "Verified fix acknowledged"
+    assert "verified fix actually worked" in event["content"]
+    assert event["payload"]["resolution"] == "acknowledged"
+    # Nothing was cancelled, so the row must not claim work was stopped.
+    assert "stopped" not in event["content"]
+
+
+@pytest.mark.asyncio
+async def test_an_anonymous_resolve_still_records_that_a_human_did_it(monkeypatch):
+    """The actor is optional: an older caller, or a Slack identity that could
+    not be resolved to an account. "A human did this" is still the fact the
+    row exists to carry."""
+    from sre_agent import approval_flow
+
+    events = _resolution_harness(monkeypatch)
+
+    await approval_flow.fire_resolution_side_effects(
+        _ResolvedIncident(), str(uuid.uuid4()), str(uuid.uuid4())
+    )
+
+    assert events[0]["content"].startswith("A human closed this incident.")
+    assert events[0]["payload"]["actor"] is None

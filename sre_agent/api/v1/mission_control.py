@@ -1184,6 +1184,7 @@ async def mark_incident_resolved(
         incident_id=str(owned_incident.id),
         organization_id=str(user.org_id),
         cluster_id=str(owned_incident.cluster_id),
+        actor=getattr(user, "email", None),
     )
     await db.refresh(owned_incident)
     return {"status": "RESOLVED", "incident_id": str(owned_incident.id)}

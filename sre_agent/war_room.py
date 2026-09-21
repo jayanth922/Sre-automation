@@ -643,6 +643,7 @@ async def _mark_resolved_for_incident(
         incident_id=incident_id,
         organization_id=str(cluster.org_id),
         cluster_id=str(incident.cluster_id),
+        actor=approver.email,
     )
     if resolved is None:
         return {"mode": "resolve_decision", "status": "not_found", "message": "Incident not found."}
@@ -677,6 +678,7 @@ async def _acknowledge_resolution_for_incident(
             incident_id=incident_id,
             organization_id=str(cluster.org_id),
             cluster_id=str(incident.cluster_id),
+            actor=approver.email,
         )
     except ApprovalValidationError:
         return {

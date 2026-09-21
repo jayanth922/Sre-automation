@@ -81,6 +81,9 @@ def test_an_admin_can_close_an_incident_the_agent_only_escalated(monkeypatch):
         "incident_id": "inc-1",
         "organization_id": "org-1",
         "cluster_id": "cluster-1",
+        # Carried through so the timeline row can name who closed it. The
+        # Slack reply has always said; the incident record could not.
+        "actor": "sre@example.com",
     }
     # The reply must not imply the agent verified anything.
     assert "did not verify" in posted[0]

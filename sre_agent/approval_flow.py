@@ -609,6 +609,7 @@ async def acknowledge_incident_resolution(
     incident_id: str,
     organization_id: str,
     cluster_id: str,
+    actor: Optional[str] = None,
 ) -> Optional[Any]:
     """CAS an incident's status PENDING_ACKNOWLEDGMENT -> RESOLVED once a
     human confirms a verified fix actually worked, and fire the same
@@ -656,14 +657,25 @@ async def acknowledge_incident_resolution(
         await db.commit()
         await db.refresh(incident)
 
-    await fire_resolution_side_effects(incident, organization_id, cluster_id)
+    await fire_resolution_side_effects(
+        incident,
+        organization_id,
+        cluster_id,
+        actor=actor,
+        resolution="acknowledged",
+    )
     return incident
 
 
 async def fire_resolution_side_effects(
-    incident: Any, organization_id: str, cluster_id: str
+    incident: Any,
+    organization_id: str,
+    cluster_id: str,
+    *,
+    actor: Optional[str] = None,
+    resolution: str = "mark_resolved",
 ) -> None:
-    """Human resolution: stop investigation, close communications, publish.
+    """Human resolution: stop investigation, record it, close communications.
 
     A human's explicit resolve/acknowledge is an instruction to stop. External
     alert recovery is intentionally different and uses
@@ -724,6 +736,48 @@ async def fire_resolution_side_effects(
                 "Slack notice was delivered to the thread",
                 incident_id,
             )
+
+    # The external alert-clear path writes its own timeline row
+    # (`api/v1/alerts.py:723`, event_type "alert_resolved"). The human path
+    # wrote nothing, so the one closure carrying real human authority -- "I
+    # checked it myself, it's handled" -- was the one closure the incident
+    # record could not show. The timeline jumped from a live investigation to
+    # a RESOLVED status with no event in between, and after the fact there was
+    # no way to tell a human close from an alert that simply stopped firing.
+    #
+    # Written here rather than in the two callers so the dashboard's
+    # mark-resolved and Slack's `mark resolved` / `acknowledge` cannot drift
+    # apart. Best-effort by construction: `emit_timeline_event` swallows its
+    # own errors, and a failed audit row must not undo a resolution that has
+    # already committed.
+    who = actor or "A human"
+    if resolution == "acknowledged":
+        title = "Verified fix acknowledged"
+        content = f"{who} confirmed the agent's verified fix actually worked."
+    else:
+        title = "Marked resolved by a human"
+        content = (
+            f"{who} closed this incident. The agent did not verify a fix — "
+            "this is a human's judgement that it is handled."
+        )
+    if cancelled:
+        content += f" {len(cancelled)} in-flight investigation job(s) were stopped."
+
+    from .incident_timeline import emit_timeline_event
+
+    await emit_timeline_event(
+        incident_id,
+        "incident_resolved",
+        "user",
+        title,
+        content,
+        payload={
+            "resolution": resolution,
+            "actor": actor,
+            "cancelled_jobs": [str(job_id) for job_id in cancelled],
+        },
+    )
+
     await _finalize_resolution_integrations(incident, organization_id, cluster_id)
 
 
@@ -908,6 +962,7 @@ async def mark_incident_resolved_by_human(
     incident_id: str,
     organization_id: str,
     cluster_id: str,
+    actor: Optional[str] = None,
 ) -> Optional[Any]:
     """Close an incident the pipeline itself can never close.
 
@@ -959,7 +1014,9 @@ async def mark_incident_resolved_by_human(
         await db.commit()
         await db.refresh(incident)
 
-    await fire_resolution_side_effects(incident, organization_id, cluster_id)
+    await fire_resolution_side_effects(
+        incident, organization_id, cluster_id, actor=actor
+    )
     return incident
 
 
