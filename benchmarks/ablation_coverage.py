@@ -87,7 +87,9 @@ def retrieval_path(store: Any) -> str:
     keyword-only 3/6. A coverage report that does not say which path produced
     it cannot be acted on.
     """
-    return "semantic" if getattr(store, "_semantic_available", False) else "keyword_only"
+    return (
+        "semantic" if getattr(store, "_semantic_available", False) else "keyword_only"
+    )
 
 
 def interpreter_provenance() -> dict[str, Any]:
@@ -107,32 +109,47 @@ def interpreter_provenance() -> dict[str, Any]:
 
 
 def open_store_read_only() -> Any:
-    """The agent's own store, with its one constructor write suppressed.
+    """The agent's own store, with constructor writes suppressed.
 
-    `SemanticSkillStore.__init__` backfills the Qdrant index. That is right for
-    a long-lived agent and wrong for a preflight, which would then be reporting
-    on a corpus it had itself just modified — observed here as a
-    `PUT /collections/sre_skills_v1/points` during what was supposed to be a
-    measurement.
+    `SemanticSkillStore.__init__` creates the collection when absent and then
+    backfills it. Both are right for a long-lived agent and wrong for a
+    preflight, which would then report on a corpus it had itself modified.
 
-    Patching a private name is deliberate, and it fails closed: if the method
-    is renamed, this raises rather than quietly resuming the write. `add()` is
-    the only other index write and the preflight never calls it.
+    Patching private names is deliberate, and fails closed: if either method
+    is renamed, this raises rather than quietly resuming a write. If the
+    collection did not already exist, semantic recall is marked unavailable;
+    otherwise the store's flag would claim a path whose first query can only
+    fail and fall back to keywords. `add()` is the only other index write and
+    the preflight never calls it.
     """
     from sre_agent import skill_store as module
 
     cls = module.SemanticSkillStore
-    if not hasattr(cls, "_backfill_index"):
+    guarded = ("_ensure_collection", "_backfill_index")
+    missing = [name for name in guarded if not hasattr(cls, name)]
+    if missing:
         raise RuntimeError(
-            "SemanticSkillStore._backfill_index is gone. This preflight suppressed "
-            "it to stay read-only and cannot assume the constructor stopped writing."
+            f"SemanticSkillStore.{missing[0]} is gone. This preflight suppressed "
+            "constructor writes and cannot assume the replacement is read-only."
         )
-    original = cls._backfill_index
-    cls._backfill_index = lambda self: None
+    originals = {name: getattr(cls, name) for name in guarded}
+    for name in guarded:
+        setattr(cls, name, lambda self: None)
     try:
-        return module.get_skill_store()
+        store = module.get_skill_store()
     finally:
-        cls._backfill_index = original
+        for name, original in originals.items():
+            setattr(cls, name, original)
+
+    if getattr(store, "_semantic_available", False):
+        client = getattr(store, "_qdrant", None)
+        try:
+            collections = {item.name for item in client.get_collections().collections}
+        except Exception:
+            collections = set()
+        if module.SKILLS_COLLECTION not in collections:
+            store._semantic_available = False
+    return store
 
 
 def assess_split(
@@ -164,9 +181,7 @@ def assess_split(
                 "alert_name": probe["alert_name"],
                 "service": probe["labels"]["service"],
                 "failure_class": getattr(signature, "failure_class", "unknown"),
-                "skills_retrieved": [
-                    getattr(s, "skill_id", "?") for s in skills
-                ],
+                "skills_retrieved": [getattr(s, "skill_id", "?") for s in skills],
                 "skill_hit": bool(skills),
                 # Per-scenario only in the sense that recall is reachable at
                 # all; a point count cannot say which scenario would match.
@@ -223,7 +238,8 @@ def verdict_lines(report: dict[str, Any]) -> list[str]:
         lines.append(
             "Retrieval path: keyword_only — semantic skill recall is OFF in this "
             "process (qdrant-client missing, Qdrant unreachable, or the embedding "
-            "model failed to load). The count above is the keyword-only count."
+            "model/collection is unavailable). The count above is the keyword-only "
+            "count."
         )
     else:
         lines.append(f"Retrieval path: {path}.")
@@ -267,7 +283,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--split", default=os.getenv("BENCH_DATASET_SPLIT", "dev"))
     parser.add_argument("--organization-id", default=os.getenv("BENCH_ORGANIZATION_ID"))
     parser.add_argument("--cluster-id", default=os.getenv("BENCH_CLUSTER_ID"))
-    parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", "http://localhost:6333"))
+    parser.add_argument(
+        "--qdrant-url", default=os.getenv("QDRANT_URL", "http://localhost:6333")
+    )
     parser.add_argument(
         "--expect-retrieval-path",
         choices=("semantic", "keyword_only"),
@@ -280,6 +298,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if not args.organization_id or not args.cluster_id:
+        print(
+            "error: --organization-id and --cluster-id are required; an unscoped "
+            "point count can make another tenant's memory look observable here",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
 
     root = (
         Path(args.dataset_root)

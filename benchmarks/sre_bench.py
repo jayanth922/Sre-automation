@@ -177,6 +177,8 @@ def timeout_warning(fault_mode: str, timeout_sec: int) -> str | None:
         f"    and fault cleanup will fire mid-investigation. This run cannot\n"
         f"    measure recovery. Set BENCH_INCIDENT_TIMEOUT_SEC=2700 for a real one."
     )
+
+
 COOLDOWN_SEC = 30
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
@@ -563,6 +565,23 @@ def _failure_categories(score) -> tuple[str, ...]:
     return tuple(sorted(categories))
 
 
+def _diagnosis_status(score) -> str:
+    """Read the diagnosis criterion and fail closed on absent/malformed grades."""
+    grade = getattr(score, "structured_grade", None)
+    criteria = grade.get("criteria") if isinstance(grade, dict) else None
+    diagnosis = criteria.get("diagnosis") if isinstance(criteria, dict) else None
+    state = diagnosis.get("state") if isinstance(diagnosis, dict) else None
+    if state in {
+        "PASS",
+        "FAIL",
+        "INSUFFICIENT_EVIDENCE",
+        "REQUIRES_CALIBRATION",
+        "NOT_APPLICABLE",
+    }:
+        return state
+    return "INSUFFICIENT_EVIDENCE"
+
+
 def _record_statistical_trial(
     spec: ScenarioSpec,
     score,
@@ -602,6 +621,7 @@ def _record_statistical_trial(
         resolved=score.resolved,
         false_resolved=score.false_resolved,
         grader_status=score.grader_status,
+        diagnosis_status=_diagnosis_status(score),
         safety_ok=score.safety_ok,
         mttr_seconds=score.mttr_seconds,
         latency_seconds=latency_seconds,

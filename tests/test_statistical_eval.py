@@ -24,6 +24,7 @@ def _trial(
     fingerprint,
     resolved=True,
     grader_status=None,
+    diagnosis_status="PASS",
     safety_ok=True,
     risk_class="high",
     latency=10.0,
@@ -47,6 +48,7 @@ def _trial(
         resolved=resolved,
         false_resolved=False,
         grader_status=grader_status or ("PASS" if resolved else "NOT_APPLICABLE"),
+        diagnosis_status=diagnosis_status,
         safety_ok=safety_ok,
         mttr_seconds=mttr if resolved else None,
         latency_seconds=latency,
@@ -123,7 +125,7 @@ def test_configuration_fingerprint_excludes_trial_input_and_trace():
     ) == evaluation.configuration_fingerprint(changed_trial)
 
 
-def test_trial_v2_pins_trace_evidence_and_rejects_unreconciled_cost():
+def test_trial_v3_pins_diagnosis_and_trace_evidence():
     payload = _trial(
         1,
         "candidate",
@@ -134,12 +136,26 @@ def test_trial_v2_pins_trace_evidence_and_rejects_unreconciled_cost():
 
     trial = evaluation.build_trial_record(**payload)
 
-    assert trial.schema_version == 2
+    assert trial.schema_version == 3
+    assert trial.diagnosis_status == "PASS"
     assert trial.trace_complete is True
     assert trial.trace_evidence_sha256 == "e" * 64
 
     payload["trace_complete"] = False
     with pytest.raises(evaluation.StatisticalEvalError, match="cannot claim a cost"):
+        evaluation.build_trial_record(**payload)
+
+
+def test_trial_v3_rejects_missing_or_malformed_diagnosis_evidence():
+    payload = _trial(1, "candidate", fingerprint="b" * 64).to_dict()
+    payload.pop("schema_version")
+    payload.pop("diagnosis_status")
+
+    with pytest.raises(evaluation.StatisticalEvalError, match="schema v3"):
+        evaluation.build_trial_record(**payload)
+
+    payload["diagnosis_status"] = "MAYBE"
+    with pytest.raises(evaluation.StatisticalEvalError, match="diagnosis_status"):
         evaluation.build_trial_record(**payload)
 
 
@@ -218,6 +234,48 @@ def test_complete_noninferior_candidate_can_promote():
     assert report["candidate"]["scenarios"]["bad_deploy_checkout"]["runs"] == 80
     assert report["raw_artifacts"][0]["sha256"] == "f" * 64
     assert report["release_decision"]["status"] == "PROMOTE"
+
+
+def test_diagnosis_is_measured_when_approval_gating_prevents_recovery():
+    trials = []
+    for pair in range(24):
+        trials.extend(
+            [
+                _trial(
+                    pair,
+                    "baseline",
+                    fingerprint="a" * 64,
+                    resolved=False,
+                    diagnosis_status="FAIL",
+                    cost=0.20,
+                ),
+                _trial(
+                    pair,
+                    "candidate",
+                    fingerprint="b" * 64,
+                    resolved=False,
+                    diagnosis_status="PASS",
+                    cost=0.20,
+                ),
+            ]
+        )
+
+    report = evaluation.compare_candidates(
+        tuple(trials),
+        baseline_id="baseline",
+        candidate_id="candidate",
+        artifact=_artifact(len(trials)),
+        minimum_pairs=1,
+        maximum_ci_width=2.0,
+        noninferiority_margin=1.0,
+    )
+
+    assert report["paired"]["recovery"]["mean_delta"] == 0.0
+    assert report["paired"]["quality"]["mean_delta"] == 0.0
+    assert report["paired"]["diagnosis"]["metric_version"] == 1
+    assert report["paired"]["diagnosis"]["mean_delta"] == 1.0
+    assert report["candidate"]["diagnosis"]["successes"] == 24
+    assert report["release_decision"]["status"] == "BLOCK"
 
 
 def test_incomplete_structured_grades_and_low_sample_block_promotion():

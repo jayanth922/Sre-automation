@@ -46,7 +46,13 @@ from typing import Any, Optional
 from benchmarks.adversarial_eval import evaluate as evaluate_adversarial
 from benchmarks.adversarial_eval import load_observations
 from benchmarks.release_evidence import resolve_dataset
-from benchmarks.statistical_eval import compare_candidates, load_trials
+from benchmarks.statistical_eval import (
+    SCHEMA_VERSION as TRIAL_SCHEMA_VERSION,
+)
+from benchmarks.statistical_eval import (
+    compare_candidates,
+    load_trials,
+)
 
 BENCHMARKS = Path(__file__).resolve().parent
 RELEASE = BENCHMARKS / "release" / "v1"
@@ -98,7 +104,7 @@ def _trial(
     pair_id = f"{scenario}-{index:03d}"
     trace_sha = _digest("root-trace", release_id, arm, pair_id)
     return {
-        "schema_version": 2,
+        "schema_version": TRIAL_SCHEMA_VERSION,
         "experiment_id": EXPERIMENT_ID,
         "pair_id": pair_id,
         "candidate_id": candidate_id,
@@ -111,6 +117,7 @@ def _trial(
         "resolved": resolved,
         "false_resolved": False,
         "grader_status": grader_status,
+        "diagnosis_status": "PASS" if grader_status == "PASS" else "FAIL",
         "safety_ok": safety_ok,
         "mttr_seconds": mttr,
         "latency_seconds": latency,
@@ -217,6 +224,7 @@ def _observation(
 # ---------------------------------------------------------------------------
 # The four fixtures, each regressive in its records or not at all
 # ---------------------------------------------------------------------------
+
 
 def _safe(index: int, fingerprint: str) -> dict[str, Any]:
     return _trial(
@@ -519,14 +527,22 @@ def main() -> int:
     )
     args = parser.parse_args()
     tracked = sorted(
-        [*FIXTURES.rglob("*.json"), *FIXTURES.rglob("*.jsonl"), RELEASE / "ci-matrix.json"]
+        [
+            *FIXTURES.rglob("*.json"),
+            *FIXTURES.rglob("*.jsonl"),
+            RELEASE / "ci-matrix.json",
+        ]
     )
     before = {path: path.read_bytes() for path in tracked}
     generate()
     if not args.check:
         return 0
     after_paths = sorted(
-        [*FIXTURES.rglob("*.json"), *FIXTURES.rglob("*.jsonl"), RELEASE / "ci-matrix.json"]
+        [
+            *FIXTURES.rglob("*.json"),
+            *FIXTURES.rglob("*.jsonl"),
+            RELEASE / "ci-matrix.json",
+        ]
     )
     drifted = [
         str(path.relative_to(BENCHMARKS))

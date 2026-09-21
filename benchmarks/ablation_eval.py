@@ -62,7 +62,7 @@ from benchmarks.statistical_eval import (  # noqa: E402
 )
 from sre_agent.ablation import ARMS, FULL_ARM  # noqa: E402
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: The lower bound of the paired delta must clear this before a component is
 #: credited. Zero, not a tolerance: an effect whose interval includes "no
@@ -270,7 +270,7 @@ def _evidence_gaps(
         )
     if paired["cost_usd"] is None:
         gaps.append("no paired cost evidence; the complexity's price is unmeasured")
-    for key in ("recovery", "quality"):
+    for key in ("diagnosis",):
         low, high = paired[key]["conservative_wilson_95"]
         if high - low > maximum_ci_width:
             gaps.append(
@@ -342,6 +342,7 @@ def evaluate_arm(
         raise AblationEvalError(f"arm {arm}: {exc}") from exc
 
     paired = report["paired"]
+    diagnosis_verdict = _verdict(paired["diagnosis"]["conservative_wilson_95"])
     quality_verdict = _verdict(paired["quality"]["conservative_wilson_95"])
     recovery_verdict = _verdict(paired["recovery"]["conservative_wilson_95"])
 
@@ -353,13 +354,11 @@ def evaluate_arm(
     pays_more = bool(cost is not None and cost["bootstrap_95"][0] > 0)
     slower = bool(latency["bootstrap_95"][0] > 0)
 
-    verdict = (
-        REFUTED
-        if REFUTED in {quality_verdict, recovery_verdict}
-        else DEMONSTRATED
-        if quality_verdict == DEMONSTRATED
-        else NOT_DEMONSTRATED
-    )
+    # Approval-gated benchmark runs intentionally cannot recover. The
+    # component question is therefore answered by the exact structured
+    # diagnosis match, while recovery and end-to-end quality remain visible
+    # as separate production outcomes and keep their release-gate authority.
+    verdict = diagnosis_verdict
     # Power only needs auditing where nothing was detected. An interval that
     # already excludes zero was, by demonstration, sharp enough.
     gaps = (
@@ -382,12 +381,12 @@ def evaluate_arm(
     if verdict != DEMONSTRATED and pays_more:
         notes.append(
             f"the full stack costs {cost_delta:+.4f} USD per incident more than "
-            "this arm without a demonstrated quality gain"
+            "this arm without a demonstrated diagnosis gain"
         )
     if verdict != DEMONSTRATED and slower:
         notes.append(
             f"the full stack is {latency['mean_delta']:+.1f}s slower than this "
-            "arm without a demonstrated quality gain"
+            "arm without a demonstrated diagnosis gain"
         )
     if verdict == REFUTED:
         notes.append(
@@ -400,6 +399,7 @@ def evaluate_arm(
         "summary": ARMS[arm].summary,
         "removed_components": arm_attestation["removed_components"],
         "verdict": verdict,
+        "diagnosis_verdict": diagnosis_verdict,
         "quality_verdict": quality_verdict,
         "recovery_verdict": recovery_verdict,
         "insufficient_evidence": gaps,
@@ -477,7 +477,7 @@ def build_ablation_report(
             "bootstrap_seed": bootstrap_seed,
             "rule": (
                 "a component earns its complexity only when the lower bound of "
-                "the paired full-minus-arm delta on quality is strictly above "
+                "the paired full-minus-arm diagnosis delta is strictly above "
                 "zero; an interval containing zero is reported as "
                 "NOT_DEMONSTRATED, never as a pass"
             ),

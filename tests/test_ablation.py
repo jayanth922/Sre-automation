@@ -215,8 +215,19 @@ def _manifest(arm, *, experiment=True, writes=False, code_sha="sha-under-test"):
     }
 
 
-def _trial(candidate, fingerprint, index, *, quality, cost=0.30, latency=60.0):
+def _trial(
+    candidate,
+    fingerprint,
+    index,
+    *,
+    quality,
+    diagnosis=None,
+    cost=0.30,
+    latency=60.0,
+):
     scenario = f"scenario-{index % 5}"
+    if diagnosis is None:
+        diagnosis = quality
     return build_trial_record(
         experiment_id=EXPERIMENT_ID,
         pair_id=make_pair_id(
@@ -237,6 +248,7 @@ def _trial(candidate, fingerprint, index, *, quality, cost=0.30, latency=60.0):
         resolved=quality,
         false_resolved=False,
         grader_status="PASS" if quality else "NOT_APPLICABLE",
+        diagnosis_status="PASS" if diagnosis else "FAIL",
         safety_ok=True,
         mttr_seconds=120.0 if quality else None,
         latency_seconds=latency,
@@ -258,6 +270,8 @@ def _corpus(
     arm_manifest,
     full_wins,
     arm_wins,
+    full_diagnosis_wins=None,
+    arm_diagnosis_wins=None,
     pairs=24,
     full_cost=0.40,
     arm_cost=0.15,
@@ -265,15 +279,31 @@ def _corpus(
     """Write a paired trial artifact plus the two manifests that attest it."""
     full_fp = configuration_fingerprint(full_manifest)
     arm_fp = configuration_fingerprint(arm_manifest)
+    if full_diagnosis_wins is None:
+        full_diagnosis_wins = full_wins
+    if arm_diagnosis_wins is None:
+        arm_diagnosis_wins = arm_wins
     records = []
     for index in range(1, pairs + 1):
         records.append(
             _trial(
-                "full-v1", full_fp, index, quality=index <= full_wins, cost=full_cost
+                "full-v1",
+                full_fp,
+                index,
+                quality=index <= full_wins,
+                diagnosis=index <= full_diagnosis_wins,
+                cost=full_cost,
             )
         )
         records.append(
-            _trial("arm-v1", arm_fp, index, quality=index <= arm_wins, cost=arm_cost)
+            _trial(
+                "arm-v1",
+                arm_fp,
+                index,
+                quality=index <= arm_wins,
+                diagnosis=index <= arm_diagnosis_wins,
+                cost=arm_cost,
+            )
         )
     trials_path = tmp_path / "trials.jsonl"
     trials_path.write_text(
@@ -332,6 +362,27 @@ def test_a_clear_benefit_is_reported_as_demonstrated(tmp_path):
     assert arm["notes"] == []
 
 
+def test_diagnosis_ablation_works_while_every_action_is_approval_gated(tmp_path):
+    report = _report(
+        tmp_path,
+        full_manifest=_manifest(FULL_ARM),
+        arm_manifest=_manifest("single_agent"),
+        full_wins=0,
+        arm_wins=0,
+        full_diagnosis_wins=24,
+        arm_diagnosis_wins=10,
+    )
+
+    arm = report["arms"][0]
+    assert arm["verdict"] == "DEMONSTRATED"
+    assert arm["diagnosis_verdict"] == "DEMONSTRATED"
+    assert arm["quality_verdict"] == "NOT_DEMONSTRATED"
+    assert arm["recovery_verdict"] == "NOT_DEMONSTRATED"
+    assert arm["paired_report"]["paired"]["diagnosis"]["mean_delta"] > 0
+    assert arm["paired_report"]["paired"]["quality"]["mean_delta"] == 0
+    assert arm["paired_report"]["paired"]["recovery"]["mean_delta"] == 0
+
+
 def test_no_difference_is_not_reported_as_a_pass(tmp_path):
     report = _report(
         tmp_path,
@@ -345,7 +396,7 @@ def test_no_difference_is_not_reported_as_a_pass(tmp_path):
     assert arm["verdict"] == "NOT_DEMONSTRATED"
     assert report["components_earning_complexity"] == []
     # An identical-outcome run that still costs more must say so.
-    assert any("without a demonstrated quality gain" in note for note in arm["notes"])
+    assert any("without a demonstrated diagnosis gain" in note for note in arm["notes"])
 
 
 def test_an_underpowered_null_is_flagged_rather_than_read_as_no_effect(tmp_path):

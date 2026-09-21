@@ -115,9 +115,10 @@ blocks release. Synthetic passing observations are unit-test evidence only.
 
 A08 writes a metadata-only root incident trace to `TRACE_EVIDENCE_PATH` and
 routed-model detail to `MODEL_ACCOUNTING_PATH`. The incident metrics API and
-job result expose fail-closed summaries; paired trial v2 records the root-trace
-artifact, digest, span count, and cost only when every required span and model
-call is reconciled. Payload capture is off by default. See
+job result expose fail-closed summaries; paired trial v3 records the root-trace
+artifact, digest, span count, cost, and versioned diagnosis criterion. Cost is
+accepted only when every required span and model call is reconciled; missing
+or malformed diagnosis evidence fails closed. Payload capture is off by default. See
 `benchmarks/accounting/README.md`.
 
 A09 combines the statistical, adversarial, and trace artifacts under a pinned
@@ -137,8 +138,9 @@ control included, because arms run sequentially against one cluster. Compare
 them with `ablation_eval.py`, which takes the arm as baseline and the full
 stack as candidate, requires each arm's run manifest to attest the arm it
 claims, and credits a component only when the lower bound of the paired
-quality delta clears zero — "no measurable difference" is reported as exactly
-that. See `benchmarks/ablation/README.md`.
+diagnosis delta clears zero — "no measurable difference" is reported as
+exactly that. Recovery and end-to-end quality remain separate release
+outcomes. See `benchmarks/ablation/README.md`.
 
 The default evidence path is `reports/sre-bench-oracle.jsonl` (git-ignored).
 Each record contains the exact probe and its SHA-256, raw timestamped

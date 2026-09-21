@@ -14,8 +14,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+DIAGNOSIS_METRIC_VERSION = 1
 _RISK_CLASSES = {"low", "medium", "high", "critical"}
+_DIAGNOSIS_STATES = {
+    "PASS",
+    "FAIL",
+    "INSUFFICIENT_EVIDENCE",
+    "REQUIRES_CALIBRATION",
+    "NOT_APPLICABLE",
+}
 _SHA256_LENGTH = 64
 _CONFIG_SECTIONS = ("provenance", "models", "tools", "runtime")
 
@@ -38,6 +46,7 @@ class TrialRecord:
     resolved: bool
     false_resolved: bool
     grader_status: str
+    diagnosis_status: str
     safety_ok: bool
     mttr_seconds: Optional[float]
     latency_seconds: float
@@ -63,6 +72,11 @@ class TrialRecord:
     @property
     def quality_success(self) -> bool:
         return self.recovery_success and self.grader_status == "PASS" and self.safety_ok
+
+    @property
+    def diagnosis_success(self) -> bool:
+        """Exact structured diagnosis match, independent of recovery or action."""
+        return self.diagnosis_status == "PASS"
 
 
 @dataclass(frozen=True)
@@ -181,6 +195,7 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         "resolved",
         "false_resolved",
         "grader_status",
+        "diagnosis_status",
         "safety_ok",
         "mttr_seconds",
         "latency_seconds",
@@ -194,7 +209,9 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         "grader_artifact",
     }
     if set(payload) != expected:
-        raise StatisticalEvalError(f"{field} keys do not match trial schema v2")
+        raise StatisticalEvalError(
+            f"{field} keys do not match trial schema v{SCHEMA_VERSION}"
+        )
     if payload["schema_version"] != SCHEMA_VERSION:
         raise StatisticalEvalError(f"{field} has unsupported schema version")
     for key in (
@@ -209,6 +226,7 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         raise StatisticalEvalError(f"{field} cannot be resolved and false_resolved")
     oracle_status = _string(payload["oracle_status"], f"{field}.oracle_status")
     grader_status = _string(payload["grader_status"], f"{field}.grader_status")
+    diagnosis_status = _string(payload["diagnosis_status"], f"{field}.diagnosis_status")
     if oracle_status not in {
         "VERIFIED_RECOVERED",
         "UNRESOLVED",
@@ -222,6 +240,8 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         "NOT_APPLICABLE",
     }:
         raise StatisticalEvalError(f"{field}.grader_status is unsupported")
+    if diagnosis_status not in _DIAGNOSIS_STATES:
+        raise StatisticalEvalError(f"{field}.diagnosis_status is unsupported")
     if payload["resolved"] and grader_status == "NOT_APPLICABLE":
         raise StatisticalEvalError(
             f"{field} resolved trial requires a structured grader outcome"
@@ -305,6 +325,7 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         resolved=payload["resolved"],
         false_resolved=payload["false_resolved"],
         grader_status=grader_status,
+        diagnosis_status=diagnosis_status,
         safety_ok=payload["safety_ok"],
         mttr_seconds=mttr,
         latency_seconds=float(latency),
@@ -440,6 +461,7 @@ def pass_power_k(successes: int, total: int, k: int) -> Optional[float]:
 def _candidate_summary(trials: list[TrialRecord], k: int) -> dict[str, Any]:
     recovery = sum(trial.recovery_success for trial in trials)
     quality = sum(trial.quality_success for trial in trials)
+    diagnosis = sum(trial.diagnosis_success for trial in trials)
     safety = sum(trial.safety_ok for trial in trials)
     mttrs = [
         trial.mttr_seconds
@@ -468,6 +490,14 @@ def _candidate_summary(trials: list[TrialRecord], k: int) -> dict[str, Any]:
             "wilson_95": list(wilson_interval(quality, len(trials))),
             "pass_at_k": pass_at_k(quality, len(trials), k),
             "pass_power_k": pass_power_k(quality, len(trials), k),
+        },
+        "diagnosis": {
+            "metric_version": DIAGNOSIS_METRIC_VERSION,
+            "successes": diagnosis,
+            "rate": diagnosis / len(trials),
+            "wilson_95": list(wilson_interval(diagnosis, len(trials))),
+            "pass_at_k": pass_at_k(diagnosis, len(trials), k),
+            "pass_power_k": pass_power_k(diagnosis, len(trials), k),
         },
         "structured_complete": sum(trial.grader_status == "PASS" for trial in trials),
         "safety_rate": safety / len(trials),
@@ -643,11 +673,18 @@ def compare_candidates(
         lambda trial: trial.quality_success,
         seed=bootstrap_seed + 1,
     )
+    diagnosis = _paired_binary_metric(
+        baseline,
+        candidate,
+        lambda trial: trial.diagnosis_success,
+        seed=bootstrap_seed + 2,
+    )
+    diagnosis["metric_version"] = DIAGNOSIS_METRIC_VERSION
     latency = _paired_metric(
         baseline,
         candidate,
         lambda trial: trial.latency_seconds,
-        seed=bootstrap_seed + 2,
+        seed=bootstrap_seed + 3,
     )
     matched_mttr = [
         index
@@ -662,7 +699,7 @@ def compare_candidates(
             [baseline[index] for index in matched_mttr],
             [candidate[index] for index in matched_mttr],
             lambda trial: trial.mttr_seconds,
-            seed=bootstrap_seed + 3,
+            seed=bootstrap_seed + 4,
         )
         if matched_mttr
         else None
@@ -677,7 +714,7 @@ def compare_candidates(
             [baseline[index] for index in matched_cost],
             [candidate[index] for index in matched_cost],
             lambda trial: trial.cost_usd,
-            seed=bootstrap_seed + 4,
+            seed=bootstrap_seed + 5,
         )
         if matched_cost
         else None
@@ -693,7 +730,7 @@ def compare_candidates(
             [baseline[index] for index in critical_indices],
             [candidate[index] for index in critical_indices],
             lambda trial: trial.recovery_success,
-            seed=bootstrap_seed + 5,
+            seed=bootstrap_seed + 6,
         )
     critical_quality = None
     if critical_indices:
@@ -701,8 +738,17 @@ def compare_candidates(
             [baseline[index] for index in critical_indices],
             [candidate[index] for index in critical_indices],
             lambda trial: trial.quality_success,
-            seed=bootstrap_seed + 6,
+            seed=bootstrap_seed + 7,
         )
+    critical_diagnosis = None
+    if critical_indices:
+        critical_diagnosis = _paired_binary_metric(
+            [baseline[index] for index in critical_indices],
+            [candidate[index] for index in critical_indices],
+            lambda trial: trial.diagnosis_success,
+            seed=bootstrap_seed + 8,
+        )
+        critical_diagnosis["metric_version"] = DIAGNOSIS_METRIC_VERSION
 
     reasons: list[str] = []
     if len(pair_ids) < minimum_pairs:
@@ -747,11 +793,13 @@ def compare_candidates(
             "pair_ids": pair_ids,
             "recovery": recovery,
             "quality": quality,
+            "diagnosis": diagnosis,
             "latency_seconds": latency,
             "oracle_mttr_seconds": mttr,
             "cost_usd": cost,
             "critical_recovery": critical_recovery,
             "critical_quality": critical_quality,
+            "critical_diagnosis": critical_diagnosis,
         },
         "policy": {
             "minimum_pairs": minimum_pairs,

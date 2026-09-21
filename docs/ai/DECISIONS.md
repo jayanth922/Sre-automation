@@ -1052,10 +1052,14 @@
 - **Rejected alternative:** Reusing `compare_candidates`' PROMOTE/BLOCK as the
   ablation verdict. Rejected because it is a non-inferiority release gate — a
   bar a component that does nothing clears easily. The harness applies its own
-  superiority rule (lower bound of the paired full-minus-arm quality delta
+  superiority rule (lower bound of the paired full-minus-arm diagnosis delta
   strictly above zero) and reports an interval containing zero as
   `NOT_DEMONSTRATED`, annotated with why the evidence was too thin to call it
-  a null when it was.
+  a null when it was. Diagnosis is the versioned exact service/fault-mode
+  criterion and is deliberately independent of recovery: human approval gates
+  leave recovery and end-to-end quality at zero. Those outcomes remain in the
+  report and retain production release authority; diagnosis evidence alone
+  never authorizes rollout or remediation.
 
 ## The specialist split is not a swarm, but the node id stays `investigation_swarm`
 

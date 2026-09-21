@@ -113,7 +113,16 @@ def test_an_unreachable_collection_is_unknown_not_empty():
 
     assert report["incident_memory_points"] is None
     assert report["recall_possible"] is False
-    assert any("unreachable" in line for line in ablation_coverage.verdict_lines(report))
+    assert any(
+        "unreachable" in line for line in ablation_coverage.verdict_lines(report)
+    )
+
+
+def test_cli_refuses_an_unscoped_memory_count(capsys):
+    code = ablation_coverage.main(["--organization-id", "org-only"])
+
+    assert code == ablation_coverage.EXIT_ERROR
+    assert "--organization-id and --cluster-id are required" in capsys.readouterr().err
 
 
 # --- What the operator is told ------------------------------------------------
@@ -153,8 +162,12 @@ def test_the_retrieval_path_is_recorded_in_the_report():
 
 
 def test_a_keyword_only_run_says_semantic_recall_was_off():
-    report = _assess([_Scenario("s1", {"alertname": "A"})], hits_for=("A",),
-                     incident_points=5, path="keyword_only")
+    report = _assess(
+        [_Scenario("s1", {"alertname": "A"})],
+        hits_for=("A",),
+        incident_points=5,
+        path="keyword_only",
+    )
     lines = " ".join(ablation_coverage.verdict_lines(report))
 
     assert "keyword_only" in lines
@@ -187,25 +200,30 @@ def test_a_store_without_the_flag_is_keyword_only_not_an_error():
 # --- The preflight must not write to what it measures -------------------------
 
 
-def _reachable_semantic_store(monkeypatch, tmp_path, backfilled):
-    """A store whose constructor reaches the backfill without a live Qdrant.
+def _reachable_semantic_store(monkeypatch, tmp_path, writes):
+    """A store whose constructor reaches both writes without a live Qdrant.
 
     `_init_semantic` is stubbed down to the one line that matters here —
-    skill_store.py:511's `self._backfill_index()` — because standing up Qdrant
-    and the embedding model would make this test slow, networked, and unable to
-    prove anything the stub cannot.
+    the ensure/backfill calls — because standing up Qdrant and the embedding
+    model would make this test slow, networked, and unable to prove anything
+    the stub cannot.
     """
     from sre_agent import skill_store
 
     monkeypatch.setattr(
         skill_store.SemanticSkillStore,
         "_backfill_index",
-        lambda self: backfilled.append(1),
+        lambda self: writes.append("backfill"),
+    )
+    monkeypatch.setattr(
+        skill_store.SemanticSkillStore,
+        "_ensure_collection",
+        lambda self: writes.append("ensure"),
     )
     monkeypatch.setattr(
         skill_store.SemanticSkillStore,
         "_init_semantic",
-        lambda self, url: self._backfill_index(),
+        lambda self, url: (self._ensure_collection(), self._backfill_index()),
     )
     monkeypatch.setattr(skill_store, "_GLOBAL_STORE", None)
     monkeypatch.setenv("SKILL_STORE_PATH", str(tmp_path / "skills.json"))
@@ -215,24 +233,69 @@ def _reachable_semantic_store(monkeypatch, tmp_path, backfilled):
 def test_opening_the_store_suppresses_the_constructor_backfill(monkeypatch, tmp_path):
     """`SemanticSkillStore.__init__` upserts every verified skill into Qdrant.
     A preflight that did that would be reporting on a corpus it just wrote."""
-    backfilled: list[int] = []
-    _reachable_semantic_store(monkeypatch, tmp_path, backfilled)
+    writes: list[str] = []
+    _reachable_semantic_store(monkeypatch, tmp_path, writes)
 
     ablation_coverage.open_store_read_only()
 
-    assert backfilled == []
+    assert writes == []
 
 
 def test_the_backfill_is_restored_afterwards(monkeypatch, tmp_path):
     """The suppression is scoped to construction; a later `add()` must still
     index, or the preflight would leave the process silently degraded."""
-    backfilled: list[int] = []
-    skill_store = _reachable_semantic_store(monkeypatch, tmp_path, backfilled)
-    stub = skill_store.SemanticSkillStore._backfill_index
+    writes: list[str] = []
+    skill_store = _reachable_semantic_store(monkeypatch, tmp_path, writes)
+    backfill = skill_store.SemanticSkillStore._backfill_index
+    ensure = skill_store.SemanticSkillStore._ensure_collection
 
     ablation_coverage.open_store_read_only()
 
-    assert skill_store.SemanticSkillStore._backfill_index is stub
+    assert skill_store.SemanticSkillStore._backfill_index is backfill
+    assert skill_store.SemanticSkillStore._ensure_collection is ensure
+
+
+def test_an_absent_semantic_collection_is_not_reported_as_an_active_path(monkeypatch):
+    from sre_agent import skill_store
+
+    class _Client:
+        def get_collections(self):
+            return type("Collections", (), {"collections": []})()
+
+    store = type(
+        "Store",
+        (),
+        {"_semantic_available": True, "_qdrant": _Client()},
+    )()
+    monkeypatch.setattr(skill_store, "get_skill_store", lambda: store)
+
+    opened = ablation_coverage.open_store_read_only()
+
+    assert opened is store
+    assert ablation_coverage.retrieval_path(opened) == "keyword_only"
+
+
+def test_a_preexisting_semantic_collection_keeps_the_path_active(monkeypatch):
+    from sre_agent import skill_store
+
+    class _Client:
+        def get_collections(self):
+            collection = type(
+                "Collection", (), {"name": skill_store.SKILLS_COLLECTION}
+            )()
+            return type("Collections", (), {"collections": [collection]})()
+
+    store = type(
+        "Store",
+        (),
+        {"_semantic_available": True, "_qdrant": _Client()},
+    )()
+    monkeypatch.setattr(skill_store, "get_skill_store", lambda: store)
+
+    assert (
+        ablation_coverage.retrieval_path(ablation_coverage.open_store_read_only())
+        == "semantic"
+    )
 
 
 def test_a_renamed_backfill_raises_rather_than_resuming_the_write(monkeypatch):
@@ -245,4 +308,15 @@ def test_a_renamed_backfill_raises_rather_than_resuming_the_write(monkeypatch):
     monkeypatch.delattr(skill_store.SemanticSkillStore, "_backfill_index")
 
     with pytest.raises(RuntimeError, match="_backfill_index"):
+        ablation_coverage.open_store_read_only()
+
+
+def test_a_renamed_collection_initializer_also_fails_closed(monkeypatch):
+    import pytest
+
+    from sre_agent import skill_store
+
+    monkeypatch.delattr(skill_store.SemanticSkillStore, "_ensure_collection")
+
+    with pytest.raises(RuntimeError, match="_ensure_collection"):
         ablation_coverage.open_store_read_only()

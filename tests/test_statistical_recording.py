@@ -87,8 +87,8 @@ def _gated_score(scenario: str) -> RunScore:
     """What every trial produces today: stopped at the human approval gate.
 
     Unresolved, so no MTTR and -- by the trial schema's own coupling -- no
-    structured grader verdict. The diagnosis it reached was still graded
-    against the oracle, and it still reported a confidence in that diagnosis.
+    overall structured grader verdict. Its diagnosis criterion was still
+    graded against the oracle, and it still reported diagnosis confidence.
     """
     return RunScore(
         scenario=scenario,
@@ -98,6 +98,9 @@ def _gated_score(scenario: str) -> RunScore:
         rubric_version="v2",
         diagnosis_confidence=0.62,
         diagnosis_confidence_outcome=True,
+        structured_grade={
+            "criteria": {"diagnosis": {"state": "PASS"}},
+        },
     )
 
 
@@ -114,6 +117,9 @@ def _resolved_score(scenario: str) -> RunScore:
         diagnosis_confidence_outcome=True,
         remediation_confidence=0.55,
         remediation_confidence_outcome=False,
+        structured_grade={
+            "criteria": {"diagnosis": {"state": "PASS"}},
+        },
     )
 
 
@@ -159,6 +165,7 @@ def test_a_complete_trace_records_the_cost(monkeypatch, tmp_path):
     assert row["config_fingerprint"] == FINGERPRINT
     assert row["experiment_id"] == "exp-recording"
     assert row["dataset_sha256"] == module.DATASET.sha256
+    assert row["diagnosis_status"] == "PASS"
     assert "trace_incomplete" not in row["failure_categories"]
 
 
@@ -197,7 +204,27 @@ def test_a_missing_trace_payload_is_treated_as_incomplete(monkeypatch, tmp_path)
     assert row["cost_usd"] is None
     assert row["trace_complete"] is False
     assert row["trace_span_count"] == 0
+    assert row["diagnosis_status"] == "PASS"
     assert set(row["failure_categories"]) == {"unresolved", "trace_incomplete"}
+
+
+def test_missing_or_malformed_structured_diagnosis_fails_closed(monkeypatch, tmp_path):
+    module = _recording(monkeypatch, tmp_path)
+    spec = module.SCENARIOS[0]
+    score = _gated_score(spec.name)
+    score.structured_grade = {"criteria": {"diagnosis": {"state": "MAYBE"}}}
+
+    module._record_statistical_trial(
+        spec,
+        score,
+        trial_index=1,
+        latency_seconds=300.0,
+        trace_completeness=dict(_COMPLETE_TRACE),
+    )
+
+    assert _rows(tmp_path / "trials.jsonl")[0]["diagnosis_status"] == (
+        "INSUFFICIENT_EVIDENCE"
+    )
 
 
 def test_a_gated_trial_still_contributes_a_diagnosis_observation(monkeypatch, tmp_path):

@@ -14,9 +14,11 @@ from typing import Any, Optional
 
 try:
     from benchmarks import release_evidence
+    from benchmarks.statistical_eval import SCHEMA_VERSION as STATISTICAL_SCHEMA_VERSION
 except ImportError:  # invoked as `python benchmarks/release_gate.py`, as CI does
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from benchmarks import release_evidence
+    from benchmarks.statistical_eval import SCHEMA_VERSION as STATISTICAL_SCHEMA_VERSION
 
 SCHEMA_VERSION = 1
 _ADVERSARIAL_DATASET_ROOT = Path(__file__).resolve().parent / "adversarial"
@@ -485,12 +487,14 @@ def evaluate_bundle(
     claimed_statistical = _object(
         bundle["statistical_report"], "bundle.statistical_report"
     )
-    if claimed_statistical.get("schema_version") != 2:
-        raise ReleaseGateError("statistical report must use schema v2")
+    if claimed_statistical.get("schema_version") != STATISTICAL_SCHEMA_VERSION:
+        raise ReleaseGateError(
+            f"statistical report must use schema v{STATISTICAL_SCHEMA_VERSION}"
+        )
     # The bundle's summary is a claim about its records, not a source of
     # truth: re-derive the comparison from the trial rows and use that. A
     # marker row never reaches this point — `load_trials` refuses any row
-    # whose key set is not trial schema v2.
+    # whose key set is not the current trial schema.
     statistical, trials = _recomputed(
         release_evidence.recompute_statistical_report,
         Path(evidence_by_kind["paired_trials"]["path"]),
@@ -515,6 +519,8 @@ def evaluate_bundle(
                 "candidate.cost_usd.mean",
                 "paired.recovery.conservative_wilson_95",
                 "paired.quality.conservative_wilson_95",
+                "paired.diagnosis.metric_version",
+                "paired.diagnosis.conservative_wilson_95",
                 "release_decision.status",
             ),
         )

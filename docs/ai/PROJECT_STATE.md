@@ -1,113 +1,102 @@
 # PROJECT_STATE.md
 
 ## Project objective
-Make Sentinel truthful, tenant-isolated, reproducible, cost-conscious, and
-production-operable. Deterministic policy and durable state—not model prose—
-control writes, approvals, status transitions, and operator-facing claims.
+Make Sentinel a truthful, tenant-isolated, reproducible and cost-conscious SRE
+agent. Deterministic policy and durable state—not model prose—control writes,
+approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-**Frontend wiring, re-audited by path.** Backend verification is closed. The
-dashboard's coverage was measured against every route decorator under
-`sre_agent/api/v1` instead of by module name: **42 of 56 endpoints have a
-caller**, and the one genuinely stranded feature — the emergency lock — is
-now wired. A fresh install still needs no `.env` (keystore volume, first-run
-claim page, `environment` / `approval_ttl_minutes` on the cluster row via
-migration `a7b8c9d0e1f2`).
+**Platform implementation is closed; rigorous AI evidence is next.** The
+current outcome is a reproducible study of whether specialist decomposition,
+reflection and memory improve incident diagnosis enough to justify their
+latency and cost. Do not add platform breadth unless it blocks that study.
 
 ## Current architecture and invariants
 - `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
-  policy, tenant, idempotency, and audit boundary: approval cannot override a
-  hard block, successful actions are not replayed after process death, and a
+  policy, tenant, idempotency and audit boundary. Approval cannot override a
+  hard block; successful actions are not replayed after process death; a
   cleared incident cannot restart remediation (#40).
-- Strict read gates activate only for specialist ReAct calls; deterministic
-  verification keeps tenant isolation but bypasses breadth limits. Scope
+- Strict breadth gates apply only to specialist ReAct reads. Deterministic
+  verification retains tenant isolation without model-search limits. Scope
   refusals audit as `REFUSED` without cancelling sibling calls.
-- Policy columns are **nullable = inherit**; resolution fails closed to
-  `production` / 30 minutes and a typo is a 422, not a silent normalisation.
-- **Decisions go through Slack, status comes back through the console.**
-  `/approve`, `/mark-resolved` and the remediation-gate `decide` endpoint have
-  no dashboard caller *by design* — the incident page renders the instruction
-  to reply in the Slack thread. Do not build approval buttons.
-- **The emergency lock is enforced and its read is now honest.**
-  `is_cluster_locked` fails open, so `GET /lock` reports `state_available`
-  beside `locked` and the console keeps "unknown" distinct from "released".
-  Enforcement never depended on that: the gateway rejects `state_unavailable`
-  before it consults the lock.
-- Losing the keystore volume makes every stored credential unrecoverable —
-  the accepted cost of zero-config boot. Back it up.
+- Policy columns use nullable=inherited semantics and fail closed to production
+  defaults. Losing the keystore volume makes credentials unrecoverable, so it
+  must be backed up with the database.
+- Benchmark evidence is content-addressed to scenario, code, configuration,
+  rubric, model and trace artifacts. Missing or inconsistent evidence blocks a
+  claim rather than degrading to a plausible summary.
+- Production promotion remains tied to recovery, full structured quality,
+  safety and complete cost traces. Diagnosis-only evidence cannot authorize a
+  rollout or bypass human approval.
 
 ## Completed or verified work
-- Job completion has a single owner: the second writer is deleted, not left
-  unused, and a losing writer raises `DurableJobError` after commit.
-- #44 proven without an outage — the real env → builder → SDK chain driven
-  against a fake `[529, 529, 200]` transport, plus a zero-budget twin that
-  proves the harness can fail.
-- Dataset **v3** authored at $0: v2's 22 scenarios plus three `missing_data`,
-  one per split, strict-loader clean and byte-identical on `--repin`. v2 is
-  untouched and still the default.
-- Emergency lock wired end to end, fail-open read fixed, call sites pinned.
-- Calibration gate (`2de46bb`): an artifact that blocked its own autonomy
-  threshold no longer counts as calibration.
-- Smoke `b13ce2c5`: **$2.2079**, 69 model calls — taken before Phase C cut
-  cost per model call 62%, so a stale ceiling.
+- Context/query hardening reduced a live smoke from 16/142 successful tool
+  calls to 53/59. Specialists receive exact alert labels/time, selected
+  procedures and bounded prior findings; durable evidence remains lossless.
+- The v2 benchmark has 22 versioned scenarios, an independent recovery oracle,
+  structured grading, adversarial cases, confidence evaluation, paired
+  statistics, four ablation arms and a content-addressed release gate.
+- Dataset v3 adds three `missing_data` scenarios, one per split, and repins
+  deterministically; v2 remains the default.
+- Job completion has one durable owner; 529 retry is proven through the real
+  env/builder/SDK chain; the emergency lock is wired and its read reports
+  unavailable state honestly.
+- **Diagnosis metric complete locally:** trial schema v3 requires the structured
+  diagnosis criterion; missing/malformed input fails closed. Statistical
+  reports expose versioned paired diagnosis results, and ablation report v2
+  uses that metric while retaining recovery/quality separately. Approval-gated
+  tests prove diagnosis can improve while both other outcomes remain zero.
+  Release evidence recomputes the metric from raw rows and detects tampering.
+- The memory preflight is now genuinely read-only: it suppresses collection
+  creation and backfill, rejects absent tenant/cluster scope, and will not call
+  an uninitialized semantic index active. The Mac dev stack measured 0/6
+  observable dev scenarios (zero skills and incident memories); this is a
+  diagnostic only, not evidence about the live Codespace stack.
+- Smoke `b13ce2c5` cost $2.2079 over 69 model calls and stopped correctly at
+  human approval. It predates the Phase C cost reduction and is not an
+  end-to-end quality result.
 
 ## Active problem
-Autonomy is gated by calibration, not a runtime bug: uncalibrated confidence
-escalates SEV2 to SEV1, which needs approval and leaves trials unresolved.
-Stage 1 needs ≥40 `live_benchmark` diagnosis observations under
-`STATISTICAL_RECORDING`, then the artifact and fingerprint. `quality_success`
-still requires recovery + PASS + safety, so both stay zero in every arm until
-`statistical_eval` / `ablation_eval` change.
+No live statistical row has yet proven grade, confidence, cost and complete
+trace persistence together. Autonomy also remains uncalibrated: Stage 1 needs
+at least 40 `live_benchmark` diagnosis observations, then a content-addressed
+artifact bound to the current configuration fingerprint.
 
 ## Relevant files
-- Frontend: `dashboard/components/console/BreakGlass.tsx`,
-  `dashboard/app/(dashboard)/clusters/[id]/{layout,settings/page}.tsx`.
-- Query/context: `sre_agent/{namespace_scope,mcp_tool_wrapper,agent_nodes,
-  context_compaction,audit_context}.py`, `config/agent_config.yaml`.
-- Benchmark: `benchmarks/{scoring,statistical_eval,ablation_eval,sre_bench}.py`,
-  `benchmarks/datasets/{v2,v3}/`.
-- Operations and rationale: `docs/ai/HANDOFF_CODEX.md`, `DECISIONS.md`.
+- Evaluation: `benchmarks/{scoring,statistical_eval,ablation_eval,sre_bench,
+  structured_grading,release_evidence,release_gate}.py`.
+- Agent/context: `sre_agent/{agent_nodes,namespace_scope,mcp_tool_wrapper,
+  context_compaction,narrative,tracing,model_accounting}.py`.
+- Safety/durability: `sre_agent/{mutation_gateway,act_phase,
+  incident_remediation_workflow,approval_flow}.py`.
+- Rationale: `docs/ai/{HANDOFF_CODEX,DECISIONS}.md`.
 
 ## Verification commands and latest results
-- Full suite in the Codespace: **2090 passed, 6 skipped** (`.venv/bin/python
-  -m pytest -q`). `uv sync --frozen --extra dev` alone fails 7 — add
-  `--extra temporal --extra anthropic`.
-- `dashboard/node_modules/.bin/tsc --noEmit` clean; `eslint` red repo-wide
-  (30 errors, endemic `react-hooks/set-state-in-effect`), new files add none.
-- Migration `a7b8c9d0e1f2` up/down/up against a throwaway DB. Live
-  `sre_platform` is still at the old head.
-- `audit_runbook_coverage.py` → 22/22; runbooks live in Notion.
+- `uv run pytest -q` → **2099 passed, 6 skipped** (2026-09-20).
+- Focused evaluator/recorder/ablation tests → **70 passed**.
+- Release evidence/gate tests → **34 passed**; fixture regeneration check clean.
+- Black and Ruff pass on all changed Python files.
 
 ## Known blockers or risks
-- **v3 is not runnable yet.** Its `metrics_enabled` knob lives in
-  `jayanth922/meridian-shop` (`services/checkout-service/app.py`),
-  uncommitted and unpushed, and the checkout image is not rebuilt. Injecting
-  it today is a no-op, so a v3 run would silently measure nothing.
-- `STATISTICAL_RECORDING` is unit-verified but has never produced a row from
-  a live trial on this stack.
-- `remediation_gate_approvals` is 0 against 61 `approval_requests`: its only
-  writer runs for **code-fix** actions (`graph_builder.py:731`) and v2
-  scenarios are infra faults. A second subsystem, not a broken one.
-- Grades are not comparable across the #54 fix (rubric sha256 moved).
+- Dataset v3 is not runnable until Meridian's `metrics_enabled` knob is
+  committed/pushed and its checkout image rebuilt in the separate repo.
+- The authoritative tenant-scoped memory preflight has not run on Codespace;
+  the local dev stack is blind and must not be used for a `no_memory` claim.
+- Paid evidence is not authorized: about $88 for 40 calibration observations;
+  about $194/$389/$583 for increasing ablation tiers at the stale smoke floor.
+- Semantic causal/evidence criteria are not human-calibrated. Do not promote
+  them to headline metrics until blinded labels measure agreement and publish
+  disagreements/error slices.
+- Grades before/after the #54 rubric digest change are not comparable.
+- `/app/reports` is not a volume; export paid evidence before rebuilds.
 - Never stage `.agents/`, `.env.local-backup-20260910`, `.env.bak-*`; never
   `git add -A`.
 
 ## Next bounded task
-Order is the user's: backend, then frontend, then benchmarking.
-
-**Frontend, remaining — decisions, not wiring.** `POST /chat` is mounted and
-spends a 120-second agent invocation for any signed-in member, while task #7
-was explicitly "no chat": decide whether it stays mounted. `POST
-/clusters/{id}/trigger` is absent for the same reason `/jobs/trigger` is, but
-only `/jobs/trigger` has a test saying so. `GET /clusters/{id}/health` and the
-standalone job `manifest` GET are redundant — that data already rides in
-`ClusterResponse` and `JobResponse.run_manifest`.
-
-**Then benchmarking**, on the user's stage and budget. Nothing paid is
-authorized: not the ~$88 calibration, not the $194 / $389 / $583 tiers.
-`ablation_eval.py:319` pins `code_sha` across arms, so land every pending fix
-first. The free pre-flight (`benchmarks/ablation_coverage.py` and the rest)
-has not been run.
-
-`docs/ai/HANDOFF_CODEX.md` → "Step 3 — wire the frontend" holds the full
-endpoint-by-endpoint result and the traps.
+Commit/deploy the evaluator changes, then run the corrected tenant-scoped
+preflight on the Codespace agent runtime. If its corpus is blind, prepare a
+training-split-only benchmark corpus with explicit provenance; never seed from
+dev or holdout. Only after the user authorizes a stage and budget, run exactly
+one live statistical smoke to prove row persistence. Do not launch calibration
+or the multi-arm campaign yet. Then build the blinded human-labelled semantic
+grader set and publish exact revisions, raw evidence and failure slices.

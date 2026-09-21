@@ -13,7 +13,7 @@ only that the gate could read the word BLOCK out of JSON.
 
 The evaluators that produce real evidence already validate it far more
 strictly than the gate did: `statistical_eval.load_trials` rejects any row
-whose key set is not trial schema v2, and `adversarial_eval.load_observations`
+whose key set is not the current trial schema, and `adversarial_eval.load_observations`
 does the same for observations. This module's whole job is to make the gate
 use them, and then to *recompute* the reports from the records so that the
 bundle's own summary becomes a claim to check rather than the source of truth.
@@ -102,15 +102,18 @@ def _parse_root_trace(payload: Any, line_number: int) -> dict[str, Any]:
         # An incomplete trace is allowed to be missing its digest and cost;
         # a complete one claiming to be evidence is not.
         _sha256_text(payload["records_sha256"], f"{field}.records_sha256")
-        if not isinstance(payload["artifact_path"], str) or not payload[
-            "artifact_path"
-        ].strip():
+        if (
+            not isinstance(payload["artifact_path"], str)
+            or not payload["artifact_path"].strip()
+        ):
             raise ReleaseEvidenceError(f"{field}.artifact_path must be a path")
         if spans < 1:
             raise ReleaseEvidenceError(f"{field} complete trace records no spans")
         cost = payload["cost_usd"]
         if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
-            raise ReleaseEvidenceError(f"{field}.cost_usd must be a non-negative number")
+            raise ReleaseEvidenceError(
+                f"{field}.cost_usd must be a non-negative number"
+            )
     return payload
 
 
@@ -119,7 +122,9 @@ def load_root_traces(path: Path) -> tuple[tuple[dict[str, Any], ...], ArtifactEv
     try:
         raw = path.read_bytes()
     except FileNotFoundError as exc:
-        raise ReleaseEvidenceError(f"root-trace artifact does not exist: {path}") from exc
+        raise ReleaseEvidenceError(
+            f"root-trace artifact does not exist: {path}"
+        ) from exc
     lines = raw.decode("utf-8").splitlines()
     if not lines:
         raise ReleaseEvidenceError("root-trace artifact is empty")
@@ -177,7 +182,9 @@ def recompute_statistical_report(
             ),
         )
     except StatisticalEvalError as exc:
-        raise ReleaseEvidenceError(f"paired-trial evidence is not usable: {exc}") from exc
+        raise ReleaseEvidenceError(
+            f"paired-trial evidence is not usable: {exc}"
+        ) from exc
     return report, trials
 
 
@@ -249,7 +256,9 @@ def verify_root_traces(
         for record in traces
         if record["records_sha256"] is not None
     }
-    paired = [trial for trial in trials if trial.candidate_id in {baseline_id, candidate_id}]
+    paired = [
+        trial for trial in trials if trial.candidate_id in {baseline_id, candidate_id}
+    ]
     for trial in paired:
         if not trial.trace_complete:
             reasons.append(

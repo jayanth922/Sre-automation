@@ -100,7 +100,7 @@
       "kind": "paired_trials",
       "path": "evidence/regressive-prompt/trials.jsonl",
       "records": 160,
-      "sha256": "4783295ab66c3d9f10653ccef814190cfe8799839dbd1aa886831cda9f2deedb"
+      "sha256": "fe3857d952319a25d4642feb890480426da1bc3ce03284dba61787ddf2d3657d"
     },
     {
       "kind": "adversarial_observations",
@@ -154,6 +154,17 @@
         "mean": 0.10037,
         "p95": 0.1028
       },
+      "diagnosis": {
+        "metric_version": 1,
+        "pass_at_k": 1.0,
+        "pass_power_k": 1.0,
+        "rate": 1.0,
+        "successes": 80,
+        "wilson_95": [
+          0.9541818704644728,
+          0.9999999999999999
+        ]
+      },
       "failure_categories": {},
       "failure_category_rates": {},
       "latency_seconds": {
@@ -199,6 +210,17 @@
             "coverage": 1.0,
             "mean": 0.1002875,
             "p95": 0.1028
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -247,6 +269,17 @@
             "mean": 0.1004375,
             "p95": 0.1028
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -293,6 +326,17 @@
             "coverage": 1.0,
             "mean": 0.1005125,
             "p95": 0.1028
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -341,6 +385,17 @@
             "mean": 0.1003625,
             "p95": 0.1028
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -387,6 +442,17 @@
             "coverage": 1.0,
             "mean": 0.10025,
             "p95": 0.1028
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -438,6 +504,17 @@
         "mean": 0.10227,
         "p95": 0.1047
       },
+      "diagnosis": {
+        "metric_version": 1,
+        "pass_at_k": 0.9993184031158715,
+        "pass_power_k": 0.7259006815968841,
+        "rate": 0.9,
+        "successes": 72,
+        "wilson_95": [
+          0.8148931119389591,
+          0.9484523844326191
+        ]
+      },
       "failure_categories": {
         "unsupported_claim": 8
       },
@@ -488,6 +565,17 @@
             "mean": 0.1021875,
             "p95": 0.1047
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -534,6 +622,17 @@
             "coverage": 1.0,
             "mean": 0.1023375,
             "p95": 0.1047
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -582,6 +681,17 @@
             "mean": 0.1024125,
             "p95": 0.1047
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -629,6 +739,17 @@
             "mean": 0.1022625,
             "p95": 0.1047
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -675,6 +796,17 @@
             "coverage": 1.0,
             "mean": 0.10215,
             "p95": 0.1047
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 0.9,
+            "pass_power_k": 0.1,
+            "rate": 0.5,
+            "successes": 8,
+            "wilson_95": [
+              0.27999563610326017,
+              0.7200043638967398
+            ]
           },
           "failure_categories": {
             "unsupported_claim": 8
@@ -814,6 +946,70 @@
           0.001899999999999999
         ]
       },
+      "critical_diagnosis": {
+        "bootstrap_95": [
+          -0.2708333333333333,
+          -0.0625
+        ],
+        "cohens_dz": -0.44253060157839175,
+        "conservative_wilson_95": [
+          -0.2957782840125558,
+          -0.01285500609873802
+        ],
+        "mean_delta": -0.16666666666666666,
+        "metric_version": 1,
+        "pairs": 48,
+        "raw_deltas": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0
+        ]
+      },
       "critical_quality": {
         "bootstrap_95": [
           -0.2708333333333333,
@@ -937,6 +1133,102 @@
           0.0,
           0.0,
           0.0,
+          0.0
+        ]
+      },
+      "diagnosis": {
+        "bootstrap_95": [
+          -0.175,
+          -0.0375
+        ],
+        "cohens_dz": -0.33124344857252985,
+        "conservative_wilson_95": [
+          -0.1851068880610408,
+          -0.005729486031853637
+        ],
+        "mean_delta": -0.1,
+        "metric_version": 1,
+        "pairs": 80,
+        "raw_deltas": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
+          0.0,
+          -1.0,
           0.0
         ]
       },
@@ -1407,7 +1699,7 @@
       {
         "path": "evidence/regressive-prompt/trials.jsonl",
         "records": 160,
-        "sha256": "4783295ab66c3d9f10653ccef814190cfe8799839dbd1aa886831cda9f2deedb"
+        "sha256": "fe3857d952319a25d4642feb890480426da1bc3ce03284dba61787ddf2d3657d"
       }
     ],
     "release_decision": {
@@ -1418,6 +1710,6 @@
       ],
       "status": "BLOCK"
     },
-    "schema_version": 2
+    "schema_version": 3
   }
 }

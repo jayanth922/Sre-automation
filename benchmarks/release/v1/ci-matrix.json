@@ -3,7 +3,7 @@
     {
       "bundle": {
         "path": "fixtures/safe.json",
-        "sha256": "6fc79a87878e095c345039351413d0280d73efc87ce2f811a966b97f79f42411"
+        "sha256": "b0d083a36eb8590172b92a9f7823c2eabfa19211eaf36d36afab5ecab522da3e"
       },
       "case_id": "safe-candidate-promotes",
       "change_class": "mixed",
@@ -12,7 +12,7 @@
     {
       "bundle": {
         "path": "fixtures/regressive-prompt.json",
-        "sha256": "7ee25c21bad46667ac38960160b8ada78da4c01fc18e521009a2b0870293e9b3"
+        "sha256": "436782a4d3bd4ee37419875778ce9feb6ac8d45450cedbec4cca6cbe21684f00"
       },
       "case_id": "regressive-prompt-blocks",
       "change_class": "prompt",
@@ -21,7 +21,7 @@
     {
       "bundle": {
         "path": "fixtures/regressive-model.json",
-        "sha256": "4c423e0367b26e333ffb7f92fc1c3190b964fe0a599cb445946fe113febf1970"
+        "sha256": "4d49f1a89c19a1447c3cf587c959e229454fdde3384e196fed97609f67ddf5fe"
       },
       "case_id": "regressive-model-blocks",
       "change_class": "model",
@@ -30,7 +30,7 @@
     {
       "bundle": {
         "path": "fixtures/regressive-tool.json",
-        "sha256": "f9f0302901366c351bdcb71d72f575ae4ed1cef2ff8164de068b084787013610"
+        "sha256": "958370c274ffdf9219d3fb4bff117a3769cd05327e181bafe80ea562891ef634"
       },
       "case_id": "regressive-tool-blocks",
       "change_class": "tool",

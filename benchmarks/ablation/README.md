@@ -97,12 +97,18 @@ docker exec sre-agent-api rm -rf /app/benchmarks
 The artifact records the interpreter that produced it, so a report can be
 attributed after the fact as well as gated in advance.
 
-The preflight is read-only. `SemanticSkillStore.__init__` backfills the Qdrant
-skill index, which would have the preflight reporting on a corpus it had just
-written; `open_store_read_only()` suppresses that for the duration of
-construction and fails loudly if the method it suppresses is ever renamed.
-Verified on the host path with the real five-skill corpus: semantic recall
-active, zero Qdrant writes.
+The preflight is read-only. `SemanticSkillStore.__init__` can create the Qdrant
+collection and backfill it, either of which would have the preflight reporting
+on a corpus it had just written. `open_store_read_only()` suppresses both for
+the duration of construction and fails loudly if either private method is ever
+renamed. It also treats an absent pre-existing collection as semantic recall
+being unavailable instead of trusting the constructor's optimistic flag.
+The historical five-skill corpus check produced 6/6 coverage with zero Qdrant
+writes; every new campaign must produce its own tenant-scoped artifact.
+
+Both `--organization-id` and `--cluster-id` are mandatory. Without them the
+Qdrant count spans tenants, so another tenant's points can make an empty
+benchmark corpus look observable.
 
 Pass the artifact to the comparison as `--memory-coverage`. Without it, or
 with a blind or partial one, `no_memory` carries an `insufficient_evidence`
@@ -194,7 +200,7 @@ paired delta reads "full minus arm". Per arm:
 
 | Verdict | Meaning |
 | --- | --- |
-| `DEMONSTRATED` | The lower bound of the paired quality delta is above zero. The component earns its complexity. |
+| `DEMONSTRATED` | The lower bound of the paired diagnosis delta is above zero. The component earns its complexity for diagnosis. |
 | `NOT_DEMONSTRATED` | The interval contains zero. **Not a pass.** |
 | `REFUTED` | The upper bound is below zero — removing the component improved outcomes. Exit code 2. |
 

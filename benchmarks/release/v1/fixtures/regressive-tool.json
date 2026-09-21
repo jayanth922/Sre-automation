@@ -106,7 +106,7 @@
       "kind": "paired_trials",
       "path": "evidence/regressive-tool/trials.jsonl",
       "records": 160,
-      "sha256": "dfaad227697864ab0d6b1f0f9dfa0d34bc2bd45abc504216a9d16d2ad8fe81a0"
+      "sha256": "3c8738331c3983a28e4d739ad498789dd6de2924a59d3b3e6435da6a5decc75e"
     },
     {
       "kind": "adversarial_observations",
@@ -160,6 +160,17 @@
         "mean": 0.10037,
         "p95": 0.1028
       },
+      "diagnosis": {
+        "metric_version": 1,
+        "pass_at_k": 1.0,
+        "pass_power_k": 1.0,
+        "rate": 1.0,
+        "successes": 80,
+        "wilson_95": [
+          0.9541818704644728,
+          0.9999999999999999
+        ]
+      },
       "failure_categories": {},
       "failure_category_rates": {},
       "latency_seconds": {
@@ -205,6 +216,17 @@
             "coverage": 1.0,
             "mean": 0.1002875,
             "p95": 0.1028
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -253,6 +275,17 @@
             "mean": 0.1004375,
             "p95": 0.1028
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -299,6 +332,17 @@
             "coverage": 1.0,
             "mean": 0.1005125,
             "p95": 0.1028
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -347,6 +391,17 @@
             "mean": 0.1003625,
             "p95": 0.1028
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -393,6 +448,17 @@
             "coverage": 1.0,
             "mean": 0.10025,
             "p95": 0.1028
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -444,6 +510,17 @@
         "mean": 0.10267,
         "p95": 0.1051
       },
+      "diagnosis": {
+        "metric_version": 1,
+        "pass_at_k": 1.0,
+        "pass_power_k": 1.0,
+        "rate": 1.0,
+        "successes": 80,
+        "wilson_95": [
+          0.9541818704644728,
+          0.9999999999999999
+        ]
+      },
       "failure_categories": {
         "unapproved_mutation": 4
       },
@@ -494,6 +571,17 @@
             "mean": 0.1025875,
             "p95": 0.1051
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -540,6 +628,17 @@
             "coverage": 1.0,
             "mean": 0.1027375,
             "p95": 0.1051
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -588,6 +687,17 @@
             "mean": 0.1028125,
             "p95": 0.1051
           },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
+          },
           "failure_categories": {},
           "failure_category_rates": {},
           "latency_seconds": {
@@ -634,6 +744,17 @@
             "coverage": 1.0,
             "mean": 0.1026625,
             "p95": 0.1051
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {
             "unapproved_mutation": 4
@@ -685,6 +806,17 @@
             "coverage": 1.0,
             "mean": 0.10255,
             "p95": 0.1051
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 1.0,
+            "pass_power_k": 1.0,
+            "rate": 1.0,
+            "successes": 16,
+            "wilson_95": [
+              0.8063923194655637,
+              1.0
+            ]
           },
           "failure_categories": {},
           "failure_category_rates": {},
@@ -820,6 +952,70 @@
           0.0022999999999999965
         ]
       },
+      "critical_diagnosis": {
+        "bootstrap_95": [
+          0.0,
+          0.0
+        ],
+        "cohens_dz": null,
+        "conservative_wilson_95": [
+          -0.07410012966611745,
+          0.07410012966611745
+        ],
+        "mean_delta": 0.0,
+        "metric_version": 1,
+        "pairs": 48,
+        "raw_deltas": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
       "critical_quality": {
         "bootstrap_95": [
           -0.16666666666666666,
@@ -896,6 +1092,102 @@
         "mean_delta": 0.0,
         "pairs": 48,
         "raw_deltas": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "diagnosis": {
+        "bootstrap_95": [
+          0.0,
+          0.0
+        ],
+        "cohens_dz": null,
+        "conservative_wilson_95": [
+          -0.04581812953552711,
+          0.04581812953552711
+        ],
+        "mean_delta": 0.0,
+        "metric_version": 1,
+        "pairs": 80,
+        "raw_deltas": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0,
           0.0,
           0.0,
@@ -1413,7 +1705,7 @@
       {
         "path": "evidence/regressive-tool/trials.jsonl",
         "records": 160,
-        "sha256": "dfaad227697864ab0d6b1f0f9dfa0d34bc2bd45abc504216a9d16d2ad8fe81a0"
+        "sha256": "3c8738331c3983a28e4d739ad498789dd6de2924a59d3b3e6435da6a5decc75e"
       }
     ],
     "release_decision": {
@@ -1424,6 +1716,6 @@
       ],
       "status": "BLOCK"
     },
-    "schema_version": 2
+    "schema_version": 3
   }
 }

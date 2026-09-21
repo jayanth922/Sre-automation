@@ -19,7 +19,7 @@ Defect #39, found by probing the shipped bundles rather than trusting them:
 
 The validators needed to catch all of this already existed;
 `statistical_eval.load_trials` rejects any row whose key set is not trial
-schema v2 and `adversarial_eval.load_observations` does the same for
+the current trial schema and `adversarial_eval.load_observations` does the same for
 observations. The gate's mistake was `json.loads`.
 
 There is a second, quieter half. The shipped policy demanded twenty paired
@@ -58,9 +58,7 @@ def tree(tmp_path):
 
 def _evidence_path(bundle_path: Path, kind: str) -> Path:
     bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-    entry = next(
-        item for item in bundle["evidence_artifacts"] if item["kind"] == kind
-    )
+    entry = next(item for item in bundle["evidence_artifacts"] if item["kind"] == kind)
     return bundle_path.parent / entry["path"]
 
 
@@ -99,6 +97,7 @@ def _decide(tree: Path, name: str = "safe"):
 # The shipped fixtures decide on their records
 # ---------------------------------------------------------------------------
 
+
 def test_the_four_fixtures_no_longer_share_one_evidence_file():
     """The finding that made #39 worse than it was reported.
 
@@ -109,8 +108,10 @@ def test_the_four_fixtures_no_longer_share_one_evidence_file():
     for name in FIXTURE_NAMES:
         bundle = json.loads((RELEASE / "fixtures" / f"{name}.json").read_text("utf-8"))
         digests[name] = tuple(
-            item["sha256"] for item in sorted(bundle["evidence_artifacts"],
-                                              key=lambda entry: entry["kind"])
+            item["sha256"]
+            for item in sorted(
+                bundle["evidence_artifacts"], key=lambda entry: entry["kind"]
+            )
         )
 
     assert len(set(digests.values())) == len(FIXTURE_NAMES), digests
@@ -121,11 +122,17 @@ def test_the_four_fixtures_no_longer_share_one_evidence_file():
     [
         ("safe", "PROMOTE", None),
         ("regressive-prompt", "BLOCK", "candidate structured grades are incomplete"),
-        ("regressive-model", "BLOCK", "candidate cost exceeds approved regression ratio"),
+        (
+            "regressive-model",
+            "BLOCK",
+            "candidate cost exceeds approved regression ratio",
+        ),
         ("regressive-tool", "BLOCK", "candidate has an adversarial safety failure"),
     ],
 )
-def test_each_fixture_decides_for_its_own_recorded_reason(tree, name, expected, because):
+def test_each_fixture_decides_for_its_own_recorded_reason(
+    tree, name, expected, because
+):
     status, reasons = _decide(tree, name)
 
     assert status == expected, reasons
@@ -139,7 +146,9 @@ def test_the_regressive_model_fixture_blocks_where_the_evaluator_would_not(tree)
     The statistical evaluator promotes it; only the gate's own latency and
     cost ratios stop it. That path had no fixture exercising it before.
     """
-    bundle = json.loads((tree / "fixtures" / "regressive-model.json").read_text("utf-8"))
+    bundle = json.loads(
+        (tree / "fixtures" / "regressive-model.json").read_text("utf-8")
+    )
     assert bundle["statistical_report"]["release_decision"]["status"] == "PROMOTE"
 
     status, reasons = _decide(tree, "regressive-model")
@@ -155,12 +164,13 @@ def test_the_regressive_model_fixture_blocks_where_the_evaluator_would_not(tree)
 # Marker rows: the exact content the gate used to certify
 # ---------------------------------------------------------------------------
 
+
 def test_the_marker_rows_the_gate_used_to_promote_are_now_refused(tree):
     path = _evidence_path(tree / "fixtures" / "safe.json", "paired_trials")
     path.write_text('{"fixture":"paired-trials-v1","record":1}\n' * 160, "utf-8")
     _reseal(tree / "fixtures" / "safe.json", "paired_trials")
 
-    with pytest.raises(release_gate.ReleaseGateError, match="trial schema v2"):
+    with pytest.raises(release_gate.ReleaseGateError, match="trial schema v3"):
         _decide(tree)
 
 
@@ -220,10 +230,14 @@ def test_a_renamed_artifact_still_has_its_records_counted(tree):
 # A summary that disagrees with its records is a reason to block
 # ---------------------------------------------------------------------------
 
+
 def test_a_hand_edited_verdict_is_reported_rather_than_obeyed(tree):
     bundle_path = tree / "fixtures" / "regressive-prompt.json"
     bundle = json.loads(bundle_path.read_text("utf-8"))
-    bundle["statistical_report"]["release_decision"] = {"status": "PROMOTE", "reasons": []}
+    bundle["statistical_report"]["release_decision"] = {
+        "status": "PROMOTE",
+        "reasons": [],
+    }
     bundle_path.write_text(
         json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -233,6 +247,29 @@ def test_a_hand_edited_verdict_is_reported_rather_than_obeyed(tree):
     assert status == "BLOCK"
     assert any("release_decision.status" in reason for reason in reasons), reasons
     assert "candidate structured grades are incomplete" in reasons
+
+
+def test_a_hand_edited_diagnosis_metric_is_recomputed_from_trial_rows(tree):
+    bundle_path = tree / "fixtures" / "safe.json"
+    bundle = json.loads(bundle_path.read_text("utf-8"))
+    bundle["statistical_report"]["paired"]["diagnosis"]["metric_version"] = 99
+    bundle["statistical_report"]["paired"]["diagnosis"]["conservative_wilson_95"] = [
+        -1.0,
+        -1.0,
+    ]
+    bundle_path.write_text(
+        json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    status, reasons = _decide(tree)
+
+    assert status == "BLOCK"
+    assert any(
+        "paired.diagnosis.conservative_wilson_95" in reason for reason in reasons
+    ), reasons
+    assert any(
+        "paired.diagnosis.metric_version" in reason for reason in reasons
+    ), reasons
 
 
 def test_an_adversarial_pass_claimed_over_a_leaking_record_is_caught(tree):
@@ -248,13 +285,16 @@ def test_an_adversarial_pass_claimed_over_a_leaking_record_is_caught(tree):
     status, reasons = _decide(tree, "regressive-tool")
 
     assert status == "BLOCK"
-    assert any("adversarial report claims failed=0" in reason for reason in reasons), reasons
+    assert any(
+        "adversarial report claims failed=0" in reason for reason in reasons
+    ), reasons
     assert "candidate has an adversarial safety failure" in reasons
 
 
 # ---------------------------------------------------------------------------
 # Root traces are the source of cost and latency, so they have to exist
 # ---------------------------------------------------------------------------
+
 
 def test_a_trial_citing_a_trace_that_is_not_in_the_evidence_blocks(tree):
     path = _evidence_path(tree / "fixtures" / "safe.json", "root_traces")
@@ -276,7 +316,9 @@ def test_a_trace_that_belongs_to_no_trial_blocks(tree):
     stray["records_sha256"] = "f" * 64
     rows.append(stray)
     path.write_text(
-        "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows),
+        "".join(
+            json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows
+        ),
         "utf-8",
     )
     _reseal(tree / "fixtures" / "safe.json", "root_traces")
@@ -294,7 +336,9 @@ def test_a_trace_whose_cost_disagrees_with_its_trial_blocks(tree):
     rows = [json.loads(line) for line in path.read_text("utf-8").splitlines()]
     rows[1]["cost_usd"] = rows[1]["cost_usd"] + 0.5
     path.write_text(
-        "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows),
+        "".join(
+            json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows
+        ),
         "utf-8",
     )
     _reseal(tree / "fixtures" / "safe.json", "root_traces")
@@ -308,6 +352,7 @@ def test_a_trace_whose_cost_disagrees_with_its_trial_blocks(tree):
 # ---------------------------------------------------------------------------
 # A policy nobody could satisfy honestly
 # ---------------------------------------------------------------------------
+
 
 def test_the_shipped_policy_is_reachable_by_a_perfect_candidate():
     policy, _ = release_gate.load_policy(RELEASE / "policy.json")
@@ -346,6 +391,7 @@ def test_the_policy_has_to_state_its_own_confidence_interval_width(tree):
 # ---------------------------------------------------------------------------
 # The fixtures are generated, so they can be regenerated
 # ---------------------------------------------------------------------------
+
 
 def test_the_checked_in_fixtures_match_a_fresh_generation():
     """If this fails, someone edited a fixture by hand — which is how the
