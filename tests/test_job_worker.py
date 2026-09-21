@@ -232,3 +232,91 @@ async def test_one_failing_job_does_not_cancel_its_siblings(batch_worker, monkey
     assert finished == [jobs[1].id]
     assert [jid for jid, _ in failed] == [jobs[0].id]
     assert failed[0][1] == "lease expired"
+
+
+# --- A resolved incident has to actually stop the run ------------------------
+# `cancel_incident_investigations` stamps `cancel_requested_at` and leaves a
+# RUNNING job alone on purpose: the worker owns the lease, so the worker has to
+# be the one that retires it. Three separate comments assert that the heartbeat
+# is what carries the flag across that boundary. Nothing exercised it, which
+# for a stop button is the one property worth a test.
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_request_stops_the_investigation_mid_flight(monkeypatch):
+    job = _job()
+    job.payload.update(
+        {
+            "incident_id": str(job.incident_id),
+            "cluster_id": str(job.cluster_id),
+            "alert_name": "ApiLatencyHigh",
+        }
+    )
+    beats = {"count": 0}
+    run_was_cancelled = asyncio.Event()
+
+    async def fake_heartbeat(db, job_id, *, worker_id, lease_seconds):
+        beats["count"] += 1
+        if beats["count"] > 1:
+            # A human marked the incident resolved between the two beats.
+            raise job_worker.DurableJobError("job cancellation requested")
+
+    async def never_finishes(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            run_was_cancelled.set()
+            raise
+
+    monkeypatch.setattr(job_worker, "heartbeat_job", fake_heartbeat)
+    monkeypatch.setattr(
+        "sre_agent.incident_runner.run_incident_investigation", never_finishes
+    )
+    monkeypatch.setattr(
+        job_worker.database, "AsyncSessionLocal", lambda: _FakeSessionContext()
+    )
+    monkeypatch.setattr(job_worker, "default_lease_seconds", lambda: 3)
+
+    with pytest.raises(job_worker.DurableJobError, match="cancellation requested"):
+        await job_worker.execute_claimed_job(job, worker_id="worker-a")
+
+    # Not merely "the worker stopped waiting" -- the investigation task itself
+    # was cancelled, so it stops burning tokens on an incident that is over.
+    assert run_was_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_is_handed_to_fail_job_rather_than_raised(monkeypatch):
+    """`fail_job` is what writes CANCELLED, so the error has to reach it."""
+    job = _job()
+    failed: list[tuple] = []
+
+    async def cancelled(job_arg, *, worker_id):
+        raise job_worker.DurableJobError(
+            "job lease renewal failed: job cancellation requested"
+        )
+
+    async def fake_fail(db, job_id, *, worker_id, error):
+        failed.append((job_id, worker_id, error))
+
+    monkeypatch.setattr(job_worker, "execute_claimed_job", cancelled)
+    monkeypatch.setattr(job_worker, "fail_job", fake_fail)
+    monkeypatch.setattr(
+        job_worker.database, "AsyncSessionLocal", lambda: _FakeSessionContext()
+    )
+
+    was_stopped = job_worker._STOP.is_set()
+    job_worker._STOP.clear()
+    try:
+        await job_worker._execute_and_finalize(job, "worker-a")
+    finally:
+        if was_stopped:
+            job_worker._STOP.set()
+
+    assert failed == [
+        (
+            job.id,
+            "worker-a",
+            "job lease renewal failed: job cancellation requested",
+        )
+    ]

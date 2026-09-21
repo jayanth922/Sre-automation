@@ -703,3 +703,72 @@ async def test_reopening_clears_the_resolution_timestamp(monkeypatch):
     update = session.statements[-1].lower()
     assert update.startswith("update incidents")
     assert "resolved_at" in update, "the status write leaves a stale resolved_at behind"
+
+
+class _SingleJobSession:
+    """Enough AsyncSession for `fail_job` to finalise one row."""
+
+    def __init__(self, job: models.Job) -> None:
+        self._job = job
+        self.commits = 0
+
+    async def execute(self, stmt):
+        job = self._job
+
+        class _Result:
+            def scalars(self):
+                class _Scalars:
+                    def first(self):
+                        return job
+
+                return _Scalars()
+
+        return _Result()
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, obj):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_is_retired_rather_than_retried():
+    """The last link: the worker's error reaches `fail_job`, which reads the
+    flag and writes CANCELLED. Without that branch a stopped investigation
+    goes back to PENDING and the queue starts it again -- the same work, on
+    the same closed incident, at the same cost."""
+    from sre_agent.job_store import fail_job
+
+    job = _job(models.JobStatus.RUNNING, incident_id=uuid.uuid4())
+    job.lease_owner = "worker-a"
+    job.cancel_requested_at = datetime.now(timezone.utc)
+    db = _SingleJobSession(job)
+
+    await fail_job(
+        db,
+        job.id,
+        worker_id="worker-a",
+        error="job lease renewal failed: job cancellation requested",
+    )
+
+    assert job.status == models.JobStatus.CANCELLED
+    assert job.completed_at is not None
+    assert job.lease_owner is None
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_an_uncancelled_failure_still_gets_its_retry():
+    """The contrast that makes the test above mean something: the flag is the
+    only reason the job is not queued for another attempt."""
+    from sre_agent.job_store import fail_job
+
+    job = _job(models.JobStatus.RUNNING, incident_id=uuid.uuid4())
+    job.lease_owner = "worker-a"
+    db = _SingleJobSession(job)
+
+    await fail_job(db, job.id, worker_id="worker-a", error="transient upstream 529")
+
+    assert job.status == models.JobStatus.PENDING
+    assert job.completed_at is None
