@@ -190,8 +190,8 @@ def _identifiers_to_check(query: str) -> List[str]:
     # absent counter returns into a zero, which every error-ratio recovery
     # probe needs to have a baseline at all. Only that exact clause is
     # stripped: a bare `or` between two selectors stays an unknown identifier
-    # and is still rejected, because _scope_query injects the tenant namespace
-    # into the first selector block only.
+    # and is still rejected, so a union can only ever name metrics the catalog
+    # already vouches for.
     q = re.sub(r"\bor\s+vector\s*\(\s*[0-9.]+\s*\)", " ", q)
     return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", q)
 

@@ -526,7 +526,7 @@ def test_or_vector_zero_is_allowed_but_a_bare_or_is_not():
     """An absent counter returns the empty vector, so the oracle can never
     establish a baseline; `or vector(0)` is the only PromQL that fixes it.
     Only that clause is permitted — a general `or` would let a query union in
-    a second selector block, which _scope_query does not namespace-scope."""
+    a metric the catalog never vouched for."""
     ok, reason = nl.validate_promql(
         '(sum(rate(http_errors_total{service="checkout-service"}[5m])) or vector(0)) '
         '/ clamp_min(sum(rate(http_requests_total{service="checkout-service"}[5m])) '

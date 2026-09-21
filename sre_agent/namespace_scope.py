@@ -243,31 +243,82 @@ def require_cluster_namespace(context: ExecutionContext) -> str:
     return ""
 
 
+def _selector_spans(query: str) -> list[tuple[int, int]]:
+    """Locate the inside of every label-selector block in the query.
+
+    A binary operation has one selector block per side, so anything that looks
+    at `query.index("{")` alone sees half the query. Quoted strings are skipped
+    so a `|= "{status}"` line filter or a `line_format "{{.pod}}"` template is
+    never mistaken for a selector. A brace nested outside a string, or an
+    unbalanced one, is not valid in a selector, and this fails closed on both
+    rather than guessing where the block ends.
+    """
+    spans: list[tuple[int, int]] = []
+    quote: str | None = None
+    start = -1
+    index = 0
+    while index < len(query):
+        char = query[index]
+        if quote is not None:
+            if char == "\\" and quote != "`":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "\"'`":
+            quote = char
+        elif char == "{":
+            if start >= 0:
+                raise NamespaceScopeError(
+                    "Scoped metric/log query has an invalid selector"
+                )
+            start = index + 1
+        elif char == "}":
+            if start < 0:
+                raise NamespaceScopeError(
+                    "Scoped metric/log query has an invalid selector"
+                )
+            spans.append((start, index))
+            start = -1
+        index += 1
+    if start >= 0 or quote is not None:
+        raise NamespaceScopeError("Scoped metric/log query has an invalid selector")
+    return spans
+
+
 def _scope_query(query: str, namespace: str) -> str:
-    """Require one exact positive namespace selector in PromQL/LogQL."""
+    """Require one exact positive namespace selector in PromQL/LogQL.
+
+    Every selector block is scoped, not just the first. `rate(a{job="x"}[5m]) /
+    rate(b{job="y"}[5m])` used to come back with the namespace on the left side
+    only, and the right side read whatever the neighbouring tenant was
+    emitting; so did the second half of a query that named the namespace once.
+    """
     matches = _POSITIVE_NAMESPACE_SELECTOR.findall(query)
     if any(value != namespace for value in matches):
         raise NamespaceScopeError(
             f"Query namespace selector is outside configured namespace '{namespace}'"
         )
-    if matches:
-        return _POSITIVE_NAMESPACE_SELECTOR.sub(
-            f'namespace="{namespace}"', query
-        )
-    if "{" not in query:
+    spans = _selector_spans(query)
+    if not spans:
         raise NamespaceScopeError(
             "Scoped metric/log query must include a label selector"
         )
-    selector_start = query.index("{") + 1
-    selector_end = query.find("}", selector_start)
-    if selector_end < 0:
-        raise NamespaceScopeError("Scoped metric/log query has an invalid selector")
-    separator = "," if query[selector_start:selector_end].strip() else ""
-    return (
-        query[:selector_start]
-        + f'namespace="{namespace}"{separator}'
-        + query[selector_start:]
-    )
+    scoped = query
+    # Right to left: rewriting a block shifts everything after it, and nothing
+    # before it.
+    for start, end in reversed(spans):
+        block = scoped[start:end]
+        if _POSITIVE_NAMESPACE_SELECTOR.search(block):
+            # Already namespaced, and checked equal above — pin `=~` to `=`.
+            block = _POSITIVE_NAMESPACE_SELECTOR.sub(
+                f'namespace="{namespace}"', block
+            )
+        else:
+            separator = "," if block.strip() else ""
+            block = f'namespace="{namespace}"{separator}{block}'
+        scoped = scoped[:start] + block + scoped[end:]
+    return scoped
 
 
 def enforce_tool_arguments(

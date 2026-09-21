@@ -417,3 +417,87 @@ def test_a_real_args_parameter_is_not_mistaken_for_an_envelope(monkeypatch):
     assert tool.received["pod"] == "checkout-1"
     assert tool.received["args"] == {"container": "app"}
     assert tool.received["namespace"] == "demo-app"
+
+
+def test_every_selector_block_in_a_binary_expression_is_scoped(monkeypatch):
+    """A ratio has two selector blocks and each one is a separate read.
+
+    Scoping only the first left the denominator reading whatever the
+    neighbouring tenant was emitting, which is a cross-tenant read through a
+    query the gate had already approved.
+    """
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    scoped = enforce_tool_arguments(
+        "get_metric",
+        {
+            "query": (
+                'rate(http_errors_total{service="api"}[5m])'
+                ' / rate(http_requests_total{service="api"}[5m])'
+            ),
+            "time": "2026-09-19T10:00:00Z",
+        },
+        _context(),
+        investigation_scope=True,
+    )
+    assert scoped["query"] == (
+        'rate(http_errors_total{namespace="demo-app",service="api"}[5m])'
+        ' / rate(http_requests_total{namespace="demo-app",service="api"}[5m])'
+    )
+
+
+def test_naming_the_namespace_once_does_not_exempt_the_other_block(monkeypatch):
+    """The rewrite used to be a blanket substitution of what was already there.
+
+    A query that named the namespace in one block therefore satisfied it
+    without the second block ever being scoped.
+    """
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    scoped = enforce_tool_arguments(
+        "get_metric",
+        {
+            "query": (
+                'rate(http_errors_total{namespace="demo-app",service="api"}[5m])'
+                ' / rate(http_requests_total{service="api"}[5m])'
+            ),
+            "time": "2026-09-19T10:00:00Z",
+        },
+        _context(),
+        investigation_scope=True,
+    )
+    assert scoped["query"] == (
+        'rate(http_errors_total{namespace="demo-app",service="api"}[5m])'
+        ' / rate(http_requests_total{namespace="demo-app",service="api"}[5m])'
+    )
+
+
+def test_braces_inside_a_string_are_not_a_selector(monkeypatch):
+    """`line_format "{{.pod}}"` is a template, not a block to inject into."""
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    scoped = enforce_tool_arguments(
+        "query_logs",
+        {
+            "logql": '{app="checkout-service"} | line_format "{{.pod}}"',
+            "start_time": "2026-09-19T09:55:00Z",
+            "end_time": "2026-09-19T10:05:00Z",
+        },
+        _context(),
+        investigation_scope=True,
+    )
+    assert scoped["logql"] == (
+        '{namespace="demo-app",app="checkout-service"} | line_format "{{.pod}}"'
+    )
+
+
+def test_an_unbalanced_selector_is_refused(monkeypatch):
+    """Where the block ends is not something to guess at in a scope check."""
+    monkeypatch.setenv("REQUIRE_CLUSTER_NAMESPACE", "true")
+    with pytest.raises(NamespaceScopeError, match="invalid selector"):
+        enforce_tool_arguments(
+            "get_metric",
+            {
+                "query": 'rate(http_requests_total{service="api"[5m])',
+                "time": "2026-09-19T10:00:00Z",
+            },
+            _context(),
+            investigation_scope=True,
+        )
