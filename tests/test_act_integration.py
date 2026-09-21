@@ -292,7 +292,7 @@ def test_live_act_hands_the_exact_action_batch_to_temporal(monkeypatch):
                     "detail": "done",
                 },
                 {
-                    "action_type": "restart",
+                    "action_type": "scale",
                     "target": "inventory-service",
                     "status": "REFUSED",
                     "command": "",
@@ -344,11 +344,20 @@ def test_live_act_hands_the_exact_action_batch_to_temporal(monkeypatch):
                 parameters={"namespace": "demo-app"},
                 safety_check="ok",
             ),
+            # Two *different* mutations on purpose. The batch needs two
+            # actions so the workflow below can execute one and refuse the
+            # other once the alert clears, but a plan naming the same
+            # mutation twice is now collapsed to one before it reaches
+            # Temporal -- a second restart would cancel the rollout the
+            # first one started.
             RemediationAction(
-                action_type="restart",
-                target="planner prose target",
-                parameters={"namespace": "demo-app"},
+                action_type="scale",
+                target="the inventory deployment",
+                parameters={"namespace": "demo-app", "replicas": 4},
                 safety_check="ok",
+                # A scale-up without a stated way back is held for approval
+                # at SEV4, and this test is about the autonomous path.
+                rollback_plan="scale back to 2 replicas",
             ),
         ],
         estimated_duration="2m",
@@ -374,9 +383,18 @@ def test_live_act_hands_the_exact_action_batch_to_temporal(monkeypatch):
         "incident-live-remediation-incident-live-temporal-"
     )
     assert len(captured["input"].action_requests) == 2
-    assert captured["input"].action_requests[0]["action"]["target"] == (
-        "inventory-service"
-    )
+    # Both targets were planner prose, and both arrive canonicalized -- which
+    # is also what makes the duplicate check meaningful: two differently
+    # worded targets become the same one here, and only then can two actions
+    # be seen to be the same mutation.
+    assert [r["action"]["target"] for r in captured["input"].action_requests] == [
+        "inventory-service",
+        "inventory-service",
+    ]
+    assert [r["action"]["action_type"] for r in captured["input"].action_requests] == [
+        "restart",
+        "scale",
+    ]
     assert report["live_results"][0]["status"] == "EXECUTED"
     assert report["remediation_halted"]["reason"] == "incident_resolved"
     assert "verification" not in report

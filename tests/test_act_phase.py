@@ -7,6 +7,7 @@ doubles that mimic the shape of AgentState / RemediationPlan / RemediationAction
 """
 
 import asyncio
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sre_agent.act_phase import (  # noqa: E402
     apply_skill_learning,
     build_act_report,
+    build_live_action_requests,
     execute_autonomous_live,
     execute_live_action_request,
     extract_incident_signals,
@@ -757,3 +759,72 @@ def test_live_outcome_summary_falls_back_when_nothing_ran_live():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- One plan naming the same mutation twice applies it once -----------------
+# `idempotency_key` hashes `action_index`, so before the dedup two identical
+# actions claimed two different keys and the mutation gateway's replay guard
+# never saw the repeat. Both the direct executor and the Temporal workflow
+# build their payloads here, so this is the one place that can settle it.
+
+
+def _autonomous_requests(plan):
+    alert = FakeAlert(
+        "warning", {"service": "inventory-service", "namespace": "demo-app"}
+    )
+    state = _state(alert, plan)
+    report = _build(state)
+    assert report.aggregate_decision == "autonomous", report.summary
+    return build_live_action_requests(state, report, context=LIVE_CONTEXT)
+
+
+def test_a_plan_that_restarts_the_same_deployment_twice_restarts_it_once(caplog):
+    action = FakeAction("restart", "inventory-service", {"namespace": "demo-app"})
+
+    with caplog.at_level(logging.WARNING, logger="sre_agent.act_phase"):
+        requests = _autonomous_requests(FakePlan([action, action]))
+
+    assert len(requests) == 1
+    assert requests[0]["action_index"] == 0
+    # Dropped, not silently dropped: an operator reading the plan sees two
+    # restarts and has to be able to find out why one did not happen.
+    assert any("duplicate action 1" in r.getMessage() for r in caplog.records)
+
+
+def test_the_duplicate_is_only_visible_after_targets_are_canonicalized():
+    """The collision the planner actually produces: two display names for one
+    deployment, both rewritten onto the alert's canonical service. Deduping on
+    the planner's raw text would miss it."""
+    plan = FakePlan(
+        [
+            FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
+            FakeAction(
+                "restart", "the inventory deployment", {"namespace": "demo-app"}
+            ),
+        ]
+    )
+
+    requests = _autonomous_requests(plan)
+
+    assert len(requests) == 1
+    assert requests[0]["action"]["target"] == "inventory-service"
+
+
+def test_the_same_action_type_with_different_parameters_is_not_a_duplicate():
+    """The contrast that gives the dedup its meaning: identity is the whole
+    mutation, not the action type or the target alone."""
+    plan = FakePlan(
+        [
+            FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
+            FakeAction(
+                "restart",
+                "inventory-service",
+                {"namespace": "demo-app", "grace_period_seconds": 30},
+            ),
+        ]
+    )
+
+    requests = _autonomous_requests(plan)
+
+    assert len(requests) == 2
+    assert requests[0]["idempotency_key"] != requests[1]["idempotency_key"]

@@ -960,6 +960,7 @@ def build_live_action_requests(
     ).strip()
 
     requests: List[Dict[str, Any]] = []
+    seen_mutations: Dict[str, int] = {}
     for index, (action, arep) in enumerate(zip(actions, report.action_reports)):
         allowed_decisions = {AutonomyDecision.AUTONOMOUS.value}
         if approved:
@@ -989,6 +990,47 @@ def build_live_action_requests(
         live_action = action
         if canonical_service and action_payload["action_type"] in EXECUTOR_TOOL_MAP:
             live_action = _with_target(action, canonical_service)
+
+        # A plan that names the same mutation twice applies it twice. The
+        # idempotency key above hashes `action_index`, so two identical actions
+        # claim two different keys and the gateway's replay guard never sees a
+        # repeat -- that guard exists to stop a *retry* re-applying an action,
+        # not to stop one plan from listing it twice. Repeating a mutation is
+        # not repeating its effect: a second scale-up compounds, and a second
+        # restart cancels the rollout the first one started.
+        #
+        # Deduplicating after canonicalization is the point, because that is
+        # what creates most of these: two actions the planner wrote against
+        # different display text ("inventory-service", "the inventory
+        # deployment") are both rewritten onto the alert's canonical service
+        # just above, and only then are they visibly the same mutation. Doing
+        # it here rather than at the gateway also keeps it deterministic --
+        # the boundary's answer would depend on a live idempotency store and
+        # on a TTL outliving the plan.
+        mutation_identity = json.dumps(
+            {
+                "action_type": str(_get(live_action, "action_type", "")),
+                "target": str(_get(live_action, "target", "")),
+                "parameters": _get(live_action, "parameters", {}) or {},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        first_index = seen_mutations.get(mutation_identity)
+        if first_index is not None:
+            logger.warning(
+                "Dropping duplicate action %s from plan %s: same mutation as "
+                "action %s (%s on %s)",
+                index,
+                _get(plan, "plan_id"),
+                first_index,
+                str(_get(live_action, "action_type", "")),
+                str(_get(live_action, "target", "")),
+            )
+            continue
+        seen_mutations[mutation_identity] = index
+
         requests.append(
             {
                 "action_index": index,
