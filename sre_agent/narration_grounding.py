@@ -18,7 +18,7 @@ Asking the model not to do this does not work — the same bar #23 set, and
 eight of eight replays failed it for `_echoed_alert_claims`. The incident's
 status is a fact in a column, so the correction is computed from it and
 appended below the narration, the way
-`incident_timeline.build_supervisor_aggregate_content` appends its echoed-claim
+`incident_timeline.build_supervisor_summary_content` appends its echoed-claim
 caveat. The model's text is left exactly as written; the reader gets the truth
 underneath it either way.
 

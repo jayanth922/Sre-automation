@@ -235,24 +235,48 @@ Three remain open, and none of them is yours to action:
 
 ## Deferred backlog — real, unfixed, and not part of Phase C
 
-Do not pick these up without asking; they predate the four-phase directive
-and none is closed.
+Do not pick these up without asking; they predate the four-phase directive.
+Entries marked CLOSED were re-checked against the code on 2026-09-20 and the
+claim did not survive; they are kept rather than deleted because this section
+was being read as current and is where the wrong claims came from.
 
-- **Dead operational-reflection branch** — `sre_agent/graph_builder.py`
-  ~1071-1212 and ~1806-1849. The reflector's "deeper investigation" loop-back
-  is collapsed to a hard `add_edge("reflector", "planner")`. The audit calls
-  it a dead branch; the code comment calls it a deliberate v1 simplification.
-  Both are true. Wire it or delete it — unreachable code that looks live is
-  itself an honesty defect.
-- **`build_supervisor_aggregate_content`** passes model text to Slack with no
-  status-derived correction — the last unaudited narration surface. Reuse
-  `sre_agent/narration_grounding.grounding_footnote`.
-- **Task #32**: nothing cancels an in-flight investigation when an incident
-  resolves externally. An unconditional cancel is wrong — a flapping alert
-  would abort a legitimate diagnosis — so it needs a debounce.
-- **SLO subsystem is dead**: `last_calculated 2026-09-13`, unit bug at
-  `sre_agent/api/v1/slos.py:76-115`, hardcoded `None` burn rates, no latency
-  SLI, not exposed as an agent tool.
+- **Dead operational-reflection branch** — CLOSED 2026-09-20; the branch is
+  live. `_route_reflector` (`sre_agent/graph_builder.py:1137`) is registered
+  with `add_conditional_edges` at `:2250-2257`, and `:2258` closes the loop
+  with `investigation_swarm -> reflector`. Both are gated on
+  `ablation.reflector`, which is what an ablation arm needs. There is no hard
+  `add_edge("reflector", "planner")` to delete.
+- **`build_supervisor_aggregate_content`** — CLOSED 2026-09-20; no such
+  function exists, so "the last unaudited narration surface" pointed at
+  nothing. The two real surfaces are
+  `incident_timeline.build_supervisor_summary_content` and
+  `build_supervisor_direct_answer_content`, and `grounding_footnote` is
+  applied to both (`sre_agent/incident_timeline.py:552` and `:597`).
+- **Task #32** — CLOSED 2026-09-20; implemented end to end, and the chain is
+  now tested. `approval_flow.py:681` calls
+  `job_store.cancel_incident_investigations`, which stamps
+  `cancel_requested_at` and deliberately leaves a RUNNING job alone — the
+  worker owns the lease, so the worker has to retire it. It observes the flag
+  through the lease heartbeat (`job_worker._renew_job_lease` ->
+  `heartbeat_job` raises `DurableJobError`), cancels the investigation task,
+  and `fail_job` writes CANCELLED without consuming a retry. The debounce this
+  entry asked for already exists as the exemption at
+  `sre_agent/api/v1/alerts.py:696-698`: an *external* alert clear retires
+  remediation authority but keeps the evidence-gathering job alive, so a
+  flapping alert cannot abort a legitimate diagnosis. Only a human
+  `mark resolved` cancels. Covered by
+  `tests/test_job_worker.py::test_a_cancel_request_stops_the_investigation_mid_flight`
+  and `tests/test_resolved_incident_stops_investigation.py::test_a_cancelled_run_is_retired_rather_than_retried`.
+- **SLO subsystem** — NARROWED 2026-09-20; "dead" is wrong and three of the
+  five specifics no longer hold. `GET /slos/{id}/status` re-queries the
+  cluster's own Prometheus on every poll and persists the result
+  (`sre_agent/api/v1/slos.py:87-107`), so `last_calculated` is not frozen, and
+  the percent conversions at `:98-104` are internally consistent. A live burn
+  rate does exist on the severity path: `severity_telemetry.py:174` produces
+  `slo_burn_rate` and `severity_engine.py:220` scores on it. What is still
+  unfixed is narrower — `burn_rate_1h`/`burn_rate_6h` are hardcoded `None` at
+  `slos.py:112-113` even though the severity path already computes a burn
+  rate, there is no latency SLI, and no SLO tool is exposed to the agent.
 - Artifact-backed context instead of stuffing context into state;
   observability semantics; no single owner of job completion.
 - An MCP server that returns an **error string** still launders a failure
@@ -597,12 +621,18 @@ the user names a stage and a budget.
 .venv/bin/python -m pytest -q                                  # 1975 passed, 37 known warnings
 .venv/bin/python scripts/audit_runbook_controls.py             # 4 of 5 detected, 1 documented KNOWN_BLIND
 .venv/bin/python scripts/audit_runbook_coverage.py \
-    --corpus benchmarks/datasets/v2/runbook_corpus_snapshot.json \
-    --proposed runbooks/meridian                               # 22/22 (drop --proposed for the live corpus -> 0/22)
+    --corpus benchmarks/datasets/v2/runbook_corpus_snapshot.json  # 22/22
 bash scripts/check_python_quality.sh                           # ruff + mypy + compileall
 bash scripts/check_eval_smoke.sh                               # 45 invariants
 bash scripts/check_no_static_secrets.sh                        # greps tracked files for credential shapes
 ```
+
+`runbook_corpus_snapshot.json` was re-dumped from live Notion on 2026-09-20
+(`scripts/dump_notion_runbook_corpus.py --cluster-id <kind-meridian>`), so it
+now holds the published rewrites rather than the drafts they replaced. The
+committed pre-publish snapshot scored **0/22**, which is why the command above
+used to need `--proposed runbooks/meridian` to show anything. Re-dump after any
+publish; grading a snapshot that Notion no longer serves grades nothing.
 
 The secret scan runs **early** in CI's `backend-tests` job, so when it fails
 nothing after it executes and the coverage/integration steps silently do not
