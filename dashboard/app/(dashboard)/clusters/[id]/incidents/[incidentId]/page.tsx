@@ -281,6 +281,25 @@ export default function IncidentConsolePage() {
     )
   }
 
+  // The incident endpoints are org-scoped, not cluster-scoped:
+  // `get_owned_incident` joins on `Cluster.org_id`, so this page will happily
+  // load a sibling cluster's incident and render it under this cluster's
+  // breadcrumb, navigation and rail. Only the ticket call has a cluster in its
+  // path, so it fails alone and everything around it still looks right. The
+  // URL asserts which cluster this is; if the incident disagrees, the URL is
+  // wrong and the page should say so rather than quietly present the wrong
+  // cluster's investigation as this one's.
+  if (tx.incident.cluster_id !== id) {
+    return (
+      <ConsolePage crumb="incidents" title="Incident not found" live={false}>
+        <div className="sx-empty">
+          This incident belongs to a different cluster. Open it from that
+          cluster&apos;s incident list.
+        </div>
+      </ConsolePage>
+    )
+  }
+
   const inc = tx.incident
   const sv = sev(inc.severity)
   const sb = statusBadge(inc.status, inc.summary)

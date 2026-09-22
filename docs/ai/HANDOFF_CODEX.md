@@ -10,26 +10,14 @@ authority.
 
 > ### ⚠ Start here: what landed, and what did not
 >
-> **The working tree is dirty again.** `master` is at **`f1a9f3a`** — which
-> carries the emergency-lock wiring (`4254df3`) and the console audit's two
-> honesty fixes. On top of it sit the **SLO delete control** and the
-> **cross-cluster leak fixes**, both uncommitted:
+> **The working tree is clean.** `master` carries the SLO delete control
+> (`d839bfd`) and the cross-cluster scoping fix (`9a4166d`) on top of the
+> emergency-lock wiring and the console audit's honesty fixes.
 >
-> ```
->  M dashboard/app/(dashboard)/clusters/[id]/insights/page.tsx
->  M dashboard/app/(dashboard)/clusters/[id]/slos/page.tsx
->  M dashboard/components/console/IncidentToasts.tsx
->  M sre_agent/agent_runtime.py
->  M sre_agent/approval_flow.py
->  M sre_agent/live_events.py
->  M tests/test_console_wiring.py
-> ?? tests/test_lifecycle_event_scope.py
-> ```
->
-> No commit was requested. It is green: **2138 passed, 6 skipped**,
-> `tsc --noEmit` clean, `npm run build` compiles every route, eslint clean on
-> the changed files. Run the suite before you change anything, so you know
-> whether a later failure is yours.
+> Baseline: **2140 passed, 6 skipped**, `tsc --noEmit` clean, `npm run build`
+> compiles every route. eslint is red repo-wide and was already red at HEAD on
+> every file touched; no change adds an error. Run the suite before you change
+> anything, so you know whether a later failure is yours.
 >
 > That delete control is the dashboard's **first and only `api.delete`**. If
 > you add a second, copy its shape: a two-step inline confirm (never
@@ -46,8 +34,20 @@ authority.
 > page took the newest snapshot for this cluster `?? snapshots[0]`, and its
 > "Recent sweeps" list was not filtered at all. `IncidentToasts` is mounted in
 > the cluster layout, so it ran on every page and raised toasts for sibling
-> clusters whose click handler built `/clusters/<this>/incidents/<that>` — a
-> certain 404.
+> clusters whose click handler built `/clusters/<this>/incidents/<that>`.
+>
+> **That last URL does not 404 — correcting an earlier claim in this file and
+> in `9a4166d`'s message.** `get_owned_incident` joins on `Cluster.org_id`,
+> not on the cluster in the path, and the detail page fetches
+> `/incidents/{id}/transcript|status|agent-metrics|remediation-gates` — all
+> org-scoped. So that URL renders the other cluster's entire investigation
+> under this cluster's breadcrumb, rail and navigation. Only the ticket call,
+> `/clusters/{id}/incidents/{id}/ticket`, carries a cluster and fails; the
+> page around it looks entirely normal. The page now compares
+> `tx.incident.cluster_id` against the URL and refuses the mismatch. This is
+> not a tenant or authorization boundary — the same member can read that
+> incident from the org-wide list — it is the URL asserting something the
+> page did not check.
 >
 > **Note the severity order, which is the opposite of how it was reported.**
 > The Insights defect is currently unreachable: nothing publishes

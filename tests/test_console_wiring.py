@@ -142,6 +142,78 @@ def test_the_ticket_panel_refetches_after_creating():
     assert "await loadTicket()" in create
 
 
+_STREAM_REFRESH_ONLY = [
+    ("slos", _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "slos" / "page.tsx"),
+    (
+        "services",
+        _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "services" / "page.tsx",
+    ),
+    (
+        "service detail",
+        _DASH
+        / "app"
+        / "(dashboard)"
+        / "clusters"
+        / "[id]"
+        / "services"
+        / "[svc]"
+        / "page.tsx",
+    ),
+    (
+        "incidents",
+        _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "incidents" / "page.tsx",
+    ),
+    ("jobs", _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "jobs" / "page.tsx"),
+    (
+        "audit",
+        _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "audit" / "page.tsx",
+    ),
+    ("cluster layout", _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "layout.tsx"),
+    (
+        "analytics",
+        _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "analytics" / "page.tsx",
+    ),
+    ("overview", _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "page.tsx"),
+]
+
+
+def test_the_other_stream_consumers_only_count_events_they_never_read_them():
+    """Nine cluster pages subscribe to the org-wide incidents feed.
+
+    They are safe for one reason: each uses the stream as a doorbell. They read
+    `events.length`, notice it moved, and re-fetch over REST — where the route
+    carries a cluster and the server enforces ownership. None of them touches
+    `events[i].payload`, so none can render a sibling cluster's data.
+
+    That is a property, not an accident, and it is the property that broke in
+    `IncidentToasts` the moment a payload got rendered directly. Asserting it
+    here means the next page to read a payload has to justify it.
+    """
+    offenders = []
+    for name, path in _STREAM_REFRESH_ONLY:
+        src = path.read_text()
+        assert "useLiveStream(" in src, f"{name} no longer subscribes at all"
+        if ".payload" in src:
+            offenders.append(name)
+    assert not offenders, (
+        "these pages now read a stream payload directly and must filter it by "
+        f"cluster: {offenders}"
+    )
+
+
+def test_the_incident_page_refuses_another_cluster_s_incident():
+    """`get_owned_incident` joins on org, not cluster.
+
+    So /clusters/<A>/incidents/<B's incident> loads B's transcript and renders
+    it under A's breadcrumb. Only the ticket call is cluster-scoped, so it
+    fails on its own while the rest of the page looks correct. The page has the
+    cluster on the incident it just fetched; it has to check it.
+    """
+    src = _INCIDENT_PAGE.read_text()
+    assert "if (tx.incident.cluster_id !== id) {" in src
+    assert "This incident belongs to a different cluster." in src
+
+
 def test_a_cluster_page_never_shows_another_cluster_s_health():
     """The insights stream is org-scoped; the page it feeds is not.
 
