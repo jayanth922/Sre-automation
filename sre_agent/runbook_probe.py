@@ -57,6 +57,8 @@ _MAX_SERIES = 3
 _MAX_LABEL_CHARS = 120
 _MAX_ERROR_CHARS = 200
 _METRIC_RANGE_TOOL = "get_metric_range"
+# str -> content blocks -> str -> {"result": [...]} is four unwraps deep.
+_MAX_UNWRAP_DEPTH = 6
 
 
 def probe_window(
@@ -80,28 +82,86 @@ def probe_window(
     return start, end
 
 
+def _is_content_block(item: Any) -> bool:
+    """A LangChain/MCP content block, not a Prometheus series.
+
+    Both arrive as a list of dicts, so tell them apart by what a series
+    always carries and a content block never does.
+    """
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("text"), str)
+        and "values" not in item
+        and "value" not in item
+        and "metric" not in item
+    )
+
+
+def _content_block_text(payload: Any) -> Optional[str]:
+    """The joined text of a content-block list, or None if it isn't one."""
+    blocks = [payload] if isinstance(payload, dict) else payload
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    if not all(_is_content_block(item) for item in blocks):
+        return None
+    return "".join(item["text"] for item in blocks)
+
+
+def _looks_like_series(item: Dict[str, Any]) -> bool:
+    return "values" in item or "value" in item or "metric" in item
+
+
 def _payload_series(raw: Any) -> Optional[List[Dict[str, Any]]]:
-    """Best-effort read of the metrics MCP payload as a list of series."""
+    """Best-effort read of the metrics MCP payload as a list of series.
+
+    The bound tool declares ``response_format="content_and_artifact"``, so
+    ``ainvoke`` hands back LangChain content blocks -- a *list of dicts*,
+    exactly the shape a series list has. Unwrap before parsing, or every
+    block is read as a series with no samples and a live fault reports
+    healthy.
+    """
     payload: Any = raw
-    if isinstance(payload, str):
-        text = payload.strip()
-        if not text or text.lower().startswith("error"):
-            return None
-        try:
-            payload = json.loads(text)
-        except (TypeError, ValueError):
-            return None
-    # The MCP server returns the result list itself, but Prometheus' own
-    # envelope ({"data": {"result": [...]}}) survives a passthrough.
-    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-        payload = payload["data"]
-    if isinstance(payload, dict) and isinstance(payload.get("result"), list):
-        payload = payload["result"]
+    for _ in range(_MAX_UNWRAP_DEPTH):
+        # response_format="content_and_artifact" can also surface as a
+        # (content, artifact) pair.
+        if isinstance(payload, tuple) and payload:
+            payload = payload[0]
+            continue
+        if isinstance(payload, str):
+            text = payload.strip()
+            if not text or text.lower().startswith("error"):
+                return None
+            try:
+                payload = json.loads(text)
+            except (TypeError, ValueError):
+                return None
+            continue
+        block_text = _content_block_text(payload)
+        if block_text is not None:
+            payload = block_text
+            continue
+        # The MCP server wraps the list as {"result": [...]}, and
+        # Prometheus' own envelope ({"data": {"result": [...]}}) survives a
+        # passthrough.
+        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("result"), list):
+            payload = payload["result"]
+            continue
+        break
+
     if isinstance(payload, dict):
         payload = [payload]
     if not isinstance(payload, list):
         return None
-    return [item for item in payload if isinstance(item, dict)]
+    series = [item for item in payload if isinstance(item, dict)]
+    if series and not any(_looks_like_series(item) for item in series):
+        # Whatever this is, it is not a series list. Calling it "no samples"
+        # would report a live fault as healthy; surface the raw text so the
+        # lane sees an unreadable answer for what it is.
+        return None
+    return series
 
 
 def _points(series: Dict[str, Any]) -> List[Tuple[float, float]]:

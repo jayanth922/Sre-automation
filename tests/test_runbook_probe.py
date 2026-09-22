@@ -33,11 +33,80 @@ import pytest
 from sre_agent.runbook_probe import (
     MAX_PROBE_WINDOW,
     PROBE_LOOKBACK,
+    _payload_series,
+    _points,
     metrics_probe_caller,
     probe_runbook_queries,
     probe_window,
     summarize_probe,
 )
+
+
+class TestTheBoundToolsEnvelope:
+    """The lane's metrics tool declares response_format="content_and_artifact",
+    so ainvoke returns LangChain content blocks -- a list of dicts, the same
+    outward shape as a series list. The 2026-09-22 trial read every block as a
+    series with no samples and reported a live 1.56s fault as "no samples"."""
+
+    # Captured verbatim from the running sre-agent-api container.
+    LIVE_BLOCKS = [
+        {
+            "type": "text",
+            "text": (
+                '{"result":[{"metric":{},"values":['
+                '[1790113331,"0.022210389610389614"],'
+                '[1790113661,"0.024558571428571437"],'
+                '[1790113691,"1.561570247933885"]]}],'
+                '"series_returned":1,"series_total":1,'
+                '"series_truncated":false,"points_per_series_truncated":false,'
+                '"points_per_series_cap":120}'
+            ),
+            "id": "lc_66fe023f-9d65-4dee-aefa-bf953ca146af",
+        }
+    ]
+
+    def test_the_content_block_envelope_is_unwrapped_to_series(self):
+        series = _payload_series(self.LIVE_BLOCKS)
+        assert series is not None
+        assert len(series) == 1
+        assert len(_points(series[0])) == 3
+
+    def test_the_live_fault_survives_the_envelope(self):
+        summary = summarize_probe(self.LIVE_BLOCKS)
+        assert "no samples" not in summary
+        assert "1.562" in summary or "1.562" in summary.replace("peak ", "")
+        assert "peak" in summary
+
+    def test_a_content_and_artifact_pair_is_unwrapped(self):
+        summary = summarize_probe((self.LIVE_BLOCKS, {"some": "artifact"}))
+        assert "no samples" not in summary
+        assert "peak" in summary
+
+    def test_a_json_string_of_content_blocks_is_unwrapped(self):
+        summary = summarize_probe(json.dumps(self.LIVE_BLOCKS))
+        assert "no samples" not in summary
+        assert "peak" in summary
+
+    def test_the_plain_server_envelope_still_parses(self):
+        payload = {
+            "result": [{"metric": {"job": "inventory-service"},
+                        "values": [[1790113331, "0.5"], [1790113361, "2.1"]]}],
+            "series_returned": 1,
+        }
+        summary = summarize_probe(json.dumps(payload))
+        assert "peak 2.1" in summary
+
+    def test_an_unreadable_envelope_is_surfaced_not_called_empty(self):
+        """A shape we do not recognise must never be summarised as "no
+        samples" -- that is a live fault reported as healthy."""
+        summary = summarize_probe([{"unexpected": "shape"}, {"another": 1}])
+        assert "no samples" not in summary
+        assert "unexpected" in summary
+
+    def test_a_genuinely_empty_result_still_says_so(self):
+        summary = summarize_probe('{"result":[],"series_returned":0}')
+        assert "matched nothing" in summary
+
 
 RUNBOOK = """
 ## Decision procedure
