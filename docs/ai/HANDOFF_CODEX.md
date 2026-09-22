@@ -760,12 +760,23 @@ the last is a gap:
   is a real caller, and the five endpoint tests were rewired onto it rather
   than dropped. `tests/test_console_wiring.py` pins the removal.
 
-  **Found while doing it, not fixed, and worth someone's attention:** a bare
-  @mention classified as a steer answers "I'll fold that into the live
-  investigation at the next checkpoint" and nothing folds it in.
-  `handle_chat_message` returned a POST descriptor no transport ever
-  dispatched — inert before this change, and now not built at all. A reply
-  *inside* a tracked thread is unaffected and does reach the handler.
+  ~~**Found while doing it, not fixed:** a bare @mention classified as a
+  steer answers "I'll fold that into the live investigation at the next
+  checkpoint" and nothing folds it in.~~ **CLOSED 2026-09-22, same day.** A
+  mention inside a tracked war-room thread now runs the *same body* as a
+  plain reply inside it — approval commands first, then
+  `route_thread_reply` — so the two entry points cannot answer one question
+  differently again. Slack delivers such a message twice (`app_mention` and
+  `message`, same `(channel, ts)`), so `slack_bot._claim_event` gives it to
+  whichever event lands first and drops the other: one sentence, one agent
+  turn, regardless of delivery order or which events a workspace subscribes
+  to. `format_reply`'s steer text no longer claims a fold; it points at the
+  incident thread, and no Slack path reaches it any more. The bot-echo
+  guard moved into the shared body at the same time: the agent's own
+  war-room posts can carry an @mention, and under the old code the worst
+  that bought was an inert sentence. Six tests in `tests/test_slack_bot.py`
+  pin all of it — the `app_mention` handler had none before, which is how
+  the gap survived.
 - **Redundant — the data already arrives another way (2).**
   `GET /clusters/{id}/health` returns `heartbeat_payload(...)` built from
   `status`, `last_heartbeat`, `heartbeat_source` and `heartbeat_reason`, and

@@ -96,12 +96,10 @@ cannot — *which record* a page picks from an org-wide list.
   `git add -A`.
 
 ## Next bounded task
-Frontend wiring is closed. Cluster-level deletes stay API-only by choice.
-
-Unfixed and reported, not in this change's scope: a bare @mention steer
-replies "I'll fold that into the live investigation" and nothing does —
-`handle_chat_message` returns a mode no transport acts on. Replies inside a
-tracked thread are unaffected.
+Frontend wiring is closed. Cluster-level deletes stay API-only by choice. So
+is the @mention steer gap: war-room text takes one shared path from either
+Slack event, deduplicated on `(channel, ts)` — see DECISIONS, "One Slack
+message, one handler, one turn".
 
 Then benchmarking, on the user's stage and budget. Keep campaigns paused until
 explicit budget authorization.

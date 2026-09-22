@@ -1650,3 +1650,46 @@ not silently compared.
 dollar gate. It can be useful later for model-tier downgrade, but it cannot stop
 the call that crosses the threshold, incomplete provider usage makes it
 unavailable, and a raised exception near finalization risks a paid retry.
+
+
+## One Slack message, one handler, one turn
+
+**Decision.** Anything said inside a tracked war-room thread — @mention or
+plain reply — runs the same body in `slack_bot.build_slack_app`
+(`_route_war_room_text`): the approval commands get first refusal on the text,
+then `war_room.route_thread_reply` takes it into
+`mission_control.handle_incident_message`. The `app_mention` and `message`
+handlers are thin entry points onto that one body, and `_claim_event`
+deduplicates on `(channel, ts)` so exactly one of them acts.
+
+**Reason.** The two events had separate bodies and drifted. `app_mention`
+resolved the incident id from the registry and then handed it to
+`nl_query.handle_chat_message`, the *ad hoc* dispatcher, which has no way to
+touch a running investigation — it answered "Got it, I'll fold that into the
+live investigation at the next checkpoint" and nothing did. On the product's
+only communication surface, an @-mentioned `approve fix` was worse still: it
+became small talk instead of an approval. Slack delivers a mention in a
+channel the bot belongs to as *both* events with the same `(channel, ts)`, so
+merging the bodies without a claim would have replaced one false answer with
+two real agent turns for one sentence.
+
+**Consequences.** The bot-echo guard had to move into the shared body with
+it. `_on_thread_message` had always dropped `bot_id` messages and
+`_on_mention` never needed to, because the worst a mention could produce was
+an inert sentence; a mention that starts an investigation makes the agent's
+own war-room posts — which do carry @mentions — a loop.
+
+The claim table is bounded (512, oldest evicted) because
+socket mode runs for weeks; a duplicate always lands milliseconds after its
+original, so eviction cannot lose one. A message with no `ts` is never
+deduplicated — a rare double reply beats a silently dropped question.
+`format_reply`'s `steer` branch is now unreachable from Slack; it is kept, and
+made truthful, for any other caller that hands the ad hoc dispatcher an
+incident id. Correctness does not depend on believing anything about Slack's
+fan-out: it holds whether one event arrives or both, in either order.
+
+**Rejected alternative.** Having `app_mention` return early whenever the
+thread is a war room, leaving the `message` handler as sole owner. Fewer
+moving parts, but it silently assumes the workspace subscribes to
+`message.channels`; where it does not, every @mention in an incident thread
+would go unanswered, and the failure would look like the bot being down.
