@@ -938,6 +938,7 @@ async def _finalize_resolution_integrations(
             summary=incident.summary or "",
             org_id=str(organization_id),
             status=str(models.IncidentStatus.RESOLVED),
+            cluster_id=str(cluster_id),
         )
     except Exception as publish_err:
         logger.warning(

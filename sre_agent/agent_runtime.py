@@ -1527,6 +1527,7 @@ async def _run_graph_impl(
             alert_name=alert_name,
             summary=f"Investigating alert: {alert_name}",
             org_id=org_id_for_bus,
+            cluster_id=str(cluster_id),
         )
     except Exception as bus_err:
         logger.debug(f"incident-open publish skipped: {bus_err}")
@@ -2189,6 +2190,7 @@ async def _run_graph_impl(
                     summary=final_response,
                     org_id=org_id_for_bus,
                     status=str(effective_status),
+                    cluster_id=str(cluster_id),
                 )
         except Exception as bus_err:
             logger.debug(f"incident-lifecycle publish skipped: {bus_err}")

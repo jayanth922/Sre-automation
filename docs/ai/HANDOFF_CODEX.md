@@ -10,19 +10,63 @@ authority.
 
 > ### ⚠ Start here: what landed, and what did not
 >
-> **The working tree is dirty again.** `master` is at **`9af6835`**; the
-> console audit's two fixes and their five tests sit uncommitted on top of it
-> (`sre_agent/api/v1/services.py`, `dashboard/app/(dashboard)/page.tsx`,
-> `tests/test_connection_preflight.py`, `tests/test_console_wiring.py`, and
-> these state files). No commit was requested.
+> **The working tree is dirty again.** `master` is at **`f1a9f3a`** — which
+> carries the emergency-lock wiring (`4254df3`) and the console audit's two
+> honesty fixes. On top of it sit the **SLO delete control** and the
+> **cross-cluster leak fixes**, both uncommitted:
 >
-> The emergency-lock wiring described in **Step 3** below is **committed** on
-> `master` (`4254df3`). It is green:
-> **2090 passed, 6 skipped**, `tsc --noEmit` clean, no new eslint errors. Run
-> the suite before you change anything, so you know whether a later failure is
-> yours.
+> ```
+>  M dashboard/app/(dashboard)/clusters/[id]/insights/page.tsx
+>  M dashboard/app/(dashboard)/clusters/[id]/slos/page.tsx
+>  M dashboard/components/console/IncidentToasts.tsx
+>  M sre_agent/agent_runtime.py
+>  M sre_agent/approval_flow.py
+>  M sre_agent/live_events.py
+>  M tests/test_console_wiring.py
+> ?? tests/test_lifecycle_event_scope.py
+> ```
 >
-> **The backend half is not live.** `sre_agent/api/v1/clusters.py` is baked
+> No commit was requested. It is green: **2138 passed, 6 skipped**,
+> `tsc --noEmit` clean, `npm run build` compiles every route, eslint clean on
+> the changed files. Run the suite before you change anything, so you know
+> whether a later failure is yours.
+>
+> That delete control is the dashboard's **first and only `api.delete`**. If
+> you add a second, copy its shape: a two-step inline confirm (never
+> `window.confirm`), the failure surfaced with "it is unchanged", and confirm
+> copy that names what is actually destroyed. Deleting an SLO removes one row
+> and its recorded budget history — nothing in the runtime reads the `slos`
+> table, so it does not affect alerting, and the copy must not imply it
+> does.
+>
+> **Two org-wide feeds now get narrowed by their consumers.** `/ws/insights`
+> and `/ws/incidents` are org-scoped, never cluster-scoped —
+> `ws_auth.event_visible_to_org` is fail-closed and tenant isolation was never
+> in question, but an org with two clusters has one feed for both. The Insights
+> page took the newest snapshot for this cluster `?? snapshots[0]`, and its
+> "Recent sweeps" list was not filtered at all. `IncidentToasts` is mounted in
+> the cluster layout, so it ran on every page and raised toasts for sibling
+> clusters whose click handler built `/clusters/<this>/incidents/<that>` — a
+> certain 404.
+>
+> **Note the severity order, which is the opposite of how it was reported.**
+> The Insights defect is currently unreachable: nothing publishes
+> `kind: "cluster_health"` and `publish_insight` has zero callers, so
+> `snapshots` is always empty and the page renders its empty state. It goes
+> live the moment the promised monitor ships. The toast leak was live today.
+>
+> **The toast fix is fail-closed, and its producer half is not deployed.**
+> `publish_lifecycle_event` now stamps `cluster_id`; the client drops any
+> event without one. `sre_agent/live_events.py` is baked into the API image,
+> so **until a deploy no payload carries it and the console shows no incident
+> toasts at all.** That is the intended trade — silence over another cluster's
+> alert names — but it will look like a regression if you do not know why.
+>
+> An endpoint-coverage audit cannot find this class of defect. Every call went
+> to the right endpoint with the right auth and rendered the wrong row.
+> Checking *which record* a page picks out of a list is a separate pass.
+>
+> **The other backend half is not live either.** `sre_agent/api/v1/clusters.py` is baked
 > into the API image, so the new `state_available` field needs
 > `docker compose build api && docker compose up -d api` — which also applies
 > migration `a7b8c9d0e1f2` to the live `sre_platform`. **Deploy is not

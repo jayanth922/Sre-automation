@@ -25,6 +25,10 @@ _INCIDENT_PAGE = (
 _BREAK_GLASS = _DASH / "components" / "console" / "BreakGlass.tsx"
 _HOME_PAGE = _DASH / "app" / "(dashboard)" / "page.tsx"
 _SLOS_PAGE = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "slos" / "page.tsx"
+_INSIGHTS_PAGE = (
+    _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "insights" / "page.tsx"
+)
+_TOASTS = _DASH / "components" / "console" / "IncidentToasts.tsx"
 _CLUSTER_LAYOUT = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "layout.tsx"
 _SETTINGS_PAGE = (
     _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "settings" / "page.tsx"
@@ -136,6 +140,49 @@ def test_the_ticket_panel_refetches_after_creating():
     page = _INCIDENT_PAGE.read_text()
     create = page.split("const createTicket")[1].split("useEffect")[0]
     assert "await loadTicket()" in create
+
+
+def test_a_cluster_page_never_shows_another_cluster_s_health():
+    """The insights stream is org-scoped; the page it feeds is not.
+
+    `/ws/insights` is filtered by `event_visible_to_org`, so it carries every
+    cluster the organization owns. This page used to take the newest snapshot
+    for *this* cluster `?? snapshots[0]` — and with no snapshot of its own it
+    rendered a sibling's services, error rates and p95s under this cluster's
+    heading. The filter has to be in the memo, so it applies to the sweep
+    feed below as well as the table.
+    """
+    src = _INSIGHTS_PAGE.read_text()
+    assert 'p.kind === "cluster_health" && p.cluster_id === id' in src
+    assert "?? snapshots[0]" not in src, "the cross-cluster fallback is back"
+
+
+def test_the_insights_memo_recomputes_when_the_cluster_changes():
+    """A cluster-dependent memo with a stale dep list is the same bug again."""
+    src = _INSIGHTS_PAGE.read_text()
+    assert "}, [events, id])" in src
+
+
+def test_incident_toasts_are_scoped_to_the_cluster_on_screen():
+    """Toasts are mounted in the cluster layout, so they are on every page.
+
+    An unscoped event cannot be placed and is dropped rather than shown. The
+    match against the current cluster happens at render, not at ingest,
+    because Next reuses this layout across sibling `[id]` routes: `id` changes
+    without a remount, so an ingest-time filter would read a stale closure and
+    already-queued toasts would strand on the wrong cluster's page.
+    """
+    src = _TOASTS.read_text()
+    assert 'const clusterId = typeof p.cluster_id === "string" ? p.cluster_id : undefined' in src
+    assert "if (!clusterId) continue" in src
+    assert "const mine = toasts.filter((t) => t.clusterId === id)" in src
+    assert "if (mine.length === 0) return null" in src
+
+
+def test_a_toast_cannot_be_built_without_its_cluster():
+    """`clusterId` is required on the type, so the drop above cannot be skipped."""
+    src = _TOASTS.read_text()
+    assert "\n  clusterId: string\n" in src
 
 
 def test_an_slo_can_be_removed_from_the_console():
