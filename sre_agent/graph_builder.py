@@ -22,6 +22,7 @@ from .agent_nodes import (
     create_single_agent,
 )
 from .agent_state import (
+    FAULT_MODES,
     AgentState,
     ReflectorAnalysis,
     RemediationAction,
@@ -1287,6 +1288,17 @@ def _make_investigation_swarm_node(
     return investigation_swarm_node
 
 
+_MISSING_EVIDENCE_DIRECTIVE = (
+    "Your previous analysis returned an empty `evidence` list. Produce the "
+    "analysis again, and this time populate `evidence` with one entry per "
+    "claim you rely on. Each entry names its source (prometheus, loki, github, "
+    "kubernetes), the exact query, resource, log selector or commit it came "
+    "from, and the claim it supports; set `observed_at` to an ISO-8601 "
+    "timestamp whenever the finding carries one. Do not invent a locator or a "
+    "timestamp -- omit `observed_at` for a finding that has none."
+)
+
+
 async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     """
     ReflectorNode: Reviews findings from evidence agents, identifies discrepancies,
@@ -1373,6 +1385,8 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         else ""
     )
 
+    fault_mode_vocabulary = ", ".join(FAULT_MODES)
+
     # Reflection prompt
     reflection_prompt = f"""
     You are the ReflectorNode in an SRE autonomic system. Your task is to analyze
@@ -1394,9 +1408,15 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     Analyze these findings and:
     1. Identify any discrepancies between infrastructure and code findings
     2. Formulate a primary hypothesis with the exact affected_service and a
-       concise snake_case fault_mode; leave either null when evidence is insufficient
-    3. Provide an ordered causal_chain and evidence references. Every reference
-       must name its source and exact query/resource/log/commit locator; never invent one
+       fault_mode taken verbatim from this closed vocabulary:
+       {fault_mode_vocabulary}
+       Leave either null when the evidence is insufficient; never invent a
+       fault_mode outside that list
+    3. Provide an ordered causal_chain AND a non-empty evidence list -- a
+       hypothesis with no sources cannot be checked by anyone. Every reference
+       must name its source and exact query/resource/log/commit locator, and
+       carry observed_at (ISO-8601) whenever the finding it came from is
+       timestamped; never invent a locator or a timestamp
     4. List material unknowns and assess confidence level (0.0-1.0)
     5. Determine if deeper investigation is needed
     6. Recommend only the evidence agents that should investigate further,
@@ -1444,6 +1464,38 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
                 HumanMessage(content=reflection_prompt),
             ]
         )
+
+        # A hypothesis with an empty evidence list is unusable downstream: the
+        # structured grade reads `evidence` directly and derives `timeline`
+        # from the entries that carry observed_at, so losing it costs two
+        # criteria at once. The model fills causal_chain and skips this list
+        # often enough to be worth one more call -- the 2026-09-22 trial
+        # returned five causal links and zero references.
+        if analysis.hypothesis and not analysis.evidence:
+            logger.warning(
+                "ReflectorNode: hypothesis carries no evidence references; "
+                "asking once more for the sources behind it"
+            )
+            try:
+                resourced = await structured_llm.ainvoke(
+                    [
+                        reflector_system_message,
+                        HumanMessage(content=reflection_prompt),
+                        HumanMessage(content=_MISSING_EVIDENCE_DIRECTIVE),
+                    ]
+                )
+            except Exception as retry_error:
+                logger.warning(
+                    "ReflectorNode: evidence re-ask failed, keeping the "
+                    "unsourced analysis: %s",
+                    retry_error,
+                )
+            else:
+                # Keep the re-ask only if it actually supplied what was
+                # missing; a second empty answer is not an improvement worth
+                # discarding the first analysis for.
+                if resourced.evidence:
+                    analysis = resourced
 
         logger.info(f"✅ ReflectorNode: Hypothesis formulated - {analysis.hypothesis}")
         logger.info(f"   Confidence: {analysis.confidence:.2f}")

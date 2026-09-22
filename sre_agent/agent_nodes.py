@@ -100,6 +100,25 @@ def _specialist_recursion_limit(model_turns: int) -> int:
     return max(1, int(model_turns)) * _REACT_STEPS_PER_TURN + 2
 
 
+# A lane that answered without calling a single tool did not investigate: the
+# model returned its opening sentence and stopped. Every other boundary in this
+# lane is detected and labelled; this one was not, so the 2026-09-22 metrics
+# lane reported 19 characters ("I'll verify current") as a complete finding
+# while Prometheus held the 1.59s fault that decided the incident. One retry is
+# cheaper than an evidence lane silently contributing nothing to a whole run.
+_NO_TOOL_RETRY_MIN_SECONDS = 20.0
+_NO_TOOL_RETRY_DIRECTIVE = (
+    "Your previous turn returned no tool calls, so you gathered no evidence. "
+    "Do not answer from the brief alone. Call the tools you need now, then "
+    "report what they actually returned."
+)
+_NO_TOOL_LANE_NOTE = (
+    "This lane called no tools, so it collected no evidence of its own and "
+    "the text above is a preamble rather than a finding. Do not treat it as "
+    "observed data, and do not report this lane's subject as checked."
+)
+
+
 def _cut_short_reason(
     turn_budget: "SpecialistTurnBudget",
     *,
@@ -605,6 +624,9 @@ class BaseAgentNode:
             # skip the narration model call for a lane that has nothing new
             # to narrate.
             cut_short_reason = ""
+            # Counted across the retry too: a lane that never reaches a tool
+            # has not investigated, however long its prose.
+            tool_calls_made = 0
             try:
                 timeout_seconds = limits.specialist_timeout_seconds
                 # Stop *starting* a turn the clock cannot finish, instead of
@@ -617,14 +639,19 @@ class BaseAgentNode:
                     - _turn_headroom_seconds(timeout_seconds)
                 )
 
-                async def execute_agent():
+                async def execute_agent(extra_directive: str = ""):
                     nonlocal agent_response  # Fix scope issue - allow access to outer variable
                     nonlocal cut_short_reason
+                    nonlocal tool_calls_made
                     chunk_count = 0
                     # Isolated chat history: only this specialist's system
                     # prompt + alert-aware brief. See the note at the top
                     # of __call__ for why we don't include state["messages"].
                     isolated_messages = [system_message, user_message]
+                    if extra_directive:
+                        isolated_messages.append(
+                            HumanMessage(content=extra_directive)
+                        )
                     logger.info(
                         f"{self.name} - Executing agent with {isolated_messages}"
                     )
@@ -654,6 +681,7 @@ class BaseAgentNode:
                                     all_messages.append(msg)
                                     # Log tool calls being made
                                     if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                        tool_calls_made += len(msg.tool_calls)
                                         logger.info(
                                             f"{self.name} - Agent making {len(msg.tool_calls)} tool calls"
                                         )
@@ -797,7 +825,40 @@ class BaseAgentNode:
                     f"{self.name} - Executing agent with timeout of {timeout_seconds} seconds"
                 )
                 with capture_fit_reports() as fit_reports:
+                    started_at = time.monotonic()
                     await asyncio.wait_for(execute_agent(), timeout=timeout_seconds)
+                    # Nothing stopped this lane and it still never called a
+                    # tool: the model wrote a preamble and returned. Ask once
+                    # more, explicitly, while there is clock left to answer in.
+                    if not cut_short_reason and not tool_calls_made:
+                        remaining = timeout_seconds - (time.monotonic() - started_at)
+                        if remaining >= _NO_TOOL_RETRY_MIN_SECONDS:
+                            logger.warning(
+                                "%s - lane returned %d chars with no tool call "
+                                "after %d model call(s); retrying once with an "
+                                "explicit directive",
+                                self.name,
+                                len(str(agent_response or "")),
+                                turn_budget.turns,
+                            )
+                            # The first attempt produced no evidence, so there
+                            # is nothing in it worth carrying into the retry.
+                            agent_response = ""
+                            # execute_agent reads soft_deadline from this
+                            # scope at call time; the original one is already
+                            # spent, and leaving it would cut the retry off
+                            # before its first tool round.
+                            soft_deadline = (
+                                time.monotonic()
+                                + remaining
+                                - _turn_headroom_seconds(int(remaining))
+                            )
+                            await asyncio.wait_for(
+                                execute_agent(
+                                    extra_directive=_NO_TOOL_RETRY_DIRECTIVE
+                                ),
+                                timeout=remaining,
+                            )
                 logger.info(f"{self.name} - Agent execution completed")
 
             except asyncio.TimeoutError:
@@ -872,6 +933,22 @@ class BaseAgentNode:
                         _partial_evidence_digest(all_messages),
                     )
                     if part
+                )
+
+            # A lane that never called a tool has not given a short answer;
+            # it has given an absent one. Label it so the reflector and the
+            # trial record both see a missing lane, instead of reading its
+            # opening sentence as though it were observed data.
+            if not tool_calls_made and not cut_short_reason:
+                cut_short_reason = "no_tool_calls"
+                logger.error(
+                    "%s - lane produced no tool calls in %d model call(s); "
+                    "reporting it as collecting no evidence",
+                    self.name,
+                    turn_budget.turns,
+                )
+                agent_response = "\n\n".join(
+                    part for part in (agent_response, _NO_TOOL_LANE_NOTE) if part
                 )
 
             # Debug: Check what we captured

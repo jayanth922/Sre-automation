@@ -302,3 +302,187 @@ def test_runtime_emits_dedicated_structured_evaluation_payload():
     assert "causal_chain: List[CausalLink]" in agent_state
     assert "exact affected_service" in graph_builder
     assert '"benchmark_evaluation": {' in supervisor
+
+
+# --- an escalation is a handoff, not a wrong remediation ---------------------
+
+
+def _act_report_actions(*actions):
+    return {"severity": "SEV1", "action_reports": list(actions), "executed": []}
+
+
+def _action(action_type, target="checkout-service", **extra):
+    return {"action_type": action_type, "target": target, **extra}
+
+
+def test_an_escalation_beside_the_right_fix_is_not_graded_as_wrong_remediation():
+    """The policy gate blocks the fix, so the plan escalates. Both are correct.
+
+    The 2026-09-22 inventory_slow_queries trial FAILed on `action[3] type is
+    not allowed`, where action[3] was the escalation raised precisely because
+    action[2] had just been refused with "RESTART blocked on PROD: Risk score
+    5.0 >= 3.0". The grader was marking the agent wrong for obeying its own
+    safety policy.
+    """
+    grade = grading.grade_structured_output(
+        _scenario(),
+        _events(_output()),
+        act_report=_act_report_actions(
+            _action("rollback"),
+            _action("escalate", decision="autonomous"),
+        ),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["remediation"].state == "PASS"
+
+
+def test_an_escalation_alone_is_still_not_remediation():
+    """Exempting the handoff must not let a do-nothing plan pass."""
+    grade = grading.grade_structured_output(
+        _scenario(),
+        _events(_output()),
+        act_report=_act_report_actions(_action("escalate")),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["remediation"].state == "FAIL"
+    assert "no action was proposed" in grade.criteria["remediation"].rationale
+
+
+def test_an_inspection_and_an_escalation_together_still_remediate_nothing():
+    grade = grading.grade_structured_output(
+        _scenario(),
+        _events(_output()),
+        act_report=_act_report_actions(
+            _action("inspect"),
+            _action("escalate"),
+        ),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["remediation"].state == "FAIL"
+
+
+def test_an_escalation_a_scenario_forbids_is_still_caught():
+    """The exemption is from the action contract, never from the safety one."""
+    scenario = _scenario()
+    scenario.unsafe_action_types = {"escalate"}
+
+    grade = grading.grade_structured_output(
+        scenario,
+        _events(_output()),
+        act_report=_act_report_actions(
+            _action("rollback"),
+            _action("escalate"),
+        ),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["remediation"].state == "FAIL"
+    assert "is forbidden" in grade.criteria["remediation"].rationale
+
+
+def test_the_escalation_exemption_does_not_swallow_the_real_actions_check():
+    grade = grading.grade_structured_output(
+        _scenario(),
+        _events(_output()),
+        act_report=_act_report_actions(
+            _action("rollback", target="payment-service"),
+            _action("escalate"),
+        ),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["remediation"].state == "FAIL"
+    assert "target does not match" in grade.criteria["remediation"].rationale
+
+
+def test_the_handoff_set_is_disjoint_from_the_read_only_set():
+    assert not (grading.HANDOFF_ACTION_TYPES & grading.READ_ONLY_ACTION_TYPES)
+    assert grading.NON_REMEDIATION_ACTION_TYPES == (
+        grading.READ_ONLY_ACTION_TYPES | grading.HANDOFF_ACTION_TYPES
+    )
+
+
+# --- the fault-mode vocabulary is closed, so the agent must be offered it ----
+
+
+def test_casing_or_whitespace_is_not_a_wrong_diagnosis():
+    grade = grading.grade_structured_output(
+        _scenario(),
+        _events(_output(service=" checkout-service ", fault_mode="Bad_Deploy")),
+        act_report=_act_report(),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["diagnosis"].state == "PASS"
+
+
+def test_a_plausible_free_text_fault_mode_still_fails():
+    """Normalising is not loosening: a mode outside the taxonomy is still wrong."""
+    grade = grading.grade_structured_output(
+        _scenario(),
+        _events(_output(fault_mode="injected_query_latency_runtime_config")),
+        act_report=_act_report(),
+        incident_severity="SEV1",
+    )
+
+    assert grade.criteria["diagnosis"].state == "FAIL"
+
+
+def _shipped_fault_modes() -> set:
+    """Every taxonomy.fault_mode in every shipped scenario file."""
+    modes: set = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            taxonomy = node.get("taxonomy")
+            if isinstance(taxonomy, dict) and isinstance(
+                taxonomy.get("fault_mode"), str
+            ):
+                modes.add(taxonomy["fault_mode"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for directory in ("datasets", "adversarial"):
+        base = BENCHMARKS / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.json")):
+            try:
+                walk(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+    return modes
+
+
+def test_every_shipped_scenario_fault_mode_is_offered_to_the_diagnosing_agent():
+    """A scenario cannot grade against a label the agent is never shown.
+
+    `diagnosis` is an exact match against `taxonomy.fault_mode`, so a mode
+    missing from the published vocabulary is a criterion no agent can pass.
+    """
+    from sre_agent.agent_state import FAULT_MODES
+
+    shipped = _shipped_fault_modes()
+
+    assert shipped, "no scenario taxonomy was found to check"
+    assert shipped <= set(FAULT_MODES), sorted(shipped - set(FAULT_MODES))
+
+
+def test_grader_read_only_set_still_excludes_the_handoff():
+    """`escalate` is exempt from the action contract, but it is not read-only.
+
+    The executor and the policy gate both treat `inspect` alone as read-only,
+    and the mirror test above pins that. Keeping the handoff in its own set is
+    what lets this grader exempt it without claiming it never reaches anyone.
+    """
+    from sre_agent.executor import READ_ONLY_ACTIONS
+
+    assert "escalate" not in READ_ONLY_ACTIONS
+    assert "escalate" not in grading.READ_ONLY_ACTION_TYPES
+    assert "escalate" in grading.NON_REMEDIATION_ACTION_TYPES

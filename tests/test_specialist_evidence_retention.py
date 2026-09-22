@@ -27,6 +27,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
 from langgraph.errors import GraphRecursionError
 
 from sre_agent import agent_nodes
@@ -601,3 +602,180 @@ def test_the_cut_short_reason_is_recorded_for_the_run_manifest(timed_out_lane):
 
     budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
     assert budgets["cut_short"] == "timeout"
+
+
+# --- a lane that never called a tool has not investigated -------------------
+
+
+def _no_tool_lane(monkeypatch, *, streams, narrated):
+    """Wire a BaseAgentNode to a scripted astream and count narration calls."""
+
+    async def fake_artifact_metadata(state, **kwargs):
+        return {}, None
+
+    async def fake_emit(*args, **kwargs):
+        return None
+
+    async def fake_narrate(*args, **kwargs):
+        narrated.append(1)
+        return "a teammate-sounding paraphrase"
+
+    monkeypatch.setattr(agent_nodes, "_create_llm", lambda *a, **k: object())
+    monkeypatch.setattr(
+        agent_nodes,
+        "create_react_agent",
+        lambda model, tools, **kwargs: SimpleNamespace(astream=streams),
+    )
+    monkeypatch.setattr(
+        agent_nodes, "_artifact_backed_trace_metadata", fake_artifact_metadata
+    )
+    monkeypatch.setattr(agent_nodes, "emit_timeline_event", fake_emit)
+    monkeypatch.setattr(agent_nodes, "narrate_specialist_finding", fake_narrate)
+
+    return agent_nodes.BaseAgentNode(
+        name="Application Logs Agent", description="reads logs", tools=[]
+    )
+
+
+@pytest.fixture
+def preamble_only_lane(monkeypatch):
+    """The 2026-09-22 metrics lane: one model call, a preamble, no tools.
+
+    Nothing stopped it -- no timeout, no turn limit, no tool failure -- so
+    every boundary already in place reported a lane that ran to completion,
+    and its 19-character opening sentence ("I'll verify current") was handed
+    on as a finding while Prometheus held the 1.59s fault that decided the
+    incident.
+    """
+    seen, narrated = [], []
+
+    async def fake_astream(payload, config=None):
+        seen.append([str(getattr(m, "content", m)) for m in payload["messages"]])
+        yield {"agent": {"messages": [AIMessage(content="I'll verify current")]}}
+
+    return _no_tool_lane(monkeypatch, streams=fake_astream, narrated=narrated), seen, narrated
+
+
+@pytest.fixture
+def answers_on_retry_lane(monkeypatch):
+    """The same lane, investigating properly once it is told to."""
+    seen, narrated = [], []
+
+    async def fake_astream(payload, config=None):
+        seen.append([str(getattr(m, "content", m)) for m in payload["messages"]])
+        if len(seen) == 1:
+            yield {"agent": {"messages": [AIMessage(content="I'll verify current")]}}
+            return
+        yield {
+            "agent": {
+                "messages": [
+                    AIMessage(
+                        content="checking the histogram",
+                        tool_calls=[
+                            {"name": "get_metric_range", "args": {}, "id": "t1"}
+                        ],
+                    )
+                ]
+            }
+        }
+        yield {
+            "tools": {
+                "messages": [_tool_message("get_metric_range", "peak 1.591 at 22:10:45Z")]
+            }
+        }
+        yield {
+            "agent": {
+                "messages": [
+                    AIMessage(content="db p90 peaked at 1.591s, over the 1.0s threshold")
+                ]
+            }
+        }
+
+    return _no_tool_lane(monkeypatch, streams=fake_astream, narrated=narrated), seen, narrated
+
+
+@pytest.fixture
+def tool_calling_lane(monkeypatch):
+    """A lane that investigated on its first pass and must not be charged twice."""
+    seen, narrated = [], []
+
+    async def fake_astream(payload, config=None):
+        seen.append([str(getattr(m, "content", m)) for m in payload["messages"]])
+        yield {
+            "agent": {
+                "messages": [
+                    AIMessage(
+                        content="looking",
+                        tool_calls=[{"name": "query_logs", "args": {}, "id": "t1"}],
+                    )
+                ]
+            }
+        }
+        yield {"tools": {"messages": [_tool_message("query_logs", "db_pool_exhausted")]}}
+        yield {"agent": {"messages": [AIMessage(content="the pool is exhausted")]}}
+
+    return _no_tool_lane(monkeypatch, streams=fake_astream, narrated=narrated), seen, narrated
+
+
+def test_a_lane_that_called_no_tool_is_asked_again(preamble_only_lane):
+    node, seen, _ = preamble_only_lane
+
+    _run_lane(node)
+
+    assert len(seen) == 2, "the lane was not retried"
+    assert any("no tool calls" in message for message in seen[1])
+
+
+def test_the_retry_answer_replaces_the_preamble(answers_on_retry_lane):
+    node, seen, _ = answers_on_retry_lane
+
+    result = _run_lane(node)
+    report = result["agent_results"]["logs_agent"]
+
+    assert len(seen) == 2
+    assert "1.591s" in report
+    assert "I'll verify current" not in report
+    budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
+    assert budgets["cut_short"] == ""
+
+
+def test_a_lane_that_still_calls_nothing_is_reported_as_having_collected_none(
+    preamble_only_lane,
+):
+    node, _, _ = preamble_only_lane
+
+    result = _run_lane(node)
+    report = result["agent_results"]["logs_agent"]
+    budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
+
+    assert budgets["cut_short"] == "no_tool_calls"
+    assert "called no tools" in report
+    assert "preamble rather than a finding" in report
+
+
+def test_a_lane_that_collected_nothing_does_not_buy_a_narration_call(
+    preamble_only_lane,
+):
+    node, _, narrated = preamble_only_lane
+
+    _run_lane(node)
+
+    assert narrated == []
+
+
+def test_a_lane_that_investigated_is_never_retried(tool_calling_lane):
+    node, seen, _ = tool_calling_lane
+
+    result = _run_lane(node)
+    budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
+
+    assert len(seen) == 1
+    assert budgets["cut_short"] == ""
+
+
+def test_a_lane_stopped_at_a_boundary_is_not_relabelled(recursion_capped_lane):
+    """A lane cut off mid-tool-round already says why; no_tool_calls would lie."""
+    result = _run_lane(recursion_capped_lane)
+
+    budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
+    assert budgets["cut_short"] == "recursion_limit"
