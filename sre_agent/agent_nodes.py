@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from .act_phase import measured_evidence_for_trace
@@ -33,10 +34,13 @@ from .incident_timeline import (
 from .investigation_limits import investigation_limits
 from .narrative import (
     SPECIALIST_LABELS,
+    alert_start_time,
     build_specialist_task_brief,
     narrate_specialist_finding,
+    runbook_text_for_alert,
 )
 from .prompt_loader import prompt_loader
+from .runbook_probe import metrics_probe_caller, probe_runbook_queries
 
 # Logging will be configured by the main entry point
 logger = logging.getLogger(__name__)
@@ -81,6 +85,19 @@ def _turn_headroom_seconds(timeout_seconds: int) -> int:
     its first tool round.
     """
     return min(_TURN_HEADROOM_SECONDS, max(int(timeout_seconds), 0) // 3)
+
+
+# create_react_agent wires pre_model_hook → agent → tools → pre_model_hook,
+# so one tool round costs three LangGraph steps, not two. Budgeting two made
+# the framework backstop (14) bite in the middle of turn five of a six-turn
+# budget, and GraphRecursionError is a crash, not the graceful boundary
+# below: the 2026-09-22 trial lost its whole logs lane to it, twice.
+_REACT_STEPS_PER_TURN = 3
+
+
+def _specialist_recursion_limit(model_turns: int) -> int:
+    """The framework backstop, sized to trip after the explicit turn budget."""
+    return max(1, int(model_turns)) * _REACT_STEPS_PER_TURN + 2
 
 
 def _cut_short_reason(
@@ -440,6 +457,36 @@ class BaseAgentNode:
             logger.warning(f"Unknown agent type for agent: {self.name}")
             return "unknown"
 
+    async def _probe_runbook_queries(self, state: AgentState) -> str:
+        """Measure the runbook's own PromQL before this lane's first turn.
+
+        Timing a rate window is arithmetic, and the 2026-09-22 trial showed
+        what it costs to leave it to a model: the runbook's query ran at the
+        alert stamp, read a pre-fault window, and routed a live regression to
+        the runbook's do-nothing branch. Fail-soft by construction — any
+        failure leaves the lane exactly as it was, with every tool bound.
+        """
+        try:
+            runbook_text = runbook_text_for_alert(state.get("alert_context"))
+            if not runbook_text:
+                return ""
+            caller = metrics_probe_caller(self.tools)
+            if caller is None:
+                return ""
+            return await probe_runbook_queries(
+                runbook_text,
+                tool_caller=caller,
+                alert_started_at=alert_start_time(state.get("alert_context")),
+            )
+        except Exception as probe_error:
+            logger.warning(
+                "%s - runbook query probe skipped (%s): %s",
+                self.name,
+                type(probe_error).__name__,
+                probe_error,
+            )
+            return ""
+
     async def __call__(self, state: AgentState) -> Dict[str, Any]:
         """Process the current state and return updated state."""
         try:
@@ -482,6 +529,33 @@ class BaseAgentNode:
                 for key, value in (state.get("agent_results") or {}).items()
                 if key != agent_key and value
             }
+            # Set Audit Context — before the runbook probe below, so its
+            # tool call is attributed to this incident and lane exactly like
+            # a model-issued one.
+            incident_id = None
+            if state.get("alert_context"):
+                # alert_context is a Pydantic model, or dict?
+                # Check type or try access
+                ac = state.get("alert_context")
+                if hasattr(ac, "incident_id"):
+                     incident_id = str(ac.incident_id) if ac.incident_id else None
+                # If incident_id not directly on alert_context, maybe we need to pass it in state separately
+                # or derive it. For now, we'll try to use what we have.
+
+            # Also try to get from metadata if set by higher level
+            if not incident_id:
+                incident_id = state.get("metadata", {}).get("incident_id")
+
+            set_audit_context(
+                incident_id=incident_id,
+                agent_name=self.name,
+                investigation_scope=True,
+            )
+
+            # Only the lane that can run PromQL, plus the single-agent
+            # ablation arm, which must differ from the full arm in the
+            # ablated dimension and nothing else.
+            runbook_hints = agent_type in ("metrics", "single")
             agent_prompt = build_specialist_task_brief(
                 specialist_role=specialist_role,
                 objective=state.get("current_query", "") or self.name,
@@ -491,10 +565,12 @@ class BaseAgentNode:
                 namespace_scope=(state.get("metadata") or {}).get(
                     "cluster_namespace"
                 ),
-                # Only the lane that can run PromQL, plus the single-agent
-                # ablation arm, which must differ from the full arm in the
-                # ablated dimension and nothing else.
-                runbook_query_hints=agent_type in ("metrics", "single"),
+                runbook_query_hints=runbook_hints,
+                runbook_probe=(
+                    await self._probe_runbook_queries(state)
+                    if runbook_hints
+                    else ""
+                ),
             )
 
             # We'll collect all messages and the final response
@@ -520,27 +596,6 @@ class BaseAgentNode:
 
             # Stream the agent execution to capture tool calls with timeout
             logger.info(f"{self.name} - Starting agent execution")
-
-            # Set Audit Context
-            incident_id = None
-            if state.get("alert_context"):
-                # alert_context is a Pydantic model, or dict?
-                # Check type or try access
-                ac = state.get("alert_context")
-                if hasattr(ac, "incident_id"):
-                     incident_id = str(ac.incident_id) if ac.incident_id else None
-                # If incident_id not directly on alert_context, maybe we need to pass it in state separately
-                # or derive it. For now, we'll try to use what we have.
-
-            # Also try to get from metadata if set by higher level
-            if not incident_id:
-                incident_id = state.get("metadata", {}).get("incident_id")
-
-            set_audit_context(
-                incident_id=incident_id,
-                agent_name=self.name,
-                investigation_scope=True,
-            )
 
             fit_reports = []
             limits = investigation_limits()
@@ -577,10 +632,13 @@ class BaseAgentNode:
                         {"messages": isolated_messages},
                         config={
                             "metadata": specialist_trace_metadata(self.agent_type),
-                            # A tool round consumes an agent step and a tools
-                            # step. The explicit counter below is the graceful
-                            # boundary; this is the framework backstop.
-                            "recursion_limit": limits.specialist_model_turns * 2 + 2,
+                            # The explicit counter below is the graceful
+                            # boundary; this is the framework backstop, and it
+                            # has to sit above the step cost of a full turn
+                            # budget or it fires first and raises.
+                            "recursion_limit": _specialist_recursion_limit(
+                                limits.specialist_model_turns
+                            ),
                         },
                     )
                     async for chunk in agent_stream:
@@ -768,10 +826,53 @@ class BaseAgentNode:
                     if part
                 )
 
+            except GraphRecursionError as recursion_error:
+                # A step ceiling is a budget, and every budget in this lane
+                # keeps the evidence it has already paid for. Losing it here
+                # is what made the 2026-09-22 trial report "the logs agent
+                # hit a recursion limit before returning anything" twice,
+                # after Loki had already answered.
+                cut_short_reason = "recursion_limit"
+                logger.error(
+                    "%s - LangGraph step backstop reached after %d model "
+                    "call(s): %s",
+                    self.name,
+                    turn_budget.turns,
+                    recursion_error,
+                )
+                recursion_note = (
+                    "Investigation stopped at the framework's step ceiling "
+                    f"after {turn_budget.turns} model calls, with a tool "
+                    "round in flight. This is a budget boundary, not a tool "
+                    "failure: the evidence below was collected before the "
+                    "cut-off and is as valid as any other. Reason from it, "
+                    "and do not report this lane as having returned no data."
+                )
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        recursion_note,
+                        _partial_evidence_digest(all_messages),
+                    )
+                    if part
+                )
+
             except Exception as e:
                 logger.error(f"{self.name} - Agent execution failed: {e}")
                 logger.exception("Full exception details:")
-                agent_response = f"Agent execution failed: {str(e)}"
+                # Say what broke, then still hand over what was collected:
+                # a failure on the fourth tool round does not un-answer the
+                # first three.
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        f"Agent execution failed: {str(e)}",
+                        _partial_evidence_digest(all_messages),
+                    )
+                    if part
+                )
 
             # Debug: Check what we captured
             logger.info(

@@ -6,9 +6,9 @@ agent. Deterministic policy and durable state—not model prose—control writes
 status transitions and operator-facing claims.
 
 ## Current milestone
-**Benchmark preflight — closed.** Frontend is closed. The free checks now say
-what a four-arm ablation would measure: little, for reasons upstream of the
-arms.
+**Evidence acquisition — fixed, unmeasured.** Frontend and preflight are
+closed. The three defects the 2026-09-22 trial exposed are closed in code and
+pinned by tests; nothing has re-run since.
 
 ## Current architecture and invariants
 - `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
@@ -34,27 +34,24 @@ arms.
 - Trial schema v3 and ablation report v2 separate diagnosis from recovery and
   quality; release evidence recomputes it. Dataset v3 ⊇ v2 by three.
 - The blinded-calibration builder validates digests, hides provenance and
-  writes a content-addressed manifest — but one packaged case is not a
-  dataset, and semantic criteria still lack two labelers and agreement.
+  writes a content-addressed manifest — but one case is not a dataset and
+  semantic criteria still lack two labelers.
 - Memory preflight, all three v2 splits, semantic, on the agent's own
   interpreter: 22/22 scenarios retrieve a skill, 12 one of their own failure
-  class, **4** one matching class *and* service. Zero tenant incident-memory
-  points. Artifacts: `reports/ablation-memory-coverage-v2-*-20260922.json`.
-- One authorized smoke, no retry: `inventory_slow_queries`, full arm,
-  `investigated`/`UNRESOLVED`, diagnosis `FAIL`, 1,540.78s, **$2.5263** over 97
-  model calls. Four defects found, all fixed. Non-comparable, but it is the
-  live per-trial price: budget $2.53 and 26 minutes, not $2.21.
+  class, **4** one matching class *and* service. Zero tenant
+  incident-memory points.
+- Two authorized trials, both `inventory_slow_queries`/`UNRESOLVED`: the
+  2026-09-21 graded run ($2.53, 97 calls, 26 min) found four defects, all
+  fixed; the 2026-09-22 run re-measured them (below).
 - Specialist ReAct is cost-bounded — six model turns each, a 48-call ceiling,
-  a 120s wall clock, and 3,000 output tokens per turn. Every limit keeps
-  partial evidence, the wall clock included. See DECISIONS.
-- A runbook's own PromQL reaches the metrics specialist as text, extracted
-  without a model call. `get_golden_signals` is built from the cluster's one
-  configured latency histogram and structurally cannot answer an alert whose
-  signal is a different metric.
-- Console audit closed the frontend milestone: no absent endpoints, no dead
-  links, 19/19 pages handling loading/error/empty, clean `next build`. Five
-  defects fixed and pinned by tests — two honesty, three cross-cluster
-  renders. The chat surface is gone (`handle_incident_message` serves Slack).
+  a 120s wall clock, 3,000 output tokens per turn. Limits must keep partial
+  evidence; the recursion cap does not (below). See DECISIONS.
+- A runbook's own PromQL reaches the metrics specialist as text, no model
+  call. `get_golden_signals` uses the cluster's one configured latency
+  histogram and cannot answer an alert keyed to a different metric.
+- Console audit closed the frontend milestone: no absent endpoints or dead
+  links, 19/19 pages handle loading/error/empty, clean `next build`, five
+  defects fixed and pinned. The chat surface is gone; Slack serves it.
 
 ## Relevant files
 - Evaluation: `benchmarks/{ablation_coverage,statistical_eval,sre_bench,
@@ -67,40 +64,46 @@ arms.
   soft deadline in `agent_nodes.BaseAgentNode.__call__`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → **2198 passed, 6 skipped** (2026-09-22).
+- `.venv/bin/python -m pytest -q` → **2226 passed, 6 skipped** (2026-09-22),
+  +28 for the three defect fixes. Ruff clean on every changed file.
 - Preflight: `docker cp benchmarks sre-agent-api:/app/benchmarks`, then
   `/app/.venv/bin/python /app/benchmarks/ablation_coverage.py --split <s>
   --expect-retrieval-path semantic` (holdout: `BENCH_ALLOW_HOLDOUT=1`), then
   delete the copy.
 - Ruff clean on every file changed; repo-wide counts unchanged from HEAD.
+- 2026-09-22 trial, same dataset sha256 as the graded run →
+  `reports/postfix-smoke-20260922-inventory-slow/`: **$1.08 vs $2.49, 40 model
+  calls vs 97, 8.5 vs 26 min, still UNRESOLVED.**
 
 ## Known blockers or risks
-- **No trial has ever recovered — 0 of 12 recorded oracle rows**, so
-  `recovery_success` and `quality_success` are constant zero and `mttr` is
-  never computable. Both diagnosed causes are now closed in code and pinned by
-  tests: the metrics lane is handed the runbook's own PromQL, and a lane cut
-  off by the wall clock reports the evidence it already has instead of
-  "no data". Closed is not measured — nothing has re-run, so 0/12 stands as
-  the last observation and one trial decides whether recovery is reachable.
-- `propose_skills` declares `threshold=0.5` on `match_score`'s additive scale;
-  `SemanticSkillStore` compares that number against a *cosine* similarity, so
-  the semantic path admits unrelated skills. Left unchanged: a defensible
-  floor needs calibration data.
+- **No trial has recovered — 0 of 13 oracle rows**, so `recovery_success`
+  and `quality_success` are constant zero and `mttr` is never computable.
+  All three 2026-09-22 causes are closed, none re-measured. (a) Timing: the
+  lane evaluated the runbook's `rate(...[5m])` at the alert stamp, set at
+  fault injection, reading 0.0221s of pre-fault traffic.
+  `sre_agent/runbook_probe.py` now runs the runbook's PromQL over
+  `[alert-5m, now]` before the first model turn via the lane's bound,
+  scoped, audited `get_metric_range` — no model call, fail-soft.
+  (b) Relabelling: pass 2 swapped `job=` for `namespace`/`service` and
+  matched nothing; the brief now forbids touching a matcher.
+  (c) `GraphRecursionError` killed the logs lane twice: `pre_model_hook` is a
+  node, so T turns need `3T-1` steps and the backstop allowed `2T+2`=14. Now
+  `3T+2`, and a step ceiling keeps the partial-evidence digest.
+- `propose_skills` declares `threshold=0.5` on `match_score`'s additive
+  scale; `SemanticSkillStore` compares it against a *cosine* similarity, so
+  the semantic path admits unrelated skills. A defensible floor needs
+  calibration data.
 - Incident recall is provably inert: half of what `no_memory` removes is
   already absent from every arm.
-- Dataset v3 is not runnable: `checkout-service/app.py` has the
-  `metrics_enabled` switch but the Meridian image is not rebuilt. The corpus
-  is v2's 22.
-- **The toast fix is half-live** — stamping `cluster_id` is a producer change
-  baked into the API image, so until a deploy the console shows no incident
-  toasts rather than the wrong cluster's.
-- No paid rerun or campaign is authorized; deploy is not either.
+- Dataset v3 is not runnable: the Meridian image lacks the `metrics_enabled`
+  rebuild. The corpus is v2's 22.
+- No further paid run is authorized. The 2026-09-22 trial was the one the
+  user approved; the $88/$194/$389/$583 tiers stay refused.
 - Rotate the Anthropic key and Slack token exposed in terminal output.
 - Never stage `.agents/`, `.env.local-backup-20260910` or `.env.bak-*`; never
   `git add -A`.
 
 ## Next bounded task
-One re-measured `inventory_slow_queries` trial (~$2-3, **not authorized**) —
-the only way to learn whether the evidence fixes turn 0/12 into a recovery.
-Everything cheaper is done. The same trial should also cost ~6% less: the
-output ceiling clips 7 of its 85 specialist turns.
+Deploy the three fixes and re-run one `inventory_slow_queries` trial
+(~$1.10, **not authorized**) — the only way to learn whether measured
+evidence turns 0/13 into a recovery. Everything free is done.

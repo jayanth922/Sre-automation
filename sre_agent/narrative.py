@@ -24,11 +24,13 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .prompt_guard import UNTRUSTED_EVIDENCE_POLICY, wrap_untrusted
+from .runbook_probe import probe_window
 from .runbook_queries import extract_metric_names, extract_promql
 
 logger = logging.getLogger(__name__)
@@ -206,6 +208,50 @@ def _format_prior_findings(prior_findings: Optional[Dict[str, Any]]) -> str:
     return wrap_untrusted("prior_specialist_findings", "\n\n".join(blocks))
 
 
+def runbook_text_for_alert(
+    alert_context: Any, runbook_brief: Optional[str] = None
+) -> str:
+    """The runbook the graph passed, or the one enriched onto the alert.
+
+    Exported because the metrics lane probes the runbook's own PromQL before
+    the brief exists, and the probe and the brief must read the same text.
+    """
+    data = _alert_to_dict(alert_context)
+    annotations = data.get("annotations") or {}
+    return (runbook_brief or "").strip() or _safe_text(
+        annotations.get("runbook_context")
+    ).strip()
+
+
+def alert_start_time(alert_context: Any) -> Optional[datetime]:
+    """When the alert says it started, as a UTC datetime, or None.
+
+    Tolerant on purpose: the stamp arrives as RFC3339 from Alertmanager, as
+    a datetime from the ORM and occasionally as epoch seconds from a test
+    fixture, and an unparsable stamp must degrade to "no window hint"
+    rather than raise inside a brief.
+    """
+    data = _alert_to_dict(alert_context)
+    raw = data.get("starts_at") if isinstance(data, dict) else None
+    if raw is None:
+        raw = getattr(alert_context, "starts_at", None)
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = _safe_text(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _runbook_query_hints_block(runbook_text: str) -> str:
     """Quote the runbook's own PromQL back to the specialist as work to do.
 
@@ -240,10 +286,16 @@ def _runbook_query_hints_block(runbook_text: str) -> str:
             "built from this cluster's one configured latency histogram, so "
             "it cannot answer an alert whose signal is a different metric. "
             "Pass the expressions below to get_metric / get_metric_range "
-            "verbatim, changing only the time window. If one returns no "
+            "exactly as written -- same metric, same label matchers, same "
+            "aggregation. Only the time window is yours to choose, and it "
+            "must end at the present, not at the alert timestamp. Do not "
+            "add, rename or drop a label matcher: the runtime already "
+            "scopes every query to this tenant's namespace, and swapping "
+            "job= for service= (or the reverse) turns a matching series "
+            "into an empty result. If a verbatim expression returns no "
             "data, report that explicitly -- an empty result for the "
-            "runbook's own metric is itself a finding, not a reason to fall "
-            "back to the golden signals.",
+            "runbook's own metric is itself a finding, not a reason to "
+            "relabel it or to fall back to the golden signals.",
             wrap_untrusted("runbook_queries", payload, max_len=len(payload) + 1),
         ]
     )
@@ -259,6 +311,7 @@ def build_specialist_task_brief(
     prior_findings: Optional[Dict[str, Any]] = None,
     namespace_scope: Optional[str] = None,
     runbook_query_hints: bool = False,
+    runbook_probe: Optional[str] = None,
 ) -> str:
     """Build a rich task brief that the specialist LLM receives as its user prompt.
 
@@ -296,9 +349,7 @@ def build_specialist_task_brief(
     # The runbook is the operator's own answer to this alert. It is passed
     # explicitly by the graph, but fall back to the enriched annotation so a
     # caller that predates this parameter still gets it.
-    runbook_text = (runbook_brief or "").strip() or _safe_text(
-        annotations.get("runbook_context")
-    ).strip()
+    runbook_text = runbook_text_for_alert(alert_context, runbook_brief)
     enforced_namespace = _safe_text(namespace_scope).strip()
 
     lines: List[str] = []
@@ -332,6 +383,12 @@ def build_specialist_task_brief(
             if hints_block:
                 lines.append(hints_block)
                 lines.append("")
+        # Measured before the first model turn, so the lane starts from the
+        # runbook's own numbers rather than from its own choice of window.
+        probe_block = (runbook_probe or "").strip()
+        if probe_block:
+            lines.append(probe_block)
+            lines.append("")
 
     prior_block = _format_prior_findings(prior_findings)
     if prior_block:
@@ -385,10 +442,27 @@ def build_specialist_task_brief(
         "Do NOT invent labels, do NOT use placeholder names like 'web-service'."
     )
     if starts_at:
+        started = alert_start_time(alert_context)
+        window_hint = ""
+        if started is not None:
+            window_start, window_end = probe_window(
+                started, now=datetime.now(timezone.utc)
+            )
+            window_hint = (
+                " Concretely: start_time="
+                f"{window_start.isoformat(timespec='seconds')}, end_time="
+                f"{window_end.isoformat(timespec='seconds')} or later."
+            )
         lines.append(
-            "2. Query the time window AROUND the alert (5-10 minutes before "
-            f"and after {starts_at}). Do not query 'now' — the issue may "
-            "have already self-resolved by the time you look."
+            "2. Query from a few minutes before the alert through the "
+            f"present. The alert is stamped {starts_at}; an instant query "
+            "evaluated AT that stamp reads a rate or histogram window "
+            "lying almost entirely before the fault, so a live regression "
+            "reads healthy. Prefer get_metric_range across the whole "
+            "incident, and for an instant get_metric leave `time` unset so "
+            "it evaluates at the present. Never pass the alert timestamp "
+            f"as the evaluation instant.{window_hint} Ending at the "
+            "present also shows a symptom that has already self-resolved."
         )
     else:
         lines.append(

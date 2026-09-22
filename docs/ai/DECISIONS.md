@@ -1819,3 +1819,61 @@ leaves nine turns in ten untouched and clips 7, removing 10,118 output tokens
 **Rejected alternative.** Leaving the LiteLLM path uncapped and documenting
 4,096 as the default anyway. The two transports disagreeing silently is how
 this went unnoticed through every graded run so far.
+
+
+## The runbook's own query is measured before the lane's first turn
+
+**Decision.** `sre_agent/runbook_probe.py` evaluates the PromQL a runbook
+names over `[alert - 5m, now]` and hands the first, peak and latest value to
+the metrics lane inside its brief, before any model call. It runs through the
+lane's *already bound* `get_metric_range`, so the probe inherits the tenant
+namespace injection, the argument gate and the audit trail, and opens no
+second MCP client. It is fail-soft: a probe that errors, times out or matches
+nothing adds a note and changes nothing else.
+
+**Reason.** Quoting the query to the model was not enough. The 2026-09-22
+`inventory_slow_queries` trial ran the right expression at the wrong instant
+— the alert timestamp, which the harness stamps at fault injection — so the
+`rate(...[5m])` window was almost entirely pre-fault: 0.0221s against a 1.0s
+threshold. The lane took the runbook's healthy branch and escalated a live
+2.1s regression as "no action required". Choosing the evaluation instant for
+a rate window is arithmetic, not judgement.
+
+**Consequences.** The lane starts from a number instead of from a choice of
+window, at the cost of one Prometheus range read per incident and no model
+tokens. The brief also now forbids editing a runbook query's label matchers:
+the same trial rewrote `job=` to `namespace`/`service`, which the series does
+not carry, and read the empty result as "metric unavailable". The probe
+window is 28 minutes so it stays inside `namespace_scope`'s 30-minute
+investigation cap; a test asserts the probe's real arguments pass that gate.
+
+**Rejected alternative.** Prompt-only — telling the model to query "now".
+The brief had already told it the opposite ("do not query 'now'") and the
+model obeyed; swapping one instruction for another leaves the outcome to
+sampling, and this repo's precedent (`runbook_queries.py`) is to make the
+deterministic part deterministic.
+
+## The LangGraph step ceiling is sized to trip after the turn budget
+
+**Decision.** A specialist's `recursion_limit` is
+`specialist_model_turns * 3 + 2`, and `GraphRecursionError` is caught like
+any other budget boundary: the lane reports its partial-evidence digest with
+a note, and records `cut_short = "recursion_limit"`.
+
+**Reason.** `create_react_agent` is built here with a `pre_model_hook`, which
+is a real graph node, so one tool round costs three steps (hook, agent,
+tools) and T model turns need `3T - 1`. The old backstop was `2T + 2` — 14
+steps against the 17 a six-turn budget was meant to buy. The framework limit
+therefore always fired before the graceful turn counter could, and it raised
+instead of returning: the 2026-09-22 logs lane died twice reporting "no data"
+after Loki had already answered.
+
+**Consequences.** The explicit turn budget is the binding limit again and the
+step ceiling is what it was meant to be, a backstop against a runaway graph.
+Adding or removing a node in the specialist graph changes the multiplier;
+`_REACT_STEPS_PER_TURN` names it in one place, with a test that pins it
+against the configured turn count.
+
+**Rejected alternative.** Raising the limit without catching the error. A
+step ceiling is a budget, and every other budget in this lane — turns, wall
+clock, call count — keeps the evidence already paid for.

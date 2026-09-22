@@ -27,13 +27,16 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from langgraph.errors import GraphRecursionError
 
 from sre_agent import agent_nodes
 from sre_agent.agent_nodes import (
+    _REACT_STEPS_PER_TURN,
     SpecialistTurnBudget,
     _create_llm,
     _cut_short_reason,
     _partial_evidence_digest,
+    _specialist_recursion_limit,
     _turn_headroom_seconds,
 )
 from sre_agent.constants import SREConstants
@@ -206,6 +209,65 @@ def test_the_metrics_lane_is_handed_the_runbook_query():
     assert "runbook_queries" in brief
 
 
+def test_the_lane_is_told_not_to_rewrite_the_runbooks_label_matchers():
+    """The 2026-09-22 metrics lane relabelled `job=` to `service=`.
+
+    The series carries `job`, so its second pass matched nothing and the
+    lane concluded the metric was unavailable. Scoping is the runtime's job
+    — `_scope_query` already injects the tenant namespace — so the model
+    has no reason to touch a matcher, and is told so.
+    """
+    brief = build_specialist_task_brief(
+        specialist_role="Prometheus Specialist",
+        objective="Investigate InventorySlowQueries",
+        alert_context={"alert_name": "InventorySlowQueries", "labels": {}},
+        runbook_brief=RUNBOOK,
+        runbook_query_hints=True,
+    )
+
+    assert "exactly as written" in brief
+    assert "add, rename or drop a label matcher" in brief
+    assert "empty result" in brief
+
+
+def test_the_brief_carries_the_measured_probe_when_one_was_run():
+    brief = build_specialist_task_brief(
+        specialist_role="Prometheus Specialist",
+        objective="Investigate InventorySlowQueries",
+        alert_context={"alert_name": "InventorySlowQueries", "labels": {}},
+        runbook_brief=RUNBOOK,
+        runbook_query_hints=True,
+        runbook_probe="Runbook queries already executed for you: peak 2.25",
+    )
+
+    assert "already executed for you" in brief
+    assert "peak 2.25" in brief
+
+
+def test_a_lane_with_a_stamped_alert_is_pointed_past_the_alert_instant():
+    """Defect 1: the brief itself said to query around the alert.
+
+    The harness stamps the alert at fault injection, so a five-minute rate
+    window evaluated there is entirely pre-fault. The instruction now names
+    the window to use and forbids the alert instant outright.
+    """
+    brief = build_specialist_task_brief(
+        specialist_role="Prometheus Specialist",
+        objective="Investigate InventorySlowQueries",
+        alert_context={
+            "alert_name": "InventorySlowQueries",
+            "labels": {},
+            "starts_at": "2026-09-22T17:50:37Z",
+        },
+        runbook_brief=RUNBOOK,
+        runbook_query_hints=True,
+    )
+
+    assert "Never pass the alert timestamp as the evaluation instant" in brief
+    assert "start_time=" in brief and "end_time=" in brief
+    assert "through the present" in brief
+
+
 def test_a_lane_that_cannot_run_promql_is_not_charged_for_the_hint():
     brief = build_specialist_task_brief(
         specialist_role="Loki Specialist",
@@ -337,6 +399,101 @@ def test_an_explicit_ceiling_reaches_the_litellm_transport(monkeypatch):
     )
 
     assert captured["max_tokens"] == 777
+
+
+# --- the framework's step ceiling is a budget, not a crash ------------------
+
+
+def test_the_step_backstop_outlives_the_turn_budget_it_backs():
+    """Defect 3: the old backstop was `turns * 2 + 2`, and tripped first.
+
+    `create_react_agent` is built here with a `pre_model_hook` node, so one
+    tool round costs three LangGraph steps (hook, agent, tools) and T model
+    turns need `3T - 1`. At six turns the old formula allowed 14 steps
+    against the 17 the budget was meant to buy: the graceful turn counter
+    could never fire, and the logs lane died mid-round instead.
+    """
+    turns = investigation_limits().specialist_model_turns
+
+    assert _REACT_STEPS_PER_TURN == 3
+    assert _specialist_recursion_limit(turns) >= turns * 3 - 1
+    assert _specialist_recursion_limit(turns) > turns * 2 + 2
+    # Still a backstop: it must not be so loose that a runaway lane is free.
+    assert _specialist_recursion_limit(turns) <= turns * 3 + 2
+
+
+def test_the_backstop_never_degenerates_on_a_pathological_budget():
+    assert _specialist_recursion_limit(0) >= 1
+    assert _specialist_recursion_limit(-4) >= 1
+
+
+@pytest.fixture
+def recursion_capped_lane(monkeypatch):
+    """A Loki lane that hits the step ceiling after Loki has answered."""
+
+    async def fake_astream(payload, config=None):
+        yield {
+            "tools": {
+                "messages": [
+                    _tool_message("query_logs", "db_pool_exhausted x412"),
+                ]
+            }
+        }
+        raise GraphRecursionError("Recursion limit of 14 reached")
+
+    async def fake_artifact_metadata(state, **kwargs):
+        return {}, None
+
+    async def fake_emit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent_nodes, "_create_llm", lambda *a, **k: object())
+    monkeypatch.setattr(
+        agent_nodes,
+        "create_react_agent",
+        lambda model, tools, **kwargs: SimpleNamespace(astream=fake_astream),
+    )
+    monkeypatch.setattr(
+        agent_nodes, "_artifact_backed_trace_metadata", fake_artifact_metadata
+    )
+    monkeypatch.setattr(agent_nodes, "emit_timeline_event", fake_emit)
+
+    return agent_nodes.BaseAgentNode(
+        name="Application Logs Agent", description="reads logs", tools=[]
+    )
+
+
+def _run_lane(node):
+    return asyncio.run(
+        node(
+            {
+                "current_query": "Investigate InventorySlowQueries",
+                "alert_context": {"alert_name": "InventorySlowQueries", "labels": {}},
+                "metadata": {},
+                "agent_results": {},
+            }
+        )
+    )
+
+
+def test_a_lane_cut_off_by_the_step_ceiling_still_reports_its_logs(
+    recursion_capped_lane,
+):
+    result = _run_lane(recursion_capped_lane)
+    report = result["agent_results"]["logs_agent"]
+
+    assert "db_pool_exhausted x412" in report
+    assert "budget boundary, not a tool failure" in report
+    assert "step ceiling" in report
+
+
+def test_the_step_ceiling_is_recorded_as_its_own_cut_short_reason(
+    recursion_capped_lane,
+):
+    result = _run_lane(recursion_capped_lane)
+
+    budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
+    assert budgets["cut_short"] == "recursion_limit"
 
 
 # --- the whole lane, through the timeout that started this ------------------
