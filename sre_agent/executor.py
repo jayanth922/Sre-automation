@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Executor — the ACT phase's hands (Phase 0: dry-run only).
+Executor — the ACT phase's hands.
 
 Given a ``RemediationAction`` that the Policy Gate has cleared, the Executor
-translates it into the concrete command it *would* run and — in Phase 0 — stops
-there, returning the command plus a tamper-evident audit record instead of
-touching any cluster. This makes the entire ACT path demoable and reviewable
-with zero production risk.
+translates it into the concrete command to run, returning that command plus a
+tamper-evident audit record. Under ``dry_run=True`` it stops there, having
+touched nothing, which is what makes the whole ACT path demoable and
+reviewable at zero risk.
 
-Live execution is intentionally **not** implemented yet: calling with
-``dry_run=False`` raises ``NotImplementedError``. That is a deliberate honesty
-guarantee — nothing in this file can mutate real infrastructure until Phase 1
-wires it to the sandboxed Executor MCP server with least-privilege RBAC.
+Live apply *is* wired — just not through this class's synchronous entry point.
+``execute(dry_run=False)`` raises ``NotImplementedError`` on purpose and names
+the supported path in the message. Real mutations go through
+``mutation_gateway.authorize_and_execute``, called from ``act_phase`` once the
+policy gate and, above low severity, a human approval have cleared the exact
+action; see ``act_phase.execute_autonomous_live``. The refusal below is a
+guard rail against a second, unaudited apply path, not evidence that the
+product cannot act.
 
 Dependency-light: operates on any object exposing ``action_type``, ``target``,
 ``parameters`` (dict) and optional ``rollback_plan``.
