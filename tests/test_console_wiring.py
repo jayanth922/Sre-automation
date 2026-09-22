@@ -24,6 +24,7 @@ _INCIDENT_PAGE = (
 )
 _BREAK_GLASS = _DASH / "components" / "console" / "BreakGlass.tsx"
 _HOME_PAGE = _DASH / "app" / "(dashboard)" / "page.tsx"
+_SLOS_PAGE = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "slos" / "page.tsx"
 _CLUSTER_LAYOUT = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "layout.tsx"
 _SETTINGS_PAGE = (
     _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "settings" / "page.tsx"
@@ -135,3 +136,54 @@ def test_the_ticket_panel_refetches_after_creating():
     page = _INCIDENT_PAGE.read_text()
     create = page.split("const createTicket")[1].split("useEffect")[0]
     assert "await loadTicket()" in create
+
+
+def test_an_slo_can_be_removed_from_the_console():
+    """Create, edit and delete all reachable from the same table.
+
+    `DELETE /clusters/{cluster_id}/slos/{slo_id}` was mounted with no caller,
+    so an objective could be created and edited from the UI but removed only
+    by hand-rolling an authenticated request. This is also the dashboard's
+    first `api.delete`, so it is the idiom the next one should copy.
+    """
+    src = _SLOS_PAGE.read_text()
+    assert "api.delete(`/clusters/${id}/slos/${slo.id}`)" in src
+
+
+def test_deleting_an_slo_asks_first():
+    """Two-step inline confirm, matching the break glass.
+
+    `window.confirm` is deliberately not used anywhere in the console: it is
+    unstyleable, it blocks the event loop while the 20s poll is running, and
+    it cannot carry the sentence explaining what is actually destroyed.
+    """
+    src = _SLOS_PAGE.read_text()
+    assert "confirmDelete === r.slo.id" in src
+    assert "setConfirmDelete(r.slo.id)" in src
+    assert "window.confirm" not in src
+
+
+def test_a_failed_delete_says_the_objective_is_still_there():
+    """A row that does not disappear is not an explanation."""
+    src = _SLOS_PAGE.read_text()
+    assert "setDeleteError(" in src
+    assert "It is unchanged." in src
+
+
+def test_deleting_the_objective_being_edited_closes_its_form():
+    """Otherwise the open form saves a PATCH against a deleted SLO."""
+    src = _SLOS_PAGE.read_text()
+    assert "if (editingId === slo.id) closeForm()" in src
+
+
+def test_the_delete_confirmation_does_not_claim_alerting_stops():
+    """Nothing in the runtime reads the `slos` table.
+
+    Severity is derived from measured evidence and incidents are opened by the
+    tenant's own Alertmanager (`agent_runtime.py:519`), so deleting an
+    objective removes a tracker and its recorded budget history and nothing
+    else. Copy that implied alerts would stop would be false, and would make
+    operators keep dead objectives out of fear.
+    """
+    src = _SLOS_PAGE.read_text()
+    assert "Alerting is unaffected." in src
