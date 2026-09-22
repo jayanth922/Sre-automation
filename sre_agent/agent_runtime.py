@@ -1771,9 +1771,16 @@ async def _run_graph_impl(
             "requires_collaboration": True,
             "agents_invoked": [],
             "final_response": None,
-            "auto_approve_plan": True, # For automated SaaS flow, auto-approve for now
+            # Auto-approves the *investigation* plan — which specialists to
+            # run — and never remediation. Mutating actions still pass the
+            # policy gate and, above low severity, a human approval in Slack.
+            "auto_approve_plan": True,
             "session_id": session_id,
-            "user_id": "saas_user",
+            # An Alertmanager webhook started this, not a person. The sibling
+            # alert path in this file already says so; "saas_user" was a name
+            # no account ever had, and it reached Langfuse as the trace's user
+            # and the planner prompt's {user_id}.
+            "user_id": "alertmanager",
         }
 
         from .audit_context import clear_audit_context, pop_audit_write_failure, set_audit_context
