@@ -183,9 +183,20 @@ COOLDOWN_SEC = 30
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
 
+# Statuses the graph stops at, used only to stop polling early — recovery
+# itself is decided by the Prometheus probe, never by these.
+#
+# `pending_acknowledgment` belongs here and was missing: it is where a *verified
+# autonomous fix* lands, and only a human running the Slack "acknowledge"
+# command moves it to `resolved`, which no benchmark run does. Every terminal
+# failure status was listed and the one success status was not, so a trial in
+# which the agent actually fixed something polled for the full incident timeout
+# whenever the probe had not yet cleared. `remediation_in_progress` stays out:
+# verification has not run yet, so it is genuinely transient.
 TERMINAL_APPLICATION_STATUSES = {
     "investigated",
     "awaiting_approval",
+    "pending_acknowledgment",
     "remediation_failed",
     "verification_unknown",
     "resolved",
