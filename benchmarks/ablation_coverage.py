@@ -18,9 +18,21 @@ can be read correctly afterwards.
 
 Two checks, and they differ in strength:
 
-* **Verified skills — exact.** Replays `propose_skills`, the same call the
-  planner makes, against the same store. What this reports is what the arm
-  would retrieve.
+* **Verified skills — what the arm would actually retrieve,** reported as two
+  different numbers. Replays `propose_skills`, the same call the planner
+  makes, against the same store. `skill_hit` is whether that returned anything
+  at all. `signature_hit` is whether anything it returned was learned from
+  this scenario's own failure class, scored with `match_score` — the function
+  whose scale `propose_skills`' `threshold=0.5` was written for, where 0.5 is
+  exactly "same failure class".
+
+  The two diverge on the semantic path, which compares that same 0.5 against a
+  *cosine similarity* from Qdrant instead. Short signature strings clear it on
+  embedding proximity alone, so `checkout_memory_leak_oom` retrieves
+  `latency-inventory-service`. Read `skill_hit` as "the lookup is not empty,
+  so `no_memory` removes something" and `signature_hit` as "what it removes is
+  knowledge about this incident". Only the second supports a claim that
+  learned memory helped.
 * **Incident recall — necessary, not sufficient.** Counts tenant-scoped points
   in the incident collection rather than running a semantic query, which would
   need the embedding model and an API bill of its own. Zero points proves
@@ -152,6 +164,13 @@ def open_store_read_only() -> Any:
     return store
 
 
+# `propose_skills` declares threshold=0.5, and on `match_score`'s scale 0.5 is
+# exactly "same failure class" — the weakest relationship under which a skill
+# is still about this incident. Same floor here, so the preflight and the
+# retrieval it is auditing agree on what counts as a match.
+SIGNATURE_FLOOR = 0.5
+
+
 def assess_split(
     scenarios: Sequence[Any],
     *,
@@ -159,6 +178,7 @@ def assess_split(
     signature_of: Callable[[dict[str, Any]], Any],
     incident_points: Optional[int],
     path: str,
+    score_of: Optional[Callable[[Any, Any], float]] = None,
 ) -> dict[str, Any]:
     """Per-scenario coverage plus the totals a verdict is read from.
 
@@ -168,6 +188,10 @@ def assess_split(
 
     `path` is required rather than derived, because every count below is only
     meaningful relative to the retrieval path that produced it.
+
+    `score_of(scenario_signature, skill)` grades each retrieved skill against
+    the scenario on `match_score`'s scale. Without it `signature_hit` is None —
+    unknown, which is not the same answer as no, and is not counted as one.
     """
     recall_possible = bool(incident_points)
     pairs: list[dict[str, Any]] = []
@@ -175,6 +199,15 @@ def assess_split(
         probe = alert_probe(scenario)
         signature = signature_of(probe)
         skills = list(propose(probe))
+        matches = (
+            None
+            if score_of is None
+            else [
+                getattr(s, "skill_id", "?")
+                for s in skills
+                if score_of(signature, s) >= SIGNATURE_FLOOR
+            ]
+        )
         pairs.append(
             {
                 "scenario": getattr(scenario, "name", "?"),
@@ -182,7 +215,11 @@ def assess_split(
                 "service": probe["labels"]["service"],
                 "failure_class": getattr(signature, "failure_class", "unknown"),
                 "skills_retrieved": [getattr(s, "skill_id", "?") for s in skills],
+                # Retrieval returned something. Not the same as: it returned
+                # something about this incident — see `signature_matches`.
                 "skill_hit": bool(skills),
+                "signature_matches": matches,
+                "signature_hit": None if matches is None else bool(matches),
                 # Per-scenario only in the sense that recall is reachable at
                 # all; a point count cannot say which scenario would match.
                 "recall_possible": recall_possible,
@@ -191,9 +228,15 @@ def assess_split(
         )
     blind = [p for p in pairs if p["blind"]]
     with_skills = [p for p in pairs if p["skill_hit"]]
+    graded = [p for p in pairs if p["signature_hit"] is not None]
     return {
         "scenario_count": len(pairs),
         "skill_hits": len(with_skills),
+        # None when nothing graded the retrievals: unknown, reported as such
+        # rather than as a zero that would read like a finding.
+        "signature_hits": (
+            len([p for p in graded if p["signature_hit"]]) if graded else None
+        ),
         "incident_memory_points": incident_points,
         "recall_possible": recall_possible,
         "retrieval_path": path,
@@ -222,6 +265,22 @@ def verdict_lines(report: dict[str, Any]) -> list[str]:
         )
     else:
         lines.append(f"COVERED: all {total} scenarios can retrieve learned memory.")
+    signature_hits = report.get("signature_hits")
+    if signature_hits is not None and signature_hits < report["skill_hits"]:
+        lines.append(
+            f"Weaker than that reads: {report['skill_hits']}/{total} scenarios "
+            f"retrieve a skill, but only {signature_hits} retrieve one learned "
+            "from their own failure class. The rest clear `propose_skills`' 0.5 "
+            "threshold on cosine similarity — the semantic path compares "
+            "embedding distance against a number written for `match_score`'s "
+            "scale. Those pairs measure whether unrelated memory hurts, not "
+            "whether relevant memory helps."
+        )
+    elif signature_hits is None:
+        lines.append(
+            "Signature relevance was not graded, so these counts say the lookup "
+            "is non-empty and nothing about what it returned."
+        )
     if report["incident_memory_points"] == 0:
         lines.append(
             "Incident recall is provably inert: the collection holds no "
@@ -281,6 +340,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--dataset-root", default=os.getenv("BENCH_DATASET_ROOT"))
     parser.add_argument("--version", default=os.getenv("BENCH_DATASET_VERSION", "v2"))
     parser.add_argument("--split", default=os.getenv("BENCH_DATASET_SPLIT", "dev"))
+    parser.add_argument(
+        "--allow-holdout",
+        action="store_true",
+        default=os.getenv("BENCH_ALLOW_HOLDOUT", "").lower() in {"1", "true", "yes"},
+        help=(
+            "assess the protected holdout split. Without this the split a "
+            "final number is reported on is the one split this preflight "
+            "cannot check. Reading it does reveal which holdout scenarios "
+            "learned memory can reach, so it takes the same explicit opt-in "
+            "`sre_bench` requires (BENCH_ALLOW_HOLDOUT)."
+        ),
+    )
     parser.add_argument("--organization-id", default=os.getenv("BENCH_ORGANIZATION_ID"))
     parser.add_argument("--cluster-id", default=os.getenv("BENCH_CLUSTER_ID"))
     parser.add_argument(
@@ -313,13 +384,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         else Path(__file__).resolve().parent / "datasets"
     )
     try:
-        dataset = load_dataset(root, args.version, args.split)
+        dataset = load_dataset(
+            root, args.version, args.split, allow_holdout=args.allow_holdout
+        )
     except Exception as exc:  # dataset errors are operator errors, not findings
         print(f"error: could not load dataset: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
     from sre_agent.memory_store import INCIDENTS_COLLECTION
-    from sre_agent.skill_store import propose_skills, signature_from_alert
+    from sre_agent.skill_store import (
+        match_score,
+        propose_skills,
+        signature_from_alert,
+    )
 
     try:
         store = open_store_read_only()
@@ -349,6 +426,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             args.qdrant_url, INCIDENTS_COLLECTION, org, cluster
         ),
         path=path,
+        # The store's own comparison, not a second opinion about relevance.
+        score_of=lambda signature, skill: match_score(signature, skill.signature),
     )
     report.update(
         {
@@ -364,9 +443,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     for pair in report["pairs"]:
         mark = "blind" if pair["blind"] else "ok   "
+        relevant = {None: "?", True: "yes", False: "no"}[pair["signature_hit"]]
         print(
             f"{mark} {pair['scenario']:36} {pair['failure_class']:16}"
-            f"{pair['service']:20} skills={len(pair['skills_retrieved'])}"
+            f"{pair['service']:20} skills={len(pair['skills_retrieved'])} "
+            f"signature_match={relevant}"
         )
     print()
     for line in verdict_lines(report):
