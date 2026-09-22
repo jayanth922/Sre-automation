@@ -10,8 +10,14 @@ authority.
 
 > ### ⚠ Start here: what landed, and what did not
 >
+> **The working tree is dirty again.** `master` is at **`9af6835`**; the
+> console audit's two fixes and their five tests sit uncommitted on top of it
+> (`sre_agent/api/v1/services.py`, `dashboard/app/(dashboard)/page.tsx`,
+> `tests/test_connection_preflight.py`, `tests/test_console_wiring.py`, and
+> these state files). No commit was requested.
+>
 > The emergency-lock wiring described in **Step 3** below is **committed** on
-> `master`, on top of `5e88747`, and the tree is clean. It is green:
+> `master` (`4254df3`). It is green:
 > **2090 passed, 6 skipped**, `tsc --noEmit` clean, no new eslint errors. Run
 > the suite before you change anything, so you know whether a later failure is
 > yours.

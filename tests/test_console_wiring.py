@@ -23,10 +23,23 @@ _INCIDENT_PAGE = (
     / "page.tsx"
 )
 _BREAK_GLASS = _DASH / "components" / "console" / "BreakGlass.tsx"
+_HOME_PAGE = _DASH / "app" / "(dashboard)" / "page.tsx"
 _CLUSTER_LAYOUT = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "layout.tsx"
 _SETTINGS_PAGE = (
     _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "settings" / "page.tsx"
 )
+
+
+def test_a_failed_cluster_list_is_not_rendered_as_an_empty_account():
+    """"Could not ask" and "you have none" are different answers.
+
+    The picker falls back to an empty array so it can leave its loading state,
+    which meant an unreachable API rendered the first-run onboarding page and
+    invited an operator with running clusters to connect another one.
+    """
+    src = _HOME_PAGE.read_text()
+    assert "setLoadErr(true)" in src
+    assert "if (loadErr) {" in src
 
 
 def test_general_chat_is_not_an_unbounded_execution_surface():

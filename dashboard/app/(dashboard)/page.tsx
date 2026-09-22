@@ -15,12 +15,18 @@ export default function HomeGate() {
   const [form, setForm] = useState({ name: "" })
   const [createdId, setCreatedId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [loadErr, setLoadErr] = useState(false)
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<Cluster[]>("/clusters")
       setClusters(data)
+      setLoadErr(false)
     } catch {
+      // An unreachable API is not an empty account. Falling through to the
+      // onboarding page would invite someone with running clusters to connect
+      // another one because a single GET failed.
+      setLoadErr(true)
       setClusters([])
     }
   }, [])
@@ -66,6 +72,35 @@ export default function HomeGate() {
     flexDirection: "column",
     alignItems: "center",
     padding: "72px 24px",
+  }
+
+  // Could not list clusters: say so, rather than rendering "none".
+  if (loadErr) {
+    return (
+      <div style={shellStyle}>
+        <div style={{ width: "100%", maxWidth: 520 }}>
+          <div className="sx-wordmark" style={{ fontSize: 22, marginBottom: 4 }}>
+            <span className="tick" /> Sentinel
+          </div>
+          <h1 style={{ fontSize: 24, fontWeight: 600, margin: "18px 0 6px" }}>Couldn&apos;t reach the platform</h1>
+          <p style={{ color: "var(--ink2)", fontSize: 13.5, marginTop: 0, marginBottom: 24, lineHeight: 1.6 }}>
+            Your clusters could not be listed, so none are shown. That is not the same as having none — nothing has been lost.
+          </p>
+          <button
+            className="sx-btn primary"
+            style={{ maxWidth: 160 }}
+            onClick={() => {
+              setClusters(null)
+              setLoadErr(false)
+              load()
+            }}
+          >
+            Try again
+          </button>
+          <button onClick={logout} className="sx-back" style={{ marginTop: 28 }}>Sign out ({user?.email})</button>
+        </div>
+      </div>
+    )
   }
 
   // Cluster picker (2+ clusters)

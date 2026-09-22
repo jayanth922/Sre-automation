@@ -5,6 +5,7 @@ Queries are built from each cluster's resolved observability profile
 not one demo's. Services with no samples simply don't appear; missing metrics
 return nulls rather than synthetic data.
 """
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,19 @@ router = APIRouter(
     tags=["services"],
     dependencies=[Depends(get_current_user_and_org)],
 )
+
+
+def _github_token(cluster: Any) -> Optional[str]:
+    """The credential the agent will actually use, in the order it uses it.
+
+    Settings stores an encrypted per-cluster PAT and
+    `ExecutionContext.from_cluster` reads it. A preflight that consults only
+    `GITHUB_TOKEN` therefore grades a credential nobody uses: red for a tenant
+    who configured one correctly, green for a tenant who configured nothing on
+    a host that exports the variable. The env var stays as a fallback for
+    single-tenant local runs, where `from_environment` is the context in play.
+    """
+    return getattr(cluster, "github_token", None) or os.getenv("GITHUB_TOKEN")
 
 
 async def _query_scalar(client: httpx.AsyncClient, base: str, promql: str) -> Optional[float]:
@@ -151,7 +165,6 @@ async def get_cluster_connections(
     Loki, GitHub, Notion, and Slack are reachable/authorized, and whether Alertmanager
     has delivered anything. Lets a new user see at a glance if their setup is wired,
     instead of discovering it's broken only when an incident fails to open."""
-    import os
     import asyncio
     from datetime import datetime, timezone
 
@@ -160,7 +173,7 @@ async def get_cluster_connections(
     # No platform-wide fallback: each cluster states its own Loki URL.
     loki = (cluster.loki_url or "").rstrip("/")
     repo = cluster.github_repo
-    gh_token = os.getenv("GITHUB_TOKEN")
+    gh_token = _github_token(cluster)
     notion_db = cluster.notion_database_id
     notion_key = cluster.notion_api_key
     org = await crud.get_org_by_id(db, user.org_id)
