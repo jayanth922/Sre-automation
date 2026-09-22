@@ -19,10 +19,14 @@ members** you can tag, and they go do their thing. Paired with **PromptQL**
   payment failures; execution goes through the Prometheus MCP tool.
 - **Chat routing** (`classify_chat_message`) — decides whether a message is a
   data **query**, an investigation **steer**, or a **greeting**.
-- **Steer bridge** (`build_incident_message_payload`) — shapes a steer into the
-  existing `POST /api/v1/incidents/{id}/message` endpoint, which already feeds the
-  supervisor's human-checkpoint interrupt queue. So chat steering reuses the
-  interrupt mechanism the platform already has.
+- **Steering, honestly scoped.** A steer *inside a tracked war-room thread*
+  is a real conversational turn: `war_room.route_thread_reply` calls
+  `mission_control.handle_incident_message`, which feeds the supervisor's
+  human-checkpoint queue. A bare @mention classified as a steer only
+  acknowledges — `handle_chat_message` returns `{"mode": "steer"}` and no
+  transport acts further. The HTTP bridge that once addressed
+  `POST /api/v1/incidents/{id}/message` is removed along with that endpoint;
+  it was never dispatched by anything.
 
 ## Slack transport (implemented)
 

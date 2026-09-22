@@ -473,12 +473,6 @@ def classify_chat_message(text: str) -> Dict[str, Any]:
     return {"mode": "steer"}  # default: treat as an instruction to the investigation
 
 
-def build_incident_message_payload(incident_id: str, text: str) -> Tuple[str, Dict[str, Any]]:
-    """Shape a chat 'steer' into the existing mission-control message endpoint,
-    which feeds the human-checkpoint queue the supervisor already consumes."""
-    return f"/api/v1/incidents/{incident_id}/message", {"message": text}
-
-
 # ── Ad hoc chat (no tracked incident): genuine LLM conversation ──────────────
 # In-thread replies inside a tracked incident already get a real, memory-backed
 # conversation via mission_control.handle_incident_message (see war_room.py).
@@ -619,8 +613,9 @@ async def handle_chat_message(
     """Dispatch a chat message (the Slack/Buzz 'AI member' behavior).
 
     - query    → run a verified NL metric query and return the result.
-    - steer    → shape a POST to the incident message endpoint (human-checkpoint),
-                 when there's a tracked incident to steer.
+    - steer    → acknowledge an instruction aimed at a tracked incident. The
+                 conversational turn itself happens on a reply inside the
+                 incident's thread (war_room.route_thread_reply), not here.
     - chat     → no tracked incident: a genuine LLM-driven conversational reply
                  with short-term memory (see _handle_ad_hoc_chat).
     - greeting → acknowledge.
@@ -642,8 +637,12 @@ async def handle_chat_message(
             "error": result.error,
         }
     if mode == "steer" and incident_id:
-        path, body = build_incident_message_payload(incident_id, text)
-        return {"mode": "steer", "post": {"path": path, "body": body}}
+        # No POST descriptor. This used to address
+        # `POST /api/v1/incidents/{id}/message`, which is removed, and no
+        # transport ever dispatched it anyway. The real conversational turn
+        # happens when the operator replies *in* the incident thread, which
+        # `war_room.route_thread_reply` routes into the handler directly.
+        return {"mode": "steer"}
     if mode == "steer" and not incident_id:
         return await _handle_ad_hoc_chat(text, llm=llm, session_key=session_key)
     return {"mode": mode}

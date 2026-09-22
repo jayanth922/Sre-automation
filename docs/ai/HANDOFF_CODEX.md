@@ -753,7 +753,19 @@ the last is a gap:
   "Slack-adjacent, **no chat**" constraint while letting any signed-in org
   member spend a 120-second agent invocation.~~ **CLOSED 2026-09-21:** the
   unused route and module are removed; Slack incident threads remain the
-  conversation surface.
+  conversation surface. ~~`POST /incidents/{id}/message` was the same shape
+  one layer down.~~ **CLOSED 2026-09-22:** it and both unimported callers
+  (`IncidentChatPanel`, `IncidentCommandCenter`) are deleted.
+  `handle_incident_message` survives because `war_room.route_thread_reply`
+  is a real caller, and the five endpoint tests were rewired onto it rather
+  than dropped. `tests/test_console_wiring.py` pins the removal.
+
+  **Found while doing it, not fixed, and worth someone's attention:** a bare
+  @mention classified as a steer answers "I'll fold that into the live
+  investigation at the next checkpoint" and nothing folds it in.
+  `handle_chat_message` returned a POST descriptor no transport ever
+  dispatched — inert before this change, and now not built at all. A reply
+  *inside* a tracked thread is unaffected and does reach the handler.
 - **Redundant — the data already arrives another way (2).**
   `GET /clusters/{id}/health` returns `heartbeat_payload(...)` built from
   `status`, `last_heartbeat`, `heartbeat_source` and `heartbeat_reason`, and
@@ -824,7 +836,7 @@ the user names a stage and a budget.
 ## Verification — run all of these before claiming anything is done
 
 ```bash
-.venv/bin/python -m pytest -q                                  # 2090 passed, 6 skipped
+.venv/bin/python -m pytest -q                                  # 2140 passed, 6 skipped
 .venv/bin/python scripts/audit_runbook_controls.py             # 4 of 5 detected, 1 documented KNOWN_BLIND
 .venv/bin/python scripts/audit_runbook_coverage.py \
     --corpus benchmarks/datasets/v2/runbook_corpus_snapshot.json  # 22/22

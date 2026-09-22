@@ -64,7 +64,7 @@ async def test_create_incident_timeline_event_persists_pending_fields(monkeypatc
         speaker_role="user",
         title="You",
         content="What changed?",
-        payload={"source": "dashboard_chat", "mode": "post_summary_follow_up"},
+        payload={"source": "slack", "mode": "post_summary_follow_up"},
         pending_supervisor=True,
     )
 

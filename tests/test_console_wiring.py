@@ -55,6 +55,31 @@ def test_general_chat_is_not_an_unbounded_execution_surface():
     assert not (_ROOT / "sre_agent" / "api" / "v1" / "chat.py").exists()
 
 
+def test_an_incident_message_cannot_queue_an_agent_turn_over_http():
+    """The follow-up route is gone, and so are the two components that called it.
+
+    `POST /incidents/{id}/message` spent a full agent turn for any org member
+    holding an incident id, while its only callers sat in
+    `components/dashboard/` -- a directory nothing imports. Reachable route, no
+    reachable UI: the same shape as `POST /chat`.
+
+    The conversational handler itself stays. Slack routes thread replies
+    straight into it, and that is the one surface the product commits to.
+    """
+    mc = (_ROOT / "sre_agent" / "api" / "v1" / "mission_control.py").read_text()
+    assert '"/{incident_id}/message"' not in mc
+    assert "async def send_incident_message" not in mc
+    assert "IncidentMessageRequest" not in mc
+    assert "IncidentMessageRequest" not in (_ROOT / "backend" / "schemas.py").read_text()
+
+    assert "async def handle_incident_message" in mc
+    assert "handle_incident_message" in (_ROOT / "sre_agent" / "war_room.py").read_text()
+
+    legacy = _DASH / "components" / "dashboard"
+    assert not (legacy / "IncidentChatPanel.tsx").exists()
+    assert not (legacy / "IncidentCommandCenter.tsx").exists()
+
+
 def test_the_console_can_reach_the_emergency_lock():
     """Both lock endpoints have a caller.
 

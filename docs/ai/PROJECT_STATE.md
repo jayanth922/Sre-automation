@@ -6,10 +6,9 @@ agent. Deterministic policy and durable state—not model prose—control writes
 approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-**Frontend operator experience — audited.** The backend milestone is verified.
-Every route decorator under `sre_agent/api/v1` was matched against every call
-site in `dashboard/`, both directions: 40 of 51 endpoints have a caller, the
-other 11 deliberate or redundant. A second pass found what endpoint coverage
+**Frontend operator experience — closed.** The backend milestone is verified.
+Route decorators under `sre_agent/api/v1` were matched against call sites in
+`dashboard/` both directions; a second pass found what endpoint coverage
 cannot — *which record* a page picks from an org-wide list.
 
 ## Current architecture and invariants
@@ -52,15 +51,18 @@ cannot — *which record* a page picks from an org-wide list.
   pages handling loading/error/empty, clean `next build`. Two honesty fixes:
   the Settings preflight graded the env `GITHUB_TOKEN`, not the cluster PAT;
   the cluster picker rendered a failed `GET /clusters` as "none".
-- Three cross-cluster render defects closed. Insights fell back to a sibling's
-  snapshot and never filtered its sweep feed. Incident toasts, on every cluster
-  page, showed siblings' alert names. And because `get_owned_incident` joins on
-  org rather than cluster, `/clusters/A/incidents/<B's>` rendered B's whole
-  investigation under A's breadcrumb — only the ticket call, the one route
-  carrying a cluster, failed. Tests pin all three, and the nine remaining
-  stream consumers are pinned as payload-free.
+- Three cross-cluster render defects closed: Insights fell back to a
+  sibling's snapshot, toasts showed siblings' alert names on every cluster
+  page, and because `get_owned_incident` joins on org rather than cluster,
+  `/clusters/A/incidents/<B's>` rendered B's investigation under A's
+  breadcrumb. Tests pin all three; the nine other stream consumers are pinned
+  as payload-free.
 - SLOs are deletable from the console: a two-step confirm naming what is
   destroyed, and the dashboard's first `api.delete`.
+- The dashboard chat surface is gone: `POST /incidents/{id}/message` and both
+  unimported components that called it. `handle_incident_message` survives for
+  Slack thread replies, which is why its five tests moved onto it rather than
+  out with the route.
 
 ## Relevant files
 - Evaluation: `benchmarks/{calibration_cases,statistical_smoke_dataset,
@@ -94,11 +96,12 @@ cannot — *which record* a page picks from an org-wide list.
   `git add -A`.
 
 ## Next bounded task
-A decision, not wiring: `POST /incidents/{id}/message` queues a full agent
-turn for any org member, and its only caller — `IncidentChatPanel` — is
-imported nowhere. That is the shape of the `/chat` route already removed.
-Remove both, or mount the panel. Cluster-level deletes stay API-only by
-choice.
+Frontend wiring is closed. Cluster-level deletes stay API-only by choice.
+
+Unfixed and reported, not in this change's scope: a bare @mention steer
+replies "I'll fold that into the live investigation" and nothing does —
+`handle_chat_message` returns a mode no transport acts on. Replies inside a
+tracked thread are unaffected.
 
 Then benchmarking, on the user's stage and budget. Keep campaigns paused until
 explicit budget authorization.

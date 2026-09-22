@@ -276,7 +276,6 @@ def _function_source(relative_path: str, function_name: str) -> str:
         ("sre_agent/api/v1/clusters.py", "get_cluster_audit_logs", "get_owned_cluster"),
         ("sre_agent/api/v1/mission_control.py", "get_incident_transcript", "get_owned_incident"),
         ("sre_agent/api/v1/mission_control.py", "get_incident_audit_logs", "get_owned_incident"),
-        ("sre_agent/api/v1/mission_control.py", "send_incident_message", "get_owned_incident"),
         ("sre_agent/api/v1/mission_control.py", "get_incident_status", "get_owned_incident"),
         ("sre_agent/api/v1/mission_control.py", "get_incident_agent_metrics", "get_owned_incident"),
         ("sre_agent/api/v1/mission_control.py", "approve_incident_action", "get_owned_incident"),

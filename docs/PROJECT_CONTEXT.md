@@ -367,16 +367,18 @@ Four-layer multi-agent incident-response system:
     on-call. 16 tests; **228 total**.
   - Roadmap: #1 stream ✓ #2 war room ✓ #3 monitor+on-call ✓ → #4 dashboard chat panel.
 
-- **2026-07-26 — Live-chat slice #4: dashboard chat panel (design COMPLETE).**
-  - `dashboard/components/dashboard/IncidentChatPanel.tsx`: mirrors the war-room
-    conversation via `useLiveStream` (WebSocket) and posts operator replies to
-    `/incidents/{id}/message` — same human-checkpoint queue as Slack. So Slack +
-    dashboard are two symmetric views of one conversation.
-  - esbuild-validated TSX. Mount: drop `<IncidentChatPanel incidentId={id} />`
-    into the incident workspace page (not auto-mounted to avoid a blind edit of
-    that large page; full `npm run build` verifies on Jayanth's machine).
-  - **Live-chat design DONE: #1 WS stream ✓ #2 Slack war room ✓ #3 monitor+on-call ✓
-    #4 dashboard chat ✓.** 228 Python tests; frontend esbuild-validated.
+- ~~**2026-07-26 — Live-chat slice #4: dashboard chat panel.**~~
+    **REVERSED 2026-09-22.** The panel was designed but never mounted, and
+    neither was `IncidentCommandCenter`, the other component that posted to
+    `/incidents/{id}/message`. An unmounted panel plus a live route meant a
+    120-second agent turn any org member could spend with a bare HTTP call and
+    no UI in front of it. Both components and the endpoint are deleted;
+    `handle_incident_message` stays for Slack.
+  - **Slack is the conversation surface, and the only one.** Symmetric
+    dashboard chat was the wrong goal: two writable surfaces for one
+    conversation is two audit paths.
+  - **Live-chat design: #1 WS stream ✓ #2 Slack war room ✓ #3 monitor+on-call ✓
+    #4 dashboard chat ✗ (removed by decision).** 228 Python tests; frontend esbuild-validated.
 
 - **2026-07-26 — Competitive-audit upgrades BUILT (all 5, guarded adapters):**
   APIs verified via web before coding (Langfuse v3, LiteLLM Router/ChatLiteLLM,
