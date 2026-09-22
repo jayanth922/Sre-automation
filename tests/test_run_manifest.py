@@ -86,6 +86,11 @@ def test_manifest_is_deterministic_tamper_evident_and_secret_free(tmp_path):
         first.data["provenance"]["prompts"]["files"]["agent_base_prompt"]["bytes"] == 11
     )
     assert first.data["tools"]["schemas"][0]["version"] == "metrics/v2"
+    assert first.data["runtime"]["investigation_limits"] == {
+        "specialist_model_turns": 6,
+        "specialist_timeout_seconds": 120,
+        "reinvestigation_rounds": 1,
+    }
     assert first.data["input"]["sanitized"]["labels"]["api_token"] == "[REDACTED]"
     assert first.data["input"]["sanitized"]["endpoint"] == "https://example.test/api"
     rendered = json.dumps(first.data)
@@ -110,6 +115,28 @@ def test_missing_required_provenance_marks_run_non_comparable(tmp_path, monkeypa
     assert built.comparable is False
     assert "missing provenance.code_sha" in built.non_comparable_reasons
     assert "missing tools.schemas" in built.non_comparable_reasons
+
+
+def test_investigation_limits_are_part_of_configuration_identity(tmp_path, monkeypatch):
+    kwargs = {
+        "execution_context": _context(),
+        "tools": [_Tool()],
+        "incident_id": uuid.UUID(int=3),
+        "job_id": uuid.UUID(int=4),
+        "input_payload": {"alert": "test"},
+        "root_trace_id": "trace-123",
+        "code_sha": "0123456789abcdef",
+        "prompts": _prompt_loader(tmp_path),
+        "created_at": datetime(2026, 8, 26, tzinfo=timezone.utc),
+    }
+    baseline = build_run_manifest(**kwargs)
+    monkeypatch.setenv("SPECIALIST_MAX_MODEL_TURNS", "7")
+    changed = build_run_manifest(**kwargs)
+
+    assert (
+        changed.data["runtime"]["investigation_limits"]["specialist_model_turns"] == 7
+    )
+    assert changed.sha256 != baseline.sha256
 
 
 def test_comparison_reports_exact_configuration_and_input_drift(tmp_path, monkeypatch):

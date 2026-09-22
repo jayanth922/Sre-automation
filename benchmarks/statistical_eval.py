@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -95,7 +96,17 @@ def configuration_fingerprint(manifest: dict[str, Any]) -> str:
         raise StatisticalEvalError(
             f"run manifest is missing configuration sections: {missing}"
         )
-    configuration = {section: manifest[section] for section in _CONFIG_SECTIONS}
+    configuration = {
+        section: copy.deepcopy(manifest[section]) for section in _CONFIG_SECTIONS
+    }
+    tools = configuration.get("tools")
+    if isinstance(tools, dict):
+        io_reference = tools.get("io_reference")
+        if isinstance(io_reference, dict):
+            # The capture policy is configuration, but the trace URI is a
+            # per-run evidence locator. Including it makes a fingerprint
+            # impossible to declare before the paid run starts.
+            io_reference.pop("uri", None)
     encoded = json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 

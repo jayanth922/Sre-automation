@@ -699,11 +699,11 @@ the last is a gap:
   because "a durable job is created by the alert pipeline, and hand-starting
   one from the console would produce an investigation with no incident behind
   it". `POST /clusters/{id}/trigger` (incidents) is the same argument and is
-  *not* pinned by a test. `POST /chat` is task #7's own parenthesis —
-  "Slack-adjacent, **no chat**" — but the router is still mounted
-  (`agent_runtime.py:342-343`) and any signed-in org member can spend a
-  120-second agent invocation on it. Decide whether that stays mounted; it is
-  a surface question, not a wiring one.
+  *not* pinned by a test. ~~`POST /chat` contradicted task #7's own
+  "Slack-adjacent, **no chat**" constraint while letting any signed-in org
+  member spend a 120-second agent invocation.~~ **CLOSED 2026-09-21:** the
+  unused route and module are removed; Slack incident threads remain the
+  conversation surface.
 - **Redundant — the data already arrives another way (2).**
   `GET /clusters/{id}/health` returns `heartbeat_payload(...)` built from
   `status`, `last_heartbeat`, `heartbeat_source` and `heartbeat_reason`, and

@@ -29,6 +29,14 @@ _SETTINGS_PAGE = (
 )
 
 
+def test_general_chat_is_not_an_unbounded_execution_surface():
+    """Slack incident threads are the only user-facing conversation surface."""
+    runtime = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+
+    assert "chat_router" not in runtime
+    assert not (_ROOT / "sre_agent" / "api" / "v1" / "chat.py").exists()
+
+
 def test_the_console_can_reach_the_emergency_lock():
     """Both lock endpoints have a caller.
 

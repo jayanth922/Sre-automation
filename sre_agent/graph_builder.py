@@ -1452,10 +1452,9 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         # Determine the next step through a fixed allowlist and bounded counter.
         # A model can recommend evidence sources; it cannot choose arbitrary
         # graph nodes or executable callables.
-        try:
-            max_depth = int(os.getenv("MAX_INVESTIGATION_DEPTH", "3"))
-        except (TypeError, ValueError):
-            max_depth = 3
+        from .investigation_limits import investigation_limits
+
+        max_depth = investigation_limits().reinvestigation_rounds
         current_investigation_count = int(
             state.get("investigation_count", 0) or 0
         )

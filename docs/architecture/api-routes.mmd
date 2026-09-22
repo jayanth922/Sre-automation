@@ -8,7 +8,6 @@ graph TB
         ALERT["alerts.py<br/>POST /alerts/webhook"]
         MC["mission_control.py<br/>GET /incidents/{id}/transcript<br/>GET /incidents/{id}/logs<br/>POST /incidents/{id}/message<br/>GET /incidents/{id}/status<br/>POST /incidents/{id}/approve"]
         ANALYTICS["analytics.py<br/>Cluster trend and analytics endpoints"]
-        CHAT["chat.py<br/>General assistant chat endpoints"]
         RECO["recommendations.py<br/>Recommendation endpoints"]
     end
 
@@ -32,7 +31,6 @@ graph TB
     ALERT --> AD
     MC --> AD
     ANALYTICS --> AD
-    CHAT --> AD
     RECO --> AD
 
     CL --> OM
@@ -41,7 +39,6 @@ graph TB
     SLO --> HM
     MC --> HM
     ANALYTICS --> HM
-    CHAT --> IM
     RECO --> HM
 
     Dashboard --> CL
@@ -52,7 +49,6 @@ graph TB
     Dashboard --> ALERT
     Dashboard --> MC
     Dashboard --> ANALYTICS
-    Dashboard --> CHAT
     Dashboard --> RECO
 
     style Routes fill:#f3e5f5

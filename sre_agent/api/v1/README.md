@@ -9,7 +9,6 @@ This folder contains the concrete HTTP routes for the current SaaS contract. If 
 - [alerts.py](alerts.py) receives alert-webhook traffic.
 - [analytics.py](analytics.py) handles incident trends, severity distribution, and MTTR reporting.
 - [auth_deps.py](auth_deps.py) provides current-user and organization dependencies used by the other routes.
-- [chat.py](chat.py) handles general-purpose chat endpoints without a specific incident context.
 - [clusters.py](clusters.py) handles cluster list/detail operations and cluster-scoped data.
 - [incidents.py](incidents.py) handles incident lifecycle, transcripts, messages, logs, and status views.
 - [jobs.py](jobs.py) handles queued work sent to the agent or edge.

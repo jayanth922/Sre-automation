@@ -42,7 +42,6 @@ from sre_agent.runbook_brief import (
     summarize_search_results,
 )
 
-
 # --- fixtures -----------------------------------------------------------------
 
 
@@ -340,6 +339,34 @@ async def test_context_builder_fetches_the_body_not_just_the_search_hit():
 
 
 @pytest.mark.asyncio
+async def test_context_builder_unwraps_langchain_mcp_text_blocks():
+    """The live adapter returns a list of text blocks, not bare JSON text."""
+    search_payload = json.dumps(
+        {"count": 1, "results": [_hit()]}, separators=(",", ":")
+    )
+    content_payload = json.dumps(
+        {**_hit(), "content": PROCEDURE}, separators=(",", ":")
+    )
+    search = FakeTool(
+        "search_runbooks",
+        lambda args: [{"type": "text", "text": search_payload}],
+    )
+    content_tool = FakeTool(
+        "get_runbook_content",
+        lambda args: [{"type": "text", "text": content_payload}],
+    )
+
+    brief = await cb.ContextBuilder([search, content_tool]).build_runbook_context(
+        alert_name="HighCheckoutLatency",
+        severity="warning",
+        service="checkout-service",
+    )
+
+    assert "RUNBOOK: Checkout p99 latency" in brief
+    assert "kubectl scale deployment/checkout-service --replicas=6" in brief
+
+
+@pytest.mark.asyncio
 async def test_the_runbook_lands_in_the_alert_annotations():
     search = _search_tool([_hit()])
     content = _content_tool()
@@ -428,6 +455,22 @@ def test_the_specialist_brief_leads_with_the_runbook():
     assert "kubectl scale deployment/checkout-service" in brief
     assert brief.index("Authoritative runbook") < brief.index("Alert payload evidence")
     assert "0. Start from the runbook" in brief
+
+
+def test_runtime_namespace_scope_reaches_the_initial_specialist_brief():
+    brief = build_specialist_task_brief(
+        specialist_role="Kubernetes Infrastructure Agent",
+        objective="Investigate InventorySlowQueries",
+        alert_context={
+            "alert_name": "InventorySlowQueries",
+            "labels": {"service": "inventory-service"},
+            "annotations": {},
+        },
+        namespace_scope="meridian",
+    )
+
+    assert "SCOPE: Investigate only Kubernetes namespace 'meridian'" in brief
+    assert "runtime-enforced namespace scope: meridian" in brief
 
 
 def test_the_runbook_is_picked_up_from_the_annotation_when_not_passed():

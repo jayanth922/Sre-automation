@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import models
 from sre_agent.ablation import current_ablation
 from sre_agent.constants import SREConstants
+from sre_agent.investigation_limits import investigation_limits
 from sre_agent.litellm_backend import litellm_enabled, tier_litellm_model
 from sre_agent.model_router import TaskType, select_model
 from sre_agent.prompt_loader import PromptLoader, prompt_loader
@@ -321,6 +322,7 @@ def build_run_manifest(
             # var. Recording os.getenv(..., "false") here stamped every
             # manifest with "false" for a phase that always ran.
             "act_phase_enabled": "true",
+            "investigation_limits": investigation_limits().manifest_entry(),
             # `runtime` is fingerprinted, so recording the arm here is what
             # makes two ablation arms structurally incomparable: the paired
             # evaluator refuses matching fingerprints, and no operator has to

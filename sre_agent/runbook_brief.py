@@ -157,8 +157,38 @@ def _coerce_json(raw: Any) -> Any:
     """Decode an MCP tool result that may arrive as text, bytes, or objects."""
     if raw is None:
         return None
+    # LangChain's MCP adapter returns content blocks, not the JSON text
+    # directly: [{"type": "text", "text": "{...}"}]. Treating that list as
+    # the runbook hits themselves produces one fake, untitled hit whose body
+    # can never be fetched. Unwrap the transport envelope before interpreting
+    # the application payload.
+    if isinstance(raw, list) and raw and all(
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and isinstance(item.get("text"), str)
+        for item in raw
+    ):
+        decoded = [_coerce_json(item["text"]) for item in raw]
+        usable = [item for item in decoded if item is not None]
+        if len(usable) == 1:
+            return usable[0]
+        if usable and all(isinstance(item, list) for item in usable):
+            return [entry for item in usable for entry in item]
+        return usable or None
+    if isinstance(raw, dict) and raw.get("type") == "text" and isinstance(
+        raw.get("text"), str
+    ):
+        return _coerce_json(raw["text"])
     if isinstance(raw, (dict, list)):
         return raw
+    content = getattr(raw, "content", None)
+    if content is not None and content is not raw:
+        decoded = _coerce_json(content)
+        if decoded is not None:
+            return decoded
+    text_value = getattr(raw, "text", None)
+    if isinstance(text_value, str):
+        return _coerce_json(text_value)
     if isinstance(raw, bytes):
         try:
             raw = raw.decode("utf-8", errors="replace")
@@ -289,13 +319,13 @@ def split_sections(content: str) -> List[Tuple[str, str]]:
     for line in lines:
         match = _HEADING_RE.match(line.strip())
         if match:
-            if current_heading or any(l.strip() for l in current_body):
+            if current_heading or any(line.strip() for line in current_body):
                 sections.append((current_heading, current_body))
             current_heading = match.group(2).strip()
             current_body = []
         else:
             current_body.append(line)
-    if current_heading or any(l.strip() for l in current_body):
+    if current_heading or any(line.strip() for line in current_body):
         sections.append((current_heading, current_body))
     return [(heading, "\n".join(body).strip()) for heading, body in sections]
 

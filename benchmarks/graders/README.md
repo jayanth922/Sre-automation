@@ -11,6 +11,28 @@ judge agreement or semantic-grade accuracy. Future labels must use opaque case
 IDs, the same two independent labelers for every case, and adjudication for
 disagreement before any model judge can become release-authoritative.
 
+Build the blinded review set from raw grader evidence without exposing scenario
+IDs or ground truth to either labeler:
+
+```bash
+umask 077
+openssl rand 32 > reports/calibration-blind.key
+uv run python -m benchmarks.calibration_cases reports/sre-bench-grades.jsonl \
+  --blind-key-file reports/calibration-blind.key \
+  --review-output reports/calibration-review.jsonl \
+  --private-mapping-output reports/calibration-private-map.jsonl \
+  --manifest-output reports/calibration-manifest.json \
+  --limit 20
+```
+
+The HMAC key makes selection reproducible without putting scenario identity in
+the review artifact. The private map and key stay with the evaluation owner;
+labelers receive only `calibration-review.jsonl`. The script rejects duplicate
+outputs, digest mismatches, missing structured evaluations, and records pinned
+to another rubric version or digest. Source-output hashes remain only in the
+private map, so a labeler cannot join an opaque case back to the raw corpus. It
+never calls a model or Langfuse, so creating the review set has no API cost.
+
 When labels exist, measure and gate agreement with:
 
 ```bash

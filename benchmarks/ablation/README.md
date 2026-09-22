@@ -154,6 +154,30 @@ exists to provide, while every trial would still be stamped with the full
 split's `dataset_sha256`. An unrecognised name is an error rather than a
 fallback to the full split.
 
+To prove statistical-row persistence with exactly one paid incident, create a
+separate one-scenario dataset instead of weakening that guard:
+
+```bash
+uv run python benchmarks/statistical_smoke_dataset.py \
+  --source-version v2 --split dev --scenario <name> \
+  --output-root reports/smoke-datasets \
+  --output-version smoke-<date>
+
+BENCH_DATASET_ROOT=reports/smoke-datasets \
+BENCH_DATASET_VERSION=smoke-<date> \
+BENCH_DATASET_SPLIT=dev \
+BENCH_RUNS_PER_SCENARIO=1 \
+BENCH_EXPERIMENT_ID=statistical-smoke-<date> \
+BENCH_CANDIDATE_ID=full \
+BENCH_CONFIG_FINGERPRINT=<manifest-sha256> \
+BENCH_PAIR_SEED=statistical-smoke-<date> \
+  uv run python benchmarks/sre_bench.py
+```
+
+The derived split has its own digest, contains exactly one scenario, refuses
+holdout input and records its parent digest in `smoke-provenance.json`. It is a
+harness smoke, not a full-split quality measurement or an ablation result.
+
 ### Capturing each arm's manifest
 
 `BENCH_CONFIG_FINGERPRINT` is operator-declared: `sre_bench.py` writes whatever
@@ -173,6 +197,8 @@ The endpoint's row wrapper is fine as-is; the harness unwraps `manifest`. The
 arm in force is recorded in the manifest's `runtime` section, which is one of
 the four sections the A01 configuration fingerprint hashes — so the arm is
 *part of* the fingerprint, and a manifest cannot claim an arm it did not run.
+The per-run `tools.io_reference.uri` is normalized out because it embeds the
+new root trace ID; its capture policy and all tool schemas remain fingerprinted.
 
 ## Comparing
 

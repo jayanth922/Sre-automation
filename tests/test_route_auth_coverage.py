@@ -39,7 +39,6 @@ _API_V1 = _ROOT / "sre_agent" / "api" / "v1"
 # Every router mounted under /api/v1 that serves logged-in dashboard/API users.
 USER_AUTH_ROUTERS = [
     "analytics.py",
-    "chat.py",
     "clusters.py",
     "incidents.py",
     "jobs.py",

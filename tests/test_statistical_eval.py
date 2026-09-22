@@ -109,7 +109,13 @@ def test_configuration_fingerprint_excludes_trial_input_and_trace():
     manifest = {
         "provenance": {"code_sha": "abc"},
         "models": {"routes": ["model-a"]},
-        "tools": {"schemas": ["tool-a"]},
+        "tools": {
+            "schemas": ["tool-a"],
+            "io_reference": {
+                "capture": "metadata-only",
+                "uri": "trace://trace-a/tool-io",
+            },
+        },
         "runtime": {"policy": "prod"},
         "input": {"sha256": "first"},
         "trace": {"root_trace_id": "trace-a"},
@@ -118,11 +124,47 @@ def test_configuration_fingerprint_excludes_trial_input_and_trace():
         **manifest,
         "input": {"sha256": "second"},
         "trace": {"root_trace_id": "trace-b"},
+        "tools": {
+            **manifest["tools"],
+            "io_reference": {
+                **manifest["tools"]["io_reference"],
+                "uri": "trace://trace-b/tool-io",
+            },
+        },
     }
 
     assert evaluation.configuration_fingerprint(
         manifest
     ) == evaluation.configuration_fingerprint(changed_trial)
+
+
+def test_configuration_fingerprint_retains_tool_capture_policy():
+    manifest = {
+        "provenance": {"code_sha": "abc"},
+        "models": {"routes": ["model-a"]},
+        "tools": {
+            "schemas": ["tool-a"],
+            "io_reference": {
+                "capture": "metadata-only",
+                "uri": "trace://trace-a/tool-io",
+            },
+        },
+        "runtime": {"policy": "prod"},
+    }
+    changed_policy = {
+        **manifest,
+        "tools": {
+            **manifest["tools"],
+            "io_reference": {
+                **manifest["tools"]["io_reference"],
+                "capture": "full",
+            },
+        },
+    }
+
+    assert evaluation.configuration_fingerprint(
+        manifest
+    ) != evaluation.configuration_fingerprint(changed_policy)
 
 
 def test_trial_v3_pins_diagnosis_and_trace_evidence():

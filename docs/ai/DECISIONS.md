@@ -1618,3 +1618,35 @@ two audit paths, two idempotency stories and a race at the gate, in exchange
 for convenience on a flow whose whole point is that a human is deliberately in
 it. The cheap half of the value — seeing what is waiting, and on what — is
 already delivered read-only.
+
+## Bound model turns structurally; do not pretend delayed cost is a hard gate
+
+**Decision.** Each specialist may make six model turns by default and gets a
+LangGraph recursion backstop derived from the same setting. The reflector may
+request one reinvestigation round by default, reduced from three. When the last
+allowed specialist turn requests another tool round, the stream is closed
+before that tool or the following model call, the partial evidence is retained,
+the exhausted limit is recorded, and cosmetic finding narration is skipped.
+All three limits are clamped, configurable, and fingerprinted in the immutable
+run manifest. The unused general `/api/v1/chat` route is removed; Slack incident
+threads remain the sole user-facing conversation surface.
+
+**Reason.** The 2026-09-21 smoke spent 85 of 97 model calls in specialists and
+ran for 25.7 minutes despite scoped queries. The runaway dimension was repeated
+ReAct and reflector cycles, not unbounded search parameters. A USD limit cannot
+be a hard pre-call boundary because provider cost and token usage arrive only
+after the call; throwing at that point can also turn finalization into a durable
+job retry and spend more. Turns and graph rounds are knowable before spending.
+
+**Consequences.** Defaults cap the initial four-specialist pass plus one full
+four-specialist recheck at 48 specialist model calls, before fixed orchestration
+and synthesis calls. A final answer on the sixth turn is accepted; only a sixth
+turn that asks for more tools is stopped. `specialist_turn_budgets` makes limit
+engagement visible in state, timeline evidence and traces. Raising a limit
+changes the configuration fingerprint, so results across different limits are
+not silently compared.
+
+**Rejected alternative.** Wiring `RequestContext.remaining_budget` as a hard
+dollar gate. It can be useful later for model-tier downgrade, but it cannot stop
+the call that crosses the threshold, incomplete provider usage makes it
+unavailable, and a raised exception near finalization risks a paid retry.

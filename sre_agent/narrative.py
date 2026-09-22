@@ -213,6 +213,7 @@ def build_specialist_task_brief(
     auto_approve: bool = False,
     runbook_brief: Optional[str] = None,
     prior_findings: Optional[Dict[str, Any]] = None,
+    namespace_scope: Optional[str] = None,
 ) -> str:
     """Build a rich task brief that the specialist LLM receives as its user prompt.
 
@@ -253,12 +254,21 @@ def build_specialist_task_brief(
     runbook_text = (runbook_brief or "").strip() or _safe_text(
         annotations.get("runbook_context")
     ).strip()
+    enforced_namespace = _safe_text(namespace_scope).strip()
 
     lines: List[str] = []
     lines.append(f"You are the {specialist_role}.")
     lines.append("")
     lines.append(f"Objective: {objective}")
     lines.append("")
+    if enforced_namespace:
+        lines.append(
+            f"SCOPE: Investigate only Kubernetes namespace "
+            f"'{enforced_namespace}' and scope every supported query to it. "
+            "This scope comes from the tenant-bound runtime, even when the "
+            "alert payload omits a namespace label."
+        )
+        lines.append("")
 
     # Before the alert payload, not after: this is the procedure, and a brief
     # that opens with raw labels invites open-ended discovery before the agent
@@ -302,6 +312,10 @@ def build_specialist_task_brief(
         payload_lines.append(f"- other labels: {', '.join(other_labels[:8])}")
     if starts_at:
         payload_lines.append(f"- alert started at: {starts_at}")
+    if enforced_namespace:
+        payload_lines.append(
+            f"- runtime-enforced namespace scope: {enforced_namespace}"
+        )
     lines.append(wrap_untrusted("alert_payload", "\n".join(payload_lines)))
 
     lines.append("")

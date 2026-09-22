@@ -5,9 +5,11 @@ own Kubernetes cluster**. It watches your services, opens incidents from real
 telemetry, and runs a multi-agent investigation — Observe → Orient → Decide →
 Act — that correlates metrics, logs, Kubernetes state, code changes, and
 runbooks into a root-cause hypothesis, then proposes severity-gated remediation
-with a human in the loop. It is not a SaaS: the platform, the datastores, the
-agent runtime, and the tool servers all deploy together into one namespace, and
-no telemetry leaves the client's infrastructure.
+with a human in the loop. It is not a SaaS: the platform, datastores, agent
+runtime, and tool servers deploy together into one namespace. Operational
+telemetry remains in that environment; prompts and trace data leave it only
+when the operator explicitly configures an external LLM provider or Langfuse
+Cloud.
 
 Design principle throughout: **orchestrate, don't override.** Clients bring their
 own LLM, their own MCP tool servers, their own runbooks (Notion), and
@@ -33,7 +35,8 @@ their own metric conventions — Sentinel adapts to them.
 
 ## Architecture
 
-One namespace, in-cluster service DNS, no external networking required:
+One namespace with in-cluster service DNS; only explicitly configured provider
+and integration endpoints require external networking:
 
 - **API / agent runtime** — FastAPI + LangGraph; the control plane and the AI brain.
 - **Web console** — Next.js; live incident timeline, service health, SLOs,
@@ -69,6 +72,13 @@ are implemented and tested, but no production call site supplies the
 that the tiering saves money: that would take a per-task cost/quality frontier
 and a router-vs-fixed-model experiment, and Sentinel runs neither. The claim
 is therefore not made anywhere — see `docs/ai/DECISIONS.md`.
+
+The expensive agent loop is bounded independently of that unproven router
+policy: every specialist has a pre-call model-turn ceiling and framework
+recursion backstop, and the reflector gets one focused reinvestigation round by
+default. Reaching a specialist ceiling preserves the evidence already gathered,
+records the exhausted limit, skips cosmetic narration, and proceeds to
+synthesis instead of buying another open-ended tool round.
 
 ## Observability, security, production engineering
 
@@ -112,6 +122,10 @@ is therefore not made anywhere — see `docs/ai/DECISIONS.md`.
   comparison, zero-tolerance adversarial suite, full trace accounting) keyed
   to the exact source digest of what changed; a change without matching
   evidence fails closed instead of shipping unverified.
+
+Measured runs, costs, negative results, and evidence limitations are published
+in [`docs/ai/AI_RESULTS.md`](docs/ai/AI_RESULTS.md). A harness smoke is reported
+there as a harness smoke, not promoted into a model-quality claim.
 
 ## Quickstart — try it locally
 

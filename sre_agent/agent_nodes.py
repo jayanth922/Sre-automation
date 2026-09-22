@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,9 +13,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
 
-from .agent_state import AgentState
 from .act_phase import measured_evidence_for_trace
-from .audit_context import set_audit_context, clear_audit_context
+from .agent_state import AgentState
+from .audit_context import clear_audit_context, set_audit_context
 from .constants import AgentMetadata
 from .context_compaction import (
     capture_fit_reports,
@@ -28,7 +29,7 @@ from .incident_timeline import (
     internal_agent_name,
     visible_specialist_role,
 )
-from .llm_utils import create_llm_with_error_handling
+from .investigation_limits import investigation_limits
 from .narrative import (
     SPECIALIST_LABELS,
     build_specialist_task_brief,
@@ -128,6 +129,28 @@ def specialist_trace_metadata(agent_type: str) -> Dict[str, str]:
     return {
         _SPECIALIST_ROLE_METADATA_KEY: internal_agent_name(agent_type),
     }
+
+
+@dataclass
+class SpecialistTurnBudget:
+    """Count model turns and stop before a requested next tool round."""
+
+    limit: int
+    turns: int = 0
+    exhausted: bool = False
+
+    def observe(self, agent_step: Any) -> bool:
+        self.turns += 1
+        messages = (
+            agent_step.get("messages", [])
+            if isinstance(agent_step, dict)
+            else []
+        )
+        requests_another_round = any(
+            bool(getattr(message, "tool_calls", None)) for message in messages
+        )
+        self.exhausted = self.turns >= self.limit and requests_another_round
+        return self.exhausted
 
 
 @lru_cache(maxsize=1)
@@ -379,6 +402,9 @@ class BaseAgentNode:
                 alert_context=state.get("alert_context"),
                 auto_approve=bool(state.get("auto_approve_plan", False)),
                 prior_findings=prior_findings,
+                namespace_scope=(state.get("metadata") or {}).get(
+                    "cluster_namespace"
+                ),
             )
 
             # We'll collect all messages and the final response
@@ -408,18 +434,18 @@ class BaseAgentNode:
             # Set Audit Context
             incident_id = None
             if state.get("alert_context"):
-                # alert_context is a Pydantic model, or dict? 
+                # alert_context is a Pydantic model, or dict?
                 # Check type or try access
                 ac = state.get("alert_context")
                 if hasattr(ac, "incident_id"):
                      incident_id = str(ac.incident_id) if ac.incident_id else None
-                # If incident_id not directly on alert_context, maybe we need to pass it in state separately 
+                # If incident_id not directly on alert_context, maybe we need to pass it in state separately
                 # or derive it. For now, we'll try to use what we have.
-            
+
             # Also try to get from metadata if set by higher level
             if not incident_id:
                 incident_id = state.get("metadata", {}).get("incident_id")
-            
+
             set_audit_context(
                 incident_id=incident_id,
                 agent_name=self.name,
@@ -427,9 +453,10 @@ class BaseAgentNode:
             )
 
             fit_reports = []
+            limits = investigation_limits()
+            turn_budget = SpecialistTurnBudget(limits.specialist_model_turns)
             try:
-                # Add timeout to prevent infinite hanging (120 seconds)
-                timeout_seconds = 120
+                timeout_seconds = limits.specialist_timeout_seconds
 
                 async def execute_agent():
                     nonlocal agent_response  # Fix scope issue - allow access to outer variable
@@ -441,10 +468,17 @@ class BaseAgentNode:
                     logger.info(
                         f"{self.name} - Executing agent with {isolated_messages}"
                     )
-                    async for chunk in self.agent.astream(
+                    agent_stream = self.agent.astream(
                         {"messages": isolated_messages},
-                        config={"metadata": specialist_trace_metadata(self.agent_type)},
-                    ):
+                        config={
+                            "metadata": specialist_trace_metadata(self.agent_type),
+                            # A tool round consumes an agent step and a tools
+                            # step. The explicit counter below is the graceful
+                            # boundary; this is the framework backstop.
+                            "recursion_limit": limits.specialist_model_turns * 2 + 2,
+                        },
+                    )
+                    async for chunk in agent_stream:
                         chunk_count += 1
                         logger.info(
                             f"{self.name} - Processing chunk #{chunk_count}: {list(chunk.keys())}"
@@ -464,24 +498,24 @@ class BaseAgentNode:
                                             tool_name = tc.get("name", "unknown")
                                             tool_args = tc.get("args", {})
                                             tool_id = tc.get("id", "unknown")
-                                            
+
                                             # Intercept actual agent reasoning/tool usage for the transcript
                                             traces = state.get("thought_traces", {})
                                             if agent_key not in traces:
                                                 traces[agent_key] = []
-                                            
+
                                             reasoning = ""
                                             if hasattr(msg, "content") and isinstance(msg.content, str) and msg.content.strip():
                                                 reasoning = msg.content.strip() + "\n"
-                                                
+
                                             actual_thought = f"{reasoning} *(Action: Invoking `{tool_name}` to gather context)*"
-                                            
+
                                             # Avoid duplicate reasoning lines on multi-tool outputs
                                             if actual_thought not in traces[agent_key]:
                                                 traces[agent_key].append(actual_thought)
-                                            
+
                                             state["thought_traces"] = traces
-                                            
+
                                             logger.info(
                                                 f"{self.name} - Tool call: {tool_name} (id: {tool_id})"
                                             )
@@ -513,6 +547,31 @@ class BaseAgentNode:
                                             logger.info(
                                                 f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
                                             )
+
+                            if turn_budget.observe(agent_step):
+                                budget_note = (
+                                    "Investigation turn limit reached after "
+                                    f"{turn_budget.turns} model calls; the requested "
+                                    "next tool round was not executed. Continue from "
+                                    "the evidence already collected."
+                                )
+                                agent_response = (
+                                    f"{agent_response}\n\n{budget_note}"
+                                    if agent_response
+                                    else budget_note
+                                )
+                                logger.warning("%s - %s", self.name, budget_note)
+                                close_stream = getattr(agent_stream, "aclose", None)
+                                if close_stream is not None:
+                                    try:
+                                        await close_stream()
+                                    except Exception as close_error:
+                                        logger.debug(
+                                            "%s - bounded stream close returned %s",
+                                            self.name,
+                                            type(close_error).__name__,
+                                        )
+                                break
 
                         elif "tools" in chunk:
                             tools_step = chunk["tools"]
@@ -606,6 +665,15 @@ class BaseAgentNode:
                 summarize_fit_reports(fit_reports),
             )
             artifact_metadata["context_fitting"] = context_fitting
+            specialist_budgets = dict(
+                artifact_metadata.get("specialist_turn_budgets", {}) or {}
+            )
+            specialist_budgets[agent_key] = {
+                "turns": turn_budget.turns,
+                "limit": turn_budget.limit,
+                "exhausted": turn_budget.exhausted,
+            }
+            artifact_metadata["specialist_turn_budgets"] = specialist_budgets
             state_agent_response = (
                 _bounded_agent_result(agent_response)
                 if artifact_reference is not None
@@ -620,18 +688,19 @@ class BaseAgentNode:
                 # output, etc.) is preserved in the structured payload, but the
                 # visible chat content reads like a teammate's Slack post.
                 narrative_text = ""
-                try:
-                    narrative_text = await narrate_specialist_finding(
-                        self.llm,
-                        agent_name=specialist_agent_name,
-                        objective=state.get("current_query", "") or self.name,
-                        alert_context=state.get("alert_context"),
-                        raw_response=agent_response,
-                    )
-                except Exception as narration_error:
-                    logger.warning(
-                        f"{self.name} - finding narration failed, falling back: {narration_error}"
-                    )
+                if not turn_budget.exhausted:
+                    try:
+                        narrative_text = await narrate_specialist_finding(
+                            self.llm,
+                            agent_name=specialist_agent_name,
+                            objective=state.get("current_query", "") or self.name,
+                            alert_context=state.get("alert_context"),
+                            raw_response=agent_response,
+                        )
+                    except Exception as narration_error:
+                        logger.warning(
+                            f"{self.name} - finding narration failed, falling back: {narration_error}"
+                        )
 
                 finding_content, finding_payload = build_specialist_finding_content(
                     specialist_agent_name,
@@ -645,6 +714,11 @@ class BaseAgentNode:
                 # load_incident_chat_context) can still tell real tool
                 # failures apart from the investigated service's own errors.
                 finding_payload["tool_failures"] = tool_failures
+                finding_payload["specialist_turn_budget"] = {
+                    "turns": turn_budget.turns,
+                    "limit": turn_budget.limit,
+                    "exhausted": turn_budget.exhausted,
+                }
                 if artifact_reference is not None:
                     finding_payload["evidence_artifact_ref"] = artifact_reference
 

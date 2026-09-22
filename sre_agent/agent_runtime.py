@@ -338,10 +338,6 @@ app.include_router(runbooks_router.router, prefix="/api/v1")
 from sre_agent.api.v1 import tickets as jira_tickets_router
 app.include_router(jira_tickets_router.router, prefix="/api/v1")
 
-# General Chat Router
-from sre_agent.api.v1 import chat as chat_router
-app.include_router(chat_router.router, prefix="/api/v1")
-
 # Recommendations Router
 from sre_agent.api.v1 import recommendations as recommendations_router
 app.include_router(recommendations_router.router, prefix="/api/v1")

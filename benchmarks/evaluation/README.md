@@ -9,7 +9,9 @@ artifact paths.
 Use the same experiment and pair seed for both candidates. The configuration
 fingerprint must be the canonical SHA-256 of A01's `provenance`, `models`,
 `tools`, and `runtime` sections; `configuration_fingerprint()` deliberately
-excludes per-trial input and trace fields:
+excludes per-trial input and trace fields. It also excludes
+`tools.io_reference.uri`, because that URI embeds the root trace ID allocated
+after a run starts; the adjacent capture policy remains fingerprinted:
 
 ```bash
 # Baseline run
