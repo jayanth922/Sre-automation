@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -42,6 +43,17 @@ logger = logging.getLogger(__name__)
 
 _SPECIALIST_ROLE_METADATA_KEY = "sentinel.specialist_role"
 
+# Seconds of the specialist wall-clock budget reserved so the last turn can
+# finish. Measured p90 specialist model-call latency on the graded
+# inventory_slow_queries run was 26.1s (p95 42.3s, max 68.6s), so a turn
+# started with less than this left is likely to be killed mid-flight: paid
+# for, and discarded.
+_TURN_HEADROOM_SECONDS = 30
+# How much of each already-collected tool result survives into the digest a
+# cut-short lane reports.
+_PARTIAL_EVIDENCE_TOOL_CHARS = 600
+_PARTIAL_EVIDENCE_MAX_TOOLS = 12
+
 
 def _bounded_agent_result(response: str, max_chars: Optional[int] = None) -> str:
     """Keep active reasoning context bounded; the artifact remains lossless."""
@@ -59,6 +71,66 @@ def _bounded_agent_result(response: str, max_chars: Optional[int] = None) -> str
     head = available // 2
     tail = available - head
     return text[:head] + marker + text[-tail:]
+
+
+def _turn_headroom_seconds(timeout_seconds: int) -> int:
+    """Seconds of the lane budget reserved so the last started turn finishes.
+
+    A short configured budget still spends two thirds of itself on turns;
+    reserving a flat 30s out of the 15s minimum would stop the lane before
+    its first tool round.
+    """
+    return min(_TURN_HEADROOM_SECONDS, max(int(timeout_seconds), 0) // 3)
+
+
+def _cut_short_reason(
+    turn_budget: "SpecialistTurnBudget",
+    *,
+    budget_hit: bool,
+    now: float,
+    soft_deadline: float,
+) -> str:
+    """Which boundary, if any, should stop this lane before the next round.
+
+    Both boundaries only bite when the model has actually asked for another
+    tool round: a lane that is about to write its report is never cut off.
+    """
+    if budget_hit:
+        return "turn_limit"
+    if turn_budget.requested_another_round and now >= soft_deadline:
+        return "soft_deadline"
+    return ""
+
+
+def _partial_evidence_digest(messages: List[Any]) -> str:
+    """Report what a cut-short lane actually collected.
+
+    The tool results already on the wire were paid for and are as valid as
+    any others. Replacing them with a bare "timed out" string is what made
+    the graded inventory_slow_queries trial tell the supervisor it had no
+    application logs -- after Loki had answered four times, in about 0.1s
+    each. The deadline is a budget boundary, not a tool failure, and the
+    brief should say so.
+    """
+    entries: List[str] = []
+    for msg in messages:
+        if not hasattr(msg, "tool_call_id"):
+            continue
+        name = getattr(msg, "name", None) or "unknown_tool"
+        marker = " (tool failed)" if getattr(msg, "status", "success") == "error" else ""
+        body = str(getattr(msg, "content", "") or "").strip()
+        if len(body) > _PARTIAL_EVIDENCE_TOOL_CHARS:
+            body = body[:_PARTIAL_EVIDENCE_TOOL_CHARS] + " …[truncated]"
+        entries.append(f"- `{name}`{marker}: {body or '(empty result)'}")
+    if not entries:
+        return ""
+    total = len(entries)
+    dropped = max(total - _PARTIAL_EVIDENCE_MAX_TOOLS, 0)
+    if dropped:
+        entries = entries[-_PARTIAL_EVIDENCE_MAX_TOOLS:]
+    header = f"Evidence collected before this lane was cut short ({total} tool results"
+    header += f", {dropped} older ones omitted here):" if dropped else "):"
+    return header + "\n" + "\n".join(entries)
 
 
 async def _artifact_backed_trace_metadata(
@@ -138,6 +210,7 @@ class SpecialistTurnBudget:
     limit: int
     turns: int = 0
     exhausted: bool = False
+    requested_another_round: bool = False
 
     def observe(self, agent_step: Any) -> bool:
         self.turns += 1
@@ -146,10 +219,15 @@ class SpecialistTurnBudget:
             if isinstance(agent_step, dict)
             else []
         )
-        requests_another_round = any(
+        # Recorded, not just tested: the wall-clock deadline needs to know
+        # whether the model is asking for another tool round before deciding
+        # there is no time left to grant one.
+        self.requested_another_round = any(
             bool(getattr(message, "tool_calls", None)) for message in messages
         )
-        self.exhausted = self.turns >= self.limit and requests_another_round
+        self.exhausted = (
+            self.turns >= self.limit and self.requested_another_round
+        )
         return self.exhausted
 
 
@@ -164,6 +242,14 @@ def _load_agent_config() -> Dict[str, Any]:
 def _create_llm(provider: str = "anthropic", router_enabled: Optional[bool] = None, **kwargs):
     """Create a specialist LLM, routed to the balanced tier by the model router."""
     from .model_router import TaskType, route_llm
+
+    # Bound the output length of a specialist turn. Without this the live
+    # LiteLLM transport applies no ceiling at all (see model_router), and a
+    # single turn can spend a third of the lane's wall-clock budget writing
+    # prose no downstream consumer reads.
+    kwargs.setdefault(
+        "max_tokens", investigation_limits().specialist_max_output_tokens
+    )
     return route_llm(
         TaskType.SPECIALIST,
         provider=provider,
@@ -405,6 +491,10 @@ class BaseAgentNode:
                 namespace_scope=(state.get("metadata") or {}).get(
                     "cluster_namespace"
                 ),
+                # Only the lane that can run PromQL, plus the single-agent
+                # ablation arm, which must differ from the full arm in the
+                # ablated dimension and nothing else.
+                runbook_query_hints=agent_type in ("metrics", "single"),
             )
 
             # We'll collect all messages and the final response
@@ -455,11 +545,26 @@ class BaseAgentNode:
             fit_reports = []
             limits = investigation_limits()
             turn_budget = SpecialistTurnBudget(limits.specialist_model_turns)
+            # "" while the lane ran to completion; otherwise the boundary that
+            # stopped it. Drives both the evidence digest and the decision to
+            # skip the narration model call for a lane that has nothing new
+            # to narrate.
+            cut_short_reason = ""
             try:
                 timeout_seconds = limits.specialist_timeout_seconds
+                # Stop *starting* a turn the clock cannot finish, instead of
+                # paying for one and throwing it away at the deadline. A very
+                # short configured budget still gets to spend two thirds of
+                # itself on turns.
+                soft_deadline = (
+                    time.monotonic()
+                    + timeout_seconds
+                    - _turn_headroom_seconds(timeout_seconds)
+                )
 
                 async def execute_agent():
                     nonlocal agent_response  # Fix scope issue - allow access to outer variable
+                    nonlocal cut_short_reason
                     chunk_count = 0
                     # Isolated chat history: only this specialist's system
                     # prompt + alert-aware brief. See the note at the top
@@ -548,13 +653,30 @@ class BaseAgentNode:
                                                 f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
                                             )
 
-                            if turn_budget.observe(agent_step):
-                                budget_note = (
-                                    "Investigation turn limit reached after "
-                                    f"{turn_budget.turns} model calls; the requested "
-                                    "next tool round was not executed. Continue from "
-                                    "the evidence already collected."
-                                )
+                            stop_reason = _cut_short_reason(
+                                turn_budget,
+                                budget_hit=turn_budget.observe(agent_step),
+                                now=time.monotonic(),
+                                soft_deadline=soft_deadline,
+                            )
+                            if stop_reason:
+                                cut_short_reason = stop_reason
+                                if stop_reason == "turn_limit":
+                                    budget_note = (
+                                        "Investigation turn limit reached after "
+                                        f"{turn_budget.turns} model calls; the requested "
+                                        "next tool round was not executed. Continue from "
+                                        "the evidence already collected."
+                                    )
+                                else:
+                                    budget_note = (
+                                        "Investigation wall-clock budget nearly spent "
+                                        f"after {turn_budget.turns} model calls; the "
+                                        "requested next tool round was not started, so "
+                                        "this lane reports what it has rather than being "
+                                        "killed mid-call and losing it. Continue from "
+                                        "the evidence already collected."
+                                    )
                                 agent_response = (
                                     f"{agent_response}\n\n{budget_note}"
                                     if agent_response
@@ -621,10 +743,30 @@ class BaseAgentNode:
                 logger.info(f"{self.name} - Agent execution completed")
 
             except asyncio.TimeoutError:
+                cut_short_reason = "timeout"
                 logger.error(
                     f"{self.name} - Agent execution timed out after {timeout_seconds} seconds"
                 )
-                agent_response = f"Agent execution timed out after {timeout_seconds} seconds. The agent may be stuck on a tool call or LLM response."
+                # Keep what was already collected. Overwriting agent_response
+                # here used to discard every tool result this lane had paid
+                # for and report the lane as having returned nothing.
+                timeout_note = (
+                    f"Investigation stopped at the {timeout_seconds}s wall-clock "
+                    "limit while a model call was still in flight. This is a "
+                    "budget boundary, not a tool failure: the evidence below was "
+                    "collected before the cut-off and is as valid as any other. "
+                    "Reason from it, and do not report this lane as having "
+                    "returned no data."
+                )
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        timeout_note,
+                        _partial_evidence_digest(all_messages),
+                    )
+                    if part
+                )
 
             except Exception as e:
                 logger.error(f"{self.name} - Agent execution failed: {e}")
@@ -672,6 +814,7 @@ class BaseAgentNode:
                 "turns": turn_budget.turns,
                 "limit": turn_budget.limit,
                 "exhausted": turn_budget.exhausted,
+                "cut_short": cut_short_reason,
             }
             artifact_metadata["specialist_turn_budgets"] = specialist_budgets
             state_agent_response = (
@@ -688,7 +831,10 @@ class BaseAgentNode:
                 # output, etc.) is preserved in the structured payload, but the
                 # visible chat content reads like a teammate's Slack post.
                 narrative_text = ""
-                if not turn_budget.exhausted:
+                # A lane stopped at a boundary has already appended the note
+                # that explains itself; paying for a narration call to restate
+                # a truncated report is the one model call here with no reader.
+                if not cut_short_reason:
                     try:
                         narrative_text = await narrate_specialist_finding(
                             self.llm,
@@ -718,6 +864,7 @@ class BaseAgentNode:
                     "turns": turn_budget.turns,
                     "limit": turn_budget.limit,
                     "exhausted": turn_budget.exhausted,
+                    "cut_short": cut_short_reason,
                 }
                 if artifact_reference is not None:
                     finding_payload["evidence_artifact_ref"] = artifact_reference

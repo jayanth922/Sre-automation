@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .prompt_guard import UNTRUSTED_EVIDENCE_POLICY, wrap_untrusted
+from .runbook_queries import extract_metric_names, extract_promql
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,49 @@ def _format_prior_findings(prior_findings: Optional[Dict[str, Any]]) -> str:
     return wrap_untrusted("prior_specialist_findings", "\n\n".join(blocks))
 
 
+def _runbook_query_hints_block(runbook_text: str) -> str:
+    """Quote the runbook's own PromQL back to the specialist as work to do.
+
+    ``get_golden_signals`` is assembled from the cluster's single configured
+    latency histogram, so for an alert whose signal is a different histogram
+    it returns a healthy-looking series and the lane concludes nothing is
+    wrong. That is what happened on ``inventory_slow_queries``: the runbook
+    names ``db_query_duration_seconds_bucket`` three times, the recovery
+    oracle probes it, and no specialist turn ever asked for it.
+
+    Extraction is pure text matching, so this adds a few hundred characters
+    to one specialist's user message and no model call at all.
+    """
+    queries = extract_promql(runbook_text)
+    # The bare-name list is a fallback for a runbook that names its metric
+    # but shows no query. When a query is present it already names its own
+    # metric, and a second list scraped from prose mostly carries log-pattern
+    # strings ("db_pool_exhausted") that are not metrics at all.
+    metrics = [] if queries else extract_metric_names(runbook_text)
+    if not queries and not metrics:
+        return ""
+    body: List[str] = []
+    if queries:
+        body.append("Queries stated by the runbook:")
+        body.extend(f"  {query}" for query in queries)
+    if metrics:
+        body.append("Metrics named by the runbook: " + ", ".join(metrics))
+    payload = "\n".join(body)
+    return "\n".join(
+        [
+            "Run these before any exploratory query. get_golden_signals is "
+            "built from this cluster's one configured latency histogram, so "
+            "it cannot answer an alert whose signal is a different metric. "
+            "Pass the expressions below to get_metric / get_metric_range "
+            "verbatim, changing only the time window. If one returns no "
+            "data, report that explicitly -- an empty result for the "
+            "runbook's own metric is itself a finding, not a reason to fall "
+            "back to the golden signals.",
+            wrap_untrusted("runbook_queries", payload, max_len=len(payload) + 1),
+        ]
+    )
+
+
 def build_specialist_task_brief(
     *,
     specialist_role: str,
@@ -214,6 +258,7 @@ def build_specialist_task_brief(
     runbook_brief: Optional[str] = None,
     prior_findings: Optional[Dict[str, Any]] = None,
     namespace_scope: Optional[str] = None,
+    runbook_query_hints: bool = False,
 ) -> str:
     """Build a rich task brief that the specialist LLM receives as its user prompt.
 
@@ -282,6 +327,11 @@ def build_specialist_task_brief(
             wrap_untrusted("runbook", runbook_text, max_len=len(runbook_text) + 1)
         )
         lines.append("")
+        if runbook_query_hints:
+            hints_block = _runbook_query_hints_block(runbook_text)
+            if hints_block:
+                lines.append(hints_block)
+                lines.append("")
 
     prior_block = _format_prior_findings(prior_findings)
     if prior_block:

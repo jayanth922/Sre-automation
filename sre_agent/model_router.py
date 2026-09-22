@@ -505,12 +505,23 @@ def route_llm(
             decision.tier.value, provider=decision.provider, model_id=decision.model_id
         )
         if model:
+            # The provider path below applies SREConstants' default_max_tokens
+            # through get_model_config. This branch forwarded the caller's
+            # kwargs unchanged, so on the live LiteLLM transport -- the one
+            # every graded run actually uses -- a call with no explicit
+            # max_tokens had no output ceiling at all. Keep the two paths in
+            # agreement rather than documenting a default only one honours.
+            from .constants import SREConstants
+
+            max_tokens = (
+                kwargs.get("max_tokens") or SREConstants.model.default_max_tokens
+            )
             try:
                 return account(
                     build_litellm_llm(
                         model,
                         temperature=decision.temperature,
-                        max_tokens=kwargs.get("max_tokens"),
+                        max_tokens=max_tokens,
                         api_key=kwargs.get("api_key") or _current_api_key.get(),
                     )
                 )

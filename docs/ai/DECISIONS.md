@@ -1693,3 +1693,129 @@ thread is a war room, leaving the `message` handler as sole owner. Fewer
 moving parts, but it silently assumes the workspace subscribes to
 `message.channels`; where it does not, every @mention in an incident thread
 would go unanswered, and the failure would look like the bot being down.
+
+
+## A retrieval that returns something is not coverage
+
+**Decision.** `ablation_coverage.py` reports two numbers per split, not one:
+`skill_hit` (retrieval returned anything) and `signature_hit` (something it
+returned shares the scenario's failure class, scored with `match_score` at the
+same 0.5 floor `propose_skills` declares). The verdict line says when they
+disagree. The retrieval floor itself is left alone.
+
+**Reason.** The preflight exists so `no_memory` reporting NOT_DEMONSTRATED
+cannot be confused with an empty corpus, and it was making exactly that
+mistake one level down. `skill_hit` was `bool(skills)`, and the docstring
+called the check "exact". On v2 it read COVERED 22/22. The honest numbers are
+22/22 retrieve something, 12/22 retrieve their own failure class, and **4/22**
+retrieve a skill matching class *and* service. Three of the five stored skills
+are for services (`pdf-thumbnailer`, `ocr-extractor`, `thumb-worker`) that no
+scenario touches, and `checkout-service` — the corpus's most common — has no
+skill at all.
+
+**Consequences.** The divergence has a single cause worth naming: on the
+keyword path `propose_skills`' `threshold=0.5` is `match_score`'s scale, where
+0.5 means "same failure class". `SemanticSkillStore._find_matching` compares
+that same 0.5 against a Qdrant *cosine* similarity, which short signature
+strings clear on embedding proximity alone. So the semantic path admits
+skills the keyword path rejects, and the planner prompt can carry a skill
+learned from an unrelated incident. Buying the `no_memory` arm on this corpus
+buys 4 pairs that test whether relevant memory helps and 18 that test whether
+irrelevant memory hurts — a real question, but not the one the arm is named
+for.
+
+**Rejected alternative.** Tightening the semantic floor now. It would change
+what a paid run measures, and no data in the repo says what a defensible
+cosine floor is; picking one by eye would substitute a guess for the
+measurement the preflight is supposed to protect. Recorded as a blocker
+instead.
+
+## A runbook's query is extracted, not recalled
+
+**Decision.** `sre_agent/runbook_queries.py` lifts PromQL out of runbook
+markdown with regexes — no model call — and `build_specialist_task_brief`
+quotes the result into the metrics specialist's user message, above an
+instruction to run those expressions verbatim before exploring. The metrics
+prompt's opening move changed from `get_golden_signals` to "the runbook's
+queries, if the brief lists any".
+
+**Reason.** The one graded trial failed because the Prometheus specialist
+queried `http_request_duration_seconds_bucket` while the runbook named
+`db_query_duration_seconds_bucket` in three places — the same metric the
+recovery oracle probes. This was not inattention. `metrics_profile` holds
+exactly one `latency_histogram` per cluster and `q_service_latency`
+interpolates it, so `get_golden_signals` *cannot* return any other histogram;
+the specialist opened with the tool the prompt told it to open with and got a
+healthy service during a live incident. The prompt also promised a "metric
+hint from the task brief" that no code produced — `grep -rn "metric_hint"`
+matched the prompt line and nothing else.
+
+**Consequences.** Extraction is deterministic and testable, so the failure
+mode is a missing hint rather than a hallucinated metric, and it costs no
+tokens to produce. Three rejections earn their complexity: templated queries
+(`service="<service>"`) are dropped, because running one returns nothing and
+manufactures the very "no data is a finding" conclusion the block teaches;
+LogQL, shell and SQL are dropped; and the bare metric-name list is emitted
+only when no query was found, because scraping prose otherwise yields
+log-pattern strings like `db_pool_exhausted` that are not metrics. On the
+real `runbooks/meridian/high-latency.md` the first extracted query is the
+`db_query_duration_seconds_bucket` p90 the oracle probes.
+
+**Rejected alternative.** Telling the specialist to "read the runbook
+carefully" or adding a metric-selection model call. Both buy turns, and the
+user's constraint on this work was that cost must not rise. Also rejected:
+widening `metrics_profile` to hold many histograms — a schema change that
+would not have helped, since the runbook names the metric the profile would
+still have to be taught.
+
+## A wall-clock cut-off is a budget boundary, not a tool failure
+
+**Decision.** When a specialist hits `SPECIALIST_TIMEOUT_SECONDS` mid-call,
+its report is now the tool results already collected — `_partial_evidence_digest`
+renders the last 12 `ToolMessage`s, 600 chars each — plus a note saying the
+lane was cut off at a budget boundary. Before, the handler *replaced* the
+response with an error string. A soft deadline reserving `min(30, timeout//3)`
+seconds also declines to start a turn the clock cannot finish, narration is
+skipped for any cut-short lane, and the reason (`turn_limit`, `soft_deadline`,
+`timeout`) is recorded on the finding and the artifact.
+
+**Reason.** The graded trial's supervisor was told there were no application
+logs. There were: `query_logs` ran 31 times at a median of 0.1s. The 120s went
+entirely to model latency (p90 26.1s, max 68.6s), and the handler threw away
+every result the lane had already collected. The timeout was not raised —
+raising it buys turns the clock currently cuts off, which is a real cost
+increase.
+
+**Consequences.** Latency now degrades the report instead of erasing it, and
+a supervisor reasoning over a truncated lane can see that it is truncated.
+The 30s headroom is the measured p90 of a specialist turn, so the deadline
+usually costs nothing and occasionally forfeits one turn to save a whole
+lane's evidence. Skipping narration on a cut-short lane also removes a model
+call — narration was 6 calls for $0.0153 on the graded trial.
+
+**Rejected alternative.** Raising the timeout, and retrying the killed call.
+Both spend more to fix a reporting bug.
+
+## The live transport had no output ceiling at all
+
+**Decision.** `route_llm`'s LiteLLM branch now applies
+`SREConstants.model.default_max_tokens` when the caller passes none, matching
+the provider branch, and `_create_llm` sets a specialist turn's ceiling from
+the new `SPECIALIST_MAX_OUTPUT_TOKENS` limit (default 3,000).
+
+**Reason.** `default_max_tokens = 4096` is documented and applied through
+`get_model_config` on the legacy provider path. The live path is LiteLLM —
+every graded run shows `gen_ai.provider.name: litellm` — and it forwarded
+kwargs unchanged, so a call with no explicit `max_tokens` had no ceiling.
+One specialist turn in the graded trial emitted 6,402 tokens, 68.6s of that
+lane's 120s at a measured 89 tok/s.
+
+**Consequences.** A specialist turn is a report, not an essay: across the
+trial's 85 turns output was p50 484, p75 857, p90 2,339, so a 3,000 ceiling
+leaves nine turns in ten untouched and clips 7, removing 10,118 output tokens
+(-$0.15 of $2.53) and ~114s. The limit is env-tunable and clamped to
+[256, 16000].
+
+**Rejected alternative.** Leaving the LiteLLM path uncapped and documenting
+4,096 as the default anyway. The two transports disagreeing silently is how
+this went unnoticed through every graded run so far.

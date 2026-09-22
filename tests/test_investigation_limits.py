@@ -16,6 +16,7 @@ def test_defaults_bound_the_expensive_loops(monkeypatch):
     for name in (
         "SPECIALIST_MAX_MODEL_TURNS",
         "SPECIALIST_TIMEOUT_SECONDS",
+        "SPECIALIST_MAX_OUTPUT_TOKENS",
         "MAX_INVESTIGATION_DEPTH",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -24,18 +25,21 @@ def test_defaults_bound_the_expensive_loops(monkeypatch):
 
     assert limits.specialist_model_turns == 6
     assert limits.specialist_timeout_seconds == 120
+    assert limits.specialist_max_output_tokens == 3000
     assert limits.reinvestigation_rounds == 1
 
 
 def test_operator_values_are_clamped_and_invalid_values_fail_to_defaults(monkeypatch):
     monkeypatch.setenv("SPECIALIST_MAX_MODEL_TURNS", "999")
     monkeypatch.setenv("SPECIALIST_TIMEOUT_SECONDS", "not-a-number")
+    monkeypatch.setenv("SPECIALIST_MAX_OUTPUT_TOKENS", "1")
     monkeypatch.setenv("MAX_INVESTIGATION_DEPTH", "-4")
 
     limits = investigation_limits()
 
     assert limits.specialist_model_turns == 20
     assert limits.specialist_timeout_seconds == 120
+    assert limits.specialist_max_output_tokens == 256
     assert limits.reinvestigation_rounds == 0
 
 
