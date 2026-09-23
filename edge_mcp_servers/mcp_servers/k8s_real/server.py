@@ -695,6 +695,30 @@ async def handle_get_deployment_spec(params: GetDeploymentSpecParams) -> str:
             f"kubectl get deployment/{params.deployment_name} "
             f"-n {params.namespace} -o yaml"
         ),
+        # A declared value reads, to an agent mid-investigation, exactly like
+        # the running one. It is not: a service that can be reconfigured at
+        # runtime leaves this pod template byte-identical when it changes.
+        # Only the result can say so.
+        "scope": {
+            "shows": (
+                "the DECLARED pod template held in the Kubernetes API - what "
+                "this deployment asks the kubelet to start"
+            ),
+            "does_not_show": (
+                "the running process's effective configuration. Anything the "
+                "service can change after startup - its own admin/config API, a "
+                "feature-flag service, a config file it re-reads - is invisible "
+                "here, and changing it leaves this pod template identical."
+            ),
+            "not_evidence_of_runtime_state": (
+                "Every value here is a STARTUP DEFAULT, not necessarily the "
+                "current one, and a setting that is absent is not a setting "
+                "that is off. A flag reading 'false' or '0' in this block can "
+                "be live and on right now. Do not confirm OR rule out a "
+                "hypothesis about live behaviour from here - check runtime "
+                "signals: metrics, logs, or the service's own config endpoint."
+            ),
+        },
     }
     return json.dumps(result, separators=(",", ":"), default=str)
 
@@ -1093,12 +1117,18 @@ async def get_deployment_status(deployment_name: str, namespace: str = "default"
 async def get_deployment_spec(
     deployment_name: str, namespace: str = "default", container: str = None
 ) -> str:
-    """Read a deployment's declared configuration: image, env vars, resource limits.
+    """Read a deployment's DECLARED configuration: image, env vars, resource limits.
 
-    Use this to answer "what is this service actually configured to run?" —
-    the question `get_deployment_status` (replica counts) cannot. Env values
-    whose names look like credentials are redacted; Secret/ConfigMap-sourced
-    entries are reported by source, never resolved.
+    This is the pod template stored in the Kubernetes API — what the deployment
+    asks the kubelet to start. It is NOT the running process's effective
+    configuration: anything set through the service's own admin API, a feature
+    flag, or a config file it re-reads at runtime is invisible here. So every
+    value you read is a STARTUP DEFAULT that may already have been superseded,
+    and a setting you do not find is not a setting that is off. Never confirm
+    or rule out live behaviour from this block — check runtime signals for that.
+
+    Env values whose names look like credentials are redacted; Secret/ConfigMap-
+    sourced entries are reported by source, never resolved.
     """
     return await handle_get_deployment_spec(
         GetDeploymentSpecParams(

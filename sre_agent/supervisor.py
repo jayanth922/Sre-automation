@@ -1373,6 +1373,11 @@ User's query: {current_query}
                     alert_context=alert_context,
                     agent_results=agent_results,
                     tool_failures=state.get("agent_tool_failures", {}) or {},
+                    # The structured benchmark_evaluation built a few lines
+                    # below draws its diagnosis from this same object. Without
+                    # it here, the prose and the structure in one payload
+                    # disagreed about whether a root cause had been found.
+                    reflector_analysis=reflector_analysis,
                 )
             except Exception as e:
                 logger.warning(

@@ -139,8 +139,10 @@ def get_prom_client() -> Optional[PrometheusConnect]:
         return None
 
 
-def _coerce_to_datetime(value: Union[str, int, float, datetime, None]) -> datetime:
-    """Coerce LLM-supplied time arguments into a real datetime.
+def _coerce_with_reason(
+    value: Union[str, int, float, datetime, None]
+) -> "tuple[datetime, Optional[str]]":
+    """Coerce an LLM-supplied time argument, and say when the coercion gave up.
 
     The prometheus_api_client library expects datetime objects for
     custom_query_range (it calls .timestamp() on them). LLMs pass strings
@@ -148,13 +150,18 @@ def _coerce_to_datetime(value: Union[str, int, float, datetime, None]) -> dateti
     triggered "'str' object has no attribute 'timestamp'" 500-style errors.
     This helper accepts any of the common formats and always returns a
     timezone-aware datetime (UTC).
+
+    The last-resort fallback is now(), so a malformed argument cannot crash the
+    call. That is the right behaviour and the wrong silence: the caller asked
+    about one moment and was answered about another, with nothing in the result
+    saying so. Return the reason alongside, so callers can put it in the result.
     """
     if value is None or value == "":
-        return datetime.now(timezone.utc)
+        return datetime.now(timezone.utc), None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)), None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return datetime.fromtimestamp(float(value), tz=timezone.utc), None
     if isinstance(value, str):
         s = value.strip()
         # Relative shorthand: "5m", "1h", "30s", "2h30m"
@@ -170,25 +177,102 @@ def _coerce_to_datetime(value: Union[str, int, float, datetime, None]) -> dateti
                         total_seconds += n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[ch]
                         num = ""
                 if total_seconds > 0:
-                    return datetime.now(timezone.utc) - timedelta(seconds=total_seconds)
+                    return (
+                        datetime.now(timezone.utc) - timedelta(seconds=total_seconds),
+                        None,
+                    )
             except Exception:
                 pass
         # Unix timestamp
         try:
-            return datetime.fromtimestamp(float(s), tz=timezone.utc)
+            return datetime.fromtimestamp(float(s), tz=timezone.utc), None
         except (ValueError, OSError):
             pass
         # RFC3339 / ISO-8601
         try:
             iso = s.replace("Z", "+00:00")
             dt = datetime.fromisoformat(iso)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)), None
         except ValueError:
             pass
     # Last resort: now() so the call doesn't crash; the agent will see
     # an empty result rather than a tool error.
     logger.warning(f"Could not coerce {value!r} to datetime; defaulting to now().")
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc), f"could not parse time={value!r}"
+
+
+def _coerce_to_datetime(value: Union[str, int, float, datetime, None]) -> datetime:
+    """Coerce LLM-supplied time arguments into a real datetime."""
+    resolved, _reason = _coerce_with_reason(value)
+    return resolved
+
+
+def _sample_timestamp(result: Any) -> Optional[float]:
+    """The instant Prometheus itself stamped on the sample it returned.
+
+    This is the authoritative answer to "when is this value from" — better than
+    the client's clock, and the only way to see that a query answered about a
+    moment other than the one that was asked for.
+    """
+    if not isinstance(result, list) or not result:
+        return None
+    first = result[0]
+    if not isinstance(first, dict):
+        return None
+    value = first.get("value")
+    if isinstance(value, (list, tuple)) and value:
+        try:
+            return float(value[0])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _evaluation_stamp(
+    result: Any,
+    *,
+    time_argument: Any,
+    requested: Optional[datetime],
+    coerce_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Say which single moment an instant query actually answered about.
+
+    An instant vector is a number with no visible timestamp once it reaches the
+    agent's transcript. A specialist reconstructing an incident that ended ten
+    minutes ago, who omits `time`, is handed the value NOW and has nothing in
+    the result to warn them it is not the incident's value. Trial 5 did exactly
+    that and reported "we're missing the live measurement" while holding one.
+    """
+    stamp: Dict[str, Any] = {"time_argument": time_argument or None}
+
+    sampled = _sample_timestamp(result)
+    if sampled is not None:
+        moment, source = sampled, "prometheus sample"
+    elif requested is not None:
+        moment, source = requested.timestamp(), "requested time (query returned no sample)"
+    else:
+        moment, source = datetime.now(timezone.utc).timestamp(), (
+            "client clock (query returned no sample)"
+        )
+    stamp["evaluated_at"] = datetime.fromtimestamp(moment, timezone.utc).isoformat()
+    stamp["evaluated_at_source"] = source
+
+    if coerce_error:
+        stamp["warning"] = (
+            f"TIME ARGUMENT IGNORED: {coerce_error}. This is the value NOW, not at "
+            f"the moment you asked for, so it is NOT evidence about a past window. "
+            f"Re-run with an RFC3339 timestamp (2026-09-23T02:32:08Z) or a unix "
+            f"epoch."
+        )
+    elif not time_argument:
+        stamp["warning"] = (
+            "No time= was given, so this is the value NOW. If you are "
+            "investigating a window that has already passed, this number does "
+            "not describe that window and is not evidence about it. Re-run with "
+            "time=<RFC3339 at the incident>, or use get_metric_range to see the "
+            "window itself."
+        )
+    return stamp
 
 
 # Create FastMCP server with host/port from environment
@@ -225,11 +309,18 @@ async def check_prometheus_health() -> str:
 @mcp.tool()
 async def get_metric(query: str, time: str = None) -> str:
     """
-    Query a Prometheus metric using PromQL. Returns the current value or value at specified time.
+    Query a Prometheus metric using PromQL at a single instant.
     
     Args:
         query: PromQL query string (e.g., 'cpu_usage{namespace="production"}')
-        time: RFC3339 timestamp or unix timestamp (optional, defaults to now)
+        time: RFC3339 timestamp or unix timestamp. Omit it ONLY when you want
+            the value right now. When you are reconstructing an incident that
+            has already passed, pass the incident's timestamp — without it you
+            get the value NOW, which is not evidence about that window.
+
+    The result always carries `evaluated_at`: the instant the returned sample is
+    stamped with. A value can then never be read as describing a moment it does
+    not describe.
     """
     client = get_prom_client()
     if not client:
@@ -244,16 +335,27 @@ async def get_metric(query: str, time: str = None) -> str:
         # DICT for params (positional second arg). Passing `time` directly
         # was producing "'str' object is not a mapping" errors. The HTTP
         # /api/v1/query endpoint accepts a `time=` query param (unix epoch).
+        requested_dt = None
+        coerce_error = None
         if time:
-            time_dt = _coerce_to_datetime(time)
-            params = {"time": str(int(time_dt.timestamp()))}
+            requested_dt, coerce_error = _coerce_with_reason(time)
+            params = {"time": str(int(requested_dt.timestamp()))}
             result = await loop.run_in_executor(
                 None, lambda: client.custom_query(query, params=params)
             )
         else:
             result = await loop.run_in_executor(None, client.custom_query, query)
 
-        return json.dumps(_cap_vector_result(result), separators=(",", ":"), default=str)
+        payload = _cap_vector_result(result)
+        payload.update(
+            _evaluation_stamp(
+                result,
+                time_argument=time,
+                requested=requested_dt,
+                coerce_error=coerce_error,
+            )
+        )
+        return json.dumps(payload, separators=(",", ":"), default=str)
     except Exception as e:
         # Try to expose HTTP status / body so the agent can distinguish
         # "your PromQL is malformed" (400/422 from Prometheus) from
@@ -368,7 +470,9 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
     Args:
         service: Service name to query
         namespace: Namespace (optional)
-        time: Time for query (optional)
+        time: RFC3339 or unix timestamp. Omit it only for "right now" — when
+            reconstructing a past incident, pass its timestamp. The result
+            carries `query_scope.evaluated_at` saying which instant you got.
     """
     client = get_prom_client()
     if not client:
@@ -396,12 +500,16 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
     loop = asyncio.get_event_loop()
     results = {}
     time_params = None
+    requested_dt = None
+    coerce_error = None
     if time:
         try:
-            time_dt = _coerce_to_datetime(time)
-            time_params = {"time": str(int(time_dt.timestamp()))}
+            requested_dt, coerce_error = _coerce_with_reason(time)
+            time_params = {"time": str(int(requested_dt.timestamp()))}
         except Exception as coerce_err:
+            coerce_error = f"could not parse time={time!r} ({coerce_err})"
             logger.warning(f"Could not coerce time={time!r}: {coerce_err}")
+    first_sample: Any = None
     for signal_name, query in queries.items():
         try:
             if time_params:
@@ -410,6 +518,8 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
                 )
             else:
                 result = await loop.run_in_executor(None, client.custom_query, query)
+            if first_sample is None and _sample_timestamp(result) is not None:
+                first_sample = result
             results[signal_name] = {
                 "query": query,
                 "value": _cap_vector_result(result),
@@ -421,6 +531,12 @@ async def get_golden_signals(service: str, namespace: str = None, time: str = No
                 "error": str(e),
             }
 
+    results["query_scope"] = _evaluation_stamp(
+        first_sample,
+        time_argument=time,
+        requested=requested_dt,
+        coerce_error=coerce_error,
+    )
     return json.dumps(results, separators=(",", ":"), default=str)
 
 

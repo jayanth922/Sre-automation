@@ -1045,6 +1045,86 @@ def _fallback_finding(agent_name: str, raw_response: str) -> str:
     return f"{label} here — {snippet}"
 
 
+def _format_reflector_conclusion(analysis: Any) -> str:
+    """The reflector's settled conclusion, rendered for the narrator.
+
+    Returns "" when the reflector did not actually settle on one. `hypothesis`
+    is a required field, so its mere presence proves nothing; what separates a
+    conclusion from a guess is whether anything supports it. ReflectorAnalysis
+    says so itself: "A hypothesis with no references cannot be checked by
+    anyone." An unsupported hypothesis is therefore reported as no conclusion,
+    and the narrator is told that "Unknown" is the correct answer.
+    """
+    if analysis is None:
+        return ""
+    hypothesis = _clean(_safe_text(getattr(analysis, "hypothesis", "") or ""))
+    evidence = list(getattr(analysis, "evidence", None) or [])
+    chain = list(getattr(analysis, "causal_chain", None) or [])
+    if not hypothesis or not (evidence or chain):
+        return ""
+
+    def _field(item: Any, name: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    lines = [f"Hypothesis: {hypothesis}"]
+    service = getattr(analysis, "affected_service", None)
+    if service:
+        lines.append(f"Affected service: {service}")
+    fault_mode = getattr(analysis, "fault_mode", None)
+    if fault_mode:
+        lines.append(f"Fault mode: {fault_mode}")
+    confidence = getattr(analysis, "confidence", None)
+    if isinstance(confidence, (int, float)):
+        lines.append(f"Reflector confidence: {confidence:.2f} (self-reported)")
+
+    for idx, link in enumerate(chain[:10], 1):
+        cause = _field(link, "cause")
+        effect = _field(link, "effect")
+        if cause or effect:
+            lines.append(f"Causal link {idx}: {cause or '?'} -> {effect or '?'}")
+
+    for ref in evidence[:12]:
+        claim = _field(ref, "claim")
+        if claim:
+            source = _field(ref, "source") or "unknown source"
+            lines.append(f"Evidence ({source}): {claim}")
+
+    for unknown in list(getattr(analysis, "unknowns", None) or [])[:6]:
+        lines.append(f"Still unresolved: {unknown}")
+    return "\n".join(lines)
+
+
+def _reflector_root_cause_rule(settled: bool) -> str:
+    """The narrator must not contradict the diagnosis it ships beside."""
+    if settled:
+        return (
+            "\n- THE ROOT CAUSE IS ALREADY SETTLED — DO NOT WRITE 'UNKNOWN'. "
+            "The reflector reviewed the specialists' evidence and reached a "
+            "supported conclusion, reproduced below as REFLECTOR CONCLUSION. It "
+            "ships to the benchmark and the dashboard in the SAME payload as "
+            "the words you are writing now. Past versions of you wrote 'Root "
+            "cause: Unknown' directly alongside a structured diagnosis naming a "
+            "specific fault mode on a specific service with twelve pieces of "
+            "supporting evidence; the on-call engineer reads your prose first "
+            "and stood down on it. '## Most likely root cause' MUST state that "
+            "hypothesis and name its affected service and fault mode. You are "
+            "free to qualify it, note what is still unresolved, or disagree "
+            "with it outright — say which and give your reason. What you may "
+            "NOT do is report that no root cause was found when one was."
+        )
+    return (
+        "\n- The reflector did NOT reach a supported conclusion here: either no "
+        "hypothesis, or one with no evidence behind it. 'Unknown' is then the "
+        "correct and required answer. Say plainly under '## Most likely root "
+        "cause' that the investigation did not establish one, and put the "
+        "checks that would establish it under '## Next steps to resolve'. Do "
+        "not manufacture a cause out of the alert's own prose to fill the "
+        "section."
+    )
+
+
 async def narrate_supervisor_summary(
     llm: Any,
     *,
@@ -1052,6 +1132,7 @@ async def narrate_supervisor_summary(
     alert_context: Any,
     agent_results: Dict[str, Any],
     tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
+    reflector_analysis: Any = None,
 ) -> str:
     fallback = _fallback_summary(objective, agent_results)
     if not llm:
@@ -1137,6 +1218,10 @@ async def narrate_supervisor_summary(
         "check that would settle it (`kubectl describe pod` for an OOMKill, "
         "the deployment's `resources.limits` for a limit)."
     )
+
+    reflector_block = _format_reflector_conclusion(reflector_analysis)
+    system += _reflector_root_cause_rule(bool(reflector_block))
+
     user = (
         f"Incident objective: {objective}\n\n"
         f"Alert payload:\n{alert_block}\n\n"
@@ -1156,7 +1241,15 @@ async def narrate_supervisor_summary(
         f"Actionable label hints from the alert: {label_hints_block}\n\n"
         f"Evidence gathered (raw; attribute each item to the source named in its "
         f"heading):\n{findings_block}\n\n"
-        "Now write the wrap-up message."
+        + (
+            f"REFLECTOR CONCLUSION — the settled diagnosis that ships in the same "
+            f"payload as your wrap-up. Your '## Most likely root cause' must "
+            f"state it, or explain why you disagree:\n"
+            f"{wrap_untrusted('reflector_conclusion', reflector_block)}\n\n"
+            if reflector_block
+            else ""
+        )
+        + "Now write the wrap-up message."
     )
     out = await _invoke_llm(llm, system, user)
     return out or fallback
