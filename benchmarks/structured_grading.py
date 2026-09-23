@@ -500,8 +500,15 @@ def append_grader_record(
     summary_text: str,
     events: list[dict[str, Any]],
     score: Any,
+    harness_approvals: int = 0,
 ) -> None:
-    """Persist raw agent output and its pinned structured judgment."""
+    """Persist raw agent output and its pinned structured judgment.
+
+    `harness_approvals` counts the approvals the benchmark granted itself
+    (BENCH_AUTO_APPROVE). Anything above zero means the run reached its outcome
+    with authorization the agent did not earn autonomously, and the grade has
+    to say so or a reader cannot tell the two apart.
+    """
     raw_output = {"summary_text": summary_text, "events": events}
     encoded = json.dumps(
         raw_output, sort_keys=True, separators=(",", ":"), default=str
@@ -517,6 +524,7 @@ def append_grader_record(
         "raw_output_sha256": hashlib.sha256(encoded).hexdigest(),
         "raw_output": raw_output,
         "score": score.to_dict(),
+        "harness_approvals": harness_approvals,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:

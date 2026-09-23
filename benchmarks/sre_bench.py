@@ -29,10 +29,12 @@ Config via env (falls back to the bench_mttr defaults):
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -86,6 +88,37 @@ EXPERIMENT_ID = os.getenv("BENCH_EXPERIMENT_ID", "").strip()
 CANDIDATE_ID = os.getenv("BENCH_CANDIDATE_ID", "").strip()
 CONFIG_FINGERPRINT = os.getenv("BENCH_CONFIG_FINGERPRINT", "").strip()
 PAIR_SEED = os.getenv("BENCH_PAIR_SEED", "").strip()
+
+# ── The approval step the harness was missing ──────────────────────────────
+#
+# `awaiting_approval` is terminal in TERMINAL_APPLICATION_STATUSES and nothing
+# ever clears it, so a plan the gate holds for a human ends the trial there.
+# That scores a correct refusal as UNRESOLVED: on a production cluster
+# `policy_gate` holds every PROD rollback and any uncalibrated mutation, which
+# is the behaviour we want, and the benchmark could only ever punish it.
+#
+# With this on, the harness plays the human approver through the same two
+# calls the dashboard makes -- GET /status for the pending approval_request_id
+# and action_hash, then POST /approve. It is not a DB bypass and not a new
+# code path; the graph still verifies the action_hash against the plan it is
+# about to run, and the Prometheus oracle still decides recovery on its own.
+#
+# It is off by default, because it does change what a trial measures: with it
+# the trial answers "can the agent fix this once authorized", without it
+# "can the agent fix this unaided". Both are worth measuring and they are not
+# the same number, so every approval granted here is counted and stamped onto
+# the grade record and the trial's failure_categories. A run that needed a
+# human can never be read back as one that did not.
+AUTO_APPROVE = os.getenv("BENCH_AUTO_APPROVE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# A plan can legitimately pause more than once; a runaway loop should still
+# not be able to spend the whole timeout POSTing approvals.
+AUTO_APPROVE_LIMIT = int(os.getenv("BENCH_AUTO_APPROVE_LIMIT", "3"))
+
 STATISTICAL_CONFIG = {
     "experiment_id": EXPERIMENT_ID,
     "candidate_id": CANDIDATE_ID,
@@ -112,6 +145,39 @@ if STATISTICAL_RECORDING and (
         f"got {len(CONFIG_FINGERPRINT)} characters. Every trial row and every "
         "confidence observation is keyed on it."
     )
+
+# ── Confidence observations are not paired trials ──────────────────────────
+#
+# Both records used to hang off STATISTICAL_RECORDING, so the only runs that
+# produced calibration evidence were full paired experiments -- and
+# BENCH_SCENARIOS raises rather than run beside one. Every single-scenario
+# trial therefore measured a real (confidence, outcome) pair and discarded it
+# unwritten: five live incidents, zero samples, and a runtime that stays
+# uncalibrated because the corpus it needs is never written.
+#
+# The two records do not need the same identity. A trial row only means
+# anything against its pair in another arm, which is exactly what PAIR_SEED
+# and an unfiltered split protect. A confidence observation is a single
+# reliability point: the schema asks for a config fingerprint and an id, and
+# nothing else -- no experiment_id, no candidate_id. A filtered smoke run
+# against a real fault produces one just as honestly as a full split does.
+#
+# Caveat worth stating where it will be read: this corpus is grouped by task,
+# not by scenario, so a run of N trials against one scenario yields N samples
+# that all describe that scenario. The artifact would still clear its sample
+# floors while describing far less than it appears to. Spread the corpus
+# across scenarios before trusting a threshold built from it.
+CONFIDENCE_RECORDING = STATISTICAL_RECORDING or os.getenv(
+    "BENCH_RECORD_CONFIDENCE", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+# Reading a corpus rejects a duplicate (task, pair_id, config_fingerprint)
+# outright rather than skipping it, so an id that repeats across runs does not
+# lose one sample -- it makes the whole file unreadable. `make_pair_id` is
+# deterministic in the trial index, which is 1 for every single-trial run, so
+# unpaired observations mix in a per-process id to stay unique.
+RUN_ID = uuid.uuid4().hex
+
 DATASET_ROOT = Path(
     os.getenv(
         "BENCH_DATASET_ROOT",
@@ -447,6 +513,69 @@ async def _await_manual_cleanup(spec: ScenarioSpec) -> None:
     )
 
 
+async def _grant_pending_approval(
+    client: httpx.AsyncClient,
+    jwt: _Token,
+    incident_id: str,
+    creds,
+    already_granted: set[str],
+) -> bool:
+    """Approve one paused action the way the dashboard does, or return False.
+
+    GET /status carries the approval_request_id and action_hash of the pending
+    interrupt; POST /approve resumes that exact action. The hash is the graph's
+    guarantee that what a human authorized is what runs, so it is read from the
+    live interrupt and echoed back rather than reconstructed here.
+    """
+    try:
+        status = await client.get(
+            f"{creds.base_url}/api/v1/incidents/{incident_id}/status",
+            headers=await jwt.headers(),
+        )
+        status.raise_for_status()
+        approval = (status.json() or {}).get("approval")
+    except Exception as exc:
+        print(f"[auto-approve] status read failed: {exc}  ", end="", flush=True)
+        return False
+
+    if not isinstance(approval, dict):
+        return False
+    request_id = str(approval.get("approval_request_id") or "")
+    action_hash = str(approval.get("action_hash") or "")
+    if not request_id or not action_hash:
+        return False
+    # The graph republishes the same interrupt until it is decided; approving
+    # it twice would 409 and, worse, would double-count in the grade record.
+    if action_hash in already_granted:
+        return False
+
+    try:
+        response = await client.post(
+            f"{creds.base_url}/api/v1/incidents/{incident_id}/approve",
+            headers=await jwt.headers(),
+            json={"approval_request_id": request_id, "action_hash": action_hash},
+            # The endpoint resumes the graph synchronously, so this call is as
+            # long as the remediation it authorizes.
+            timeout=httpx.Timeout(TIMEOUT_SEC),
+        )
+    except Exception as exc:
+        print(f"[auto-approve] POST failed: {exc}  ", end="", flush=True)
+        return False
+
+    if response.status_code >= 400:
+        detail = response.text[:160]
+        print(
+            f"[auto-approve] refused {response.status_code}: {detail}  ",
+            end="",
+            flush=True,
+        )
+        return False
+
+    already_granted.add(action_hash)
+    print(f"[auto-approve] granted {action_hash[:12]}…  ", end="", flush=True)
+    return True
+
+
 async def _wait_for_recovery(
     client: httpx.AsyncClient,
     jwt: _Token,
@@ -454,11 +583,17 @@ async def _wait_for_recovery(
     oracle_client: PrometheusOracleClient,
     tracker: RecoveryOracleTracker,
     creds,
-) -> dict:
-    """Poll independent evidence; application status is context, never the oracle."""
+) -> tuple[dict, int]:
+    """Poll independent evidence; application status is context, never the oracle.
+
+    Returns the latest incident and the number of approvals the harness itself
+    granted, which the caller records so an authorized run stays distinguishable
+    from an autonomous one.
+    """
     elapsed = 0
     terminal_seen_at: Optional[int] = None
     latest = incident
+    granted_hashes: set[str] = set()
 
     while elapsed < TIMEOUT_SEC:
         await asyncio.sleep(POLL_INTERVAL_SEC)
@@ -472,6 +607,18 @@ async def _wait_for_recovery(
 
         if tracker.recovered_at is not None:
             break
+        if (
+            AUTO_APPROVE
+            and application_status == "awaiting_approval"
+            and len(granted_hashes) < AUTO_APPROVE_LIMIT
+        ):
+            if await _grant_pending_approval(
+                client, jwt, incident["id"], creds, granted_hashes
+            ):
+                # The run is moving again: it is no longer sitting on a
+                # terminal status, so the grace countdown has to start over.
+                terminal_seen_at = None
+                continue
         if application_status in TERMINAL_APPLICATION_STATUSES:
             if terminal_seen_at is None:
                 terminal_seen_at = elapsed
@@ -480,7 +627,7 @@ async def _wait_for_recovery(
         else:
             terminal_seen_at = None
 
-    return latest
+    return latest, len(granted_hashes)
 
 
 async def _fetch_transcript(client, jwt, incident_id, creds) -> dict:
@@ -545,6 +692,7 @@ def _record_grade(
     summary_text: str,
     events: list[dict],
     score,
+    harness_approvals: int = 0,
 ) -> None:
     append_grader_record(
         GRADER_RESULTS_PATH,
@@ -554,6 +702,7 @@ def _record_grade(
         summary_text=summary_text,
         events=events,
         score=score,
+        harness_approvals=harness_approvals,
     )
 
 
@@ -600,6 +749,7 @@ def _record_statistical_trial(
     trial_index: int,
     latency_seconds: float,
     trace_completeness: Optional[dict],
+    harness_approvals: int = 0,
 ) -> None:
     if not STATISTICAL_RECORDING:
         return
@@ -619,6 +769,12 @@ def _record_statistical_trial(
     failure_categories = set(_failure_categories(score))
     if not trace_complete:
         failure_categories.add("trace_incomplete")
+    if harness_approvals:
+        # Not a failure, but the trial schema is strict about its keys and this
+        # is the one free-form field in it. An arm that was authorized by the
+        # harness must never be compared against one that ran unaided without
+        # that being visible in the artifact people actually diff.
+        failure_categories.add("harness_approved")
     trial = build_trial_record(
         experiment_id=EXPERIMENT_ID,
         pair_id=pair_id,
@@ -660,6 +816,32 @@ def _record_statistical_trial(
     append_trial(TRIAL_RESULTS_PATH, trial)
 
 
+def _confidence_fingerprint() -> str:
+    """The paired experiment's fingerprint when there is one, else a digest of
+    the config that actually shapes a run.
+
+    Derived rather than typed. The corpus is grouped by this value, so an
+    operator who guesses one silently pools observations from configurations
+    that are not comparable; one who forgets it records nothing at all. Neither
+    is possible if the run computes it from itself.
+    """
+    if CONFIG_FINGERPRINT:
+        return CONFIG_FINGERPRINT
+    material = json.dumps(
+        {
+            "dataset_version": DATASET.dataset_version,
+            "dataset_split": DATASET.split,
+            "dataset_sha256": DATASET.sha256,
+            "fault_mode": FAULT_MODE,
+            "incident_timeout_sec": TIMEOUT_SEC,
+            "auto_approve": AUTO_APPROVE,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 def _record_confidence_observations(
     spec: ScenarioSpec,
     score,
@@ -667,15 +849,15 @@ def _record_confidence_observations(
     trial_index: int,
 ) -> None:
     """Pair task-specific self-confidence with exact structured outcomes."""
-    if not STATISTICAL_RECORDING:
+    if not CONFIDENCE_RECORDING:
         return
     pair_id = make_pair_id(
-        experiment_id=EXPERIMENT_ID,
+        experiment_id=EXPERIMENT_ID or f"unpaired-{RUN_ID}",
         dataset_sha256=DATASET.sha256,
         scenario=spec.name,
         scenario_version=spec.scenario_version,
         trial_index=trial_index,
-        pair_seed=PAIR_SEED,
+        pair_seed=PAIR_SEED or RUN_ID,
     )
     for task, confidence, outcome in (
         (
@@ -701,7 +883,7 @@ def _record_confidence_observations(
                 scenario=spec.name,
                 scenario_version=spec.scenario_version,
                 dataset_sha256=DATASET.sha256,
-                config_fingerprint=CONFIG_FINGERPRINT,
+                config_fingerprint=_confidence_fingerprint(),
                 pair_id=pair_id,
                 observed_at=datetime.now(timezone.utc),
                 # This runner is the only sanctioned producer of the evidence
@@ -754,7 +936,7 @@ async def _run_trial(
             append_oracle_result(ORACLE_RESULTS_PATH, result)
             score = _score_without_output(spec, result)
             _record_grade(spec, result, "", [], score)
-            return score, f"FAILED (stimulus: {exc})", None
+            return score, f"FAILED (stimulus: {exc})", None, 0
 
         incident = await _wait_new_incident(client, jwt, known, creds)
         if not incident:
@@ -767,9 +949,9 @@ async def _run_trial(
             append_oracle_result(ORACLE_RESULTS_PATH, result)
             score = _score_without_output(spec, result)
             _record_grade(spec, result, "", [], score)
-            return score, "FAILED (no incident)", None
+            return score, "FAILED (no incident)", None, 0
 
-        latest_incident = await _wait_for_recovery(
+        latest_incident, harness_approvals = await _wait_for_recovery(
             client, jwt, incident, oracle_client, tracker, creds
         )
         transcript = await _fetch_transcript(client, jwt, incident["id"], creds)
@@ -794,7 +976,7 @@ async def _run_trial(
             mttr_seconds=result.mttr_seconds,
             incident_severity=latest_incident.get("severity", ""),
         )
-        _record_grade(spec, result, summary_text, events, score)
+        _record_grade(spec, result, summary_text, events, score, harness_approvals)
         if score.resolved:
             line = (
                 f"MTTR={score.mttr_seconds:.0f}s "
@@ -810,7 +992,9 @@ async def _run_trial(
                 f"{score.oracle_status} "
                 f"(app={score.application_status}){false_claim}"
             )
-        return score, line, trace_completeness
+        if harness_approvals:
+            line += f" approved-by-harness×{harness_approvals}"
+        return score, line, trace_completeness, harness_approvals
     finally:
         if leases and fault_adapter is not None:
             await fault_adapter.cleanup(client, leases)
@@ -879,7 +1063,7 @@ async def run() -> None:
                 flush=True,
             )
             trial_started = time.perf_counter()
-            score, line, trace_completeness = await _run_trial(
+            score, line, trace_completeness, harness_approvals = await _run_trial(
                 client,
                 jwt,
                 oracle_client,
@@ -893,6 +1077,7 @@ async def run() -> None:
                 trial_index=trial_index,
                 latency_seconds=time.perf_counter() - trial_started,
                 trace_completeness=trace_completeness,
+                harness_approvals=harness_approvals,
             )
             _record_confidence_observations(
                 spec,

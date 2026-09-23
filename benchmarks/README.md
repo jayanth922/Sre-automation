@@ -63,6 +63,24 @@ round again, and a ceiling below that records every trial as a non-recovery),
 `BENCH_FAULT_MODE`. Raw agent outputs and structured judgments are written to
 `BENCH_GRADER_RESULTS_PATH` (default `reports/sre-bench-grades.jsonl`).
 
+`BENCH_AUTO_APPROVE=1` lets the harness play the human approver. Without it a
+plan that `policy_gate` holds for a person ends the trial on the terminal
+`awaiting_approval` status and scores UNRESOLVED — which punishes the agent for
+behaving correctly, since on a production cluster the gate holds every rollback
+and every uncalibrated mutation. With it, the runner makes the same two calls
+the dashboard makes (`GET /status` for the pending `approval_request_id` and
+`action_hash`, then `POST /approve`); the graph still verifies that hash against
+the plan it is about to run, and the Prometheus oracle still decides recovery on
+its own. `BENCH_AUTO_APPROVE_LIMIT` (default 3) bounds how many pauses one trial
+may clear.
+
+It is off by default because it changes what a trial measures: on, the number
+answers "can the agent fix this once authorized"; off, "can the agent fix this
+unaided". Every approval the harness grants is counted into the grade record's
+`harness_approvals` and stamped onto the trial's `failure_categories` as
+`harness_approved`, so an authorized run can never be read back — or compared
+against an unaided arm — as an autonomous one.
+
 `BENCH_FAULT_MODE=automatic` drives the fault targets directly, so each one
 must be reachable: `BENCH_CHECKOUT_URL` (8001), `BENCH_INVENTORY_URL` (8002),
 `BENCH_LOADGEN_URL` (8003), `BENCH_PAYMENT_URL` (8004). A v2 scenario may
@@ -78,9 +96,23 @@ randomizes the shared trial schedule and appends strict records to
 candidate runs with `statistical_eval.py`; see
 `benchmarks/evaluation/README.md`.
 
-The same paired run writes exact confidence/outcome observations to
+Any live run — paired or not — writes exact confidence/outcome observations to
 `BENCH_CONFIDENCE_RESULTS_PATH` (default
-`reports/sre-bench-confidence.jsonl`). Use `confidence_eval.py` for A06
+`reports/sre-bench-confidence.jsonl`); set `BENCH_RECORD_CONFIDENCE=0` to
+suppress them. These used to share the paired-experiment gate above, which
+`BENCH_SCENARIOS` refuses to run beside, so every single-scenario trial measured
+a real (confidence, outcome) pair and discarded it unwritten. A trial row is
+only meaningful against its pair in another arm; a confidence observation is one
+reliability point, and the record schema asks only for a config fingerprint and
+an id. Outside a paired experiment the runner derives both — the fingerprint
+from the config that shapes the run, the id from a per-process value, since a
+repeated `(task, pair_id, config_fingerprint)` makes the whole corpus
+unreadable rather than costing one sample.
+
+The corpus is grouped by task, not by scenario, so N trials against one scenario
+yield N samples that all describe that scenario while still clearing the
+artifact's sample floors. Spread the corpus across scenarios before trusting a
+threshold built from it. Use `confidence_eval.py` for A06
 reliability metrics, content-addressed monotonic calibration artifacts, measured
 autonomy thresholds, and reference drift checks. The threshold is not asserted:
 the artifact scores every candidate operating point and picks the one with the
