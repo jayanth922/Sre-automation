@@ -49,8 +49,24 @@ def investigation_limits() -> InvestigationLimits:
         # turn emitted 6,402, taking 68.6s of that lane's 120s budget at a
         # measured 89 tok/s. This bounds the tail without touching nine
         # turns in ten.
+        #
+        # 3000 was those percentiles plus headroom, and it was measured on
+        # *text*. The balanced tier is an extended-thinking model (see
+        # litellm_backend._FIXED_TEMPERATURE, which forces temperature=1 for
+        # exactly that reason), and thinking is billed and capped out of the
+        # same allowance. On 2026-09-23 the metrics lane spent its whole
+        # allowance thinking twice over -- 31.7s and 34.4s, the two longest
+        # model calls of the run -- and emitted no text and no tool call
+        # either time. Both turns were billed in full and returned nothing.
+        #
+        # 4096 is not a guess: context_compaction.DEFAULT_RESERVED_OUTPUT_TOKENS
+        # already subtracts 4096 from every input budget on this path, so
+        # those tokens were set aside and merely unusable. Raising the
+        # ceiling to meet the reservation moves no other budget, and a
+        # ceiling is not a spend -- output is billed as generated, and nine
+        # turns in ten still finish under 3000.
         specialist_max_output_tokens=_bounded_int(
-            "SPECIALIST_MAX_OUTPUT_TOKENS", 3000, minimum=256, maximum=16000
+            "SPECIALIST_MAX_OUTPUT_TOKENS", 4096, minimum=256, maximum=16000
         ),
         reinvestigation_rounds=_bounded_int(
             "MAX_INVESTIGATION_DEPTH", 1, minimum=0, maximum=3

@@ -349,7 +349,7 @@ def test_the_ceiling_is_operator_tunable_and_bounded(monkeypatch):
     assert investigation_limits().specialist_max_output_tokens == 16000
 
     monkeypatch.setenv("SPECIALIST_MAX_OUTPUT_TOKENS", "nonsense")
-    assert investigation_limits().specialist_max_output_tokens == 3000
+    assert investigation_limits().specialist_max_output_tokens == 4096
 
 
 def test_the_litellm_transport_no_longer_drops_the_default_ceiling(monkeypatch):

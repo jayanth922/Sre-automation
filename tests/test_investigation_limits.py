@@ -25,7 +25,10 @@ def test_defaults_bound_the_expensive_loops(monkeypatch):
 
     assert limits.specialist_model_turns == 6
     assert limits.specialist_timeout_seconds == 120
-    assert limits.specialist_max_output_tokens == 3000
+    # 4096, not a round 3000: context_compaction already reserves exactly
+    # this many output tokens out of every input budget on this path, and
+    # a ceiling below the reservation only makes the reservation unusable.
+    assert limits.specialist_max_output_tokens == 4096
     assert limits.reinvestigation_rounds == 1
 
 

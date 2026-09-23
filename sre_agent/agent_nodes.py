@@ -40,7 +40,11 @@ from .narrative import (
     runbook_text_for_alert,
 )
 from .prompt_loader import prompt_loader
-from .runbook_probe import metrics_probe_caller, probe_runbook_queries
+from .runbook_probe import (
+    metrics_probe_caller,
+    probe_payload,
+    probe_runbook_queries,
+)
 
 # Logging will be configured by the main entry point
 logger = logging.getLogger(__name__)
@@ -126,6 +130,107 @@ _NO_TOOL_LANE_NOTE = (
 # so the exemption is conditional on the brief, not on the lane alone.
 _RUNBOOK_SUFFICIENT_AGENTS = frozenset({"runbooks_agent"})
 
+# A turn that ran out of output tokens and a model that declined to call a
+# tool are different failures with opposite fixes, and until now they were
+# recorded identically -- nothing in this lane read the provider's stop
+# reason at all. LiteLLM normalises Anthropic's "max_tokens" to OpenAI's
+# "length", so both spellings arrive depending on the backend in use.
+_TRUNCATION_FINISH_REASONS = frozenset(
+    {"length", "max_tokens", "max_output_tokens"}
+)
+_TRUNCATED_LANE_NOTE = (
+    "This lane was cut off at its output-token ceiling before it produced a "
+    "tool call or a finding, so it collected no evidence of its own. That is "
+    "a budget boundary, not a finding that this lane's subject is healthy: "
+    "do not report this lane's subject as checked."
+)
+# Telling a model that was cut off mid-sentence "do not answer from the brief
+# alone" wastes the retry: it never got as far as an answer. Ask for brevity
+# instead, which is the one thing that makes the second attempt fit.
+_TRUNCATED_RETRY_DIRECTIVE = (
+    "Your previous turn hit the output-token ceiling before it produced "
+    "anything usable. Do not restate the brief and do not plan at length. "
+    "Call your first tool immediately, then report only what it returned."
+)
+
+# The hard ceiling on everything salvaged for one lane, probe measurement
+# and tool digest together. It sits under narrative._truncate's own 1800-char
+# cap on a finding entering the next lane's brief, so salvage can never be
+# larger than a finding that survives that cap -- it costs no payload an
+# ordinary finding would not have cost. _partial_evidence_digest's own bounds
+# (600 chars x 12 results) are deliberately looser, because on the cut-short
+# paths the digest *is* the whole lane report; here it is an addition to one.
+# Nothing in this path calls a model: the probe ran before the lane's first
+# turn and the tool results were already on the wire.
+_SALVAGE_MAX_CHARS = 1500
+# Two thirds of it, so a long probe can never crowd the tool results out
+# entirely. A real probe block is a few hundred chars.
+_PROBE_SALVAGE_MAX_CHARS = 1000
+
+
+def _finish_reason(message: Any) -> str:
+    """The provider's stop reason for one model turn, lowercased."""
+    for holder in ("response_metadata", "additional_kwargs"):
+        payload = getattr(message, holder, None)
+        if not isinstance(payload, dict):
+            continue
+        for key in ("finish_reason", "stop_reason"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    return ""
+
+
+def _bounded_lines(text: str, limit: int) -> str:
+    """Trim to whole lines within `limit`, saying how many were dropped."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    kept = head.rsplit("\n", 1)[0] if "\n" in head else head
+    dropped = text.count("\n") - kept.count("\n")
+    return (
+        f"{kept}\n[{dropped} further line(s) omitted here; the full "
+        "transcript is in this run's evidence artifact]"
+    )
+
+
+def _probe_measurement_note(runbook_probe_block: str) -> str:
+    """The runbook probe's numbers, restated as a finding of the runtime's."""
+    payload = probe_payload(runbook_probe_block)
+    if not payload:
+        return ""
+    return (
+        "Runbook query probe -- measured by the runtime before this lane's "
+        "first turn, so these are arithmetic over live series and not a "
+        "model's claim:\n" + payload[:_PROBE_SALVAGE_MAX_CHARS]
+    )
+
+
+def _salvaged_evidence(
+    messages: List[Any], runbook_probe_block: str, existing: str = ""
+) -> str:
+    """Everything the runtime already holds for a lane that reported nothing.
+
+    Both sources are deterministic and already bought. Neither is re-added
+    when the text the lane is carrying already contains it: the timeout and
+    recursion handlers append the same digest, and salvage must not say
+    anything twice.
+    """
+    parts: List[str] = []
+    probe_note = _probe_measurement_note(runbook_probe_block)
+    if probe_note and probe_note not in (existing or ""):
+        parts.append(probe_note)
+    if _EVIDENCE_DIGEST_HEADER not in (existing or ""):
+        digest = _partial_evidence_digest(
+            messages, reason="stopped without writing a finding"
+        )
+        if digest:
+            parts.append(digest)
+    # The probe goes first and is never the part that gets cut: it is a
+    # single decisive number, and on 2026-09-23 it was the number the whole
+    # incident turned on.
+    return _bounded_lines("\n\n".join(parts), _SALVAGE_MAX_CHARS)
+
 
 def _cut_short_reason(
     turn_budget: "SpecialistTurnBudget",
@@ -146,7 +251,12 @@ def _cut_short_reason(
     return ""
 
 
-def _partial_evidence_digest(messages: List[Any]) -> str:
+_EVIDENCE_DIGEST_HEADER = "Evidence collected before this lane "
+
+
+def _partial_evidence_digest(
+    messages: List[Any], *, reason: str = "was cut short"
+) -> str:
     """Report what a cut-short lane actually collected.
 
     The tool results already on the wire were paid for and are as valid as
@@ -172,7 +282,7 @@ def _partial_evidence_digest(messages: List[Any]) -> str:
     dropped = max(total - _PARTIAL_EVIDENCE_MAX_TOOLS, 0)
     if dropped:
         entries = entries[-_PARTIAL_EVIDENCE_MAX_TOOLS:]
-    header = f"Evidence collected before this lane was cut short ({total} tool results"
+    header = f"{_EVIDENCE_DIGEST_HEADER}{reason} ({total} tool results"
     header += f", {dropped} older ones omitted here):" if dropped else "):"
     return header + "\n" + "\n".join(entries)
 
@@ -583,6 +693,12 @@ class BaseAgentNode:
             # ablation arm, which must differ from the full arm in the
             # ablated dimension and nothing else.
             runbook_hints = agent_type in ("metrics", "single")
+            # Kept, not merely passed. These are the runtime's own numbers for
+            # the runbook's gating query; if the lane that receives them never
+            # reports, they are still the best evidence in the incident.
+            runbook_probe_block = (
+                await self._probe_runbook_queries(state) if runbook_hints else ""
+            )
             agent_prompt = build_specialist_task_brief(
                 specialist_role=specialist_role,
                 objective=state.get("current_query", "") or self.name,
@@ -593,11 +709,7 @@ class BaseAgentNode:
                     "cluster_namespace"
                 ),
                 runbook_query_hints=runbook_hints,
-                runbook_probe=(
-                    await self._probe_runbook_queries(state)
-                    if runbook_hints
-                    else ""
-                ),
+                runbook_probe=runbook_probe_block,
             )
 
             # Answering without a tool call is this lane's contract only
@@ -610,6 +722,15 @@ class BaseAgentNode:
             # We'll collect all messages and the final response
             all_messages = []
             agent_response = ""
+            # Two facts this lane never recorded, and could not report
+            # without: whether the provider stopped a turn at the output
+            # ceiling, and whether the model ever emitted a text block at
+            # all. Without the first, a lane cut off mid-turn was labelled a
+            # lane that declined to investigate. Without the second, deciding
+            # whether anything is worth salvaging means pattern-matching our
+            # own notes back out of the response.
+            response_truncated = False
+            model_text_captured = False
             # Genuine tool-call failures for this specialist, keyed off
             # ToolMessage.status == "error" (set by langgraph's ToolNode when
             # a bound tool raises). This is the ONLY reliable signal for "the
@@ -658,6 +779,8 @@ class BaseAgentNode:
                     nonlocal agent_response  # Fix scope issue - allow access to outer variable
                     nonlocal cut_short_reason
                     nonlocal tool_calls_made
+                    nonlocal response_truncated
+                    nonlocal model_text_captured
                     chunk_count = 0
                     # Isolated chat history: only this specialist's system
                     # prompt + alert-aware brief. See the note at the top
@@ -750,8 +873,21 @@ class BaseAgentNode:
                                             )
                                         if content:
                                             agent_response = content
+                                            model_text_captured = True
                                             logger.info(
                                                 f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
+                                            )
+                                        finish_reason = _finish_reason(msg)
+                                        if finish_reason in _TRUNCATION_FINISH_REASONS:
+                                            response_truncated = True
+                                            logger.warning(
+                                                "%s - model turn stopped on '%s': the "
+                                                "output ceiling was reached before the "
+                                                "turn finished (%d chars, %d tool call(s))",
+                                                self.name,
+                                                finish_reason,
+                                                len(str(content or "")),
+                                                len(getattr(msg, "tool_calls", []) or []),
                                             )
 
                             stop_reason = _cut_short_reason(
@@ -862,7 +998,10 @@ class BaseAgentNode:
                             )
                             # The first attempt produced no evidence, so there
                             # is nothing in it worth carrying into the retry.
+                            first_attempt_truncated = response_truncated
                             agent_response = ""
+                            response_truncated = False
+                            model_text_captured = False
                             # execute_agent reads soft_deadline from this
                             # scope at call time; the original one is already
                             # spent, and leaving it would cut the retry off
@@ -874,7 +1013,11 @@ class BaseAgentNode:
                             )
                             await asyncio.wait_for(
                                 execute_agent(
-                                    extra_directive=_NO_TOOL_RETRY_DIRECTIVE
+                                    extra_directive=(
+                                        _TRUNCATED_RETRY_DIRECTIVE
+                                        if first_attempt_truncated
+                                        else _NO_TOOL_RETRY_DIRECTIVE
+                                    )
                                 ),
                                 timeout=remaining,
                             )
@@ -959,16 +1102,56 @@ class BaseAgentNode:
             # trial record both see a missing lane, instead of reading its
             # opening sentence as though it were observed data.
             if not tool_calls_made and not cut_short_reason and not runbook_answerable:
-                cut_short_reason = "no_tool_calls"
+                cut_short_reason = (
+                    "output_truncated" if response_truncated else "no_tool_calls"
+                )
                 logger.error(
-                    "%s - lane produced no tool calls in %d model call(s); "
+                    "%s - lane produced no tool calls in %d model call(s) (%s); "
                     "reporting it as collecting no evidence",
                     self.name,
                     turn_budget.turns,
+                    (
+                        "cut off at the output ceiling"
+                        if response_truncated
+                        else "the model returned without calling one"
+                    ),
                 )
                 agent_response = "\n\n".join(
-                    part for part in (agent_response, _NO_TOOL_LANE_NOTE) if part
+                    part
+                    for part in (
+                        agent_response,
+                        (
+                            _TRUNCATED_LANE_NOTE
+                            if response_truncated
+                            else _NO_TOOL_LANE_NOTE
+                        ),
+                    )
+                    if part
                 )
+
+            # Whatever stopped the lane, evidence the runtime already holds is
+            # not the model's to lose. A probe measurement and a completed
+            # tool round are facts about the incident; the notes above are
+            # facts about the lane. On 2026-09-23 two lanes wrote no text --
+            # one cut off at the ceiling holding a pre-measured p90 of 2.023s
+            # against a 1.0s threshold, one out of turns holding ten tool
+            # results -- and the reflector was handed neither, so it reported
+            # the gating measurement as never taken. Both are bounded above
+            # and neither costs a model call.
+            if not model_text_captured:
+                salvage = _salvaged_evidence(
+                    all_messages, runbook_probe_block, agent_response
+                )
+                if salvage:
+                    agent_response = (
+                        f"{agent_response}\n\n{salvage}" if agent_response else salvage
+                    )
+                    logger.info(
+                        "%s - lane wrote no finding; salvaged %d chars of "
+                        "evidence the runtime already held",
+                        self.name,
+                        len(salvage),
+                    )
 
             # Debug: Check what we captured
             logger.info(

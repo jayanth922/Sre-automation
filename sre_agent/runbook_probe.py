@@ -336,3 +336,39 @@ async def probe_runbook_queries(
             ),
         ]
     )
+
+
+def probe_payload(block: str) -> str:
+    """The measurement lines back out of a block built above.
+
+    The probe runs before the lane's first turn and its numbers are the
+    runtime's own arithmetic, not a model's claim. They were reaching the
+    model only as prompt text, so when a lane produced nothing the
+    measurement died with it -- on 2026-09-23 that discarded a p90 of
+    2.023s against a 1.0s branch threshold, the one number the incident
+    turned on. Callers use this to keep it.
+
+    The envelope is ours and deterministic, so this reads it rather than
+    guessing: one JSON object on its own line between the two markers.
+    """
+    import json
+
+    if not block:
+        return ""
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("<<UNTRUSTED_EVIDENCE_V1"):
+            continue
+        if index + 1 >= len(lines):
+            return ""
+        try:
+            decoded = json.loads(lines[index + 1])
+        except (ValueError, TypeError):
+            return ""
+        if not isinstance(decoded, dict):
+            return ""
+        if decoded.get("source") != "runbook_query_probe":
+            return ""
+        content = decoded.get("content")
+        return content.strip() if isinstance(content, str) else ""
+    return ""
