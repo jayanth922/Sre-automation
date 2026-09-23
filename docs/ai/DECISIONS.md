@@ -1877,3 +1877,153 @@ against the configured turn count.
 **Rejected alternative.** Raising the limit without catching the error. A
 step ceiling is a budget, and every other budget in this lane — turns, wall
 clock, call count — keeps the evidence already paid for.
+
+## An environment ban belongs in the gate that can be appealed
+
+**Decision.** `policy_engine` Rule 1 — block a PROD restart whose plan risk
+score clears `POLICY_RESTART_RISK_THRESHOLD` — is deleted, and a comment in
+its place records why it cannot come back. The intent stays in
+`policy_gate.decide`, where it is already enforced from measured state:
+telemetry must be known, severity must sit inside the autonomy band, and a
+calibration artifact must clear the threshold.
+
+**Reason.** The score Rule 1 judged was the planner's own `risk_level` string
+mapped by `act_phase._plan_risk_score` (low 2.0, medium 5.0, high 8.0), so
+only a plan that labelled itself "low" ever passed — the same untrusted-writer
+inversion Rule 4 already records for `explicit_approval`. `calculate_risk_score`
+also adds 0.5 per dangerous action, so proposing a restart raised the very
+number used to judge it. Worse, an `evaluate_action` verdict is final:
+`policy_gate.decide` returns BLOCKED before the approval ladder runs and
+`_act_gate_node` builds the ACT report before looking up the approval, so no
+human could authorize what the rule refused. The 2026-09-23 trial is the
+evidence — a SEV3 restart with complete telemetry, blocked outright,
+UNRESOLVED.
+
+**Consequences.** A production restart now reaches REQUIRES_APPROVAL in
+production *and* development. Two environment-spoofing tests used the PROD
+restart block as their observable and would have passed either way after this;
+both move to scale-to-0, which is still environment-discriminated, each with a
+contrast case. Trial 6 took the new path end to end: `requires_approval` →
+approve → four live remediations → oracle-verified recovery.
+
+**Rejected alternative.** Keeping Rule 1 and reading a trustworthy risk signal
+instead. There is no such signal at that layer — `evaluate_action` sees the
+proposed action and the plan's self-description, and nothing else. The PROD
+rollback floor (Rule 2b) is the documented precedent for moving a ban into
+`decide`.
+
+## A confidence observation is not a paired trial
+
+**Decision.** `CONFIDENCE_RECORDING` is its own gate, defaulting on for any
+live benchmark run. Outside a paired experiment the runner derives the config
+fingerprint from the config that shapes the run and the pair id from a
+per-process `RUN_ID`. Trial rows stay gated on the four `BENCH_*` experiment
+vars.
+
+**Reason.** Both records hung off `STATISTICAL_RECORDING`, and `BENCH_SCENARIOS`
+raises rather than run beside it, so every single-scenario trial measured a
+real (confidence, outcome) pair and dropped it unwritten: five live incidents,
+zero samples, and a runtime that stays uncalibrated because the corpus it needs
+is never written. The two records do not need the same identity — a trial row
+means something only against its pair in another arm, which is what
+`PAIR_SEED` protects; a confidence observation is one reliability point, and
+its schema asks for a fingerprint and an id and nothing else.
+
+**Consequences.** `reports/sre-bench-confidence.jsonl` accumulates across
+ordinary single-scenario runs. The id must not repeat:
+`load_confidence_records` rejects a duplicate
+`(task, pair_id, config_fingerprint)` outright, and `make_pair_id` is
+deterministic in a trial index that is 1 for every single-trial run, so a
+repeat would not cost one sample — it would make the whole corpus unreadable.
+The corpus groups by task, not scenario, so it must be spread across scenarios
+before a threshold built from it means anything.
+
+## The benchmark may play approver, and must say so
+
+**Decision.** `BENCH_AUTO_APPROVE=1` lets the harness clear a pending approval
+through the same two calls the dashboard makes — `GET /status` for the
+`approval_request_id` and `action_hash`, then `POST /approve`. It is off by
+default, bounded by `BENCH_AUTO_APPROVE_LIMIT` (3), counted into the grade
+record's `harness_approvals`, and stamped onto the trial's
+`failure_categories` as `harness_approved`.
+
+**Reason.** `awaiting_approval` is terminal in `TERMINAL_APPLICATION_STATUSES`
+and nothing ever cleared it, so a plan the gate correctly held for a human
+ended the trial there and scored UNRESOLVED. On a production cluster
+`policy_gate` holds every rollback and every uncalibrated mutation, which is
+the behaviour we want; the benchmark could only ever punish it.
+
+**Consequences.** The number a trial reports changes meaning with the flag on
+— "can the agent fix this once authorized", not "unaided" — so the count is
+recorded in both artifacts and an authorized arm can never be read back, or
+diffed against an unaided one, as autonomous. This is not a DB bypass and not
+a new code path: the graph still verifies the hash against the plan it runs,
+and the Prometheus oracle still decides recovery on its own.
+
+**Rejected alternative.** Treating `awaiting_approval` as a success. That
+scores an unexecuted plan as a fix and would have made `false_resolved`
+meaningless.
+
+
+## An empty observability result must carry its own validity verdict
+
+**Decision.** A Loki query that returns nothing now says why: whether the
+selector was valid, and if not, which label or value does not exist.
+`query_logs` reports `streams_matched` and, on any empty result,
+`selector_valid` plus an `empty_result_reason`. An invalid selector is phrased
+"INVALID QUERY, NOT EVIDENCE"; a valid selector over a quiet window is phrased
+"This IS genuine evidence of silence". `analyze_log_patterns` forwards the
+verdict instead of rebuilding a payload without it.
+
+**Reason.** Loki answers a selector naming a label it does not have exactly the
+way it answers a service that logged nothing: HTTP 200, zero streams. In trial 6
+the Application Logs specialist ran five queries against `{app="..."}` — a label
+this Loki does not index — and concluded, verbatim, "no evidence of a Loki tool
+failure (no error/exception in the response, just `count: 0`) ... there's
+nothing in the logs to contradict the Prometheus specialist's Branch A finding."
+A query that could never have matched was promoted to a finding. This is #35's
+class — a failure laundered into a success string — reached through a different
+door: the call succeeded, and only the question was malformed.
+
+**Consequences.** Every empty log result now carries either a warning that
+forbids reading it as evidence, or a note confirming the silence is real. The
+diagnosis costs one to three extra Loki calls, only on empty results, and is
+best-effort: when the label index cannot be read it returns `selector_valid:
+null` and still refuses to call the result silence. A tool may now spend a round
+trip to establish that it has nothing useful to say.
+
+**Rejected alternative.** Validating selectors before every query. That pays the
+label-index cost on all calls to protect the minority that come back empty, and
+still cannot separate a typo from a genuinely quiet service — only the empty
+result raises the question worth answering.
+
+## A runbook may not name telemetry the cluster does not have
+
+**Decision.** `runbooks/meridian/high-error-rate.md` Step 4 and
+`downstream-dependency-failure.md` Step 2 now select on `service`, the label
+this Loki indexes, rather than `app`, which it does not have.
+
+**Reason.** Step 4's rule is "if any of the three returns lines → Branch D".
+A selector on a nonexistent label returns zero lines unconditionally, so Branch
+D — the database-connectivity remediation — was unreachable by construction. The
+runbook did not merely fail to help; it routed every database-side fault to
+Branch A or E. The agent was following the corpus correctly.
+
+**Consequences.** The agent reads runbooks from Notion, not from the repo, so
+the fix reached it only on republish (2026-09-23, four pages, 12 changed lines;
+the other two drafts went out byte-identical). The live corpus now holds no
+LogQL selector naming `app`, and `audit_runbook_coverage.py` scores 22/22
+against the dump taken after the write rather than against the local drafts.
+`benchmarks/datasets/v{2,3}/runbook_corpus_snapshot.json` were regenerated from
+that same dump. They are dumps of what Notion served, so they must always be
+regenerated with `scripts/dump_notion_runbook_corpus.py` and never hand-edited,
+or the snapshot stops describing the corpus anyone read.
+
+The `kubectl -l app=<service>` selectors elsewhere in the corpus were left
+alone: pods do carry an `app` label. Only Loki lacks one, and only Loki's
+silence was being read as evidence.
+
+**Rejected alternative.** Teaching the tool to accept `app` as an alias for
+`service`. That hides a corpus defect behind a tool that silently rewrites the
+operator's query, and the next wrong label — on a cluster whose labels differ —
+would get no such courtesy.

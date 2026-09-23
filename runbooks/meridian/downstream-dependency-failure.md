@@ -36,7 +36,7 @@ Checkout errors during a provider outage carry the reason
 `payment_dependency_failure`:
 
 ```
-query_logs(logql='{app="checkout-service"} |= "payment_dependency_failure"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
+query_logs(logql='{service="checkout-service"} |= "payment_dependency_failure"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
 ```
 
 If the reasons are dependency-side and no deployment correlates with the
