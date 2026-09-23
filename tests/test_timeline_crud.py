@@ -334,3 +334,142 @@ def test_an_alert_with_no_findings_yet_gets_no_echo_caveat():
     )
 
     assert "Carried over from the alert text" not in content
+
+
+# --- A figure only conflicts with a figure about the same thing ------------
+#
+# On 2026-09-22 the detector pooled five numbers under "latency" -- the
+# alert rule's static 2.1s, a control reading on another service, and one
+# rising series quoted by two lanes -- declared them unreconciled, and the
+# agent escalated rather than act on a measurement it had made correctly.
+
+
+def _alert_at_2_1s():
+    return SimpleNamespace(
+        alert_name="InventorySlowQueries",
+        severity="warning",
+        annotations={
+            "summary": "inventory-service 90th percentile query latency at 2.1s",
+            "description": "Slow queries for more than 5 minutes.",
+        },
+    )
+
+
+def test_the_2026_09_22_latency_shape_is_not_a_conflict():
+    """The exact shape that stopped the run: one rising series, a control
+    on a second service, and the alert rule's own templated figure."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": (
+                "inventory-service db p90 latency was 0.022s pre-fault and "
+                "latency is 1.723s during the fault. Separately "
+                "payment-service p95 latency is 0.0095s and did not move, "
+                "so a shared dependency is ruled out."
+            ),
+            "logs_agent": (
+                "Per Prometheus, inventory-service query latency is 1.895s now."
+            ),
+            "runbooks_agent": (
+                "The runbook threshold is latency above 1.0s for 5 minutes."
+            ),
+        },
+        query="Investigate InventorySlowQueries",
+        alert_context=_alert_at_2_1s(),
+        narrative="## TL;DR\nFault injection is enabled on inventory-service.",
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+
+
+def test_the_alerts_own_prose_cannot_manufacture_a_conflict():
+    """``annotations.summary`` is a static string in the rule file, not a
+    reading. It has nothing to disagree with on its own."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {"metrics_agent": "inventory-service p90 latency is 1.723s"},
+        query="Investigate InventorySlowQueries",
+        alert_context=_alert_at_2_1s(),
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+
+
+def test_the_alerts_figure_is_still_shown_when_specialists_disagree():
+    """The alert cannot create a conflict, but when one exists the operator
+    still needs the number that tripped the rule."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "inventory-service p90 latency is 1.723s",
+            "logs_agent": "inventory-service request latency is 9.4s",
+        },
+        query="Investigate InventorySlowQueries",
+        alert_context=_alert_at_2_1s(),
+    )
+
+    assert "2.1s" in payload["conflicting_numeric_facts"]["latency"]
+
+
+def test_a_control_reading_on_another_service_is_not_a_contradiction():
+    """Checking a second service to rule out a shared dependency is the
+    lane doing its job, not disagreeing with the first."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "inventory-service p90 latency is 1.723s",
+            "logs_agent": "payment-service p95 latency is 0.0095s, unchanged",
+        },
+        query="Investigate InventorySlowQueries",
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+
+
+def test_a_metric_that_moved_during_the_incident_is_one_fact():
+    """An incident metric that moves is the normal case. Two readings of it
+    minutes apart are one fact drifting, not two facts colliding."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "inventory-service p90 latency is 1.723s",
+            "logs_agent": "inventory-service p90 latency is 1.895s on recheck",
+        },
+        query="Investigate InventorySlowQueries",
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+
+
+def test_one_source_narrating_a_series_does_not_contradict_the_next():
+    """"rose from 0.022s to 1.723s" asserts an interval. A later reading
+    just past its top is the same series continuing."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": (
+                "inventory-service latency was 0.022s pre-fault and "
+                "latency is 1.723s during the fault"
+            ),
+            "logs_agent": "inventory-service p90 latency is 1.895s on recheck",
+        },
+        query="Investigate InventorySlowQueries",
+    )
+
+    assert payload["conflicting_numeric_facts"] == {}
+
+
+def test_two_readings_far_apart_on_one_service_are_still_flagged():
+    """The tolerance is for drift, not for disagreement. 1.723s against
+    9.4s on the same service is two lanes measuring different things."""
+    _content, payload = build_supervisor_summary_content(
+        "",
+        {
+            "metrics_agent": "inventory-service p90 latency is 1.723s",
+            "logs_agent": "inventory-service p90 latency is 9.4s",
+        },
+        query="Investigate InventorySlowQueries",
+    )
+
+    flagged = payload["conflicting_numeric_facts"]["latency"]
+    assert "1.723s" in flagged and "9.4s" in flagged

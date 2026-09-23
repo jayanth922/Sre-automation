@@ -202,6 +202,36 @@ _THRESHOLD_CONTEXT_RE = re.compile(
 )
 
 
+# A service or job name next to a figure says what the figure is about.
+# On 2026-09-22 the Prometheus lane reported "payment-service p95 flat at
+# 0.0095s" as a deliberate control -- it checked a second service to rule out
+# a shared dependency, and said so -- alongside inventory-service's 1.723s.
+# Pooling both under "latency" turned a ruled-out dependency into a
+# contradiction. 100 characters is enough to reach back past a PromQL label
+# selector to the service name in front of its result.
+_ENTITY_RE = re.compile(
+    r"(?:job|service|app|container|pod)\s*=\s*[^a-z0-9]{0,2}([a-z0-9][a-z0-9._-]*)"
+    r"|\b([a-z0-9][a-z0-9-]*-(?:service|api|db|gateway|worker|cache|queue))\b",
+    re.IGNORECASE,
+)
+_ENTITY_LOOKBEHIND = 100
+
+
+def _mention_entity(text: str, start: int) -> str:
+    """The service a figure belongs to, or "" when the text does not say.
+
+    Unattributed figures share one bucket, so they are still compared with
+    each other -- just never with a figure the text explicitly pinned to
+    some other service.
+    """
+    window = text[max(0, start - _ENTITY_LOOKBEHIND): start]
+    matches = list(_ENTITY_RE.finditer(window))
+    if not matches:
+        return ""
+    last = matches[-1]
+    return (last.group(1) or last.group(2) or "").lower()
+
+
 def _mention_kind(text: str, start: int, end: int) -> str:
     """Classify a numeric mention as a configured 'threshold' or an
     'observed' measurement, based on nearby context words, so a runbook's
@@ -211,7 +241,9 @@ def _mention_kind(text: str, start: int, end: int) -> str:
     return "threshold" if _THRESHOLD_CONTEXT_RE.search(window) else "observed"
 
 
-def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[Tuple[str, str]]]:
+def _extract_numeric_fact_mentions(
+    text: str,
+) -> Dict[str, List[Tuple[str, str, str]]]:
     patterns = {
         "error rate": [
             r"(?:error rate|errors?)\D{0,24}(\d+(?:\.\d+)?%)",
@@ -236,17 +268,18 @@ def _extract_numeric_fact_mentions(text: str) -> Dict[str, List[Tuple[str, str]]
             r"(\d+(?:\.\d+)?%)\D{0,24}(?:memory(?: usage| utilization)?|memory|mem)",
         ],
     }
-    facts: Dict[str, List[Tuple[str, str]]] = {}
+    facts: Dict[str, List[Tuple[str, str, str]]] = {}
     for label, label_patterns in patterns.items():
         seen: set = set()
-        mentions: List[Tuple[str, str]] = []
+        mentions: List[Tuple[str, str, str]] = []
         for pattern in label_patterns:
             for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
                 value = re.sub(r"\s+", " ", match.group(1).strip().lower())
                 kind = _mention_kind(text or "", match.start(), match.end())
-                if (value, kind) not in seen:
-                    seen.add((value, kind))
-                    mentions.append((value, kind))
+                entity = _mention_entity(text or "", match.start())
+                if (value, kind, entity) not in seen:
+                    seen.add((value, kind, entity))
+                    mentions.append((value, kind, entity))
         if mentions:
             facts[label] = mentions
     return facts
@@ -281,29 +314,137 @@ def _canonical_fact_value(label: str, value: str) -> str:
     return value
 
 
-def _detect_conflicting_numeric_facts(texts: Sequence[str]) -> Dict[str, List[str]]:
-    """Flag a label as conflicting only when two or more DISTINCT *observed*
-    values are seen for it. A runbook-quoted threshold/config value is never
-    compared against an observed measurement — they describe different
-    things (a limit vs. a reading) and are not a real conflict."""
-    combined: Dict[str, List[Tuple[str, str]]] = {}
+# Two readings of one metric taken minutes apart are one fact, not two. An
+# incident metric that moves is the normal case: on 2026-09-22 the same db
+# p90 was quoted as 1.723s at the alert stamp and 1.895s at the next check,
+# and calling that pair "unreconciled" told the agent to distrust a
+# measurement it had made correctly, which cost the run its remediation. A
+# figure differing by more than this factor is a different fact; one
+# differing by less is the same fact, drifting. The cost here is asymmetric
+# -- a missed 1.8x disagreement understates uncertainty in one sentence,
+# while a false one stopped a whole remediation -- so this is deliberately
+# permissive.
+_FACT_AGREEMENT_RATIO = 2.0
+
+
+def _fact_magnitude(canonical: str) -> Optional[float]:
+    match = _NUMBER_AND_UNIT_RE.match(canonical.strip().lower())
+    return float(match.group(1)) if match else None
+
+
+def _observed_values(
+    label: str, mentions: List[Tuple[str, str, str]]
+) -> Dict[str, Dict[str, str]]:
+    """One source's observed readings for one label, per entity measured."""
+    observed: Dict[str, Dict[str, str]] = {}
+    for value, kind, entity in mentions:
+        if kind != "observed":
+            continue
+        observed.setdefault(entity, {}).setdefault(
+            _canonical_fact_value(label, value), value
+        )
+    return observed
+
+
+def _reading_span(observed: Dict[str, str]) -> Optional[Tuple[float, float]]:
+    """The interval one source's readings cover, canonical units."""
+    magnitudes = [
+        magnitude
+        for magnitude in (_fact_magnitude(value) for value in observed)
+        if magnitude is not None
+    ]
+    if not magnitudes:
+        return None
+    return (min(magnitudes), max(magnitudes))
+
+
+def _spans_agree(
+    left: Optional[Tuple[float, float]], right: Optional[Tuple[float, float]]
+) -> bool:
+    """Whether two sources can be describing one fact.
+
+    A source that narrates a series ("0.022s pre-fault, 1.723s at the
+    alert") asserts an interval, not a point. Two intervals that overlap,
+    or sit within _FACT_AGREEMENT_RATIO of each other, are reconcilable.
+    """
+    if left is None or right is None:
+        return True
+    lower, upper = (left, right) if left[0] <= right[0] else (right, left)
+    if upper[0] <= lower[1]:
+        return True
+    if lower[1] <= 0:
+        return upper[0] <= 0
+    return upper[0] / lower[1] <= _FACT_AGREEMENT_RATIO
+
+
+def _detect_conflicting_numeric_facts(
+    texts: Sequence[str],
+    *,
+    alert_text: str = "",
+) -> Dict[str, List[str]]:
+    """Flag a label only when two investigating sources genuinely disagree.
+
+    A conflict requires two sources that measured the same label on the
+    same service and whose readings cannot be reconciled as one moving
+    fact. Four things are deliberately not conflicts:
+
+    * A runbook-quoted threshold or configured limit. It describes a bound,
+      not a reading (see ``_mention_kind``).
+
+    * Two figures measured on different services. A lane that checks a
+      second service to rule out a shared dependency is doing its job, not
+      contradicting the first (see ``_mention_entity``).
+
+    * Readings within ``_FACT_AGREEMENT_RATIO`` of each other, or whose
+      ranges overlap. A metric that moved during the incident is one fact
+      observed twice (see ``_spans_agree``).
+
+    * A spread *within* one source. A specialist reporting "db p90 rose
+      from 0.022s pre-fault to 1.723s at the alert to 1.895s now" is
+      narrating one series, not contradicting itself. An incident metric
+      that moves is the normal case; pooling its samples and calling the
+      range an inconsistency describes almost every real incident.
+
+    * The alert's own prose. ``annotations.summary`` is a static,
+      human-authored string in the rule file. On 2026-09-22 it said "query
+      latency at 2.1s" while the lane measured 1.723s rising to 1.895s, and
+      comparing the two manufactured a contradiction out of the alert's
+      wording — which drove severity down and stopped the agent acting on
+      a measurement it had made correctly. Alert figures are still listed
+      when a conflict exists, so the operator sees the trigger value; they
+      just cannot create one on their own.
+    """
+    per_bucket: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
     for text in texts:
         for label, mentions in _extract_numeric_fact_mentions(text).items():
-            known = combined.setdefault(label, [])
-            for mention in mentions:
-                if mention not in known:
-                    known.append(mention)
+            for entity, observed in _observed_values(label, mentions).items():
+                per_bucket.setdefault((label, entity), []).append(observed)
 
-    conflicts: Dict[str, List[str]] = {}
-    for label, mentions in combined.items():
-        by_canonical: Dict[str, str] = {}
-        for value, kind in mentions:
-            if kind != "observed":
-                continue
-            by_canonical.setdefault(_canonical_fact_value(label, value), value)
-        if len(by_canonical) > 1:
-            conflicts[label] = list(by_canonical.values())
-    return conflicts
+    from_alert: Dict[str, Dict[str, str]] = {}
+    for label, mentions in _extract_numeric_fact_mentions(alert_text).items():
+        for observed in _observed_values(label, mentions).values():
+            for canonical, value in observed.items():
+                from_alert.setdefault(label, {}).setdefault(canonical, value)
+
+    disputed: Dict[str, Dict[str, str]] = {}
+    for (label, _entity), sources in per_bucket.items():
+        spans = [_reading_span(observed) for observed in sources]
+        disagree = any(
+            not _spans_agree(earlier, later)
+            for index, earlier in enumerate(spans)
+            for later in spans[index + 1 :]
+        )
+        if not disagree:
+            continue
+        reported = disputed.setdefault(label, {})
+        for observed in sources:
+            for canonical, value in observed.items():
+                reported.setdefault(canonical, value)
+
+    for label, reported in disputed.items():
+        for canonical, value in from_alert.get(label, {}).items():
+            reported.setdefault(canonical, value)
+    return {label: list(reported.values()) for label, reported in disputed.items()}
 
 
 def _alert_context_to_text(alert_context: Any) -> str:
@@ -484,10 +625,10 @@ def build_supervisor_summary_content(
         for agent_name, response in visible_results.items()
         if response
     ]
-    conflict_sources = ([alert_text] if alert_text else []) + [
-        str(response) for response in agent_results.values() if response
-    ]
-    conflicts = _detect_conflicting_numeric_facts(conflict_sources)
+    conflicts = _detect_conflicting_numeric_facts(
+        [str(response) for response in agent_results.values() if response],
+        alert_text=alert_text,
+    )
 
     if narrative and narrative.strip():
         content = narrative.strip()

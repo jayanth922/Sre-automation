@@ -607,8 +607,14 @@ def test_the_cut_short_reason_is_recorded_for_the_run_manifest(timed_out_lane):
 # --- a lane that never called a tool has not investigated -------------------
 
 
-def _no_tool_lane(monkeypatch, *, streams, narrated):
-    """Wire a BaseAgentNode to a scripted astream and count narration calls."""
+def _no_tool_lane(
+    monkeypatch, *, streams, narrated, name="Application Logs Agent"
+):
+    """Wire a BaseAgentNode to a scripted astream and count narration calls.
+
+    ``name`` picks the lane: _get_agent_type() reads it, and the guards
+    under test are keyed on the agent it resolves to.
+    """
 
     async def fake_artifact_metadata(state, **kwargs):
         return {}, None
@@ -633,7 +639,7 @@ def _no_tool_lane(monkeypatch, *, streams, narrated):
     monkeypatch.setattr(agent_nodes, "narrate_specialist_finding", fake_narrate)
 
     return agent_nodes.BaseAgentNode(
-        name="Application Logs Agent", description="reads logs", tools=[]
+        name=name, description="reads logs", tools=[]
     )
 
 
@@ -779,3 +785,118 @@ def test_a_lane_stopped_at_a_boundary_is_not_relabelled(recursion_capped_lane):
 
     budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
     assert budgets["cut_short"] == "recursion_limit"
+
+
+# --- the lane whose job the brief already did -------------------------------
+#
+# build_specialist_task_brief() inlines the authoritative runbook for the
+# alert. For the runbooks lane that IS the artifact it would have gone to
+# fetch, so answering from it is the contract. On 2026-09-22 the guard
+# above read that as a silent lane and bought a second run of it.
+
+_RUNBOOK = (
+    "1. Confirm the slow query in pg_stat_statements.\n"
+    "2. Disable the fault injection flag on inventory-service.\n"
+    "3. Verify p90 returns under 1.0s."
+)
+
+
+def _run_runbook_lane(node, *, runbook=_RUNBOOK):
+    annotations = {"runbook_context": runbook} if runbook else {}
+    return asyncio.run(
+        node(
+            {
+                "current_query": "Investigate InventorySlowQueries",
+                "alert_context": {
+                    "alert_name": "InventorySlowQueries",
+                    "labels": {},
+                    "annotations": annotations,
+                },
+                "metadata": {},
+                "agent_results": {},
+            }
+        )
+    )
+
+
+@pytest.fixture
+def runbook_lane_answering_from_the_brief(monkeypatch):
+    """The runbooks lane quoting the runbook it was handed, no tool call."""
+    seen, narrated = [], []
+
+    async def fake_astream(payload, config=None):
+        seen.append([str(getattr(m, "content", m)) for m in payload["messages"]])
+        yield {
+            "agent": {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "The runbook says to disable the fault injection "
+                            "flag on inventory-service, then verify p90 is "
+                            "back under 1.0s."
+                        )
+                    )
+                ]
+            }
+        }
+
+    node = _no_tool_lane(
+        monkeypatch,
+        streams=fake_astream,
+        narrated=narrated,
+        name="Operational Runbooks Agent",
+    )
+    return node, seen, narrated
+
+
+def test_the_runbooks_lane_answering_from_its_own_runbook_is_not_retried(
+    runbook_lane_answering_from_the_brief,
+):
+    node, seen, _ = runbook_lane_answering_from_the_brief
+
+    _run_runbook_lane(node)
+
+    assert len(seen) == 1, "the lane was charged for a second run it did not need"
+
+
+def test_the_runbooks_lane_answer_is_kept_as_a_finding(
+    runbook_lane_answering_from_the_brief,
+):
+    node, _, narrated = runbook_lane_answering_from_the_brief
+
+    result = _run_runbook_lane(node)
+    report = result["agent_results"]["runbooks_agent"]
+    budgets = result["metadata"]["specialist_turn_budgets"]["runbooks_agent"]
+
+    assert budgets["cut_short"] == ""
+    assert "called no tools" not in report
+    assert "disable the fault injection" in report.lower()
+    assert narrated == [1]
+
+
+def test_the_runbooks_lane_with_no_runbook_in_hand_is_still_retried(
+    runbook_lane_answering_from_the_brief,
+):
+    """With nothing inlined the lane does have to go and find a procedure,
+    so the exemption is conditional on the brief, not on the lane."""
+    node, seen, _ = runbook_lane_answering_from_the_brief
+
+    result = _run_runbook_lane(node, runbook="")
+    budgets = result["metadata"]["specialist_turn_budgets"]["runbooks_agent"]
+
+    assert len(seen) == 2
+    assert budgets["cut_short"] == "no_tool_calls"
+
+
+def test_another_lane_handed_the_same_runbook_is_still_retried(
+    preamble_only_lane,
+):
+    """The logs lane's evidence is in Loki. A runbook in its brief tells it
+    where to look; it does not excuse it from looking."""
+    node, seen, _ = preamble_only_lane
+
+    result = _run_runbook_lane(node)
+    budgets = result["metadata"]["specialist_turn_budgets"]["logs_agent"]
+
+    assert len(seen) == 2
+    assert budgets["cut_short"] == "no_tool_calls"

@@ -117,6 +117,14 @@ _NO_TOOL_LANE_NOTE = (
     "the text above is a preamble rather than a finding. Do not treat it as "
     "observed data, and do not report this lane's subject as checked."
 )
+# ...with one exception. The runbooks lane's domain is the procedure itself,
+# and build_specialist_task_brief() already inlines the authoritative runbook
+# for this alert. When it is there, the lane has nothing left to retrieve and
+# answering from it is the contract, not a skipped investigation. On
+# 2026-09-22 the guard above read that as a silent lane and bought a second
+# run of it. With no runbook inlined the lane does have to go and find one,
+# so the exemption is conditional on the brief, not on the lane alone.
+_RUNBOOK_SUFFICIENT_AGENTS = frozenset({"runbooks_agent"})
 
 
 def _cut_short_reason(
@@ -592,6 +600,13 @@ class BaseAgentNode:
                 ),
             )
 
+            # Answering without a tool call is this lane's contract only
+            # while the runbook it would have fetched is already in hand.
+            runbook_answerable = bool(
+                agent_key in _RUNBOOK_SUFFICIENT_AGENTS
+                and runbook_text_for_alert(state.get("alert_context"))
+            )
+
             # We'll collect all messages and the final response
             all_messages = []
             agent_response = ""
@@ -830,7 +845,11 @@ class BaseAgentNode:
                     # Nothing stopped this lane and it still never called a
                     # tool: the model wrote a preamble and returned. Ask once
                     # more, explicitly, while there is clock left to answer in.
-                    if not cut_short_reason and not tool_calls_made:
+                    if (
+                        not cut_short_reason
+                        and not tool_calls_made
+                        and not runbook_answerable
+                    ):
                         remaining = timeout_seconds - (time.monotonic() - started_at)
                         if remaining >= _NO_TOOL_RETRY_MIN_SECONDS:
                             logger.warning(
@@ -939,7 +958,7 @@ class BaseAgentNode:
             # it has given an absent one. Label it so the reflector and the
             # trial record both see a missing lane, instead of reading its
             # opening sentence as though it were observed data.
-            if not tool_calls_made and not cut_short_reason:
+            if not tool_calls_made and not cut_short_reason and not runbook_answerable:
                 cut_short_reason = "no_tool_calls"
                 logger.error(
                     "%s - lane produced no tool calls in %d model call(s); "
