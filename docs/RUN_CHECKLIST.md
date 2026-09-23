@@ -62,7 +62,7 @@ advisor run, then enable one tier at a time.
 
 Optional tuning: `MODEL_ROUTER_LOW_BUDGET_THRESHOLD`,
 `MODEL_ROUTER_STRONG_PROVIDER`, `VERIFY_ERROR_THRESHOLD`,
-`VERIFICATION_WAIT_SECONDS`, `CONTEXT_MAX_TOKENS`, `POLICY_RESTART_RISK_THRESHOLD`.
+`VERIFICATION_WAIT_SECONDS`, `CONTEXT_MAX_TOKENS`.
 
 Edge executor guardrails (in `edge_mcp_servers/docker-compose.yaml` or its env):
 `EXECUTOR_ALLOWED_NAMESPACES=demo-app`, `EXECUTOR_MIN_REPLICAS=1`.

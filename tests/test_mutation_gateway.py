@@ -298,10 +298,19 @@ def test_fresh_policy_ignores_alert_or_stale_gate_environment(monkeypatch):
         environment="development",
         risk_score=5.0,
     )
+    # scale-to-0 is refused on PROD and allowed off it, so "policy_blocked"
+    # here can only mean the gateway resolved production from the operator-owned
+    # execution context and ignored the stale gate's "development". This was a
+    # medium-risk restart until `policy_engine` Rule 1 stopped hard-blocking
+    # those; a restart now reaches REQUIRES_APPROVAL in either environment and
+    # would make this assertion pass without discriminating anything.
+    outage = FakeAction(
+        action_type="scale", parameters={"namespace": "demo-app", "replicas": 0}
+    )
     with pytest.raises(MutationRejected, match="policy_blocked"):
         asyncio.run(
             authorize_and_execute(
-                FakeAction(), stale, CONTEXT, caller, None, "spoofed-environment"
+                outage, stale, CONTEXT, caller, None, "spoofed-environment"
             )
         )
     assert calls == []
