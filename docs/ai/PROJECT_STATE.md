@@ -59,8 +59,7 @@ comes next, benchmarking last.
 
 ## Active problem
 Benchmarking, and it is budget-blocked: the $88–$632 tiers are refused, and six
-single trials (~$6) are all that has been spent. Two defects stay unfiled —
-`propose_skills` tests an additive `threshold=0.5` against a cosine score, and
+single trials (~$6) are all that has been spent. One defect stays open —
 specialists still exhaust the six-turn limit, capping how far one investigation
 reaches before the reflector sees it.
 
@@ -73,7 +72,9 @@ reaches before the reflector sees it.
 - Evaluation: `benchmarks/{sre_bench,structured_grading,statistical_eval}.py`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → **2385 passed, 6 skipped** (2026-09-23).
+- `.venv/bin/python -m pytest -q` → **2389 passed, 6 skipped** (2026-09-23).
+- `benchmarks/calibrate_semantic_floor.py` → free, no LLM; fails if
+  `_SEMANTIC_MATCH_FLOOR` leaves the measured gap (0.764, 0.851).
 - `scripts/check_python_quality.sh` → ruff critical, mypy, compileall clean.
 - `scripts/deploy_agent_runtimes.sh` → `code_sha=283f9ba`, 162 files, parity
   passed. `benchmarks/` is not in the image; `sre_agent/` is.
@@ -93,8 +94,6 @@ reaches before the reflector sees it.
   `evidence_support` sit at `REQUIRES_CALIBRATION`, no blinded judge installed.
 - Specialists still hit the six-turn investigation limit.
 - Defect (c) is unit-verified only — never observed under live fire.
-- `propose_skills` compares an additive `threshold=0.5` against a cosine score,
-  so the semantic path admits unrelated skills.
 - Incident recall is provably inert; dataset v3 is not runnable, the Meridian
   image lacking the `metrics_enabled` rebuild. The corpus stays v2's 22.
 - **No paid run beyond trial 6 is authorized.** The $88–$632 tiers stay refused.

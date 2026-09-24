@@ -49,11 +49,29 @@ logger = logging.getLogger(__name__)
 # enabling this costs no extra infra (see platform/docker-compose.yaml).
 SKILLS_COLLECTION = "sre_skills_v1"
 
-# Cosine-similarity floor for a semantic hit to even be considered a candidate,
-# applied at the Qdrant query itself. The final find_matching() threshold
-# (default 0.5, same 0..1 scale as match_score) is the real cutoff; this is
-# just a cheap floor to keep obviously-irrelevant points out of the merge.
+# Cosine floor applied at the Qdrant query itself — a cheap pre-filter so
+# obviously-irrelevant points are never deserialised or resolved to skills.
 _SEMANTIC_QUERY_FLOOR = 0.3
+
+# Cosine floor for a semantic hit to be *admitted* when the keyword pass already
+# rejected it. Deliberately not find_matching()'s `threshold`: that grades
+# match_score, which is additive (0.5 failure class + 0.3 service + 0.2 alert
+# name), so threshold=0.5 means precisely "same failure class". Cosine over
+# signature_text() is a different scale that merely shares the 0..1 range, and
+# reusing 0.5 there admitted essentially everything.
+#
+# Measured over all 231 pairs of the 22 v2 benchmark signatures with the
+# production embedding model (benchmarks/calibrate_semantic_floor.py), the two
+# populations separate cleanly with no overlap:
+#
+#     same failure class (n=70)       min 0.851   p50 0.898   max 1.000
+#     different failure class (n=161) min 0.564   p50 0.680   max 0.764
+#
+# 0.80 sits inside that gap: it admits 0/161 wrong-class pairs while keeping
+# 70/70 same-class ones. The previous behaviour — reusing threshold=0.5 —
+# admitted all 161. Re-run the calibration if the embedding model or
+# signature_text() changes; the script fails if the gap no longer holds.
+_SEMANTIC_MATCH_FLOOR = 0.80
 
 # Stable namespace for deriving Qdrant point IDs from skill_id (uuid5 is
 # deterministic across processes; distinct from memory_store.py's namespace so
@@ -585,46 +603,65 @@ class SemanticSkillStore(JsonSkillStore):
         threshold: float,
         observed: Dict[str, Any],
     ) -> List[Tuple[Skill, float]]:
-        by_id: Dict[str, Tuple[Skill, float]] = {
+        # Two recall paths on two different scales, kept apart. Keyword hits are
+        # graded by match_score against `threshold`; semantic hits by cosine
+        # against _SEMANTIC_MATCH_FLOOR. A score from one scale is never
+        # compared with, nor substituted for, a score from the other: a skill
+        # the keyword pass admitted keeps its match_score even if Qdrant also
+        # returns it, and the tiered ordering below puts every keyword hit ahead
+        # of every semantic-only one. So semantic recall can add a candidate the
+        # keyword pass missed — the whole reason this subclass exists — but can
+        # never outrank or rescore a real signature match.
+        keyword: Dict[str, Tuple[Skill, float]] = {
             s.skill_id: (s, sc)
             for s, sc in super()._find_matching(signature, threshold, observed)
         }
+        semantic: List[Tuple[Skill, float]] = []
+
         if not self._semantic_available:
             observed["error"] = "semantic index unavailable; keyword-only recall"
-            return sorted(by_id.values(), key=lambda t: (t[1], t[0].success_count), reverse=True)
+        else:
+            try:
+                query_vector = self._embed_text(signature_text(signature))
+                tenant_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="organization_id", match=MatchValue(value=signature.organization_id)
+                        ),
+                        FieldCondition(key="cluster_id", match=MatchValue(value=signature.cluster_id)),
+                    ]
+                )
+                response = self._qdrant.query_points(
+                    collection_name=SKILLS_COLLECTION,
+                    query=query_vector,
+                    limit=10,
+                    score_threshold=_SEMANTIC_QUERY_FLOOR,
+                    query_filter=tenant_filter,
+                )
+                for point in response.points:
+                    skill_id = point.payload.get("skill_id")
+                    skill = self._skill_by_id(skill_id) if skill_id else None
+                    if skill is None or skill.invalidated or skill.outcome != "verified_success":
+                        continue
+                    if skill.skill_id in keyword or point.score < _SEMANTIC_MATCH_FLOOR:
+                        continue
+                    semantic.append((skill, point.score))
+            except Exception as e:
+                logger.warning(
+                    f"SkillStore: semantic recall query failed ({e}); using keyword-only matches"
+                )
+                observed["error"] = f"semantic recall failed: {type(e).__name__}: {e}"
 
-        try:
-            query_vector = self._embed_text(signature_text(signature))
-            tenant_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="organization_id", match=MatchValue(value=signature.organization_id)
-                    ),
-                    FieldCondition(key="cluster_id", match=MatchValue(value=signature.cluster_id)),
-                ]
-            )
-            response = self._qdrant.query_points(
-                collection_name=SKILLS_COLLECTION,
-                query=query_vector,
-                limit=10,
-                score_threshold=_SEMANTIC_QUERY_FLOOR,
-                query_filter=tenant_filter,
-            )
-            for point in response.points:
-                skill_id = point.payload.get("skill_id")
-                skill = self._skill_by_id(skill_id) if skill_id else None
-                if skill is None or skill.invalidated or skill.outcome != "verified_success":
-                    continue
-                existing = by_id.get(skill.skill_id)
-                if existing is None or point.score > existing[1]:
-                    by_id[skill.skill_id] = (skill, point.score)
-        except Exception as e:
-            logger.warning(f"SkillStore: semantic recall query failed ({e}); using keyword-only matches")
-            observed["error"] = f"semantic recall failed: {type(e).__name__}: {e}"
+        def rank(pair: Tuple[Skill, float]) -> Tuple[float, int]:
+            return (pair[1], pair[0].success_count)
 
-        hits = [t for t in by_id.values() if t[1] >= threshold]
-        hits.sort(key=lambda t: (t[1], t[0].success_count), reverse=True)
-        return hits
+        if semantic:
+            # Scores below are on two scales; record how many are cosines so the
+            # retrieval metrics aren't read as one distribution.
+            observed["semantic_only"] = len(semantic)
+        return sorted(keyword.values(), key=rank, reverse=True) + sorted(
+            semantic, key=rank, reverse=True
+        )
 
 
 _GLOBAL_STORE: Optional[InMemorySkillStore] = None

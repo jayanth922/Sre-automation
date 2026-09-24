@@ -26,13 +26,18 @@ Two checks, and they differ in strength:
   whose scale `propose_skills`' `threshold=0.5` was written for, where 0.5 is
   exactly "same failure class".
 
-  The two diverge on the semantic path, which compares that same 0.5 against a
-  *cosine similarity* from Qdrant instead. Short signature strings clear it on
-  embedding proximity alone, so `checkout_memory_leak_oom` retrieves
-  `latency-inventory-service`. Read `skill_hit` as "the lookup is not empty,
-  so `no_memory` removes something" and `signature_hit` as "what it removes is
-  knowledge about this incident". Only the second supports a claim that
-  learned memory helped.
+  The two can still diverge on the semantic path, which admits on cosine
+  similarity and so can return a skill `match_score` would not. That path used
+  to test cosine against this same 0.5 — a number written for `match_score` —
+  and so admitted nearly everything: `checkout_memory_leak_oom` retrieved
+  `latency-inventory-service`. It now has a floor of its own, measured rather
+  than assumed (`_SEMANTIC_MATCH_FLOOR`; see calibrate_semantic_floor.py), so
+  the gap between the two numbers should be narrow. It is not zero, though —
+  a skill whose failure class is `unknown` can still be close in embedding
+  space — so both are still reported. Read `skill_hit` as "the lookup is not
+  empty, so `no_memory` removes something" and `signature_hit` as "what it
+  removes is knowledge about this incident". Only the second supports a claim
+  that learned memory helped.
 * **Incident recall — necessary, not sufficient.** Counts tenant-scoped points
   in the incident collection rather than running a semantic query, which would
   need the embedding model and an API bill of its own. Zero points proves
@@ -47,8 +52,10 @@ unavailable, and it does so with a log line rather than an error. So the
 answer depends on the interpreter: the image's `/app/.venv` (what `uv run`
 starts, and what the agent is) has the dependency, while the container's bare
 `/usr/local/bin/python` does not. Running this under the latter reported
-`qdrant-client not installed` and 3/6 coverage for a corpus that actually
-covers 6/6 — a wrong answer that looked exactly like a finding.
+`qdrant-client not installed` and 3/6 coverage where the semantic path reported
+6/6 — a wrong answer that looked exactly like a finding. Both figures predate
+`_SEMANTIC_MATCH_FLOOR`, and most of the spread between them was the old
+admit-everything behaviour, so re-measure before quoting either.
 
 Hence `--expect-retrieval-path`, and hence the `interpreter` block in the
 report: a coverage number is unreadable without knowing which stack produced
@@ -95,9 +102,11 @@ def retrieval_path(store: Any) -> str:
     `SemanticSkillStore` degrades to keyword-only when `qdrant-client` is
     missing, when Qdrant is unreachable, or when the embedding model will not
     load — each with a log line and no error. The coverage number differs by
-    path: on this corpus, semantic recall covers 6/6 scenarios and
-    keyword-only 3/6. A coverage report that does not say which path produced
-    it cannot be acted on.
+    path: measured before `_SEMANTIC_MATCH_FLOOR` existed, semantic recall
+    covered 6/6 scenarios on this corpus against keyword-only's 3/6. That
+    spread was mostly the old cosine-against-0.5 admission and has not been
+    re-measured since. Either way, a coverage report that does not say which
+    path produced it cannot be acted on.
     """
     return (
         "semantic" if getattr(store, "_semantic_available", False) else "keyword_only"
@@ -168,6 +177,11 @@ def open_store_read_only() -> Any:
 # exactly "same failure class" — the weakest relationship under which a skill
 # is still about this incident. Same floor here, so the preflight and the
 # retrieval it is auditing agree on what counts as a match.
+#
+# This grades the keyword scale only. Semantic admission is a cosine judged
+# against `_SEMANTIC_MATCH_FLOOR`, so the store now returns scores on two
+# scales — which is why `signature_hit` recomputes `match_score` below instead
+# of reusing whatever score came back with the hit.
 SIGNATURE_FLOOR = 0.5
 
 
@@ -270,11 +284,11 @@ def verdict_lines(report: dict[str, Any]) -> list[str]:
         lines.append(
             f"Weaker than that reads: {report['skill_hits']}/{total} scenarios "
             f"retrieve a skill, but only {signature_hits} retrieve one learned "
-            "from their own failure class. The rest clear `propose_skills`' 0.5 "
-            "threshold on cosine similarity — the semantic path compares "
-            "embedding distance against a number written for `match_score`'s "
-            "scale. Those pairs measure whether unrelated memory hurts, not "
-            "whether relevant memory helps."
+            "from their own failure class. The rest were admitted by the "
+            "semantic path on embedding proximity, graded against its own "
+            "floor, which can clear where `match_score` does not. Those pairs "
+            "measure whether unrelated memory hurts, not whether relevant "
+            "memory helps."
         )
     elif signature_hits is None:
         lines.append(
@@ -305,7 +319,8 @@ def verdict_lines(report: dict[str, Any]) -> list[str]:
     lines.append(
         "Valid only if the agent's own process takes that same path — the agent "
         "is /app/.venv/bin/python, not the container's bare `python`, and the "
-        "two disagreed 6/6 against 3/6 on this corpus."
+        "two have disagreed on this corpus: 6/6 against 3/6, measured before "
+        "the semantic floor was calibrated."
     )
     return lines
 

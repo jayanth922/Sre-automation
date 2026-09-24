@@ -169,7 +169,8 @@ def test_semantic_store_indexes_skill_on_add(tmp_path):
 def test_semantic_store_find_matching_merges_semantic_only_hit(tmp_path):
     store = _semantic_store(tmp_path)
     # A skill whose alert/failure-class won't keyword-match the query signature,
-    # so it can only be found via the mocked semantic hit.
+    # so it can only be found via the mocked semantic hit. 0.83 clears
+    # _SEMANTIC_MATCH_FLOOR; a lower cosine would be rejected by design.
     s = skill_store.skill_from_remediation(
         _alert("WeirdUnrelatedAlertName", "checkout-service"),
         [{"action_type": "rollback", "target": "checkout-service"}], "inc-1",
@@ -183,6 +184,62 @@ def test_semantic_store_find_matching_merges_semantic_only_hit(tmp_path):
     assert len(hits) == 1
     assert hits[0][0].skill_id == s.skill_id
     assert hits[0][1] == pytest.approx(0.83)
+
+
+def test_semantic_hit_below_the_measured_floor_is_not_admitted(tmp_path):
+    """A cosine is not a match_score, so `threshold` must not be the cosine gate.
+
+    This point scores 0.70 — comfortably above find_matching's threshold=0.5,
+    which is what the cosine used to be tested against, and comfortably below
+    the floor measured over the v2 corpus, where every pair that does *not*
+    share a failure class scores at most 0.764. Judged on the keyword scale it
+    was admitted; judged on its own it is what it is, an unrelated skill.
+    """
+    store = _semantic_store(tmp_path)
+    s = skill_store.skill_from_remediation(
+        _alert("WeirdUnrelatedAlertName", "checkout-service"),
+        [{"action_type": "rollback", "target": "checkout-service"}], "inc-1",
+    )
+    store.add(s)
+    store._qdrant.query_points.return_value = MagicMock(points=[_qpoint(s.skill_id, 0.70)])
+
+    query_sig = skill_store.signature_from_alert(_alert("SomethingElseEntirely", "other-service"))
+    assert store.find_matching(query_sig, threshold=0.5) == []
+
+
+def test_cosine_never_rescores_or_outranks_a_keyword_hit(tmp_path):
+    """The two scales are reported side by side, never merged by max().
+
+    `near` matches on failure class and alert name (match_score 0.7) and is
+    admitted by the keyword pass. `far` matches on nothing and is admitted only
+    by cosine. Taking max() across the scales — the old behaviour — rescored
+    `near` to 0.99 and ranked `far` above it on 0.95, which inverts the two:
+    the skill that genuinely shares the incident's signature was pushed below
+    one that merely reads like it.
+    """
+    store = _semantic_store(tmp_path)
+    near = skill_store.skill_from_remediation(
+        _alert("CheckoutHighErrorRate", "other-service"),
+        [{"action_type": "rollback", "target": "other-service"}], "inc-1",
+    )
+    far = skill_store.skill_from_remediation(
+        _alert("WeirdUnrelatedAlertName", "unrelated-service"),
+        [{"action_type": "restart", "target": "unrelated-service"}], "inc-2",
+    )
+    store.add(near)
+    store.add(far)
+    store._qdrant.query_points.return_value = MagicMock(
+        points=[_qpoint(near.skill_id, 0.99), _qpoint(far.skill_id, 0.95)]
+    )
+
+    query_sig = skill_store.signature_from_alert(
+        _alert("CheckoutHighErrorRate", "checkout-service")
+    )
+    hits = store.find_matching(query_sig, threshold=0.5)
+
+    assert [h[0].skill_id for h in hits] == [near.skill_id, far.skill_id]
+    assert hits[0][1] == pytest.approx(0.7)
+    assert hits[1][1] == pytest.approx(0.95)
 
 
 def test_semantic_store_falls_back_to_keyword_only_when_unavailable(tmp_path):

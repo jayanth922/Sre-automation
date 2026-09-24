@@ -2061,3 +2061,41 @@ investigation. That leaves a mounted endpoint whose only valid input is a
 payload no caller can construct — the handler name and idempotency key are
 internal — so every honest request would be refused, and the helper behind it
 would stay available to the next caller who skips the route.
+
+
+## A cosine and a match_score are not the same number
+
+**Decision.** Semantic skill recall admits on `_SEMANTIC_MATCH_FLOOR = 0.80`, a
+constant measured over the v2 corpus, never on `find_matching`'s `threshold`. A
+skill the keyword pass already admitted keeps its `match_score`; a cosine may
+add a candidate but may not rescore or outrank one.
+
+**Reason.** `match_score` is additive — 0.5 failure class + 0.3 service + 0.2
+alert name — so `threshold=0.5` means exactly "same failure class".
+`SemanticSkillStore._find_matching` tested Qdrant cosines against that same 0.5
+and merged the two with `max()`, comparing scales that share nothing but the
+0..1 range. Embedding all 22 v2 signatures with the production model and
+scoring all 231 pairs shows the distance: pairs sharing a failure class score
+0.851 at worst, pairs that do not score 0.764 at best, and a 0.5 cutoff admits
+all 161 wrong-class pairs. That is the entire population, not a tail — the
+filed example, `checkout_memory_leak_oom` retrieving
+`latency-inventory-service`, was typical rather than unlucky.
+
+**Consequences.** `benchmarks/calibrate_semantic_floor.py` is that measurement,
+kept runnable and free (local embedding model, no LLM). It exits non-zero if
+the populations stop being separable or if the constant leaves the gap, so a
+changed embedding model or `signature_text()` fails loudly instead of quietly
+restoring the old behaviour. `find_matching` now returns two scales — keyword
+hits first, ordered by `match_score`, then semantic-only hits by cosine — which
+is why `ablation_coverage.py` recomputes `match_score` for `signature_hit`
+instead of reading the score it was handed. That file's "semantic 6/6 against
+keyword-only 3/6" coverage figure was produced by the defect; it is now marked
+as pre-fix and has not been re-measured.
+
+**Rejected alternative.** Scoring semantic candidates with `match_score` and
+letting cosine only nominate them. `_skill_by_id` resolves Qdrant points
+against the same in-memory dict the keyword pass already scanned, so the two
+candidate sets are identical and the semantic path would collapse into a no-op
+— deleting the feature rather than calibrating it. Its purpose is to reach a
+skill whose wording matches when the failure-class keywords miss, and that
+requires cosine to admit something `match_score` rejects.
