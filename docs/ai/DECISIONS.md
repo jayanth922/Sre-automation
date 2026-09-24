@@ -1609,8 +1609,8 @@ without a caller, exactly one was a genuine gap (the emergency lock, now
 wired). The other thirteen were this decision, the Alertmanager webhook, two
 endpoints whose data already arrives embedded in a list response, and three
 absences that are themselves deliberate — one of which,
-`POST /clusters/{id}/jobs/trigger`, is pinned by an assertion that it stays
-absent (`tests/test_console_wiring.py:38`).
+`POST /clusters/{id}/jobs/trigger`, has since been removed outright (see "A job
+may only be enqueued by a writer that stamps its handler").
 
 **Rejected alternative.** Adding buttons "for parity", leaving Slack as one of
 two ways to approve. Two writable surfaces for the same state transition means
@@ -2027,3 +2027,37 @@ silence was being read as evidence.
 `service`. That hides a corpus defect behind a tool that silently rewrites the
 operator's query, and the next wrong label — on a cluster whose labels differ —
 would get no such courtesy.
+
+## A job may only be enqueued by a writer that stamps its handler
+
+**Decision.** `POST /clusters/{id}/jobs/trigger`, `backend.crud.create_job` and
+`schemas.JobCreate` are deleted. `sre_agent.job_store.enqueue_investigation`,
+reached through `enqueue_and_kick`, is the only path that may write a row to
+`jobs`.
+
+**Reason.** `claim_jobs` selects on `status == PENDING AND job_type ==
+INVESTIGATION AND cancel_requested_at IS NULL` and nothing else. `create_job`
+wrote exactly that shape from caller-supplied fields, `job_type` defaulting to
+`INVESTIGATION` and `payload` to `NULL`. The worker claimed the row, read
+`handler` out of an empty payload in `execute_claimed_job`, raised
+`DurableJobError("unsupported job handler: None")`, and retried to
+`max_attempts` before dead-lettering — burning a lease each round. The console
+never called it, so it never fired, but any authenticated org member could reach
+it. Two components were each locally correct and jointly wrong: the claimer's
+predicate and the writer's defaults agree only while every writer stamps a
+handler.
+
+**Consequences.** There is no hand-start for a job. An investigation with no
+incident behind it has nothing to investigate, which was already the recorded
+reason the console never wired the route; this closes it at the server instead
+of relying on the console's restraint. `tests/test_durable_jobs.py` pins both
+halves — `encode_investigation_payload` stamps `run_graph_background_saas`, and
+`crud` exposes no `create_job` — so a future helper that writes a claimable row
+without a handler fails the suite rather than the worker. `JobType` keeps its
+import in `backend/schemas.py`, because `JobResponse` still uses it.
+
+**Rejected alternative.** Keeping the route and refusing a payload-less
+investigation. That leaves a mounted endpoint whose only valid input is a
+payload no caller can construct — the handler name and idempotency key are
+internal — so every honest request would be refused, and the helper behind it
+would stay available to the next caller who skips the route.

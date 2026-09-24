@@ -6,117 +6,104 @@ agent. Deterministic policy and durable state—not model prose—control writes
 approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-**First measured recovery.** Trial 6 (2026-09-23) is the first the Prometheus
-oracle verified as recovered. The two defects that made RESOLVED unreachable —
-a policy rule no human could appeal, and a benchmark that discarded its own
-calibration evidence — are closed and confirmed under live fire. What remains
-is corpus size, not correctness.
+**Frontend wiring.** Backend correctness is closed for now: trial 6 was the
+first recovery the Prometheus oracle verified, and the three evidence-quality
+defects it exposed shipped in `283f9ba`. Per the standing directive the console
+comes next, benchmarking last.
 
 ## Current architecture and invariants
 - `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
-  tenant, policy, idempotency and audit boundary. Successful actions are not
-  replayed after process death, and a cleared incident cannot restart
-  remediation (#40).
+  tenant, policy, idempotency and audit boundary. A successful action is not
+  replayed after process death; a cleared incident cannot restart remediation.
 - **A verdict from `evaluate_action` cannot be appealed.** `policy_gate.decide`
-  returns BLOCKED before the approval ladder runs, and `_act_gate_node` builds
-  the ACT report before looking up the approval. Environment and action bans
-  therefore belong in `decide`, judged from measured state — never on the
-  planner's own `risk_level` string, which is untrusted writer input.
-- Specialist reads are bounded; verification stays deterministic. Approval
-  cannot override a hard block.
-- **Org scope is not cluster scope.** Tenant isolation holds
-  (`event_visible_to_org` fail-closed, `get_owned_incident` joins on org), but
+  returns BLOCKED before the approval ladder runs, so bans belong in `decide`,
+  judged from measured state — never from the planner's `risk_level`, which is
+  untrusted writer input.
+- **Org scope is not cluster scope.** Tenant isolation holds, but
   `/ws/insights`, `/ws/incidents` and every `/incidents/{id}` route serve the
   whole org; narrowing to one cluster is the consumer's job.
-- Benchmark evidence is content-addressed to scenario, code, config, rubric,
-  model and traces; inconsistent evidence blocks a claim. Release needs
-  recovery, quality, safety and cost traces — diagnosis authorizes nothing.
-- Recovery is the scenario's Prometheus probe, never the incident status.
-  `TERMINAL_APPLICATION_STATUSES` only ends polling early.
-- **A trial writes two independent artifacts.** A trial row means something
-  only against its pair in another arm and stays gated on the four `BENCH_*`
-  experiment vars; a confidence observation is one reliability point and
-  records on any live run.
+- **A tool result must state which question it answered:** `evaluated_at` from
+  Prometheus's own sample stamp, a deployment spec declaring itself startup
+  defaults rather than running state.
+- Recovery is the scenario's Prometheus probe, never incident status. Benchmark
+  evidence is content-addressed; inconsistent evidence blocks a claim.
+- **Slack is the action surface.** Approve, deny, acknowledge and mark-resolved
+  are Slack-thread commands by design; the console observes and configures.
 
 ## Completed or verified work
 - v2: 22 scenarios, recovery oracles, structured grading, adversarial cases,
   paired statistics, four ablation arms, a content-addressed release gate.
-- Memory preflight, all three v2 splits, semantic: 22/22 retrieve a skill, 12
-  one of their own failure class, **4** one matching class *and* service. Zero
-  tenant incident-memory points.
 - **Six authorized trials, all `inventory_slow_queries`, ≈$1 each.** 1–5
-  UNRESOLVED; trial 6 `VERIFIED_RECOVERED`, MTTR 958s, root-cause /
-  remediation / severity / safety 100%, `false_resolved=False`, one harness
-  approval. Path: plan → `requires_approval` → `POST /approve` → `applied 4 of
-  4 live remediation(s)` → `verification → RESOLVED`, the oracle confirming
+  UNRESOLVED; trial 6 `VERIFIED_RECOVERED`, MTTR 958s, root-cause, remediation,
+  severity and safety 100%, one harness approval, oracle confirming
   independently on `inventory_db_p90_latency`.
-- `reports/sre-bench-confidence.jsonl` now exists — diagnosis 0.72/True,
-  remediation 0.45/True, both `live_benchmark`. First samples since 2026-09-21.
-- Specialist ReAct is cost-bounded (six model turns, 48 calls, 120s, 3,000
-  output tokens/turn) and keeps partial evidence at every limit. A runbook's
-  own PromQL reaches the metrics specialist as text, no model call.
-- Console audit closed the frontend milestone: 19/19 pages handle
-  loading/error/empty, no dead links, clean `next build`. The chat surface is
-  gone; Slack serves it.
+- **Three evidence-quality defects closed — `283f9ba`, deployed, parity proven.**
+  (a) `get_metric` / `get_golden_signals` return `evaluated_at` plus a warning
+  when `time=` was omitted or unparsable. (b) `get_deployment_spec` states
+  every value is a STARTUP DEFAULT: `inventory-service` *declares*
+  `SLOW_QUERY_RATE="0"` while the adapter drives the live rate to 1.0 through
+  `PUT /admin/config`, so trial 5 read a superseded value, not an absence.
+  (c) `narrate_supervisor_summary` may not write "Unknown" once the reflector
+  settled — settled meaning evidence or a causal chain, since `hypothesis` is
+  required and proves nothing alone.
+- **Console wiring closed.** 19/19 pages handle loading, error and empty; no
+  dead links, no mock data. The incidents page starts an investigation
+  (`POST /clusters/{id}/trigger`) with no severity preselected, because the API
+  refuses to default it, and separates a new investigation from the endpoint's
+  title-dedup match. The incident page loads the flight recorder
+  (`GET /incidents/{id}/logs`) on demand: the transcript is the curated
+  account, this the raw one. `POST /clusters/{id}/jobs/trigger` and
+  `crud.create_job` are deleted: the row they wrote — PENDING, investigation,
+  NULL payload — is what `claim_jobs` selects, so the worker claimed it and
+  dead-lettered it. Every remaining uncalled route is deliberate.
+
+## Active problem
+Benchmarking, and it is budget-blocked: the $88–$632 tiers are refused, and six
+single trials (~$6) are all that has been spent. Two defects stay unfiled —
+`propose_skills` tests an additive `threshold=0.5` against a cosine score, and
+specialists still exhaust the six-turn limit, capping how far one investigation
+reaches before the reflector sees it.
 
 ## Relevant files
-- Policy: `sre_agent/{policy_engine,policy_gate,act_phase}.py` — Rule 1 removed,
-  with a comment recording why it cannot return.
-- Logs: `edge_mcp_servers/mcp_servers/loki_real/server.py` (image-baked in
-  `mcp-loki`; rebuild its compose service, the deploy script misses it).
-- Evaluation: `benchmarks/{sre_bench,structured_grading,statistical_eval,
-  ablation_eval,ablation_coverage}.py`; `docs/ai/AI_RESULTS.md` holds the
-  public negative evidence.
-- Retrieval: `sre_agent/skill_store.py`. Evidence acquisition:
-  `sre_agent/{runbook_queries,runbook_probe}.py`,
-  `agent_nodes.BaseAgentNode.__call__`.
+- Console: `dashboard/app/(dashboard)/clusters/[id]/*/page.tsx`.
+  `dashboard/lib/console.ts` is types and formatters only — each page fetches.
+- Tool scope: `edge_mcp_servers/mcp_servers/{prometheus_real,k8s_real}/server.py`,
+  image-baked; rebuild their compose services, the deploy script misses them.
+- Narrative: `sre_agent/narrative.py`, call site `sre_agent/supervisor.py:1370`.
+- Evaluation: `benchmarks/{sre_bench,structured_grading,statistical_eval}.py`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → **2345 passed, 6 skipped** (2026-09-23).
-- `scripts/check_python_quality.sh` → ruff critical, mypy (3 curated files) and
-  compileall all clean.
-- `scripts/deploy_agent_runtimes.sh` refuses a dirty tracked tree, builds
-  `sentinel/api:local` once, recreates api + temporal worker, proves parity.
-  Last: `code_sha=2b73497`, 162 files. `benchmarks/` is **not** in the image
-  (harness changes need no redeploy); `sre_agent/` is.
+- `.venv/bin/python -m pytest -q` → **2385 passed, 6 skipped** (2026-09-23).
+- `scripts/check_python_quality.sh` → ruff critical, mypy, compileall clean.
+- `scripts/deploy_agent_runtimes.sh` → `code_sha=283f9ba`, 162 files, parity
+  passed. `benchmarks/` is not in the image; `sre_agent/` is.
+- The dashboard is image-baked too (no bind mounts) despite running `next dev`:
+  `cd platform && docker compose build dashboard && docker compose up -d
+  --no-build --force-recreate dashboard`. Gate is `npm run lint` plus
+  `npm run build`, which typechecks; `dashboard/` has no test framework.
 - Trial 6: `reports/approve-20260923-inventory-slow/`. Rerun shape —
   `BENCH_SCENARIOS=inventory_slow_queries BENCH_AUTO_APPROVE=1`,
   `BENCH_INCIDENT_TIMEOUT_SEC=2700`, secrets from `/home/vscode/bench.env`.
 
 ## Known blockers or risks
-- **Calibration needs ~100 more paid trials.** The corpus holds 2 records
-  against `minimum_samples=100` and `minimum_threshold_support=40` at
-  `required_wilson_lower=0.90`. Records group by task, not scenario, so N runs
-  of one scenario clear the floor while describing one fault — spread the
-  corpus before trusting any threshold built from it.
+- **Calibration needs ~100 more paid trials**; the corpus holds 2 records
+  against `minimum_samples=100`. Records group by task, not scenario, so N runs
+  of one scenario clear the floor while describing one fault.
 - Structured grading returns `INCOMPLETE`: `causal_chain` and
   `evidence_support` sit at `REQUIRES_CALIBRATION`, no blinded judge installed.
-  The four scored criteria pass.
-- Specialists still hit the six-turn investigation limit — Performance Metrics
-  and Application Logs in trial 6, GitHub in trial 5.
-- Three evidence-quality defects from trial 5 remain: a Prometheus call omits
-  `time`; the fault-injection knobs read as disabled while the injected delay is
-  demonstrably running; `summary_text` says "root cause: Unknown" over a
-  structured evaluation holding a correct diagnosis and 12 evidence entries.
-- The logs lane is fixed end to end: tool, repo runbooks, and the Notion corpus
-  the agent actually reads. No LogQL selector in the live corpus names `app`;
-  the `kubectl -l app=` selectors that remain are correct, since pods do carry
-  that label.
-- `propose_skills` declares `threshold=0.5` on `match_score`'s additive scale
-  but `SemanticSkillStore` compares it to a *cosine* similarity, so the
-  semantic path admits unrelated skills. A floor needs calibration data.
-- Incident recall is provably inert: half of what `no_memory` removes is
-  already absent from every arm.
-- Dataset v3 is not runnable — the Meridian image lacks the `metrics_enabled`
-  rebuild. The corpus is v2's 22.
-- **No paid run beyond trial 6 is authorized.** The $88/$194/$389/$583/$632
-  tiers stay refused.
+- Specialists still hit the six-turn investigation limit.
+- Defect (c) is unit-verified only — never observed under live fire.
+- `propose_skills` compares an additive `threshold=0.5` against a cosine score,
+  so the semantic path admits unrelated skills.
+- Incident recall is provably inert; dataset v3 is not runnable, the Meridian
+  image lacking the `metrics_enabled` rebuild. The corpus stays v2's 22.
+- **No paid run beyond trial 6 is authorized.** The $88–$632 tiers stay refused.
 - Rotate the Anthropic key and Slack token exposed in terminal output.
 - Never stage `.agents/`, `.env.local-backup-20260910` or `.env.bak-*`; never
   `git add -A`.
 
 ## Next bounded task
-Close the three remaining evidence-quality defects — all free, all in the
-acquisition lane — then frontend wiring, per the standing directive that backend
-correctness comes first and benchmarking last. Any further paid trial needs
-fresh authorization.
+Decide the benchmarking shape the budget allows: which arms of #28 earn one
+trial each rather than the full four-arm matrix, and whether #34's memory
+seeding can run against the train split without a paid investigation per item.
+No paid run beyond trial 6 is authorized until that decision is made.

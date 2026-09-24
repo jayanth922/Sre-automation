@@ -130,15 +130,31 @@ def test_the_break_glass_does_not_sit_under_the_save_bar():
 def test_the_console_reaches_every_jobs_endpoint_it_should():
     """List, cancel and manifest-compare all have a caller.
 
-    /jobs/trigger deliberately does not: a durable job is created by the alert
-    pipeline, and hand-starting one from the console would produce an
-    investigation with no incident behind it.
+    /jobs/trigger has no caller because it no longer exists. Tracing showed the
+    row it wrote - PENDING, investigation, no payload - is exactly what
+    `claim_jobs` selects, so the worker claimed it and dead-lettered it. Both
+    sides of that absence are pinned: the console below, the router with it.
     """
     page = _JOBS_PAGE.read_text()
     assert "api.get<Job[]>(`/clusters/${id}/jobs`)" in page
     assert "api.post(`/clusters/${id}/jobs/${jobId}/cancel`)" in page
     assert "/manifest/compare/${against}" in page
     assert "/jobs/trigger" not in page
+    router = _ROOT / "sre_agent" / "api" / "v1" / "jobs.py"
+    assert "/jobs/trigger" not in router.read_text()
+
+
+def test_the_incident_page_can_read_its_own_flight_recorder():
+    """The audit page is cluster-wide, so per-incident tool calls needed a home.
+
+    /transcript is the curated timeline; /logs is the raw `agent_audit_logs`
+    trail folded together with the Redis step logs. On demand rather than on
+    mount, so the loader is bound to a control and not to an effect: it is the
+    one response on the page whose size grows with how long the agent ran.
+    """
+    page = _INCIDENT_PAGE.read_text()
+    assert "api.get<AuditRow[]>(`/incidents/${incidentId}/logs`)" in page
+    assert "onClick={loadAudit}" in page
 
 
 def test_the_jobs_page_is_in_the_rail():

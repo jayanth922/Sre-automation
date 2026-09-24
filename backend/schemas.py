@@ -360,10 +360,6 @@ class SLOStatusResponse(BaseModel):
 
 from backend.models import JobStatus, JobType
 
-class JobCreate(BaseModel):
-    job_type: JobType = JobType.INVESTIGATION
-    payload: Optional[str] = None  # JSON string
-
 class RunManifestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

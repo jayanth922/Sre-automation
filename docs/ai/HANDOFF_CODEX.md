@@ -744,12 +744,19 @@ the last is a gap:
   is the standing "Slack is the only method of all types of communication"
   constraint working as intended. **Do not build approval buttons.**
 - **Deliberately absent, one of them test-enforced (3).**
-  `POST /clusters/{id}/jobs/trigger` —
-  `tests/test_console_wiring.py:38` asserts `"/jobs/trigger" not in page`,
-  because "a durable job is created by the alert pipeline, and hand-starting
-  one from the console would produce an investigation with no incident behind
-  it". `POST /clusters/{id}/trigger` (incidents) is the same argument and is
-  *not* pinned by a test. ~~`POST /chat` contradicted task #7's own
+  ~~`POST /clusters/{id}/jobs/trigger` — `tests/test_console_wiring.py` asserts
+  `"/jobs/trigger" not in page`, because "a durable job is created by the alert
+  pipeline, and hand-starting one from the console would produce an
+  investigation with no incident behind it".~~ **CLOSED 2026-09-23:** the route,
+  `crud.create_job` and `schemas.JobCreate` are removed rather than left
+  unwired. The row they wrote — PENDING, investigation, NULL payload — is
+  exactly what `claim_jobs` selects, so the worker claimed it, found no
+  `handler`, and dead-lettered it after `max_attempts`. The absence is pinned on
+  both sides now, console and router.
+  `POST /clusters/{id}/trigger` (incidents) was the same argument until #56 gave
+  it a control: an operator-started investigation creates its own incident,
+  which is the thing `jobs/trigger` could never do. ~~`POST /chat` contradicted
+  task #7's own
   "Slack-adjacent, **no chat**" constraint while letting any signed-in org
   member spend a 120-second agent invocation.~~ **CLOSED 2026-09-21:** the
   unused route and module are removed; Slack incident threads remain the
