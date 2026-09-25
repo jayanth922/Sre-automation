@@ -23,7 +23,7 @@ import pytest
 from sre_agent.provider_config import SUPPORTED_PROVIDERS, ProviderConfigError
 
 ROOT = Path(__file__).resolve().parents[1]
-CHART = ROOT / "deploy" / "helm" / "sentinel"
+CHART = ROOT / "infra" / "helm" / "sentinel"
 
 # Credential/model env keys for providers the runtime refuses. Their presence in
 # a shipped file means we are asking operators to fill in a key we will reject.
@@ -40,9 +40,9 @@ DEAD_PROVIDER_KEYS = (
 # Files an operator copies or edits to configure a deployment.
 CONFIG_FILES = (
     ROOT / ".env.example",
-    ROOT / "deploy" / "k8s" / "config.yaml",
-    ROOT / "deploy" / "k8s" / "secret.example.yaml",
-    ROOT / "deploy" / "terraform" / "secret.example.yaml",
+    ROOT / "infra" / "k8s" / "config.yaml",
+    ROOT / "infra" / "k8s" / "secret.example.yaml",
+    ROOT / "infra" / "terraform" / "secret.example.yaml",
     CHART / "values.yaml",
     CHART / "templates" / "configmap.yaml",
     CHART / "templates" / "secret.yaml",
@@ -171,7 +171,7 @@ def test_anthropic_model_defaults_stay_on_the_router_ladder():
 
     ladder = set(_ANTHROPIC_LADDER)
     shipped = {
-        ROOT / "deploy" / "k8s" / "config.yaml": r'ANTHROPIC_MODEL:\s*"([^"]+)"',
+        ROOT / "infra" / "k8s" / "config.yaml": r'ANTHROPIC_MODEL:\s*"([^"]+)"',
         ROOT / ".env.example": r'ANTHROPIC_MODEL="([^"]+)"',
         CHART / "values.yaml": r'anthropicModel:\s*"([^"]+)"',
     }

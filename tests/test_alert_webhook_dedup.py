@@ -31,7 +31,7 @@ class ExpiredAttributeError(RuntimeError):
 
 class FakeSession:
     """Mimics the two session behaviours this branch depends on: commit does
-    not expire (``expire_on_commit=False`` in backend/database.py), rollback
+    not expire (``expire_on_commit=False`` in src/backend/database.py), rollback
     always does."""
 
     def __init__(self):

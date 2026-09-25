@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -45,7 +46,7 @@ import pytest
 from benchmarks import release_evidence, release_gate
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE = ROOT / "benchmarks" / "release" / "v1"
+RELEASE = ROOT / "evals" / "benchmarks" / "release" / "v1"
 FIXTURE_NAMES = ("safe", "regressive-prompt", "regressive-model", "regressive-tool")
 
 
@@ -396,11 +397,23 @@ def test_the_policy_has_to_state_its_own_confidence_interval_width(tree):
 def test_the_checked_in_fixtures_match_a_fresh_generation():
     """If this fails, someone edited a fixture by hand — which is how the
     old ones came to say things their records did not."""
+    # `benchmarks` sits under `evals/` since the layout refactor, so running it
+    # from ROOT no longer puts it on the subprocess's path the way it did when
+    # it was a top-level directory. Hand the child the same roots `pyproject`
+    # hands pytest, so this test states its own imports instead of depending on
+    # an editable install being present and pointed at the current tree.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part
+        for part in (str(ROOT / "evals"), str(ROOT / "src"), env.get("PYTHONPATH"))
+        if part
+    )
     result = subprocess.run(
         [sys.executable, "-m", "benchmarks.make_release_fixtures", "--check"],
         cwd=ROOT,
         capture_output=True,
         text=True,
+        env=env,
     )
 
     assert result.returncode == 0, result.stderr
@@ -408,7 +421,7 @@ def test_the_checked_in_fixtures_match_a_fresh_generation():
 
 def test_the_dataset_directory_is_found_by_the_version_a_report_names():
     dataset = release_evidence.resolve_dataset(
-        ROOT / "benchmarks" / "adversarial", "sentinel-adversarial-v1"
+        ROOT / "evals" / "benchmarks" / "adversarial", "sentinel-adversarial-v1"
     )
 
     assert dataset.version == "sentinel-adversarial-v1"
@@ -418,7 +431,7 @@ def test_the_dataset_directory_is_found_by_the_version_a_report_names():
 def test_an_unknown_dataset_version_is_refused():
     with pytest.raises(release_evidence.ReleaseEvidenceError, match="no checked-in"):
         release_evidence.resolve_dataset(
-            ROOT / "benchmarks" / "adversarial", "sentinel-adversarial-v99"
+            ROOT / "evals" / "benchmarks" / "adversarial", "sentinel-adversarial-v99"
         )
 
 

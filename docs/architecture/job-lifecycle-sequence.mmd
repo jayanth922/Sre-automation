@@ -1,15 +1,23 @@
 sequenceDiagram
     autonumber
-    participant Client as API Route or Agent
-    participant Queue as Job Table / Redis State
-    participant Worker as Job Consumer
-    participant Store as Backend DB
-    participant UI as Dashboard
+    participant API as API / alert reconciler
+    participant DB as PostgreSQL jobs
+    participant Worker as Durable worker
+    participant Workflow as Incident workflow
+    participant UI as Console / Slack
 
-    Client->>Queue: Enqueue job request
-    Queue-->>Client: Job id and queued state
-    Worker->>Queue: Claim pending job
-    Worker->>Store: Load job payload and update status
-    Worker->>Worker: Execute the requested workflow
-    Worker->>Store: Persist completed result and timestamps
-    Worker-->>UI: New job state visible through API polling
+    API->>DB: Insert pending tenant-scoped job
+    Worker->>DB: Claim with owner and lease expiry
+    Worker->>Worker: Renew heartbeat lease
+    Worker->>Workflow: Execute investigation or remediation
+    alt completed
+        Workflow-->>Worker: Persisted result
+        Worker->>DB: Mark completed
+    else retriable failure
+        Worker->>DB: Release for bounded retry
+    else attempts exhausted
+        Worker->>DB: Mark dead_letter
+    else cancellation requested
+        Worker->>DB: Mark cancelled
+    end
+    DB-->>UI: Status and timeline available through API

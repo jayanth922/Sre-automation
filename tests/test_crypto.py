@@ -66,7 +66,7 @@ def crypto_module(monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
 
     spec = importlib.util.spec_from_file_location(
-        "_t09_crypto", _ROOT / "backend" / "crypto.py"
+        "_t09_crypto", _ROOT / "src" / "backend" / "crypto.py"
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

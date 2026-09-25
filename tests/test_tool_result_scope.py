@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-_MCP = Path(__file__).resolve().parents[1] / "edge_mcp_servers" / "mcp_servers"
+_MCP = Path(__file__).resolve().parents[1] / "services" / "edge_mcp_servers" / "mcp_servers"
 
 
 def _stub(name: str, **attrs):

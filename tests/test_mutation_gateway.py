@@ -535,7 +535,7 @@ def test_audit_event_persists_executor_content_hash(monkeypatch):
 
 
 def test_live_executor_has_no_direct_application_bypass():
-    source_root = Path(__file__).resolve().parents[1] / "sre_agent"
+    source_root = Path(__file__).resolve().parents[1] / "src" / "sre_agent"
     offenders = []
     for path in source_root.rglob("*.py"):
         if path.name == "mutation_gateway.py":

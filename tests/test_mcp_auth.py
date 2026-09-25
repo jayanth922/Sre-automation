@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_EDGE_DIR = _ROOT / "edge_mcp_servers"
+_EDGE_DIR = _ROOT / "services" / "edge_mcp_servers"
 
 
 def _module():
@@ -75,7 +75,7 @@ def test_middleware_rejects_before_reaching_mcp_app(monkeypatch):
 
 def test_every_edge_server_runs_authenticated_transport():
     servers = list(
-        (_ROOT / "edge_mcp_servers" / "mcp_servers").glob("*/server.py")
+        (_ROOT / "services" / "edge_mcp_servers" / "mcp_servers").glob("*/server.py")
     )
     assert servers
     for server in servers:
@@ -85,19 +85,19 @@ def test_every_edge_server_runs_authenticated_transport():
 
 
 def test_compose_ports_are_loopback_only_and_require_token():
-    source = (_ROOT / "edge_mcp_servers" / "docker-compose.yaml").read_text()
+    source = (_ROOT / "services" / "edge_mcp_servers" / "docker-compose.yaml").read_text()
     for port in range(4000, 4008):
         assert f'"127.0.0.1:{port}:3000"' in source
     assert source.count("MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}") == 8
 
 
 def test_mcp_client_threads_bearer_header_through_server_config():
-    source = (_ROOT / "sre_agent" / "multi_agent_langgraph.py").read_text()
+    source = (_ROOT / "src" / "sre_agent" / "multi_agent_langgraph.py").read_text()
     assert '"headers": dict(relay_headers)' in source
     assert "build_relay_headers(context, service_token=service_token)" in source
-    executor_source = (_ROOT / "sre_agent" / "executor.py").read_text()
+    executor_source = (_ROOT / "src" / "sre_agent" / "executor.py").read_text()
     assert '"headers": execution_context.transport_headers()' in executor_source
     assert "require_operator_mcp_endpoint(server_name, endpoint)" in executor_source
     assert "require_operator_mcp_endpoint(name, uri)" in source
-    relay_auth_source = (_ROOT / "sre_agent" / "multitenant" / "relay_auth.py").read_text()
+    relay_auth_source = (_ROOT / "src" / "sre_agent" / "multitenant" / "relay_auth.py").read_text()
     assert "context.transport_headers(service_token)" in relay_auth_source

@@ -20,6 +20,7 @@ import pytest
 
 MODULE_PATH = (
     Path(__file__).resolve().parents[1]
+    / "services"
     / "edge_mcp_servers"
     / "mcp_servers"
     / "loki_real"

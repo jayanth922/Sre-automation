@@ -1,5 +1,5 @@
-"""Unit tests for the credential relay: sre_agent/multitenant/relay_auth.py
-(control-plane side) and edge_mcp_servers/relay_credentials.py (edge side).
+"""Unit tests for the credential relay: src/sre_agent/multitenant/relay_auth.py
+(control-plane side) and services/edge_mcp_servers/relay_credentials.py (edge side).
 """
 import importlib.util
 from pathlib import Path
@@ -18,7 +18,7 @@ def _service_token(monkeypatch):
 
 
 def _edge_module():
-    path = _ROOT / "edge_mcp_servers" / "relay_credentials.py"
+    path = _ROOT / "services" / "edge_mcp_servers" / "relay_credentials.py"
     spec = importlib.util.spec_from_file_location("_edge_relay_credentials", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -116,26 +116,26 @@ def test_capture_relay_credentials_resets_between_connections():
 # ── edge server wiring (source-level, mirrors test_mcp_auth.py's style) ────
 
 def test_mcp_auth_middleware_captures_relay_credentials():
-    source = (_ROOT / "edge_mcp_servers" / "mcp_auth.py").read_text()
+    source = (_ROOT / "services" / "edge_mcp_servers" / "mcp_auth.py").read_text()
     assert "capture_relay_credentials(" in source
     assert "import capture_relay_credentials" in source
 
 
 def test_github_real_server_prefers_relayed_repo():
-    source = (_ROOT / "edge_mcp_servers" / "mcp_servers" / "github_real" / "server.py").read_text()
+    source = (_ROOT / "services" / "edge_mcp_servers" / "mcp_servers" / "github_real" / "server.py").read_text()
     assert "_active_repo(" in source
     assert "get_relay_credential" in source
 
 
 def test_k8s_real_server_prefers_relayed_api_client():
-    source = (_ROOT / "edge_mcp_servers" / "mcp_servers" / "k8s_real" / "server.py").read_text()
+    source = (_ROOT / "services" / "edge_mcp_servers" / "mcp_servers" / "k8s_real" / "server.py").read_text()
     assert "_relay_api_client(" in source
     assert "get_relay_credential" in source
 
 
 def test_all_relay_dockerfiles_copy_relay_credentials_module():
     dockerfiles = list(
-        (_ROOT / "edge_mcp_servers" / "mcp_servers").glob("*/Dockerfile")
+        (_ROOT / "services" / "edge_mcp_servers" / "mcp_servers").glob("*/Dockerfile")
     )
     assert dockerfiles
     for dockerfile in dockerfiles:

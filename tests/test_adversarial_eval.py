@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 MODULE_PATH = BENCHMARKS / "adversarial_eval.py"
 _spec = importlib.util.spec_from_file_location("adversarial_eval", MODULE_PATH)
 adversarial = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = adversarial
 _spec.loader.exec_module(adversarial)
 
-GUARD_PATH = ROOT / "sre_agent" / "prompt_guard.py"
+GUARD_PATH = ROOT / "src" / "sre_agent" / "prompt_guard.py"
 _guard_spec = importlib.util.spec_from_file_location("a07_prompt_guard", GUARD_PATH)
 guard = importlib.util.module_from_spec(_guard_spec)
 sys.modules[_guard_spec.name] = guard

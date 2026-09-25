@@ -87,28 +87,28 @@ config.yaml
 !config.yaml.example
 
 # Dashboard / Next.js
-/dashboard/node_modules/
-/dashboard/.pnp
-/dashboard/.pnp.*
-/dashboard/.yarn/*
-!/dashboard/.yarn/patches
-!/dashboard/.yarn/plugins
-!/dashboard/.yarn/releases
-!/dashboard/.yarn/versions
-/dashboard/coverage/
-/dashboard/.next/
-/dashboard/out/
-/dashboard/build/
-/dashboard/.DS_Store
-/dashboard/*.pem
-/dashboard/npm-debug.log*
-/dashboard/yarn-debug.log*
-/dashboard/yarn-error.log*
-/dashboard/.pnpm-debug.log*
-/dashboard/.env*
-/dashboard/.vercel
-/dashboard/*.tsbuildinfo
-/dashboard/next-env.d.ts
+/apps/dashboard/node_modules/
+/apps/dashboard/.pnp
+/apps/dashboard/.pnp.*
+/apps/dashboard/.yarn/*
+!/apps/dashboard/.yarn/patches
+!/apps/dashboard/.yarn/plugins
+!/apps/dashboard/.yarn/releases
+!/apps/dashboard/.yarn/versions
+/apps/dashboard/coverage/
+/apps/dashboard/.next/
+/apps/dashboard/out/
+/apps/dashboard/build/
+/apps/dashboard/.DS_Store
+/apps/dashboard/*.pem
+/apps/dashboard/npm-debug.log*
+/apps/dashboard/yarn-debug.log*
+/apps/dashboard/yarn-error.log*
+/apps/dashboard/.pnpm-debug.log*
+/apps/dashboard/.env*
+/apps/dashboard/.vercel
+/apps/dashboard/*.tsbuildinfo
+/apps/dashboard/next-env.d.ts
 
 # Temporary files
 *.tmp
@@ -116,15 +116,15 @@ config.yaml
 gha-creds-*.json
 
 # Kubernetes rendered secret (never commit)
-deploy/k8s/secret.yaml
+infra/k8s/secret.yaml
 
 # Terraform
-deploy/terraform/.terraform/
-deploy/terraform/*.tfstate
-deploy/terraform/*.tfstate.*
-deploy/terraform/terraform.tfvars
-deploy/terraform/*.tfplan
-deploy/terraform/ci.tfplan
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfplan
+infra/terraform/ci.tfplan
 
 # Secrets: every .env variant, however it is suffixed.
 # `.env` under "Virtual environments" above matches only that exact name, so
@@ -140,4 +140,4 @@ deploy/terraform/ci.tfplan
 # Tracked on purpose: shipped, secret-free defaults that let a fresh
 # clone boot with no configuration at all. `*.env` above would
 # otherwise ignore it.
-!platform/defaults.env
+!infra/local/defaults.env

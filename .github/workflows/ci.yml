@@ -32,7 +32,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
       - name: Quality gate
-        run: bash scripts/check_python_quality.sh
+        run: bash scripts/ci/check_python_quality.sh
 
   backend-tests:
     name: Backend tests + coverage
@@ -69,13 +69,13 @@ jobs:
       - name: Apply database migrations
         run: uv run alembic upgrade head
       - name: Byte-compile (fast fail on syntax errors)
-        run: uv run python -m compileall backend sre_agent
+        run: uv run python -m compileall src
       - name: Secret scan + docs truthfulness
         run: |
-          bash scripts/check_no_static_secrets.sh
+          bash scripts/ci/check_no_static_secrets.sh
           uv run pytest -q tests/test_docs_truthfulness.py
       - name: Module reachability (P10)
-        run: uv run python scripts/check_module_reachability.py
+        run: uv run python scripts/ci/check_module_reachability.py
       - name: Install coverage tooling
         run: uv pip install "pytest-cov>=4.1.0"
       - name: Tests with coverage
@@ -104,8 +104,8 @@ jobs:
         run: uv run python -m benchmarks.make_release_fixtures --check
       - name: Run frozen candidate and regression matrix
         run: >-
-          uv run python benchmarks/release_gate.py matrix
-          --matrix benchmarks/release/v1/ci-matrix.json
+          uv run python evals/benchmarks/release_gate.py matrix
+          --matrix evals/benchmarks/release/v1/ci-matrix.json
           --output reports/release-matrix.json
       - name: Evaluate verified-skill retrieval quality
         # Named release-retrieval.json so the existing evidence upload below
@@ -113,7 +113,7 @@ jobs:
         # needs no services; the Qdrant-backed memory half reports itself as
         # skipped rather than passing untested.
         run: >-
-          uv run python benchmarks/retrieval_eval.py
+          uv run python evals/benchmarks/retrieval_eval.py
           --output reports/release-retrieval.json
       - name: Record changed files
         if: github.event_name == 'pull_request'
@@ -125,12 +125,12 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           bundle_args=()
-          if [[ -f benchmarks/release/candidate/bundle.json ]]; then
-            bundle_args=(--bundle benchmarks/release/candidate/bundle.json)
+          if [[ -f evals/benchmarks/release/candidate/bundle.json ]]; then
+            bundle_args=(--bundle evals/benchmarks/release/candidate/bundle.json)
           fi
-          uv run python benchmarks/release_gate.py impact \
+          uv run python evals/benchmarks/release_gate.py impact \
             --changed-files /tmp/sentinel-release-changed-files.txt \
-            --policy benchmarks/release/v1/policy.json \
+            --policy evals/benchmarks/release/v1/policy.json \
             --repo-root . \
             --output reports/release-impact.json \
             "${bundle_args[@]}"
@@ -175,7 +175,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
       - name: Apply migrations
-        run: bash scripts/check_migrations.sh
+        run: bash scripts/ci/check_migrations.sh
 
   eval-smoke:
     name: Eval smoke (invariants)
@@ -198,21 +198,21 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --extra dev
       - name: Eval smoke
-        run: bash scripts/check_eval_smoke.sh
+        run: bash scripts/ci/check_eval_smoke.sh
 
   frontend:
     name: Frontend (type-check + production build)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: dashboard
+        working-directory: apps/dashboard
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: dashboard/package-lock.json
+          cache-dependency-path: apps/dashboard/package-lock.json
       - run: npm ci
       - name: Type-check
         run: npx tsc --noEmit
@@ -226,15 +226,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - name: Verify namespace-scoped RBAC defaults
-        run: bash scripts/check_helm_rbac.sh
+        run: bash scripts/ci/check_helm_rbac.sh
       - name: Verify WebSocket routing defaults
-        run: bash scripts/check_helm_ws.sh
+        run: bash scripts/ci/check_helm_ws.sh
       - name: Verify production-capable Helm chart
-        run: bash scripts/check_helm_production.sh
+        run: bash scripts/ci/check_helm_production.sh
       - name: Verify Meridian is not hardcoded in base manifests
-        run: bash scripts/check_no_meridian_defaults.sh
+        run: bash scripts/ci/check_no_meridian_defaults.sh
       - name: Verify Kustomize build
-        run: bash scripts/check_kustomize.sh
+        run: bash scripts/ci/check_kustomize.sh
 
   terraform:
     name: Terraform (Helm module)
@@ -252,7 +252,7 @@ jobs:
           chmod +x /tmp/kind
           sudo mv /tmp/kind /usr/local/bin/kind
       - name: fmt / validate / representative plan
-        run: bash scripts/check_terraform.sh
+        run: bash scripts/ci/check_terraform.sh
 
   images-platform:
     name: Platform images (API + web)
@@ -260,9 +260,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build API image
-        run: docker build --build-arg SENTINEL_CODE_SHA=${{ github.sha }} -f platform/Dockerfile -t sentinel/api:ci .
+        run: docker build --build-arg SENTINEL_CODE_SHA=${{ github.sha }} -f infra/local/Dockerfile -t sentinel/api:ci .
       - name: Build web image
-        run: docker build -f platform/Dockerfile.dashboard -t sentinel/web:ci dashboard
+        run: docker build -f infra/local/Dockerfile.dashboard -t sentinel/web:ci apps/dashboard
 
   images-edge:
     name: Edge MCP images
@@ -282,7 +282,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build ${{ matrix.server }}
-        working-directory: edge_mcp_servers
+        working-directory: services/edge_mcp_servers
         run: >
           docker build
           -f mcp_servers/${{ matrix.server }}/Dockerfile

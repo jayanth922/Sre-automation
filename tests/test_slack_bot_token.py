@@ -1,4 +1,4 @@
-"""Unit tests for the manual Slack bot-token path (sre_agent/multitenant/slack_oauth.py)."""
+"""Unit tests for the manual Slack bot-token path (src/sre_agent/multitenant/slack_oauth.py)."""
 from types import SimpleNamespace
 
 from sre_agent.multitenant import slack_oauth

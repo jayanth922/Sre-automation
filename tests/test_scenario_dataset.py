@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 DATASETS = BENCHMARKS / "datasets"
 sys.path.insert(0, str(BENCHMARKS))
 

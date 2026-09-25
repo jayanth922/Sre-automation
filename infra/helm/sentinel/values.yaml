@@ -1,0 +1,300 @@
+# =============================================================================
+# Sentinel — Helm values. Everything the platform needs is configurable here;
+# nothing is hardcoded in the templates. Override with -f my-values.yaml or --set.
+#
+# The guiding principle: we orchestrate, we don't override your choices. Bring
+# your own MCP tool servers and your own Postgres/Redis if you have them — or
+# let the chart deploy the basics for you. The one place we do not bend is the
+# model provider: Anthropic only (see the llm block below).
+# =============================================================================
+
+# ── Naming (standard Helm overrides; empty = derive from the chart/release) ──
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Images ───────────────────────────────────────────────────────────────────
+image:
+  # Registry prefix for all Sentinel images. For air-gapped / private registries,
+  # set this to your internal registry (e.g. registry.internal/sentinel).
+  registry: sentinel
+  tag: latest
+  pullPolicy: IfNotPresent
+# Names of imagePullSecrets that already exist in the namespace.
+imagePullSecrets: []
+
+# Common pod security posture (restricted-friendly).
+podSecurityContext:
+  runAsNonRoot: false        # set true once images are verified to run as non-root
+securityContext: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── Secrets ────────────────────────────────────────────────────────────────
+secrets:
+  # create=true: the chart renders a Secret from the values below.
+  # create=false: you manage the Secret yourself — set existingSecret to its name.
+  create: true
+  existingSecret: ""
+  # Used only when create=true. Prefer --set / a sealed secret / external-secrets.
+  secretKey: "change-me-to-a-long-random-string"
+  postgresPassword: "change-me-postgres-password"
+  # URL-safe base64 encoding of exactly 32 random bytes. Historical versions
+  # stay in credentialEncryptionKeysJson while rows are rotated.
+  credentialEncryptionKey: ""
+  credentialEncryptionKeysJson: ""
+  # Shared bearer credential used only between the API and MCP services.
+  mcpServiceToken: ""
+  # Model provider key. Anthropic is the only supported provider; the groq /
+  # google / nvidia slots that used to sit here were dead config for providers
+  # `provider_config` rejects at startup.
+  llmApiKey: ""
+  anthropicApiKey: ""
+  githubToken: ""
+  # Static single-tenant fallback for the runbooks server; SaaS clusters relay
+  # per-cluster Notion creds over MCP instead (blank is fine for self-hosted
+  # deployments with no Notion runbook database — generation/lookup just skips).
+  notionApiKey: ""
+  notionDatabaseId: ""
+  # Optional Slack war-room (bot token enables incident mirroring; app token for replies)
+  slackBotToken: ""
+  slackAppToken: ""
+  # Langfuse Cloud tracing is wired by default (tracing.enabled=true) — these
+  # keys are required unless you set tracing.enabled=false. Get them from a
+  # https://cloud.langfuse.com project (Cloud-only; no in-cluster option).
+  langfusePublicKey: "change-me-langfuse-public-key"
+  langfuseSecretKey: "change-me-langfuse-secret-key"
+
+# ── Model provider ────────────────────────────────────────────────────────────
+# Anthropic only: `sre_agent.provider_config` refuses every other value before
+# the API starts, so any other setting here is a CrashLoopBackOff, not a choice.
+# Keep anthropicModel on the router's ladder (haiku-4-5, sonnet-4-5, sonnet-5,
+# opus-5) or per-tier escalation falls back to fixed defaults.
+llm:
+  provider: "anthropic"
+  anthropicModel: "claude-sonnet-5"
+  # Single-tenant fallbacks, read only when no cluster is bound (see
+  # src/sre_agent/cluster_context.resolve_llm). A connected cluster's own settings
+  # always win. baseUrl points at an Anthropic-compatible gateway; leave both
+  # empty for the default endpoint and the router's own model choice.
+  baseUrl: ""
+  model: ""
+
+# ── MCP tool servers ──────────────────────────────────────────────────────────
+mcp:
+  # Bring your own: a JSON object of client-run MCP servers, merged with the
+  # built-in edge servers. Example:
+  #   extraServersJson: '{"my-tool":{"url":"http://my-tool.ns:9000/sse","transport":"sse"}}'
+  extraServersJson: ""
+  # The built-in edge tool servers shipped with the chart. Disable any you don't
+  # want, or set edge.enabled=false to run none and rely entirely on your own.
+  edge:
+    enabled: true
+    resources:
+      requests: { cpu: "25m", memory: "96Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+    servers:
+      - { name: mcp-k8s, image: mcp-k8s, serviceAccount: observer }
+      - { name: mcp-executor, image: mcp-executor, serviceAccount: actuator,
+          configEnv: [ EXECUTOR_ALLOWED_NAMESPACES, EXECUTOR_MIN_REPLICAS ] }
+      - { name: mcp-prometheus, image: mcp-prometheus, configEnv: [ PROMETHEUS_URL ] }
+      - { name: mcp-loki, image: mcp-loki, configEnv: [ LOKI_URL ] }
+      - { name: mcp-github, image: mcp-github, secretEnv: [ GITHUB_TOKEN ] }
+      - { name: mcp-github-exec, image: mcp-github-exec, secretEnv: [ GITHUB_TOKEN ] }
+      - { name: mcp-runbooks, image: mcp-runbooks, secretEnv: [ NOTION_API_KEY, NOTION_DATABASE_ID ] }
+      - { name: mcp-sandbox, image: mcp-sandbox, serviceAccount: sandbox,
+          configEnv: [ SANDBOX_NAMESPACE, SANDBOX_ALLOWED_IMAGES, SANDBOX_MAX_ACTIVE_DEADLINE_SECONDS ] }
+
+# ── Observability defaults (per-cluster settings live in the console) ─────────
+observability:
+  prometheusUrl: ""
+  lokiUrl: ""
+
+# ── Slack war-room (optional) ────────────────────────────────────────────────
+slack:
+  warRoomChannel: "#incidents"
+
+# ── Agent tracing (Langfuse Cloud, wired by default) ───────────────────────────
+tracing:
+  # Every LLM/tool call is traced out of the box. Set false to fully disable.
+  enabled: true
+  # "" defaults to https://cloud.langfuse.com. Set explicitly for the US
+  # region (https://us.cloud.langfuse.com) or a different Langfuse project.
+  langfuseHost: ""
+
+# ── Auth / session ─────────────────────────────────────────────────────────
+auth:
+  accessTokenMinutes: "15"
+  refreshTokenDays: "7"
+  # Set true when serving over TLS (e.g. with ingress.tls) so the refresh cookie
+  # carries the Secure flag.
+  cookieSecure: "false"
+
+credentialEncryption:
+  keyVersion: "1"
+
+# ── Remediation + feature flags ────────────────────────────────────────────
+features:
+  # Trusted policy environment: production | staging | development | testing.
+  # Unknown values fail closed to production.
+  clusterEnvironment: "production"
+  # Reasoning + dry-run proposal always runs. This only authorizes autonomous
+  # EXECUTION of gate-approved reversible actions on the live cluster. Read-only
+  # by default; high severities always require human approval.
+  executorLive: "false"
+  # Namespaces the executor may act on (comma-separated) — the client's blast
+  # radius. Empty means the executor refuses every action (safe default).
+  # Set per-client via overlay / --set (see examples/).
+  executorAllowedNamespaces: ""
+  executorMinReplicas: "1"
+  # Durability on by default (enables human-approval resume + interrupted-run
+  # continuation). PostgreSQL survives API restarts and uses the same database
+  # configured for the control plane.
+  checkpointerEnabled: "true"
+  checkpointerBackend: "postgres"
+  approvalTtlMinutes: "30"
+  # Redis is required for multi-replica API; memory is single-process only.
+  liveBusBackend: "redis"
+  debug: "false"
+
+# ── API (control plane + agent runtime) ───────────────────────────────────────
+api:
+  # Use 2+ with features.liveBusBackend=redis for multi-replica safety.
+  replicas: 2
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: sentinel-api
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1536Mi" }
+
+# ── Web console ───────────────────────────────────────────────────────────────
+web:
+  replicas: 2
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: sentinel-web
+  # Optional browser-visible API WebSocket origin. Empty auto-selects the
+  # console origin with ingress, or ws://localhost:8080 for port-forwarding.
+  # Set an explicit origin only when the browser bypasses those defaults.
+  wsBase: ""
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+# ── Datastores: deploy ours, or bring your own ────────────────────────────────
+postgres:
+  deploy: true                 # false → use an external Postgres you already run
+  image: postgres:15.19-alpine@sha256:a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd
+  user: sentinel
+  database: sentinel
+  storage: 5Gi
+  storageClass: ""             # "" = cluster default
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+  external:                    # used when deploy=false
+    host: ""
+    port: "5432"
+    # password comes from the Secret (secrets.* or existingSecret key POSTGRES_PASSWORD)
+
+redis:
+  deploy: true                 # false → set external.url
+  image: redis:7.4.11-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7
+  # Durable AOF + PVC so restarts keep bus/cache state. Set persistence.enabled
+  # false only for ephemeral disposable clusters.
+  persistence:
+    enabled: true
+    storage: 2Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "500m", memory: "256Mi" }
+  external:
+    url: ""                    # e.g. redis://redis.mycorp:6379/0
+
+qdrant:
+  deploy: true                 # false → set external.url
+  image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+  storage: 2Gi
+  storageClass: ""
+  external:
+    url: ""                    # e.g. http://qdrant.mycorp:6333
+
+# ── Sandbox (code-fix verification Jobs) ──────────────────────────────────────
+# Dedicated namespace + operator-owned safety envelope for the ephemeral K8s
+# Jobs that run AI-generated code fixes for verification. Never the same
+# namespace as a real workload.
+sandbox:
+  namespace: "sentinel-sandbox"
+  # Comma-separated allow-list of runner images the sandbox may launch. Empty
+  # refuses every provision request (safe default) — set per-client to the
+  # runner image(s) that can actually execute your code fix candidates.
+  allowedImages: ""
+  maxActiveDeadlineSeconds: "600"
+
+# ── Temporal (sandbox workflow orchestration) ─────────────────────────────────
+temporal:
+  enabled: true
+  deploy: true                 # false → use an external Temporal, set external.host
+  image: temporalio/auto-setup:1.24
+  namespace: "default"         # Temporal namespace (not a k8s namespace)
+  storage: 2Gi
+  storageClass: ""
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+  external:
+    host: ""                   # e.g. temporal.mycorp:7233
+
+# ── RBAC for the agent's k8s tools ────────────────────────────────────────────
+rbac:
+  create: true
+  # Default: both tool identities are restricted to one workload namespace.
+  namespaced:
+    enabled: true
+    # Existing workload namespace that the observer/executor may access.
+    # Keep aligned with features.executorAllowedNamespaces when you enable ACT.
+    # Override per client with an example overlay under examples/.
+    namespace: "default"
+  # Explicit opt-in for observing/mutating resources across all namespaces.
+  clusterWide:
+    enabled: false
+
+# ── NetworkPolicy (namespace-internal least privilege) ────────────────────────
+networkPolicy:
+  enabled: true
+
+# ── Ingress (optional) ────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: "nginx"
+  host: "sentinel.your-domain"
+  tls: false
+  tlsSecretName: ""
+  annotations: {}

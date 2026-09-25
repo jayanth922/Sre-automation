@@ -1,4 +1,4 @@
-"""Unit tests for the Jira ticketing integration (sre_agent/integrations/jira.py).
+"""Unit tests for the Jira ticketing integration (src/sre_agent/integrations/jira.py).
 
 Per-tenant credentials live on Cluster (mirrors the existing Notion pattern),
 so every test builds a fake cluster/incident row and monkeypatches

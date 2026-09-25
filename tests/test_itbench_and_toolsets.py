@@ -21,8 +21,8 @@ def _load(path, name):
     return mod
 
 
-itb = _load(_ROOT / "benchmarks" / "itbench_adapter.py", "itbench_adapter")
-ts = _load(_ROOT / "sre_agent" / "toolsets.py", "toolsets")
+itb = _load(_ROOT / "evals" / "benchmarks" / "itbench_adapter.py", "itbench_adapter")
+ts = _load(_ROOT / "src" / "sre_agent" / "toolsets.py", "toolsets")
 
 
 @dataclass

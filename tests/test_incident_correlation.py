@@ -19,7 +19,7 @@ def _load(name, rel_path):
     return module
 
 
-_ic = _load("incident_correlation_under_test", "sre_agent/incident_correlation.py")
+_ic = _load("incident_correlation_under_test", "src/sre_agent/incident_correlation.py")
 CorrelationCandidate = _ic.CorrelationCandidate
 correlate = _ic.correlate
 extract_service = _ic.extract_service

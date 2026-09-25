@@ -2,7 +2,7 @@
 
 This page records measured AI-system evidence, including negative results. It
 does not claim production readiness. Promotion still requires the paired,
-full-split release evidence defined under `benchmarks/`.
+full-split release evidence defined under `evals/benchmarks/`.
 
 ## 2026-09-21: one-incident statistical harness smoke
 

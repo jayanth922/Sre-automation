@@ -179,7 +179,7 @@ def test_the_real_meridian_runbook_offers_the_histogram_the_oracle_probes():
     Not the raw file: the budgeted, remediation-first brief that
     ``ContextBuilder`` actually renders and puts in front of the specialist.
     """
-    content = (REPO_ROOT / "runbooks" / "meridian" / "high-latency.md").read_text(
+    content = (REPO_ROOT / "examples" / "meridian" / "runbooks" / "high-latency.md").read_text(
         encoding="utf-8"
     )
     brief = render_runbook_brief(

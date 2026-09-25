@@ -48,23 +48,23 @@ dependencies = [
     "langchain-openai>=0.1.0",
     "qdrant-client>=1.19.1,<1.20.0",
     "fastembed>=0.3.0",
-    # Observability — self-hosted Langfuse is wired by default (sre_agent/tracing.py).
+    # Observability — self-hosted Langfuse is wired by default (src/sre_agent/tracing.py).
     # langfuse.langchain.CallbackHandler does `import langchain; langchain.__version__`
     # purely to pick its v0/v1 import branch, even though every actual import it uses
     # comes from langchain-core (already a dependency above) — so the bare `langchain`
     # package is required too, or the callback silently fails to construct.
     "langfuse>=3.0.0",
     "langchain>=1.0.0",
-    # Slack war-room forwarding + interactive bot (sre_agent/war_room_service.py,
-    # sre_agent/integrations/slack_bot.py). No-op at runtime unless SLACK_BOT_TOKEN
+    # Slack war-room forwarding + interactive bot (src/sre_agent/war_room_service.py,
+    # src/sre_agent/integrations/slack_bot.py). No-op at runtime unless SLACK_BOT_TOKEN
     # (and SLACK_APP_TOKEN for the Socket Mode bot) are configured.
     "slack-bolt>=1.18.0",
-    # LiteLLM model-router backend (sre_agent/litellm_backend.py). On by default
+    # LiteLLM model-router backend (src/sre_agent/litellm_backend.py). On by default
     # via MODEL_ROUTER_BACKEND=litellm (.env.example); langchain-litellm provides
     # the maintained ChatLiteLLM wrapper this talks through.
     "litellm>=1.50.0",
     "langchain-litellm>=0.7.1",
-    # Token counting for context budgeting (sre_agent/context_compaction.py).
+    # Token counting for context budgeting (src/sre_agent/context_compaction.py).
     # Declared explicitly rather than leaned on transitively: budgeting decides
     # whether a request fits the model's context window, and falling back to the
     # character heuristic because an unrelated package dropped its dependency is
@@ -103,8 +103,9 @@ anthropic = [
 
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["sre_agent*"]
+where = ["src", "evals"]
+include = ["sre_agent*", "backend*", "benchmarks*"]
+namespaces = true
 
 [tool.black]
 line-length = 88
@@ -126,7 +127,7 @@ ignore = ["E501"]
 branch = true
 source = ["backend", "sre_agent"]
 omit = [
-    "sre_agent/prompts/*",
+    "src/sre_agent/prompts/*",
     "*/tests/*",
 ]
 
@@ -137,6 +138,7 @@ skip_covered = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src", "evals"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"

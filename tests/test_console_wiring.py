@@ -7,10 +7,11 @@ nor the production build can notice that, because an unreferenced endpoint is
 not a type error. These tests pin the call sites instead.
 """
 
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_DASH = _ROOT / "dashboard"
+_DASH = _ROOT / "apps" / "dashboard"
 _JOBS_PAGE = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "jobs" / "page.tsx"
 _INCIDENT_PAGE = (
     _DASH
@@ -45,14 +46,17 @@ def test_a_failed_cluster_list_is_not_rendered_as_an_empty_account():
     src = _HOME_PAGE.read_text()
     assert "setLoadErr(true)" in src
     assert "if (loadErr) {" in src
+    layout = _CLUSTER_LAYOUT.read_text()
+    assert 'setState("error")' in layout
+    assert "Could not load this cluster" in layout
 
 
 def test_general_chat_is_not_an_unbounded_execution_surface():
     """Slack incident threads are the only user-facing conversation surface."""
-    runtime = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    runtime = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
 
     assert "chat_router" not in runtime
-    assert not (_ROOT / "sre_agent" / "api" / "v1" / "chat.py").exists()
+    assert not (_ROOT / "src" / "sre_agent" / "api" / "v1" / "chat.py").exists()
 
 
 def test_an_incident_message_cannot_queue_an_agent_turn_over_http():
@@ -66,14 +70,14 @@ def test_an_incident_message_cannot_queue_an_agent_turn_over_http():
     The conversational handler itself stays. Slack routes thread replies
     straight into it, and that is the one surface the product commits to.
     """
-    mc = (_ROOT / "sre_agent" / "api" / "v1" / "mission_control.py").read_text()
+    mc = (_ROOT / "src" / "sre_agent" / "api" / "v1" / "mission_control.py").read_text()
     assert '"/{incident_id}/message"' not in mc
     assert "async def send_incident_message" not in mc
     assert "IncidentMessageRequest" not in mc
-    assert "IncidentMessageRequest" not in (_ROOT / "backend" / "schemas.py").read_text()
+    assert "IncidentMessageRequest" not in (_ROOT / "src" / "backend" / "schemas.py").read_text()
 
     assert "async def handle_incident_message" in mc
-    assert "handle_incident_message" in (_ROOT / "sre_agent" / "war_room.py").read_text()
+    assert "handle_incident_message" in (_ROOT / "src" / "sre_agent" / "war_room.py").read_text()
 
     legacy = _DASH / "components" / "dashboard"
     assert not (legacy / "IncidentChatPanel.tsx").exists()
@@ -140,7 +144,7 @@ def test_the_console_reaches_every_jobs_endpoint_it_should():
     assert "api.post(`/clusters/${id}/jobs/${jobId}/cancel`)" in page
     assert "/manifest/compare/${against}" in page
     assert "/jobs/trigger" not in page
-    router = _ROOT / "sre_agent" / "api" / "v1" / "jobs.py"
+    router = _ROOT / "src" / "sre_agent" / "api" / "v1" / "jobs.py"
     assert "/jobs/trigger" not in router.read_text()
 
 
@@ -170,6 +174,47 @@ def test_the_incident_page_reaches_both_ticket_endpoints():
     page = _INCIDENT_PAGE.read_text()
     assert "api.get<Ticket>(`/clusters/${id}/incidents/${incidentId}/ticket`)" in page
     assert "api.post(`/clusters/${id}/incidents/${incidentId}/ticket`" in page
+
+
+def test_console_incident_status_vocabulary_matches_the_backend():
+    """A new durable status must not silently render as a critical "Open" row."""
+    from backend.models import IncidentStatus
+
+    console = (_DASH / "lib" / "console.ts").read_text()
+    status_type = console.split("export type IncidentStatusT =", 1)[1].split(
+        "\n\n", 1
+    )[0]
+    frontend_statuses = set(re.findall(r'"([a-z_]+)"', status_type))
+    backend_statuses = {status.value for status in IncidentStatus}
+
+    assert frontend_statuses == backend_statuses
+    badge_map = console.split("const INCIDENT_STATUS_BADGE", 1)[1].split("\n}\n", 1)[0]
+    for status in backend_statuses:
+        assert f'"{status}":' in badge_map
+
+
+def test_incident_approval_cue_survives_graph_status_outage():
+    page = _INCIDENT_PAGE.read_text()
+    assert (
+        'status?.status === "WAITING_APPROVAL" || '
+        'inc.status === "awaiting_approval"'
+    ) in page
+
+
+def test_remediation_gate_status_vocabulary_matches_the_backend():
+    """Pydantic serializes ApprovalStatus by its lowercase string value."""
+    from backend.models import ApprovalStatus
+
+    page = _INCIDENT_PAGE.read_text()
+    gate_interface = page.split("interface GateApproval", 1)[1].split("\n}", 1)[0]
+    status_line = next(
+        line for line in gate_interface.splitlines() if line.strip().startswith("status:")
+    )
+    frontend_statuses = set(re.findall(r'"([a-z_]+)"', status_line))
+
+    assert frontend_statuses == {status.value for status in ApprovalStatus}
+    assert 'gates.filter((g) => g.status === "pending")' in page
+    assert 'g.status === "approved"' in page
 
 
 def test_the_ticket_panel_refetches_after_creating():

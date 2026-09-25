@@ -13,7 +13,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 def _load():
     spec = importlib.util.spec_from_file_location(
-        "provider_config_under_test", _ROOT / "sre_agent" / "provider_config.py"
+        "provider_config_under_test", _ROOT / "src" / "sre_agent" / "provider_config.py"
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules["provider_config_under_test"] = module
@@ -89,7 +89,7 @@ def test_cli_exits_zero_on_valid(monkeypatch):
 
 def test_runtime_no_longer_coerces_provider():
     """Source guard: agent_runtime must not silently default invalid providers."""
-    source = (_ROOT / "sre_agent" / "agent_runtime.py").read_text(encoding="utf-8")
+    source = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text(encoding="utf-8")
     assert "defaulting to 'groq'" not in source
     assert "require_supported_provider" in source
     assert "validate_startup_config" in source

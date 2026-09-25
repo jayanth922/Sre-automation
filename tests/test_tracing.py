@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "tracing.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "tracing.py"
 _spec = importlib.util.spec_from_file_location("tracing", _MODULE_PATH)
 tr = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = tr
@@ -112,7 +112,7 @@ def test_specialist_role_does_not_rename_other_or_dynamic_observations(
 
 # These fixtures have to be credential-*shaped* — that is the entire point of
 # the test below. They are assembled at import time instead of written as
-# literals because `scripts/check_no_static_secrets.sh` greps every tracked
+# literals because `scripts/ci/check_no_static_secrets.sh` greps every tracked
 # file for exactly these shapes, and it cannot tell a redaction fixture from a
 # leaked key. Weakening the scanner (or excluding this file from it) to make
 # room for a test would trade a real guarantee for a cosmetic one, so the test

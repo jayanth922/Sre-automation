@@ -1,4 +1,4 @@
-# PROJECT_STATE.md
+# Project state
 
 ## Project objective
 Make Sentinel a truthful, tenant-isolated, reproducible and cost-conscious SRE
@@ -6,13 +6,20 @@ agent. Deterministic policy and durable state—not model prose—control writes
 approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-**Benchmarking, sized to the budget.** Backend correctness, console wiring and
-memory coverage are closed. The first paid ablation campaign (#28) ran to
-completion — both arms, 8 trials, ≈$8 — but two of its four pairs were
-destroyed by harness defects. Those defects (#65, #66, #68) are now fixed and
-tested. What remains is a ≈$8–10 re-run, which needs authorization.
+**All known defects fixed in one batch, then one run.** Two paid campaigns have
+run (#28 on 2026-09-24, its re-run #70 on 2026-09-25). Each surfaced harness
+defects that cost paid trials, so the standing decision (user, 2026-09-25) is
+to stop verifying fixes one at a time and land every open fix before any
+further paid run. Fixes are verified offline — unit tests plus replay of
+already-recorded campaign data — which costs no agent API credits at all; only
+#72 needed a live incident.
 
 ## Current architecture and invariants
+- **Layout (PR #56, 2026-09-25):** production packages in `src/`, the console
+  in `apps/dashboard/`, MCP and backend services in `services/`, evaluation in
+  `evals/benchmarks/`, deployment assets in `infra/`, the Meridian reference
+  integration in `examples/meridian/`. `pyproject.toml` sets
+  `pythonpath = ["src", "evals"]`, so `import sre_agent` still resolves.
 - `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
   tenant, policy, idempotency and audit boundary. A successful action is not
   replayed after process death; a cleared incident cannot restart remediation.
@@ -35,75 +42,97 @@ tested. What remains is a ≈$8–10 re-run, which needs authorization.
 - Console wiring closed: 19/19 pages handle loading, error and empty.
 - #34 seeding (two paid train trials, ≈$2): skill store 5 → 7, adding
   `high_error_rate` for checkout- and payment-service, both `verified_success`.
-- **#28 campaign (2026-09-25): `full` vs `no_memory`, holdout v2, 8 trials,
-  ≈$8.** Arm separation proven, not asserted: of 326 leaf configuration fields
-  compared across the arms' manifests, exactly one differs
-  (`runtime.ablation_arm`); both carry `ablation_experiment=true` and
-  `learned_memory_writes=false`. Verdict **NOT_DEMONSTRATED**, never REFUTED.
-  On the two valid pairs every graded delta is exactly zero; the one non-zero
-  diagnosis delta was #66's artifact. See `reports/ablation-20260924/`.
-- **#65/#66/#67/#68 fixed, all four uncommitted.** #65: `_wait_for_recovery`
-  broke on `tracker.recovered_at` alone, so an unarmed probe ended the trial
-  ~7s in with 0 spans; it now also requires `tracker.failure_observed`. #66:
-  teardown now closes the incident a trial opened (`mark-resolved`, the
-  sanctioned path), so no orphan folds or dedups the next scenario's alert.
-  #68: the declared `BENCH_CONFIG_FINGERPRINT` is checked against the first
-  trial's manifest, so a bad declaration costs one trial, not a campaign. #67:
-  `--memory-coverage` was routed through `load_manifest` and was unusable.
-  Rationale lives in the docstrings; 11 tests in
-  `tests/test_bench_trial_teardown.py`, which fail against the pre-fix file.
-  Note for anyone re-reading #65: `payment_subthreshold_charge_errors` is a
-  deliberate negative control, not a mis-set threshold. Its scenario block is
-  correct as written.
+- **Two paid campaigns, `full` vs `no_memory` on holdout v2, 8 trials each:
+  #28 (≈$8, `reports/ablation-20260924/`) and its re-run #70
+  (`reports/ablation-20260925/`).** Both **NOT_DEMONSTRATED**, never REFUTED;
+  both reached only 2 valid pairs, on which every graded delta is exactly zero.
+  Arm separation is proven, not asserted: of 326 leaf configuration fields
+  across the arms' manifests exactly one differs (`runtime.ablation_arm`).
+- **#72 fixed and proven live.** Incident-memory promotion sat outside the
+  approval gate, so an approval-gated plan — i.e. every mutating one — ended its
+  first graph pass at `awaiting_approval` and never wrote. Promotion moved into
+  `graph_builder._act_gate_node`; verified `sre_incidents_v2` 0 → 1, correctly
+  scoped. This is what makes the recall half of memory testable at all.
+- **#71 fixed.** Its title was a misdiagnosis — the harness posts its own alert
+  and the incident opens synchronously, so alert latency never enters
+  `BENCH_INCIDENT_WAIT_SECONDS`. The real defect: the webhook receipt was
+  discarded and a fixed, false guess printed. It now names the absorbing
+  incident.
+- **#69 fixed (uncommitted, at pre-refactor paths — see Next bounded task).**
+  `OracleStatus` gained `NO_ACTION_CORRECT`: a `taxonomy.category == "clean"`
+  scenario whose signal never leaves its healthy band reports that and no MTTR,
+  still counts as resolved, and still gets a full structured grade — correct
+  inaction is a pass, and the unresolved branch records no safety outcome at
+  all, which is the whole point of a control. One that *did* go failing reports
+  INVALID_SCENARIO. Verified by replaying the recorded trials: #70's "MTTR mean
+  526s" was two real recoveries at 786.1s averaged with a 7s poll interval.
+- **#65/#66/#67/#68 fixed and committed** — trial-ending on an unarmed probe,
+  orphan incidents surviving teardown, an unchecked declared fingerprint, and an
+  unusable `--memory-coverage`. Rationale is in the docstrings; 11 tests in
+  `tests/test_bench_trial_teardown.py` fail against the pre-fix file.
+  `payment_subthreshold_charge_errors` is a deliberate negative control, not a
+  mis-set threshold — its scenario block is correct as written.
 
 ## Active problem
-Nothing technical blocks the re-run; it waits on a spend decision and a commit.
-Secondary: clean scenarios (#69) still report `VERIFIED_RECOVERED` and
-contribute a meaningless MTTR, because `OracleStatus` has no verdict for
-"investigated and correctly did nothing". Deferred deliberately — that Literal
-is consumed by `scoring.py`, `statistical_eval.py`, `make_release_fixtures.py`
-and ~10 test files.
+Three open defects plus one corpus task, all to be landed together before any
+paid run:
+- **#73** — `cost_usd` is null on half the trials, including two negative
+  controls that ran full ~400s investigations. Campaign cost figures are the
+  mean of half the trials, so every budget estimate built from them runs low.
+- **#74** — the same-service fold still straddles the scenario boundary. #66's
+  teardown closes incidents *between* scenarios, but both observed folds landed
+  7–9 min *into* the next one. 4-for-4 correlation with whether a trial opened
+  an incident. #71 makes it visible; it does not prevent it.
+- **#75** — `get_awaiting_approval` swallows checkpointer failures with a bare
+  `except` and reports 0, so a gated incident reads as no incident.
+- **#4** — test varied software incident types.
 
 ## Relevant files
-- Evaluation: `benchmarks/{sre_bench,structured_grading,statistical_eval,
+- Evaluation: `evals/benchmarks/{sre_bench,structured_grading,statistical_eval,
   ablation_eval,recovery_oracle,ablation_coverage}.py`,
-  `sre_agent/skill_store.py`, `benchmarks/datasets/v2/holdout.json`,
-  `sre_agent/api/v1/alerts.py` (`_fold_target`, `_FOLD_WINDOW_MINUTES = 120`).
-- Tool scope: `edge_mcp_servers/mcp_servers/{prometheus_real,k8s_real}/
+  `src/sre_agent/skill_store.py`, `evals/benchmarks/datasets/v2/holdout.json`,
+  `src/sre_agent/api/v1/alerts.py` (`_fold_target`,
+  `_FOLD_WINDOW_MINUTES = 120`).
+- Tool scope: `services/edge_mcp_servers/mcp_servers/{prometheus_real,k8s_real}/
   server.py`, image-baked; rebuild their compose services — the deploy script
   misses them.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → **2389 passed, 6 skipped** (2026-09-23);
-  bench subset after #65/#66/#68 → **222 passed** (2026-09-25).
-- `scripts/check_python_quality.sh` → ruff critical, mypy, compileall clean.
-- `benchmarks/ablation_coverage.py --split {dev,holdout}` → free. Needs
+- `.venv/bin/python -m pytest -q` → **2453 passed, 6 skipped** (2026-09-25,
+  after #69, at pre-refactor paths). There is no `--timeout` plugin here.
+- `scripts/ci/check_python_quality.sh` → ruff critical, mypy, compileall clean.
+- `evals/benchmarks/ablation_coverage.py --split {dev,holdout}` → free. Needs
   `SKILL_STORE_PATH`; the live store is a docker volume, so `docker cp
   sre-agent-api:/app/data/skills.json` first. 2026-09-25: **COVERED 6/6 dev,
   4/4 holdout**. Cross-service transfers sit at exactly 0.50 — `match_score`'s
   admission threshold, NOT the 0.80 `_SEMANTIC_MATCH_FLOOR` (cosines only).
-- `benchmarks/ablation_eval.py` → free. Exit 0 with `NOT_DEMONSTRATED`; 2 is
-  REFUTED.
+- `evals/benchmarks/ablation_eval.py` → free. Exit 0 with `NOT_DEMONSTRATED`; 2
+  is REFUTED.
 - Ablation arm: `SENTINEL_ABLATION_ARM` is read at graph-build time inside
   `sre-agent-api`, so the arm belongs to the container, not the bench client.
   Append it to the root `.env`, then `docker compose -f
-  platform/docker-compose.yaml --profile local-temporal up -d --no-deps
+  infra/local/docker-compose.yaml --profile local-temporal up -d --no-deps
   sre-agent-api temporal-worker` (profile-gated worker). Confirm with
   `current_ablation().describe()` before spending.
 - Single trial: `BENCH_SCENARIOS=<id> BENCH_AUTO_APPROVE=1
   BENCH_INCIDENT_TIMEOUT_SEC=2700`, secrets from `/home/vscode/bench.env`,
   recording unset (`BENCH_SCENARIOS` refuses to run beside it).
-- `benchmarks/` is not in the agent image; `sre_agent/` is. The dashboard is
+- `evals/` is not in the agent image; `src/sre_agent/` is. The dashboard is
   image-baked: rebuild, then `up -d --no-build --force-recreate`.
 
 ## Known blockers or risks
-- **No further paid run is authorized.** #28's ≈$8 tier is spent; the $88–$632
-  tiers stay refused. A clean 4-pair re-run costs ≈$8–10.
+- **No further paid run is authorized**, and none should be proposed until the
+  whole batch above is landed. The $88–$632 tiers stay refused. Measured basis
+  for any future estimate: 4 priced trials, mean $0.895, range $0.825–$1.001 —
+  but see #73, these lean low. Costed only: 8-trial re-run with memory seeded
+  ≈$18; the 20-pair campaign §9 calls conclusive ≈$47 (range $40–60), which on
+  a 4-scenario holdout means 5 repetitions each, measuring run-to-run variance
+  more than scenario breadth.
 - The re-run is **not poolable** with #28. The agent is byte-identical, so the
   fingerprint and `dataset_sha256` still match and attestation passes — but the
   harness producing the measurements changed. Report it as a new experiment.
 - **Calibration needs ~100 more paid trials** against `minimum_samples=100`;
-  the corpus holds 2. Records group by task, not scenario.
+  the corpus holds 2.
 - Structured grading can never return `PASS`: `causal_chain` sits at
   `REQUIRES_CALIBRATION` with no blinded judge. Read per-criterion states and
   scalar hits. In #28, 6 of 8 rows carry `structured_failure`.
@@ -111,15 +140,28 @@ and ~10 test files.
   creates — the only adapter toggles `/admin/config`. Arm-independent; caps dev
   root-cause accuracy at 5/6.
 - Specialists routinely hit the six-turn limit. Verified deliberate (#62).
-- Incident recall is provably inert — 0 points in the collection. Dataset v3 is
-  not runnable (the Meridian image lacks the `metrics_enabled` rebuild).
+- Incident recall was inert in **both** arms of both campaigns — 0 points in
+  the collection — so neither measured the recall half of memory. Both
+  attestations say so and return NOT_DEMONSTRATED; do not restate either as a
+  null result. #72 makes the writes work, so a seeded re-run would finally put
+  that half under test. Dataset v3 is not runnable (the Meridian image lacks the
+  `metrics_enabled` rebuild).
 - Rotate the Anthropic key and Slack token exposed in terminal output.
 - Never stage `.agents/`, `.env.local-backup-20260910` or `.env.bak-*`; never
   `git add -A`.
 
 ## Next bounded task
-Two decisions the work waits on: commit the four uncommitted files
-(`benchmarks/sre_bench.py`, `benchmarks/ablation_eval.py`,
-`docs/ai/PROJECT_STATE.md`, `tests/test_bench_trial_teardown.py`), and
-authorize the ≈$8–10 re-run of `full` vs `no_memory` on holdout v2 for 4 clean
-pairs. Then #69, which needs a vocabulary decision before any patch.
+Re-seat the uncommitted #69 work on the new layout, then land #73, #74, #75 and
+#4 as one batch, commit everything together, and run the suite once. Only after
+that should a paid run be discussed.
+
+#69 is uncommitted on the Codespace at **pre-refactor paths**: modified
+`benchmarks/{recovery_oracle,scoring,sre_bench,statistical_eval}.py` and
+`reports/ablation-20260925/ATTESTATION.md` (gitignored — needs `git add -f`),
+plus untracked `tests/test_negative_control_verdict.py`. Those four source paths
+are now `evals/benchmarks/...`, so save the diff before pulling
+(`git diff > /tmp/69.patch`) and re-apply it with
+`git apply --directory=evals` rather than merging in place. The test file loads
+its modules by file path — repoint it at `parents[1] / "evals" / "benchmarks"`,
+the convention the rest of `tests/` now uses. Stage explicit paths only, never
+`git add -A`, and run the env/`.agents` staging guard first.

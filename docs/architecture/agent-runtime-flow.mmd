@@ -1,21 +1,19 @@
-graph TD
-    A["POST /invocations<br/>User Prompt or Alert"] --> B["Initialize Graph State<br/>Incident Context & Tools"]
-    B --> C["Supervisor Node<br/>Select next specialist"]
-    C --> D["Specialist Step<br/>kubernetes_agent OR metrics_agent OR logs_agent OR runbooks_agent OR github_agent"]
-    D --> E["Supervisor Checkpoint<br/>Review evidence and route"]
-    E --> F{More Evidence<br/>Needed?}
-    F -->|Yes| C
-    F -->|No| G["Aggregate Node<br/>Generate final summary"]
-    G --> H["Persist incident summary<br/>and timeline events (PostgreSQL)"]
-    H --> I["Store live state/logs<br/>for follow-up (Redis + DB logs)"]
-    I --> J["Return Response<br/>to Dashboard"]
-    J --> K["Dashboard Updates<br/>Incident Panel"]
+flowchart TD
+    Input["Alert or operator request"] --> Job["Persist tenant-scoped durable job"]
+    Job --> Context["Build incident context<br/>namespace · runbook brief · limits"]
+    Context --> Specialists["Bounded specialist agents<br/>metrics · logs · Kubernetes · code · runbooks"]
+    Specialists --> Reflect["Reflect on structured evidence"]
+    Reflect --> More{"One focused<br/>reinvestigation needed?"}
+    More -->|Yes| Specialists
+    More -->|No| Plan["Structured diagnosis and action plan"]
+    Plan --> Gate["Deterministic policy / approval gate"]
+    Gate -->|blocked or diagnosis only| Persist["Persist status, evidence, timeline, audit"]
+    Gate -->|authorized| Mutation["Mutation gateway<br/>freshness · tenant · lock · idempotency"]
+    Mutation --> Verify["Execute once and verify deterministically"]
+    Verify --> Persist
+    Persist --> Surface["Console + optional Slack thread"]
 
-    style A fill:#e3f2fd
-    style B fill:#f3e5f5
-    style C fill:#fff3e0
-    style E fill:#f3e5f5
-    style G fill:#e8f5e9
-    style H fill:#fce4ec
-    style I fill:#fce4ec
-    style J fill:#e3f2fd
+    style Specialists fill:#fff3e0
+    style Gate fill:#f3e5f5
+    style Mutation fill:#ffebee
+    style Persist fill:#e8f5e9

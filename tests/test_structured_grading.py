@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 _MODULE_PATH = BENCHMARKS / "structured_grading.py"
 _spec = importlib.util.spec_from_file_location("structured_grading", _MODULE_PATH)
 grading = importlib.util.module_from_spec(_spec)
@@ -294,9 +294,9 @@ def test_raw_output_and_judgment_are_appended_together(tmp_path):
 
 
 def test_runtime_emits_dedicated_structured_evaluation_payload():
-    agent_state = (ROOT / "sre_agent" / "agent_state.py").read_text()
-    graph_builder = (ROOT / "sre_agent" / "graph_builder.py").read_text()
-    supervisor = (ROOT / "sre_agent" / "supervisor.py").read_text()
+    agent_state = (ROOT / "src" / "sre_agent" / "agent_state.py").read_text()
+    graph_builder = (ROOT / "src" / "sre_agent" / "graph_builder.py").read_text()
+    supervisor = (ROOT / "src" / "sre_agent" / "supervisor.py").read_text()
 
     assert "class EvidenceReference" in agent_state
     assert "causal_chain: List[CausalLink]" in agent_state

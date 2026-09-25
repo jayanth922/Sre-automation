@@ -6,7 +6,7 @@ cluster's namespace. That check is correct — a scoped cluster must not reach
 its neighbours — but the planner prompt never carried the namespace, so the
 model inferred one from evidence: runbook snippets full of
 `kubectl -n demo-app`, and MCP tool signatures whose default argument is
-literally `namespace: str = "demo-app"` (edge_mcp_servers/.../executor_real).
+literally `namespace: str = "demo-app"` (services/edge_mcp_servers/.../executor_real).
 
 Live on 2026-09-14, cluster namespace `meridian`, incident f8ca9a54: three of
 five proposed actions — the rollback, the inspect and one escalate — were

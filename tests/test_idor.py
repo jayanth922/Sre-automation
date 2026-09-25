@@ -151,7 +151,7 @@ def ownership_module(monkeypatch):
 
     spec = importlib.util.spec_from_file_location(
         "_t04_ownership",
-        _ROOT / "sre_agent" / "api" / "v1" / "ownership.py",
+        _ROOT / "src" / "sre_agent" / "api" / "v1" / "ownership.py",
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -269,21 +269,21 @@ def _function_source(relative_path: str, function_name: str) -> str:
 @pytest.mark.parametrize(
     ("relative_path", "function_name", "dependency"),
     [
-        ("sre_agent/api/v1/clusters.py", "update_cluster_endpoint", "get_owned_cluster"),
-        ("sre_agent/api/v1/clusters.py", "get_cluster_health", "get_owned_cluster"),
-        ("sre_agent/api/v1/clusters.py", "delete_cluster", "get_owned_cluster"),
-        ("sre_agent/api/v1/clusters.py", "set_cluster_lock", "get_owned_cluster"),
-        ("sre_agent/api/v1/clusters.py", "get_cluster_audit_logs", "get_owned_cluster"),
-        ("sre_agent/api/v1/mission_control.py", "get_incident_transcript", "get_owned_incident"),
-        ("sre_agent/api/v1/mission_control.py", "get_incident_audit_logs", "get_owned_incident"),
-        ("sre_agent/api/v1/mission_control.py", "get_incident_status", "get_owned_incident"),
-        ("sre_agent/api/v1/mission_control.py", "get_incident_agent_metrics", "get_owned_incident"),
-        ("sre_agent/api/v1/mission_control.py", "approve_incident_action", "get_owned_incident"),
-        ("sre_agent/api/v1/slos.py", "create_slo", "get_owned_cluster"),
-        ("sre_agent/api/v1/slos.py", "list_slos", "get_owned_cluster"),
-        ("sre_agent/api/v1/slos.py", "get_slo_status", "get_owned_slo"),
-        ("sre_agent/api/v1/slos.py", "update_slo_endpoint", "get_owned_slo"),
-        ("sre_agent/api/v1/slos.py", "delete_slo_endpoint", "get_owned_slo"),
+        ("src/sre_agent/api/v1/clusters.py", "update_cluster_endpoint", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/clusters.py", "get_cluster_health", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/clusters.py", "delete_cluster", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/clusters.py", "set_cluster_lock", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/clusters.py", "get_cluster_audit_logs", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/mission_control.py", "get_incident_transcript", "get_owned_incident"),
+        ("src/sre_agent/api/v1/mission_control.py", "get_incident_audit_logs", "get_owned_incident"),
+        ("src/sre_agent/api/v1/mission_control.py", "get_incident_status", "get_owned_incident"),
+        ("src/sre_agent/api/v1/mission_control.py", "get_incident_agent_metrics", "get_owned_incident"),
+        ("src/sre_agent/api/v1/mission_control.py", "approve_incident_action", "get_owned_incident"),
+        ("src/sre_agent/api/v1/slos.py", "create_slo", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/slos.py", "list_slos", "get_owned_cluster"),
+        ("src/sre_agent/api/v1/slos.py", "get_slo_status", "get_owned_slo"),
+        ("src/sre_agent/api/v1/slos.py", "update_slo_endpoint", "get_owned_slo"),
+        ("src/sre_agent/api/v1/slos.py", "delete_slo_endpoint", "get_owned_slo"),
     ],
 )
 def test_bare_id_routes_use_central_ownership_dependency(

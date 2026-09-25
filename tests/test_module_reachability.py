@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_module_reachability_script_passes():
-    script = ROOT / "scripts" / "check_module_reachability.py"
+    script = ROOT / "scripts" / "ci" / "check_module_reachability.py"
     result = subprocess.run(
         [sys.executable, str(script)],
         cwd=str(ROOT),
@@ -22,7 +22,7 @@ def test_module_reachability_script_passes():
 
 
 def test_generative_course_is_archived_not_shipped():
-    assert not (ROOT / "sre_agent" / "generative_course.py").exists()
+    assert not (ROOT / "src" / "sre_agent" / "generative_course.py").exists()
     assert (ROOT / "archive" / "experimental" / "generative_course.py").exists()
     assert (ROOT / "archive" / "experimental" / "README.md").exists()
 
@@ -36,24 +36,32 @@ def test_module_owners_doc_exists():
 
 
 def test_orphaned_dashboard_components_removed():
-    dash = ROOT / "dashboard" / "components" / "dashboard"
-    assert not (dash / "AuditLogTable.tsx").exists()
-    assert not (dash / "AgentStatus.tsx").exists()
+    dash = ROOT / "apps" / "dashboard" / "components" / "dashboard"
+    obsolete = {
+        "AgentStatus.tsx",
+        "AuditLogTable.tsx",
+        "IncidentChatPanel.tsx",
+        "IncidentCommandCenter.tsx",
+        "MetricSparklines.tsx",
+        "SLOOverview.tsx",
+        "UserAccountMenu.tsx",
+    }
+    assert not any((dash / name).exists() for name in obsolete)
 
 
 def test_live_dashboard_pages_use_existing_cluster_apis():
     """Pages may call /clusters/{id}/audit and /health — both exist on clusters router."""
-    clusters = (ROOT / "sre_agent" / "api" / "v1" / "clusters.py").read_text()
+    clusters = (ROOT / "src" / "sre_agent" / "api" / "v1" / "clusters.py").read_text()
     assert '@router.get("/{cluster_id}/health")' in clusters
     assert '@router.get("/{cluster_id}/audit")' in clusters
 
     audit_page = (
-        ROOT / "dashboard" / "app" / "(dashboard)" / "clusters" / "[id]" / "audit" / "page.tsx"
+        ROOT / "apps" / "dashboard" / "app" / "(dashboard)" / "clusters" / "[id]" / "audit" / "page.tsx"
     ).read_text()
     assert "/audit" in audit_page
 
     # No leftover course/learning UI that the backend cannot serve.
-    for path in (ROOT / "dashboard").rglob("*.tsx"):
+    for path in (ROOT / "apps" / "dashboard").rglob("*.tsx"):
         text = path.read_text()
         assert "generative_course" not in text
         assert "/learning-modules" not in text

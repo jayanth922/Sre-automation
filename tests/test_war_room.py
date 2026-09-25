@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_BASE = Path(__file__).resolve().parents[1] / "sre_agent"
+_BASE = Path(__file__).resolve().parents[1] / "src" / "sre_agent"
 
 
 def _load(name):

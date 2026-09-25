@@ -1,40 +1,18 @@
 graph TB
-    subgraph Org["Organization Management"]
-        ORGANIZATION["ORGANIZATION<br/>id (PK)<br/>name<br/>api_key (unique)<br/>created_at"]
-        USER["USER<br/>id (PK)<br/>email<br/>hashed_password<br/>full_name<br/>role<br/>is_active<br/>org_id (FK)<br/>created_at"]
-    end
+    Org["Organization"] --> User["User"]
+    Org --> Invite["Invitation"]
+    Org --> Cluster["Cluster + encrypted integrations"]
+    Cluster --> Incident["Incident"]
+    Cluster --> Job["Durable Job + lease"]
+    Cluster --> SLO["SLO"]
+    Incident --> Timeline["Timeline Event"]
+    Incident --> Approval["Approval / remediation gate"]
+    Incident --> Manifest["Immutable Run Manifest"]
+    Cluster --> Audit["Tenant-scoped Audit Events"]
+    Job --> Manifest
 
-    subgraph Cluster["Cluster & Infrastructure"]
-        CLUSTER["CLUSTER<br/>id (PK)<br/>name<br/>org_id (FK)<br/>token<br/>status<br/>last_heartbeat<br/>prometheus_url<br/>loki_url<br/>k8s_api_server<br/>k8s_token<br/>github_token<br/>github_repo<br/>notion_api_key<br/>notion_database_id<br/>created_at"]
-        JOB["JOB<br/>id (PK)<br/>cluster_id (FK)<br/>job_type<br/>status<br/>payload<br/>result<br/>logs<br/>created_at<br/>started_at<br/>completed_at"]
-        SLO["SLO<br/>id (PK)<br/>cluster_id (FK)<br/>name<br/>sli_metric<br/>target<br/>window_days<br/>current_value<br/>error_budget_remaining<br/>last_calculated<br/>created_at"]
-    end
-
-    subgraph Incident["Incident & Timeline"]
-        INCIDENT["INCIDENT<br/>id (PK)<br/>cluster_id (FK)<br/>title<br/>description<br/>severity<br/>status<br/>summary<br/>created_at<br/>resolved_at"]
-        TIMELINE["INCIDENT_TIMELINE_EVENT<br/>id (PK)<br/>incident_id (FK)<br/>sequence<br/>event_type<br/>speaker_role<br/>title<br/>content<br/>payload_json<br/>pending_supervisor<br/>handled_at<br/>created_at"]
-    end
-
-    subgraph Audit["Audit & Compliance"]
-        AUDITLOG["AUDITLOG<br/>id (PK)<br/>user_id (FK)<br/>action<br/>target_resource<br/>target_id<br/>timestamp"]
-        AUDITEVENT["AUDITEVENT<br/>id (PK)<br/>cluster_id (FK)<br/>timestamp<br/>actor_type<br/>actor_id<br/>action_type<br/>resource_target<br/>outcome<br/>details"]
-    end
-
-    ORGANIZATION -->|owns| CLUSTER
-    ORGANIZATION -->|contains| USER
-    USER -->|creates| AUDITLOG
-    CLUSTER -->|has| INCIDENT
-    CLUSTER -->|queues| JOB
-    CLUSTER -->|defines| SLO
-    CLUSTER -->|emits| AUDITEVENT
-    INCIDENT -->|generates| TIMELINE
-
-    style ORGANIZATION fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
-    style USER fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
-    style CLUSTER fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style JOB fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style SLO fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style INCIDENT fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    style TIMELINE fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    style AUDITLOG fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    style AUDITEVENT fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    style Org fill:#e3f2fd
+    style Cluster fill:#f3e5f5
+    style Incident fill:#fff3e0
+    style Audit fill:#fce4ec
+    style Manifest fill:#e8f5e9

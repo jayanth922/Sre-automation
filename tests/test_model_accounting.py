@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "sre_agent" / "model_accounting.py"
+MODULE_PATH = ROOT / "src" / "sre_agent" / "model_accounting.py"
 _spec = importlib.util.spec_from_file_location("model_accounting", MODULE_PATH)
 accounting = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = accounting

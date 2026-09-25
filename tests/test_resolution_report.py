@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "resolution_report.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "resolution_report.py"
 _spec = importlib.util.spec_from_file_location("resolution_report", _MODULE_PATH)
 rr = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = rr

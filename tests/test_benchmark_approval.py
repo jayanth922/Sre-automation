@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 if str(BENCHMARKS) not in sys.path:
     sys.path.insert(0, str(BENCHMARKS))
 if str(ROOT) not in sys.path:

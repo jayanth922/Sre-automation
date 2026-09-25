@@ -16,7 +16,7 @@ def _load(name, rel_path):
     return module
 
 
-_st = _load("service_topology_under_test", "sre_agent/service_topology.py")
+_st = _load("service_topology_under_test", "src/sre_agent/service_topology.py")
 build_adjacency_map = _st.build_adjacency_map
 
 

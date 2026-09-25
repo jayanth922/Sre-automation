@@ -33,7 +33,7 @@ def _assert_delete_is_pods_only(source: str):
 
 
 def test_plain_manifest_actuator_is_namespaced_and_delete_is_pods_only():
-    source = (ROOT / "deploy" / "k8s" / "rbac.yaml").read_text()
+    source = (ROOT / "infra" / "k8s" / "rbac.yaml").read_text()
     role = _document(source, "Role", "sentinel-actuator")
     binding = _document(source, "RoleBinding", "sentinel-actuator")
 
@@ -47,16 +47,16 @@ def test_plain_manifest_actuator_is_namespaced_and_delete_is_pods_only():
 
 
 def test_plain_manifest_observer_remains_read_only():
-    source = (ROOT / "deploy" / "k8s" / "rbac.yaml").read_text()
+    source = (ROOT / "infra" / "k8s" / "rbac.yaml").read_text()
     observer = _document(source, "ClusterRole", "sentinel-observer")
     assert 'verbs: ["get", "list", "watch"]' in observer
     assert '"delete"' not in observer
 
 
 def test_helm_defaults_namespaced_and_cluster_wide_is_opt_in():
-    values = (ROOT / "deploy" / "helm" / "sentinel" / "values.yaml").read_text()
+    values = (ROOT / "infra" / "helm" / "sentinel" / "values.yaml").read_text()
     template = (
-        ROOT / "deploy" / "helm" / "sentinel" / "templates" / "rbac.yaml"
+        ROOT / "infra" / "helm" / "sentinel" / "templates" / "rbac.yaml"
     ).read_text()
 
     assert "namespaced:\n    enabled: true" in values
@@ -76,9 +76,9 @@ def test_helm_defaults_namespaced_and_cluster_wide_is_opt_in():
 
 def test_ci_renders_default_and_opt_in_rbac_modes():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    check = (ROOT / "scripts" / "check_helm_rbac.sh").read_text()
-    live = (ROOT / "scripts" / "check_live_rbac.sh").read_text()
-    deploy_templates = (ROOT / "scripts" / "check_deploy_templates.sh").read_text()
+    check = (ROOT / "scripts" / "ci" / "check_helm_rbac.sh").read_text()
+    live = (ROOT / "scripts" / "ci" / "check_live_rbac.sh").read_text()
+    deploy_templates = (ROOT / "scripts" / "ci" / "check_deploy_templates.sh").read_text()
 
     # CI may invoke RBAC checks directly or via the deploy-templates wrapper (P08).
     assert (

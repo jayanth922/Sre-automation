@@ -91,7 +91,7 @@
   reliably look up a point by `incident_id` for cross-incident back-linking.
 - **Consequences:** The old `sre_incidents` collection (single flat vector)
   is abandoned in place, not migrated — Qdrant is local/self-hosted per
-  `platform/docker-compose.yaml` with no production tenant traffic yet,
+  `infra/local/docker-compose.yaml` with no production tenant traffic yet,
   so there is no data worth migrating. Any future code that needs a point
   for a known `incident_id` must use `memory_store._point_id()`, not query by
   payload filter.
@@ -152,15 +152,15 @@
 
 ## Per-cluster credentials relay over the MCP transport (Phase 4)
 
-- **Decision:** `edge_mcp_servers/*` keep resolving credentials from static
+- **Decision:** `services/edge_mcp_servers/*` keep resolving credentials from static
   process environment variables (`GITHUB_TOKEN`/`GITHUB_REPO`, `KUBECONFIG`)
   as their fallback, but a request-scoped credential relay now takes
-  priority: `sre_agent/multitenant/relay_auth.py::build_relay_headers`
+  priority: `src/sre_agent/multitenant/relay_auth.py::build_relay_headers`
   attaches one cluster's resolved GitHub/K8s credentials as additional
   `X-Sentinel-Relay-*` headers on the MCP connection built fresh per
   investigation (`build_mcp_server_config`); the edge-side ASGI bearer-auth
   middleware (`mcp_auth.py`) captures them into a `contextvars.ContextVar`
-  (`edge_mcp_servers/relay_credentials.py`), and only two choke points read
+  (`services/edge_mcp_servers/relay_credentials.py`), and only two choke points read
   them back — `github_real/server.py::_active_repo()` and
   `k8s_real/server.py::_relay_api_client()` — both bounded caches (max 8
   entries) keyed by the credential itself.
@@ -174,12 +174,12 @@
   constants are duplicated as plain strings on both sides and must be kept
   in sync by hand. GitHub credentials are relayed as the stored PAT
   (`Cluster.github_token`) only — the GitHub App installation-token flow
-  (`sre_agent/multitenant/github_app.py`) was removed 2026-09-08 since the
+  (`src/sre_agent/multitenant/github_app.py`) was removed 2026-09-08 since the
   platform authenticates to GitHub with a repo URL + PAT exclusively;
   `Cluster.github_app_installation_id` (DB column) is now unused dead
   storage, kept only to avoid an extra migration. Slack similarly moves from a single
   global `SLACK_BOT_TOKEN` to a per-`Organization` OAuth-installed token
-  (`sre_agent/multitenant/slack_oauth.py`, `Organization.slack_bot_token`),
+  (`src/sre_agent/multitenant/slack_oauth.py`, `Organization.slack_bot_token`),
   with the env var kept as the self-hosted fallback.
 - **Rejected alternative:** A large mechanical rewrite threading a
   `Cluster`/credentials object through every MCP tool handler signature, or
@@ -188,7 +188,7 @@
 
 ## AIOpsLab adapter plays back one investigation, not a live shell loop (Phase 5)
 
-- **Decision:** `benchmarks/aiopslab_adapter.py` does not reuse
+- **Decision:** `evals/benchmarks/aiopslab_adapter.py` does not reuse
   `sre_bench.py`'s fire-webhook/poll-oracle harness pattern, even though that
   was the plan's original sketch for this phase. Reading the live package
   (github.com/microsoft/AIOpsLab: `orchestrator.py`, `parser.py`, the four
@@ -200,7 +200,7 @@
   first turn, then plays back a fixed queue of AIOpsLab action strings built
   from that single investigation — for the mitigation task, one
   `exec_shell(...)` per already-executed remediation command (replaying
-  `sre_agent/executor.py::build_command()`'s output verbatim), then the
+  `src/sre_agent/executor.py::build_command()`'s output verbatim), then the
   task-appropriate `submit(...)` (shape differs per task: detection/
   localization/analysis/mitigation each have a distinct `submit()` payload).
 - **Reason:** Our pipeline investigates and remediates as one shot against
@@ -227,15 +227,15 @@
 ## Runbooks migrated to Notion-only hosting
 
 - **Decision:** Deleted the local markdown runbook corpus entirely
-  (`edge_mcp_servers/mcp_servers/runbooks_local/`, `sre_agent/runbooks_corpus.py`)
+  (`services/edge_mcp_servers/mcp_servers/runbooks_local/`, `src/sre_agent/runbooks_corpus.py`)
   across all three consumers, not just the human-facing catalog API: (1)
-  `sre_agent/api/v1/runbooks.py` now reads only via `sre_agent/notion_runbooks.py`,
+  `src/sre_agent/api/v1/runbooks.py` now reads only via `src/sre_agent/notion_runbooks.py`,
   returning an empty list / 404 for a cluster with no Notion database
   configured, no local fallback; (2) the agent's live-investigation RAG tool
-  is now served by `edge_mcp_servers/mcp_servers/runbooks_notion/server.py`
+  is now served by `services/edge_mcp_servers/mcp_servers/runbooks_notion/server.py`
   (new, replaces `runbooks_local`), keeping the exact tool names/signatures
   (`search_runbooks` et al.) so `context_builder.py`/`graph_builder.py`'s
-  by-name tool lookups needed no changes; (3) `sre_agent/runbook_generator.py`'s
+  by-name tool lookups needed no changes; (3) `src/sre_agent/runbook_generator.py`'s
   `write_runbook`/`write_runbook_generative` became `async` and publish via
   the new `notion_runbooks.upsert_notion_runbook` instead of writing a local
   `.md` file. Notion credentials extend the existing per-cluster relay
@@ -246,7 +246,7 @@
 - **Reason:** User instruction: "regarding runbooks, remove local uploads of
   runbooks. only hosted on notion." Production teams already keep runbooks in
   Notion; a local file corpus was redundant, went stale independently of the
-  source of truth, and — since `edge_mcp_servers/mcp_servers/*` images ship to
+  source of truth, and — since `services/edge_mcp_servers/mcp_servers/*` images ship to
   customers — meant shipping a fixed example corpus baked into the container.
 - **Consequences:** The Notion-backed MCP server does lexical-only search (no
   `fastembed`/embeddings), a deliberate simplification versus the old local
@@ -268,13 +268,13 @@
 
 ## Anthropic extended-thinking `AIMessage.content` is normalized at the two consumer sites, not one shared helper
 
-- **Decision:** `sre_agent/agent_nodes.py` (specialist message capture) and
-  `sre_agent/supervisor.py` (final synthesis capture) each independently
+- **Decision:** `src/sre_agent/agent_nodes.py` (specialist message capture) and
+  `src/sre_agent/supervisor.py` (final synthesis capture) each independently
   detect `isinstance(content, list)` and join only `type == "text"` blocks,
   rather than adding a single shared normalization utility.
 - **Reason:** Both call sites are small, already-distinct extraction points
   (one per streamed chunk in a specialist's message loop, one on a single
-  final LLM response), and `sre_agent/narrative.py::_invoke_llm()` already
+  final LLM response), and `src/sre_agent/narrative.py::_invoke_llm()` already
   has its own independent (correct) version of this same normalization —
   three call sites already existed with this pattern in some form before this
   fix; consolidating now would touch more surface than the bug required.
@@ -284,7 +284,7 @@
   from `AIMessage`/`response` objects before trusting `.strip()`/string ops
   on them.
 - **Rejected alternative:** A shared `normalize_ai_content()` helper in
-  `sre_agent/llm_utils.py` — deferred as unnecessary scope for a bug fix;
+  `src/sre_agent/llm_utils.py` — deferred as unnecessary scope for a bug fix;
   worth doing if a fourth call site turns up.
 
 ## MCP server output capping applies to instant queries too, not just range queries
@@ -308,7 +308,7 @@
 
 ## Live-execution target parsing and MCP response classification must handle real Planner/SDK shapes, not just the tested subset (Task #16)
 
-- **Decision:** `sre_agent/executor.py::_live_args()` extracts a k8s resource
+- **Decision:** `src/sre_agent/executor.py::_live_args()` extracts a k8s resource
   name from a Planner `target` string via a leading DNS-1123-label regex
   (`_K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?")` on the
   lowercased target), not by splitting on `:`. Separately,
@@ -362,7 +362,7 @@
 
 ## Correlation adjacency source: infer from k8s labels
 
-- **Decision:** `sre_agent/incident_correlation.py::correlate`'s optional
+- **Decision:** `src/sre_agent/incident_correlation.py::correlate`'s optional
   `adjacency` map (service -> neighbor services, used for the
   service-topology signal) will be populated by inferring a
   service-dependency graph from existing Kubernetes metadata already
@@ -375,9 +375,9 @@
   external topology source) when the decision was raised — no new
   infrastructure required, and cluster manifests are assumed to already
   encode enough dependency information to be useful.
-- **Consequences:** Implemented 2026-09-03 in `sre_agent/service_topology.py`
+- **Consequences:** Implemented 2026-09-03 in `src/sre_agent/service_topology.py`
   (`build_adjacency_map` + `get_adjacency_map`), wired into
-  `_record_correlation_shadow` in `sre_agent/api/v1/alerts.py`. Uses
+  `_record_correlation_shadow` in `src/sre_agent/api/v1/alerts.py`. Uses
   `app.kubernetes.io/part-of` label grouping plus a NetworkPolicy
   ingress/egress graph walker resolved via label-selector matching against
   Service selectors (new `list_network_policies` tool on the `k8s` MCP
@@ -406,7 +406,7 @@
 ## Hermes safety review (`AGENT_RUNTIME=hermes`)
 
 - **Decision:** `AGENT_RUNTIME=hermes` (Nous Research's Hermes Agent as the
-  autonomous actor in `sre_agent/actor_runtime.py::HermesRuntime`) remains
+  autonomous actor in `src/sre_agent/actor_runtime.py::HermesRuntime`) remains
   **not safe to enable in production** as of this review (2026-09-03).
   `hermes-agent` has never been installed in any environment this project has
   touched, so this review is static: reading `HermesRuntime`'s code plus
@@ -443,8 +443,8 @@
   4. `max_iterations` default here (20) is already well under the package's
      documented default (500) — no action needed, noted as a mitigating
      factor already in place.
-- **Consequences:** Items 1 and 2 fixed in `sre_agent/actor_runtime.py` /
-  `sre_agent/incident_remediation_workflow.py` (tests added in
+- **Consequences:** Items 1 and 2 fixed in `src/sre_agent/actor_runtime.py` /
+  `src/sre_agent/incident_remediation_workflow.py` (tests added in
   `tests/test_actor_runtime.py`), independent of whether `hermes-agent` is
   ever installed — both are correct regardless of the package's actual
   internals. Item 3 remains open and is the actual blocker on enabling
@@ -452,7 +452,7 @@
   either (a) install `hermes-agent` in a disposable environment and
   introspect its real toolset names to build an explicit `enabled_toolsets`
   allowlist, or (b) run `HermesRuntime` inside the project's existing
-  ephemeral-K8s-Job sandbox infra (`edge_mcp_servers/mcp_servers/sandbox_real/`)
+  ephemeral-K8s-Job sandbox infra (`services/edge_mcp_servers/mcp_servers/sandbox_real/`)
   instead of trusting any in-process confinement at all — the latter is the
   architecturally stronger fix but is a bigger change, not done here.
   Phase E cutover should treat this as still blocked, not cleared, by this
@@ -468,14 +468,14 @@
 
 - **Decision (2026-09-03):** Fully remove `HermesRuntime` and
   `AGENT_RUNTIME=local|hermes` backend selection from
-  `sre_agent/actor_runtime.py`. `get_agent_runtime()` now unconditionally
+  `src/sre_agent/actor_runtime.py`. `get_agent_runtime()` now unconditionally
   returns `LocalTerminalRuntime` — the actor is no longer pluggable, since
   there is only one implementation. `hermes-agent` is dropped from
   `pyproject.toml`'s optional extras and `uv.lock`; the Hermes-specific
   tests in `tests/test_actor_runtime.py` are deleted; the `task_id=` kwarg
   (Hermes's memory-isolation key) is removed from
   `incident_remediation_workflow.py`'s `generate_patch_activity` call site.
-  `sre_agent/skill_store.py` (the self-improving skill-memory module,
+  `src/sre_agent/skill_store.py` (the self-improving skill-memory module,
   originally credited to Hermes's "save every workflow as a skill" feature
   in its docstring) is unaffected in behavior — it was always first-party,
   backend-agnostic code with no dependency on `HermesRuntime`; only its
@@ -500,12 +500,10 @@
   backend selection to reason about or keep safe. The Hermes safety review
   above is retained as historical record (not deleted, per this project's
   append-only decision-log convention) even though its subject no longer
-  exists in the codebase. `docs/PROJECT_CONTEXT.md`, `docs/INTEGRATION_PLAN.md`,
-  `docs/COMPETITIVE_AUDIT.md`, and `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`
-  contain historical narrative describing the Hermes integration as it was
-  built and reviewed; where those docs asserted Hermes was actively in use
-  or an open decision, they were annotated as superseded by this entry
-  rather than rewritten wholesale.
+  exists in the codebase. The contemporaneous design notes were later removed
+  during documentation cleanup; the retained competitive audit lives at
+  `docs/archive/audits/COMPETITIVE_AUDIT.md` and is historical rather than a
+  statement of current behavior.
 - **Rejected alternative:** Keep `HermesRuntime` in place, unused but
   available behind the env var, in case a future need for an autonomous
   third-party actor arises. Rejected because unused, unreviewed-to-safety
@@ -517,7 +515,7 @@
 
 ## Phase E cutover: code-fix actions always defer to the deterministic pipeline
 
-- **Decision:** In `_act_gate_node` (`sre_agent/graph_builder.py`), detecting
+- **Decision:** In `_act_gate_node` (`src/sre_agent/graph_builder.py`), detecting
   a code-fix action (`action_type` in `GITHUB_EXEC_TOOL_MAP | {"code_fix"}`)
   unconditionally marks its `decision` as `DEFERRED_TO_DETERMINISTIC_PIPELINE`,
   keeping it out of the old single-gate `execute_autonomous_live()` path.
@@ -558,19 +556,19 @@
 
 ## E2B sandbox backend removed — K8s Job sandbox is the sole mechanism
 
-- **Decision:** Deleted `sre_agent/code_sandbox.py` and its test file
+- **Decision:** Deleted `src/sre_agent/code_sandbox.py` and its test file
   entirely (`apply_and_test`, `apply_and_test_e2b`, `run_code_fix`, the
   `SANDBOX_BACKEND`/`E2B_API_KEY` env vars, `pyproject.toml`'s `sandbox`
   optional-dependency group). The only code-fix sandbox mechanism going
   forward is `sandbox_workflow.py`'s Temporal-orchestrated, K8s-Job-based
   `CodeFixVerificationWorkflow`, which dispatches to the `sandbox_real` edge
-  MCP server (`edge_mcp_servers/mcp_servers/sandbox_real/`).
+  MCP server (`services/edge_mcp_servers/mcp_servers/sandbox_real/`).
 - **Reason:** `code_sandbox.py` had zero production callers — only its own
   test file referenced it (confirmed by repo-wide grep). It was a second,
   parallel sandbox mechanism (local subprocess + an E2B microVM backend
   added 2026-09-04) that duplicated what the K8s Job path already does live,
   while adding a paid, metered cloud dependency (E2B has no free tier) and
-  cost/timing-noise exposure for `benchmarks/bench_mttr.py`, which drives
+  cost/timing-noise exposure for `evals/benchmarks/bench_mttr.py`, which drives
   real incidents through the live API. User decision: keep local K8s Jobs,
   drop E2B.
 - **Consequences:** `docs/COMPETITIVE_AUDIT.md`'s "Highest-leverage
@@ -585,7 +583,7 @@
 
 ## Platform-to-edge MCP traffic crosses a shared Docker network, not published host ports
 
-- **Decision:** `platform/docker-compose.yaml` and `edge_mcp_servers/
+- **Decision:** `infra/local/docker-compose.yaml` and `services/edge_mcp_servers/
   docker-compose.yaml` both join an external Docker network
   (`sre-shared-network`, service alias `shared-edge-network`, created once
   via `docker network create sre-shared-network`). `sre-agent-api` and
@@ -736,8 +734,8 @@
 
 - **Decision:** Build the platform Python source once as `sentinel/api:local`
   and recreate both API and Temporal-worker entrypoints from that image. The
-  image contains a build-time SHA-256 manifest of all `backend/` and
-  `sre_agent/` Python files. Startup verifies the manifest; the worker also
+  image contains a build-time SHA-256 manifest of all `src/backend/` and
+  `src/sre_agent/` Python files. Startup verifies the manifest; the worker also
   imports every workflow/activity dependency; deployment compares both running
   code revisions, fingerprints, and file counts.
 - **Reason:** The live crash-resume probe failed before its first mutation
@@ -893,9 +891,9 @@
 ## Retrieval is measured in two separate halves, and every offline label is derived
 
 - **Decision:** Retrieval quality is split into label-free runtime
-  instrumentation (`sre_agent/retrieval_metrics.RetrievalRecorder`, surfaced at
+  instrumentation (`src/sre_agent/retrieval_metrics.RetrievalRecorder`, surfaced at
   `/agent/metrics → retrieval`) and labeled offline ranking metrics
-  (`benchmarks/retrieval_eval.py`). The two never merge. Offline labels are
+  (`evals/benchmarks/retrieval_eval.py`). The two never merge. Offline labels are
   **derived** from contracts the code already commits to — self-retrieval,
   taxonomy-generated paraphrase, tenant/cluster isolation, distractor
   rejection, invalidation — and no relevance judgment is hand-assigned. The
@@ -907,7 +905,7 @@
   is indistinguishable from "nothing relevant exists" at every call site, so
   the learning claim was unfalsifiable. Call-shape metrics catch most of that
   and need no labels. Relevance does need labels, and
-  `benchmarks/datasets/README.md` already forbids invented ones; a derived
+  `evals/benchmarks/datasets/README.md` already forbids invented ones; a derived
   label is wrong only if the contract behind it is wrong, which is a bug worth
   failing on. Precision is excluded from the gate because `match_score` gives
   a same-class skill on a different service 0.5 by design, so that candidate
@@ -933,7 +931,7 @@
 
 ## Benchmark scenarios are bounded by a digest-pinned fixture capability manifest
 
-- **Decision:** Dataset v2 (`benchmarks/datasets/v2/`) adds `fixtures.json`, a
+- **Decision:** Dataset v2 (`evals/benchmarks/datasets/v2/`) adds `fixtures.json`, a
   manifest of the fault surface the Meridian reference workload actually
   exposes: every adapter-drivable target with its `/admin/config` path and each
   knob's type, bounds and healthy baseline; every Prometheus alert rule a
@@ -992,7 +990,7 @@
 - **Reason:** The old 0.90 Wilson floor was decorative — it was asserted, not
   derived, carried no rationale, and could not be argued with because nothing
   recorded what it was trading off. Worse, the rule that synthetic evidence
-  must never enable autonomy lived only in `benchmarks/confidence/README.md`
+  must never enable autonomy lived only in `evals/benchmarks/confidence/README.md`
   prose, so a fabricated JSONL carrying the right `config_fingerprint` would
   have produced a fully valid autonomy-granting artifact. That is the same
   defect class as the v1 fixture prose fixed in the dataset manifest decision:
@@ -1007,7 +1005,7 @@
   one whose threshold did not come from live evidence. Artifacts that grant no
   autonomy must say why, and that reason reaches the operator through
   `ActReport.autonomy_blocked_reason` instead of an undifferentiated
-  "uncalibrated". `benchmarks/sre_bench.py` is the only sanctioned producer of
+  "uncalibrated". `evals/benchmarks/sre_bench.py` is the only sanctioned producer of
   `live_benchmark` records, which means no real artifact can be built without a
   paired A05 run against a live cluster.
 - **Rejected alternative:** Keeping the Wilson floor as the selector and adding
@@ -1022,7 +1020,7 @@
   removing at most one component. Unset is production, not an arm. The arm is
   written into the run manifest's `runtime` section, which is one of the four
   sections the A01 configuration fingerprint hashes, so two arms are
-  structurally incomparable by construction. `benchmarks/ablation_eval.py`
+  structurally incomparable by construction. `evals/benchmarks/ablation_eval.py`
   requires every arm — control included — to present the manifest it actually
   ran under, recomputes `configuration_fingerprint()` from it, and refuses to
   proceed unless that hash equals the fingerprint recorded on the arm's
@@ -1205,7 +1203,7 @@ which risks trimming away the breakpoint itself.
 
 ## The runbook reaches the agent as a rendered procedure, not as a search hit
 
-- **Decision:** `sre_agent/runbook_brief.py` parses the `search_runbooks`
+- **Decision:** `src/sre_agent/runbook_brief.py` parses the `search_runbooks`
   envelope, picks the best hit, fetches that page's body with a **second**
   `get_runbook_content` call, and renders a budgeted brief that is ordered by
   section priority — remediation first, background last. `ContextBuilder`
@@ -1307,8 +1305,8 @@ decision procedures: a numbered set of measurements that selects exactly one
 (with `namespace="meridian"`), the actions it forbids and why, and a
 `## Verification` section carrying the benchmark's own recovery probe, its
 operator and threshold, and the two-consecutive-passes rule.
-`scripts/audit_runbook_coverage.py` grades every v2 scenario against this and
-`scripts/audit_runbook_controls.py` checks the grader by deleting properties
+`scripts/tools/audit_runbook_coverage.py` grades every v2 scenario against this and
+`scripts/tools/audit_runbook_controls.py` checks the grader by deleting properties
 and asserting the score drops.
 
 **Reason.** Measured on the live Notion corpus: retrieval was correct for
@@ -1323,13 +1321,13 @@ rewrites score 22/22 on the same grader.
 - A runbook may only prescribe PromQL that `validate_promql` accepts. Writing
   these found two real gaps in the allowlist (`clamp_min`, and `le` inside
   `sum by (le)` read as an unknown metric) that made 16 of 22 recovery probes
-  unrunnable by the agent. Fixed in `sre_agent/nl_query.py`.
+  unrunnable by the agent. Fixed in `src/sre_agent/nl_query.py`.
 - `DEFAULT_RUNBOOK_BRIEF_MAX_CHARS` rose 6000 → 9000. Every "Branch X —
   Action:" heading scores priority 0, so five branches spent the whole budget
   and Verification was dropped: the agent got every remediation option and
   lost the probe that says whether the one it chose worked.
 - The corpus snapshot is committed at
-  `benchmarks/datasets/v2/runbook_corpus_snapshot.json` so the audit runs
+  `evals/benchmarks/datasets/v2/runbook_corpus_snapshot.json` so the audit runs
   offline. It is a point-in-time copy; Notion is still the source of truth.
 
 **Known limit.** The audit grades content, not routing. It finds a branch that
@@ -1424,7 +1422,7 @@ accounting/Langfuse.
 
 ## The GitHub server shapes commit payloads at the source, on a measured budget
 
-**Decision.** `edge_mcp_servers/mcp_servers/github_real/payload.py` bounds what
+**Decision.** `services/edge_mcp_servers/mcp_servers/github_real/payload.py` bounds what
 a GitHub read puts in front of the model. `get_commit` returns up to 50 changed
 file rows (filename, status, additions, deletions, changes) ordered
 largest-change-first, reports the remainder, and spends whatever space those
@@ -1550,7 +1548,7 @@ approval required` for the mutating action; the graph raises
 `GraphInterrupt(approval_required)`; `awaiting_approval` is in
 `TERMINAL_APPLICATION_STATUSES`, so the harness stops; `resolved=false` means
 `statistical_eval.py:229` *requires* `grader_status=NOT_APPLICABLE`.
-`benchmarks/confidence/README.md` states the premise plainly: no artifact is
+`evals/benchmarks/confidence/README.md` states the premise plainly: no artifact is
 committed, and `sre_bench.py` is the only sanctioned producer of the
 `live_benchmark` records that may unlock autonomy. Nothing here is a bug to
 fix; a shortcut around any link in it would be fabricated autonomy evidence,
@@ -1732,7 +1730,7 @@ instead.
 
 ## A runbook's query is extracted, not recalled
 
-**Decision.** `sre_agent/runbook_queries.py` lifts PromQL out of runbook
+**Decision.** `src/sre_agent/runbook_queries.py` lifts PromQL out of runbook
 markdown with regexes — no model call — and `build_specialist_task_brief`
 quotes the result into the metrics specialist's user message, above an
 instruction to run those expressions verbatim before exploring. The metrics
@@ -1758,7 +1756,7 @@ manufactures the very "no data is a finding" conclusion the block teaches;
 LogQL, shell and SQL are dropped; and the bare metric-name list is emitted
 only when no query was found, because scraping prose otherwise yields
 log-pattern strings like `db_pool_exhausted` that are not metrics. On the
-real `runbooks/meridian/high-latency.md` the first extracted query is the
+real `examples/meridian/runbooks/high-latency.md` the first extracted query is the
 `db_query_duration_seconds_bucket` p90 the oracle probes.
 
 **Rejected alternative.** Telling the specialist to "read the runbook
@@ -1823,7 +1821,7 @@ this went unnoticed through every graded run so far.
 
 ## The runbook's own query is measured before the lane's first turn
 
-**Decision.** `sre_agent/runbook_probe.py` evaluates the PromQL a runbook
+**Decision.** `src/sre_agent/runbook_probe.py` evaluates the PromQL a runbook
 names over `[alert - 5m, now]` and hands the first, peak and latest value to
 the metrics lane inside its brief, before any model call. It runs through the
 lane's *already bound* `get_metric_range`, so the probe inherits the tenant
@@ -1999,7 +1997,7 @@ result raises the question worth answering.
 
 ## A runbook may not name telemetry the cluster does not have
 
-**Decision.** `runbooks/meridian/high-error-rate.md` Step 4 and
+**Decision.** `examples/meridian/runbooks/high-error-rate.md` Step 4 and
 `downstream-dependency-failure.md` Step 2 now select on `service`, the label
 this Loki indexes, rather than `app`, which it does not have.
 
@@ -2014,9 +2012,9 @@ the fix reached it only on republish (2026-09-23, four pages, 12 changed lines;
 the other two drafts went out byte-identical). The live corpus now holds no
 LogQL selector naming `app`, and `audit_runbook_coverage.py` scores 22/22
 against the dump taken after the write rather than against the local drafts.
-`benchmarks/datasets/v{2,3}/runbook_corpus_snapshot.json` were regenerated from
+`evals/benchmarks/datasets/v{2,3}/runbook_corpus_snapshot.json` were regenerated from
 that same dump. They are dumps of what Notion served, so they must always be
-regenerated with `scripts/dump_notion_runbook_corpus.py` and never hand-edited,
+regenerated with `scripts/tools/dump_notion_runbook_corpus.py` and never hand-edited,
 or the snapshot stops describing the corpus anyone read.
 
 The `kubectl -l app=<service>` selectors elsewhere in the corpus were left
@@ -2054,7 +2052,7 @@ of relying on the console's restraint. `tests/test_durable_jobs.py` pins both
 halves — `encode_investigation_payload` stamps `run_graph_background_saas`, and
 `crud` exposes no `create_job` — so a future helper that writes a claimable row
 without a handler fails the suite rather than the worker. `JobType` keeps its
-import in `backend/schemas.py`, because `JobResponse` still uses it.
+import in `src/backend/schemas.py`, because `JobResponse` still uses it.
 
 **Rejected alternative.** Keeping the route and refusing a payload-less
 investigation. That leaves a mounted endpoint whose only valid input is a
@@ -2081,7 +2079,7 @@ all 161 wrong-class pairs. That is the entire population, not a tail — the
 filed example, `checkout_memory_leak_oom` retrieving
 `latency-inventory-service`, was typical rather than unlucky.
 
-**Consequences.** `benchmarks/calibrate_semantic_floor.py` is that measurement,
+**Consequences.** `evals/benchmarks/calibrate_semantic_floor.py` is that measurement,
 kept runnable and free (local embedding model, no LLM). It exits non-zero if
 the populations stop being separable or if the constant leaves the gap, so a
 changed embedding model or `signature_text()` fails loudly instead of quietly

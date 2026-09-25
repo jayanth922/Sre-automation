@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 _MODULE_PATH = BENCHMARKS / "statistical_eval.py"
 _spec = importlib.util.spec_from_file_location("statistical_eval", _MODULE_PATH)
 evaluation = importlib.util.module_from_spec(_spec)

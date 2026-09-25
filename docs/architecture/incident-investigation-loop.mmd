@@ -1,43 +1,22 @@
 flowchart TD
-    One["1. Incident Created<br/>or Alert Arrives"]
-    Two["2. Dashboard sends<br/>follow-up message or<br/>user initiates"]
-    Three["3. Invocation queued<br/>to sre_agent runtime"]
-    Four["4. Graph initializes state<br/>with incident context<br/>& MCP tools"]
-    Five["5. Supervisor selects<br/>next specialist step"]
-    Six["6. Selected specialist runs<br/>(K8s, metrics, logs,<br/>code, or runbooks)"]
-    Seven["7. Supervisor reviews<br/>new evidence and decides<br/>continue or summarize"]
-    
-    Decision{"More evidence<br/>needed?"}
-    
-    Eight["8. Aggregate node builds<br/>executive summary"]
-    Nine["9. Timeline + incident summary<br/>persisted to PostgreSQL"]
-    Ten["10. Live state/logs updated<br/>for polling and follow-up"]
-    Eleven["11. Response returned<br/>to dashboard"]
-    Twelve["12. Dashboard updates<br/>incident panel<br/>& transcript"]
-    Thirteen["13. Operator reviews findings<br/>and decides on remediation"]
-    
-    Resume["User sends<br/>follow-up message"]
+    Open["Incident opened"] --> Claim["Durable worker claims leased job"]
+    Claim --> State["Load checkpoint and incident state"]
+    State --> Read["Bounded evidence collection"]
+    Read --> Synthesis["Reflection + structured diagnosis"]
+    Synthesis --> Decision{"Remediation outcome"}
+    Decision -->|no safe action| Investigated["Investigated / unresolved"]
+    Decision -->|approval required| Approval["Persist gate and pause"]
+    Approval -->|approved| Execute["Authorize and execute once"]
+    Approval -->|denied / expired| Investigated
+    Decision -->|autonomous and allowed| Execute
+    Execute --> Verify["Deterministic verification"]
+    Verify -->|recovered| Ack["Pending acknowledgment"]
+    Verify -->|failed / unknown| Failed["Failed or verification unknown"]
+    Ack -->|acknowledged| Resolved["Resolved"]
+    Investigated --> Timeline["Timeline + audit + manifest"]
+    Failed --> Timeline
+    Resolved --> Timeline
 
-    One --> Two
-    Two --> Three
-    Three --> Four
-    Four --> Five
-    Five --> Six
-    Six --> Seven
-    Seven --> Decision
-    Decision -->|Yes| Five
-    Decision -->|No| Eight
-    Eight --> Nine
-    Nine --> Ten
-    Ten --> Eleven
-    Eleven --> Twelve
-    Twelve --> Thirteen
-    Thirteen --> Resume
-    Resume --> Two
-
-    style One fill:#e1f5ff
-    style Decision fill:#ffe0b2
-    style Eight fill:#e8f5e9
-    style Twelve fill:#f3e5f5
-    style Thirteen fill:#fff3e0
-    style Resume fill:#fff3e0
+    style Approval fill:#fff3e0
+    style Execute fill:#ffebee
+    style Resolved fill:#e8f5e9

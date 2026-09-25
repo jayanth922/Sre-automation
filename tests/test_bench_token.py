@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-BENCHMARKS = Path(__file__).resolve().parents[1] / "benchmarks"
+BENCHMARKS = Path(__file__).resolve().parents[1] / "evals" / "benchmarks"
 
 
 @pytest.fixture(scope="module")

@@ -27,7 +27,7 @@ import pytest
 
 from sre_agent import incident_status as incident_status_module
 
-BENCHMARKS = Path(__file__).resolve().parents[1] / "benchmarks"
+BENCHMARKS = Path(__file__).resolve().parents[1] / "evals" / "benchmarks"
 
 # Reachable from compute_incident_status but genuinely not terminal:
 # verification has not run yet, so the graph is going to move again.

@@ -1,0 +1,32 @@
+# =============================================================================
+# Platform Dashboard — Next.js SaaS UI
+# =============================================================================
+# Provides the web interface for managing clusters, incidents, and SLOs.
+#
+# Build context: apps/dashboard/
+#   docker build -f infra/local/Dockerfile.dashboard -t sentinel/web:local apps/dashboard
+# =============================================================================
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies (cache layer)
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy source
+COPY . .
+
+EXPOSE 3000
+
+# Browser talks to the API's WebSocket directly (Next rewrites don't proxy WS
+# upgrades). The host publishes the API on :8080.
+ENV NEXT_PUBLIC_WS_BASE=ws://localhost:8080
+
+RUN apk add --no-cache curl
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl --fail --silent http://localhost:3000 || exit 1
+
+CMD ["npm", "run", "dev"]

@@ -6,6 +6,7 @@ import os
 import re
 import runpy
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_benchmarks_do_not_ship_static_cluster_tokens():
-    for path in (ROOT / "benchmarks").glob("*.py"):
+    for path in (ROOT / "evals" / "benchmarks").glob("*.py"):
         if path.name == "fixtures.py":
             continue
         text = path.read_text()
@@ -74,18 +75,19 @@ def test_env_example_does_not_advertise_the_dead_act_switch():
 def test_architecture_readme_points_at_canonical_runtime():
     text = (ROOT / "docs" / "architecture" / "README.md").read_text()
     assert "agent-runtime-flow" in text
-    assert "quickstart_smoke.sh" in text
-    assert "agent_runtime.py" in text
+    assert "generate-diagrams" in text
+    assert "source and SVG" in text
 
 
-def test_historical_docs_are_labeled():
-    session = (ROOT / "docs" / "session-nvidia-nim-benchmark.md").read_text()
-    assert "HISTORICAL" in session
-    assert "fixtures.py" in session
+def test_obsolete_provider_session_doc_is_not_published():
+    assert not (ROOT / "docs" / "session-nvidia-nim-benchmark.md").exists()
+    scanner = (ROOT / "scripts" / "ci" / "check_no_static_secrets.sh").read_text()
+    assert "session-nvidia-nim-benchmark.md" not in scanner
+    assert "nvapi-" in scanner
 
 
 def test_fixtures_module_requires_env_or_bootstrap():
-    fixtures = runpy.run_path(str(ROOT / "benchmarks" / "fixtures.py"))
+    fixtures = runpy.run_path(str(ROOT / "evals" / "benchmarks" / "fixtures.py"))
     bench_config_error = fixtures["BenchConfigError"]
     load_credentials = fixtures["load_credentials"]
 
@@ -105,3 +107,39 @@ def test_readme_documents_bootstrap_bench_path():
     assert "BENCH_BOOTSTRAP" in readme
     assert "fixtures.py" in readme
     assert "quickstart_smoke.sh" in readme
+
+
+def test_public_markdown_links_resolve():
+    documents = [ROOT / "README.md", ROOT / "CONTRIBUTING.md", ROOT / "SECURITY.md"]
+    for subtree in ("apps", "docs", "evals", "infra", "services", "src", "tests"):
+        documents.extend((ROOT / subtree).rglob("*.md"))
+
+    broken = []
+    for path in documents:
+        relative = path.relative_to(ROOT)
+        if (
+            {"archive", "node_modules", ".next"} & set(relative.parts)
+            or relative == Path("docs/ai/DECISIONS.md")
+        ):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"\[[^\]]*\]\(([^)]+)\)", text):
+            raw = match.group(1).strip()
+            if raw.startswith(("#", "http://", "https://", "mailto:", "app://")):
+                continue
+            target = unquote(raw.split("#", 1)[0].strip("<>"))
+            if target and not (path.parent / target).resolve().exists():
+                broken.append(f"{relative}:{target}")
+    assert broken == []
+
+
+def test_architecture_sources_and_generated_images_are_paired():
+    architecture = ROOT / "docs" / "architecture"
+    sources = {path.stem for path in architecture.glob("*.mmd")}
+    images = {path.stem for path in (architecture / "images").glob("*.svg")}
+    assert sources == images
+    assert "target-client-architecture" not in sources
+
+
+def test_docs_do_not_ship_orphaned_demo_screenshots():
+    assert list((ROOT / "docs").glob("*.png")) == []

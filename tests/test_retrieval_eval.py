@@ -208,7 +208,7 @@ def test_a_report_with_no_probes_fails_rather_than_passing_vacuously():
 
 def test_build_report_against_the_checked_in_dataset(tmp_path):
     report = re_eval.build_report(
-        dataset_root=re_eval.Path("benchmarks/datasets"),
+        dataset_root=re_eval.Path("evals/benchmarks/datasets"),
         dataset_version_dir="v1",
         splits=["train", "dev"],
         k=5,
@@ -225,7 +225,7 @@ def test_build_report_against_the_checked_in_dataset(tmp_path):
 
 def test_a_skipped_memory_store_is_not_a_pass():
     report = re_eval.build_report(
-        dataset_root=re_eval.Path("benchmarks/datasets"),
+        dataset_root=re_eval.Path("evals/benchmarks/datasets"),
         dataset_version_dir="v1",
         splits=["dev"],
         k=5,
@@ -238,7 +238,7 @@ def test_a_skipped_memory_store_is_not_a_pass():
 
 def test_holdout_is_refused():
     with pytest.raises(re_eval.RetrievalEvalError, match="holdout"):
-        re_eval.load_scenarios(re_eval.Path("benchmarks/datasets"), "v1", ["holdout"])
+        re_eval.load_scenarios(re_eval.Path("evals/benchmarks/datasets"), "v1", ["holdout"])
 
 
 def test_the_production_memory_collection_is_refused():

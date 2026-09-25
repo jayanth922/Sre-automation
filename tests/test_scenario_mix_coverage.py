@@ -9,7 +9,7 @@ fail as soon as that stopped being true. v3 measures it, so that assertion has
 been replaced by the positive ones below — including the constraint that makes
 a missing-data scenario gradable at all.
 
-See the coverage table in `benchmarks/datasets/README.md`.
+See the coverage table in `evals/benchmarks/datasets/README.md`.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-V2 = REPO / "benchmarks" / "datasets" / "v2"
-V3 = REPO / "benchmarks" / "datasets" / "v3"
-ADVERSARIAL = REPO / "benchmarks" / "adversarial" / "v1" / "cases.json"
-DATASETS_README = REPO / "benchmarks" / "datasets" / "README.md"
+V2 = REPO / "evals" / "benchmarks" / "datasets" / "v2"
+V3 = REPO / "evals" / "benchmarks" / "datasets" / "v3"
+ADVERSARIAL = REPO / "evals" / "benchmarks" / "adversarial" / "v1" / "cases.json"
+DATASETS_README = REPO / "evals" / "benchmarks" / "datasets" / "README.md"
 
 # Category -> how many v2 scenarios must carry it. These are the three
 # categories the mix requires that a recovery-probe corpus can express.

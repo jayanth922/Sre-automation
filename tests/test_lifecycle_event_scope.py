@@ -91,7 +91,7 @@ def test_every_live_call_site_passes_a_cluster():
 
     root = pathlib.Path(__file__).resolve().parents[1]
     sites = 0
-    for rel in ("sre_agent/agent_runtime.py", "sre_agent/approval_flow.py"):
+    for rel in ("src/sre_agent/agent_runtime.py", "src/sre_agent/approval_flow.py"):
         tree = ast.parse((root / rel).read_text())
         for node in ast.walk(tree):
             if (

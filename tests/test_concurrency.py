@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "concurrency.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "concurrency.py"
 _spec = importlib.util.spec_from_file_location("concurrency", _MODULE_PATH)
 cc = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = cc

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SERVER = _ROOT / "edge_mcp_servers" / "mcp_servers" / "github_exec"
+_SERVER = _ROOT / "services" / "edge_mcp_servers" / "mcp_servers" / "github_exec"
 
 
 @pytest.fixture()

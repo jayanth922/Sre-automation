@@ -214,15 +214,15 @@ def test_sanitizer_redacts_nested_credentials_and_bounds_values():
 
 
 def test_model_migration_runtime_and_api_wire_manifest_contract():
-    model_source = (ROOT / "backend" / "models.py").read_text()
+    model_source = (ROOT / "src" / "backend" / "models.py").read_text()
     migration_source = (
-        ROOT / "backend" / "alembic" / "versions" / "d3e4f5a6b7c8_add_run_manifests.py"
+        ROOT / "src" / "backend" / "alembic" / "versions" / "d3e4f5a6b7c8_add_run_manifests.py"
     ).read_text()
-    runtime_source = (ROOT / "sre_agent" / "agent_runtime.py").read_text()
-    route_source = (ROOT / "sre_agent" / "api" / "v1" / "jobs.py").read_text()
+    runtime_source = (ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
+    route_source = (ROOT / "src" / "sre_agent" / "api" / "v1" / "jobs.py").read_text()
     ci_source = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    docker_source = (ROOT / "platform" / "Dockerfile").read_text()
-    compose_source = (ROOT / "platform" / "docker-compose.yaml").read_text()
+    docker_source = (ROOT / "infra" / "local" / "Dockerfile").read_text()
+    compose_source = (ROOT / "infra" / "local" / "docker-compose.yaml").read_text()
 
     assert "class RunManifest" in model_source
     assert 'down_revision: Union[str, None] = "c2d3e4f5a6b7"' in migration_source

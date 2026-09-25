@@ -34,7 +34,7 @@ from sre_agent.investigation_write_guard import (
     wrap_tool_with_write_guard,
 )
 
-CONFIG = Path(__file__).resolve().parents[1] / "sre_agent" / "config" / "agent_config.yaml"
+CONFIG = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "config" / "agent_config.yaml"
 
 
 class FakeTool:

@@ -18,7 +18,7 @@ def _load(name, rel_path):
     return module
 
 
-_ar = _load("alert_resolution_under_test", "sre_agent/alert_resolution.py")
+_ar = _load("alert_resolution_under_test", "src/sre_agent/alert_resolution.py")
 reconcile_resolved_alert = _ar.reconcile_resolved_alert
 is_active_incident_status = _ar.is_active_incident_status
 

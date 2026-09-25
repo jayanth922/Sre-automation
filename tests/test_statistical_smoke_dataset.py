@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = ROOT / "benchmarks" / "datasets"
-sys.path.append(str(ROOT / "benchmarks"))
+SOURCE_ROOT = ROOT / "evals" / "benchmarks" / "datasets"
+sys.path.append(str(ROOT / "evals" / "benchmarks"))
 
 import statistical_smoke_dataset  # noqa: E402
 from scenario_dataset import load_dataset  # noqa: E402

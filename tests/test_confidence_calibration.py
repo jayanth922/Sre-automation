@@ -12,7 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_FINGERPRINT = "c" * 64
-MODULE_PATH = ROOT / "sre_agent" / "confidence_calibration.py"
+MODULE_PATH = ROOT / "src" / "sre_agent" / "confidence_calibration.py"
 _spec = importlib.util.spec_from_file_location("confidence_calibration", MODULE_PATH)
 calibration = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = calibration

@@ -1,4 +1,4 @@
-"""Unit tests for Prometheus discovery heuristics (sre_agent/metrics_discovery.py)."""
+"""Unit tests for Prometheus discovery heuristics (src/sre_agent/metrics_discovery.py)."""
 import pytest
 
 from sre_agent.metrics_discovery import MetricsDiscoveryError, discover_metrics_profile

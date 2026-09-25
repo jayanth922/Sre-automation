@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 # Load the module by path (its lazy slack_bolt import means it loads fine without it).
-_PKG = Path(__file__).resolve().parents[1] / "sre_agent" / "integrations"
+_PKG = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "integrations"
 _spec = importlib.util.spec_from_file_location("slack_bot", _PKG / "slack_bot.py")
 sb = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = sb

@@ -31,7 +31,11 @@ from sre_agent.incident_timeline import (  # noqa: E402
 
 _SPEC_VIEW_PATH = (
     Path(__file__).resolve().parents[1]
-    / "edge_mcp_servers" / "mcp_servers" / "k8s_real" / "spec_view.py"
+    / "services"
+    / "edge_mcp_servers"
+    / "mcp_servers"
+    / "k8s_real"
+    / "spec_view.py"
 )
 _spec = importlib.util.spec_from_file_location("k8s_spec_view", _SPEC_VIEW_PATH)
 spec_view = importlib.util.module_from_spec(_spec)
@@ -103,7 +107,7 @@ def test_a_broken_prescan_does_not_abort_the_investigation():
 
 def test_the_graph_runs_the_prescan_between_prepare_and_the_supervisor():
     source = (
-        Path(__file__).resolve().parents[1] / "sre_agent" / "graph_builder.py"
+        Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "graph_builder.py"
     ).read_text()
     assert re.search(r'workflow\.add_node\(\s*"infra_prescan"', source)
     assert 'workflow.add_edge("prepare", "infra_prescan")' in source
@@ -229,6 +233,7 @@ def test_the_kubernetes_specialist_is_allowed_the_tool_it_needs():
     config = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
+            / "src"
             / "sre_agent" / "config" / "agent_config.yaml"
         ).read_text()
     )

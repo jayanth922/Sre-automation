@@ -1,0 +1,307 @@
+# Shipped defaults first, the operator's optional overrides second: compose
+# applies env_file entries in order and later entries win. `../../.env` is
+# `required: false`, which is what lets a fresh clone boot with no
+# configuration at all -- everything else is set in the dashboard's Settings.
+x-env-files: &sentinel-env-files
+  - path: ./defaults.env
+    required: true
+  - path: ../../.env
+    required: false
+
+x-sentinel-api-image: &sentinel-api-image
+  platform: linux/amd64
+  image: sentinel/api:local
+  build:
+    context: ../..
+    dockerfile: infra/local/Dockerfile
+    args:
+      SENTINEL_CODE_SHA: ${SENTINEL_CODE_SHA:-unknown}
+
+# =============================================================================
+# SaaS Platform Stack — API, Dashboard, AI Agent, and infrastructure services
+#
+# All Dockerfiles for this stack live in infra/local/.
+# All AI reasoning (LLM, LangGraph, OODA loop) happens here.
+# Tool calls are dispatched directly to the edge MCP stack on host ports.
+#
+# Usage:  cd infra/local && docker compose up -d --build
+# =============================================================================
+
+services:
+  # ============================================
+  # Infrastructure Services
+  # ============================================
+
+  redis:
+    image: redis:7.4.11-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7
+    container_name: sre-redis
+    hostname: redis
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      sre-network:
+        aliases:
+          - redis
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:15.19-alpine@sha256:a46e076249ce434e41203b8c1dadfaa025b9726331d72390df038385d6dc29cd
+    container_name: sre-postgres
+    hostname: postgres
+    env_file: *sentinel-env-files
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      sre-network:
+        aliases:
+          - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sre_user} -d ${POSTGRES_DB:-sre_platform}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    container_name: sre-qdrant
+    hostname: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      sre-network:
+        aliases:
+          - qdrant
+    restart: unless-stopped
+
+  # ============================================
+  # Temporal (local dev server for the code-fix verification sandbox — see
+  # src/sre_agent/temporal_client.py). Off by default: TEMPORAL_ENABLED=false and
+  # this service isn't in any active profile, so it never starts on its own.
+  # Single-container all-in-one dev server with embedded SQLite — no separate
+  # Cassandra/MySQL/Elasticsearch cluster needed, unlike a production Temporal
+  # deployment. Opt in with COMPOSE_PROFILES=local-temporal (+ set
+  # TEMPORAL_ENABLED=true). For Temporal Cloud instead (no local container at
+  # all), leave this profile off and set TEMPORAL_HOST/TEMPORAL_API_KEY — see
+  # .env.example.
+  # ============================================
+
+  temporal:
+    image: temporalio/temporal:1.8.3@sha256:cea463d98a8d6def4420f903ea5c3fcd0d85c8d10fbcc2770a50c12fff2eb26d
+    container_name: sre-temporal
+    hostname: temporal
+    profiles: ["local-temporal"]
+    command: server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    volumes:
+      - temporal_data:/data
+    networks:
+      sre-network:
+        aliases:
+          - temporal
+    restart: unless-stopped
+
+  # ollama:                        # Commented out — using Groq instead
+  #   image: ollama/ollama:latest
+  #   container_name: sre-ollama
+  #   hostname: ollama
+  #   ports:
+  #     - "11435:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     sre-network:
+  #       aliases:
+  #         - ollama
+  #   restart: unless-stopped
+
+  # ============================================
+  # SRE Agent API (Control Plane + AI Brain)
+  # ============================================
+
+  sre-agent-api:
+    <<: *sentinel-api-image
+    container_name: sre-agent-api
+    hostname: sre-agent-api
+    command: >
+      sh -c "uv run python -m sre_agent.provider_config && uv run alembic upgrade head && exec uv run uvicorn sre_agent.agent_runtime:app --host 0.0.0.0 --port 8080"
+    ports:
+      - "8080:8080"
+    env_file: *sentinel-env-files
+    environment:
+      # Topological fixed values that shouldn't be overridden via user .env
+      - AGENT_MODE=api
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
+      - PYTHONPATH=/app/src
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      # Langfuse tracing (src/sre_agent/tracing.py) — Cloud-only. Sign up at
+      # https://cloud.langfuse.com, create a project, and set these three from
+      # .env. LANGFUSE_TRACING=false (or leaving keys blank) disables tracing.
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      # Verified-learning skill store (src/sre_agent/skill_store.py): without this,
+      # get_skill_store() falls back to an in-process dict that's lost on every
+      # restart, silently discarding every skill the agent has ever learned.
+      - SKILL_STORE_PATH=/app/data/skills.json
+
+    volumes:
+      - skill_store_data:/app/data
+      # Secrets generated on first boot (src/sre_agent/bootstrap_secrets.py).
+      # Shared with temporal-worker so both processes read the same keys --
+      # if they disagreed, one could not decrypt what the other wrote.
+      - sentinel_keys:/var/lib/sentinel
+      # WORKDIR is /app, so the relative "reports/..." defaults in
+      # src/sre_agent/trace_evidence.py and src/sre_agent/model_accounting.py land
+      # here. Those two files are the run-trace evidence the release gate
+      # reads and the per-call cost ledger; on the container filesystem they
+      # are deleted by the next `docker compose build`, which is exactly when
+      # you most want the before-and-after numbers.
+      - reports_data:/app/reports
+    networks:
+      sre-network:
+        aliases:
+          - sre-agent
+      shared-edge-network:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================
+  # Temporal worker (sre_agent.sandbox_worker)
+  # ============================================
+  # Long-lived task-queue poller for CodeFixVerificationWorkflow and
+  # IncidentRemediationWorkflow (src/sre_agent/temporal_client.py). Without this
+  # running, TEMPORAL_ENABLED=true creates workflows that sit in the queue
+  # forever — nothing ever executes them. Reuses the sre-agent-api image
+  # (temporalio is already installed there, see infra/local/Dockerfile) with a
+  # different entrypoint, matching infra/helm/sentinel/templates/
+  # temporal-worker.yaml's shape. Gated on the same "local-temporal" profile
+  # as the temporal service itself, since running it makes no sense unless
+  # TEMPORAL_ENABLED=true is also set.
+  temporal-worker:
+    <<: *sentinel-api-image
+    container_name: sre-temporal-worker
+    hostname: temporal-worker
+    profiles: ["local-temporal"]
+    command: uv run python -m sre_agent.sandbox_worker
+    env_file: *sentinel-env-files
+    environment:
+      - AGENT_MODE=api
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
+      - PYTHONPATH=/app/src
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Same keystore the API uses; see the note on that mount.
+      - sentinel_keys:/var/lib/sentinel
+      # Same image, same relative paths: the worker appends to the same
+      # ledger rather than to a copy that dies with the container.
+      - reports_data:/app/reports
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "sre_agent.runtime_preflight", "--role", "worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      sre-network:
+        aliases:
+          - temporal-worker
+      shared-edge-network:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================
+  # Dashboard (Next.js UI)
+  # ============================================
+
+  dashboard:
+    platform: linux/amd64
+    build:
+      context: ../../apps/dashboard
+      dockerfile: ../../infra/local/Dockerfile.dashboard
+    container_name: sre-dashboard
+    # Without this the dashboard is the one service that does not come back
+    # after a Codespace resume, and the UI reads as broken when it is not.
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      - API_URL=http://sre-agent-api:8080
+    depends_on:
+      - sre-agent-api
+    networks:
+      sre-network:
+        aliases:
+          - dashboard
+
+networks:
+  sre-network:
+    driver: bridge
+    name: sre-platform-network
+  # Shared with services/edge_mcp_servers/docker-compose.yaml so sre-agent-api and
+  # temporal-worker reach the MCP servers by container name over an internal
+  # Docker network instead of via published host ports (which would force
+  # those ports to bind 0.0.0.0, breaking the loopback-only hardening
+  # tests/test_mcp_auth.py enforces). Created once with:
+  #   docker network create sre-shared-network
+  shared-edge-network:
+    external: true
+    name: sre-shared-network
+
+volumes:
+  # SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY and MCP_SERVICE_TOKEN, generated on
+  # first boot. Back this up alongside postgres_data: without it, credentials
+  # saved through Settings cannot be decrypted.
+  sentinel_keys:
+    driver: local
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  skill_store_data:
+    driver: local
+  # Run-trace evidence and the model cost ledger. Append-only JSONL, and the
+  # only record of what a benchmark campaign actually spent.
+  reports_data:
+    driver: local
+  temporal_data:
+    driver: local
+  # ollama_data:                   # Commented out — using Groq instead
+  #   driver: local
+  postgres_data:
+    driver: local

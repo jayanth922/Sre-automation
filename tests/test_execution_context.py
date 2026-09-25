@@ -231,7 +231,7 @@ def test_org_langfuse_credentials_bound_org_no_fallback(monkeypatch):
 
 
 def test_agent_runtime_uses_context_cache_not_process_singletons():
-    source = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    source = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
     assert "AgentRuntimeCache(" in source
     assert "_runtime_cache.get_or_create" in source
     assert "mcp_client_global" not in source

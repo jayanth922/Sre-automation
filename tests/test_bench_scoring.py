@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-BENCHMARKS = Path(__file__).resolve().parents[1] / "benchmarks"
+BENCHMARKS = Path(__file__).resolve().parents[1] / "evals" / "benchmarks"
 sys.path.insert(0, str(BENCHMARKS))
 _MODULE_PATH = BENCHMARKS / "scoring.py"
 _spec = importlib.util.spec_from_file_location("bench_scoring", _MODULE_PATH)

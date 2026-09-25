@@ -152,7 +152,7 @@ def test_the_ack_dead_end_points_at_the_command_that_works(monkeypatch):
 
 def test_the_slack_bot_routes_the_command_before_the_llm_chat_path():
     source = (
-        Path(__file__).resolve().parents[1] / "sre_agent" / "integrations" / "slack_bot.py"
+        Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "integrations" / "slack_bot.py"
     ).read_text()
     assert "is_resolve_command" in source
     assert source.index("route_resolve_command(") < source.index("route_thread_reply(\n")

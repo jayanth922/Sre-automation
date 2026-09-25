@@ -8,7 +8,7 @@ available in this lightweight test environment — the same constraint that
 `tests/test_checkpointer.py::test_agent_runtime_uses_configured_checkpointer`
 already works around by asserting on source text instead of on live objects.
 
-Each authenticated router in ``sre_agent/api/v1/`` must attach
+Each authenticated router in ``src/sre_agent/api/v1/`` must attach
 ``get_current_user_and_org`` at the *router* level (``APIRouter(...,
 dependencies=[Depends(get_current_user_and_org)])``) rather than relying on
 per-route annotations, so a route added later without an explicit
@@ -17,7 +17,7 @@ legitimately exempt because they authenticate a different caller:
 
 - ``alerts.py``: its one route is called by the client's own Alertmanager via
   a cluster token, not a logged-in user.
-- ``backend/routers/auth.py``: login/register/token/refresh must stay public;
+- ``src/backend/routers/auth.py``: login/register/token/refresh must stay public;
   only its ``/me`` and ``/password`` sub-routes carry per-route user auth.
 
 The legacy single-tenant endpoints defined directly on ``app`` in
@@ -34,9 +34,9 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
-_API_V1 = _ROOT / "sre_agent" / "api" / "v1"
+_API_V1 = _ROOT / "src" / "sre_agent" / "api" / "v1"
 
-# Every router mounted under /api/v1 that serves logged-in dashboard/API users.
+# Every router mounted under /api/v1 that serves logged-in apps/dashboard/API users.
 USER_AUTH_ROUTERS = [
     "analytics.py",
     "clusters.py",
@@ -108,7 +108,7 @@ def test_alerts_router_uses_cluster_token_not_user_auth():
 
 
 def test_auth_router_login_endpoints_stay_public():
-    src = (_ROOT / "backend" / "routers" / "auth.py").read_text()
+    src = (_ROOT / "src" / "backend" / "routers" / "auth.py").read_text()
     block_start = src.index("router = APIRouter(")
     block_end = src.index(")", block_start)
     assert "get_current_user_and_org" not in src[block_start : block_end + 1]
@@ -117,7 +117,7 @@ def test_auth_router_login_endpoints_stay_public():
 
 
 def test_auth_router_me_and_password_require_user_auth():
-    src = (_ROOT / "backend" / "routers" / "auth.py").read_text()
+    src = (_ROOT / "src" / "backend" / "routers" / "auth.py").read_text()
     for route_decorator, fn_name in (
         ('@router.get("/me"', "read_current_user"),
         ('@router.post("/password")', "reset_password"),
@@ -130,26 +130,26 @@ def test_auth_router_me_and_password_require_user_auth():
 
 @pytest.mark.parametrize("decorator", INTERNAL_ONLY_ROUTE_DECORATORS)
 def test_legacy_global_endpoint_requires_internal_token(decorator):
-    src = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    src = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
     assert decorator in src
 
 
 @pytest.mark.parametrize("decorator", PUBLIC_ROUTE_DECORATORS)
 def test_health_endpoint_stays_public(decorator):
-    src = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    src = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
     assert decorator in src
     assert "dependencies=[Depends(require_internal_token)]" not in src.split(decorator, 1)[1].split("\n\n", 1)[0]
 
 
 def test_divergent_rbac_module_removed():
-    assert not (_ROOT / "backend" / "rbac.py").exists()
+    assert not (_ROOT / "src" / "backend" / "rbac.py").exists()
 
 
 def test_no_remaining_backend_rbac_imports():
     import subprocess
 
     result = subprocess.run(
-        ["grep", "-rl", "backend.rbac", "--include=*.py", str(_ROOT / "sre_agent"), str(_ROOT / "backend")],
+        ["grep", "-rl", "backend.rbac", "--include=*.py", str(_ROOT / "src" / "sre_agent"), str(_ROOT / "src" / "backend")],
         capture_output=True,
         text=True,
     )
@@ -157,7 +157,7 @@ def test_no_remaining_backend_rbac_imports():
 
 
 def test_auth_deps_require_admin_is_canonical():
-    src = (_ROOT / "sre_agent" / "api" / "v1" / "auth_deps.py").read_text()
+    src = (_ROOT / "src" / "sre_agent" / "api" / "v1" / "auth_deps.py").read_text()
     assert "async def require_admin(" in src
     assert "Depends(get_current_user_and_org)" in src
 

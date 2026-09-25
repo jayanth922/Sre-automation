@@ -9,19 +9,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-_VL = ROOT / "sre_agent" / "verified_learning.py"
+_VL = ROOT / "src" / "sre_agent" / "verified_learning.py"
 _spec = importlib.util.spec_from_file_location("verified_learning", _VL)
 vl = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = vl
 _spec.loader.exec_module(vl)
 
-_SS = ROOT / "sre_agent" / "skill_store.py"
+_SS = ROOT / "src" / "sre_agent" / "skill_store.py"
 _ss_spec = importlib.util.spec_from_file_location("skill_store_a10", _SS)
 skill_store = importlib.util.module_from_spec(_ss_spec)
 sys.modules[_ss_spec.name] = skill_store
 _ss_spec.loader.exec_module(skill_store)
 
-_AP = ROOT / "sre_agent" / "act_phase.py"
+_AP = ROOT / "src" / "sre_agent" / "act_phase.py"
 # act_phase has package-relative imports; load via package path.
 sys.path.insert(0, str(ROOT))
 from sre_agent.act_phase import ActReport, apply_skill_learning  # noqa: E402

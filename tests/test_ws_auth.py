@@ -64,7 +64,7 @@ def test_global_feed_event_filter_enforces_organization_scope():
 
 
 def test_ticket_endpoint_is_authenticated_short_lived_and_not_cached():
-    src = (_ROOT / "sre_agent" / "api" / "v1" / "ws_tickets.py").read_text()
+    src = (_ROOT / "src" / "sre_agent" / "api" / "v1" / "ws_tickets.py").read_text()
     assert "dependencies=[Depends(get_current_user_and_org)]" in src
     assert "WS_TICKET_TTL_SECONDS = 45" in src
     assert '"purpose": WS_TICKET_PURPOSE' in src
@@ -72,7 +72,7 @@ def test_ticket_endpoint_is_authenticated_short_lived_and_not_cached():
 
 
 def test_runtime_authenticates_all_websocket_handlers_and_filters_global_feeds():
-    src = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    src = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
     for function_name in ("ws_incident", "ws_insights", "ws_incidents"):
         start = src.index(f"async def {function_name}(")
         next_route = src.find("\n@app.", start)
@@ -83,7 +83,7 @@ def test_runtime_authenticates_all_websocket_handlers_and_filters_global_feeds()
 
 
 def test_dashboard_mints_a_fresh_ticket_inside_every_connect_attempt():
-    src = (_ROOT / "dashboard" / "lib" / "useLiveStream.ts").read_text()
+    src = (_ROOT / "apps" / "dashboard" / "lib" / "useLiveStream.ts").read_text()
     connect_start = src.index("const connect = async () =>")
     connect_end = src.index("\n        void connect()", connect_start)
     ticket_call = src.index('api.post<WsTicketResponse>("/ws-tickets")')
@@ -98,23 +98,23 @@ def test_dashboard_mints_a_fresh_ticket_inside_every_connect_attempt():
 
 
 def test_dashboard_websocket_default_matches_the_ingress_route():
-    src = (_ROOT / "dashboard" / "lib" / "useLiveStream.ts").read_text()
+    src = (_ROOT / "apps" / "dashboard" / "lib" / "useLiveStream.ts").read_text()
     assert 'return `${proto}//${window.location.host}${path}`' in src
     assert "/agent${path}" not in src
 
     values = (
-        _ROOT / "deploy" / "helm" / "sentinel" / "values.yaml"
+        _ROOT / "infra" / "helm" / "sentinel" / "values.yaml"
     ).read_text()
     assert 'wsBase: ""' in values
 
     ingress = (
-        _ROOT / "deploy" / "helm" / "sentinel" / "templates" / "ingress.yaml"
+        _ROOT / "infra" / "helm" / "sentinel" / "templates" / "ingress.yaml"
     ).read_text()
     assert "- path: /ws" in ingress
     assert "name: sentinel-api" in ingress
 
     web = (
-        _ROOT / "deploy" / "helm" / "sentinel" / "templates" / "web.yaml"
+        _ROOT / "infra" / "helm" / "sentinel" / "templates" / "web.yaml"
     ).read_text()
     assert ".Values.ingress.enabled" in web
     assert '"ws://localhost:8080"' in web
@@ -122,7 +122,7 @@ def test_dashboard_websocket_default_matches_the_ingress_route():
 
 def test_helm_rejects_missing_or_placeholder_signing_key():
     src = (
-        _ROOT / "deploy" / "helm" / "sentinel" / "templates" / "secret.yaml"
+        _ROOT / "infra" / "helm" / "sentinel" / "templates" / "secret.yaml"
     ).read_text()
     assert 'eq $secretKey "change-me-to-a-long-random-string"' in src
     assert 'fail "secrets.secretKey must be set' in src
