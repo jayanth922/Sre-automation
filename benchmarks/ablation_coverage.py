@@ -51,11 +51,12 @@ keyword-only recall whenever `qdrant-client` or the embedding model is
 unavailable, and it does so with a log line rather than an error. So the
 answer depends on the interpreter: the image's `/app/.venv` (what `uv run`
 starts, and what the agent is) has the dependency, while the container's bare
-`/usr/local/bin/python` does not. Running this under the latter reported
-`qdrant-client not installed` and 3/6 coverage where the semantic path reported
-6/6 — a wrong answer that looked exactly like a finding. Both figures predate
-`_SEMANTIC_MATCH_FLOOR`, and most of the spread between them was the old
-admit-everything behaviour, so re-measure before quoting either.
+`/usr/local/bin/python` does not. Before `_SEMANTIC_MATCH_FLOOR` existed the
+two paths disagreed: keyword-only reported 3/6 on dev where semantic reported
+6/6 — a wrong answer that looked exactly like a finding. Re-measured on
+2026-09-25 with the floor in place, they agree exactly, 3/6 on dev with the
+same three scenarios blind either way. The spread was the old
+cosine-against-0.5 admission and it is gone.
 
 Hence `--expect-retrieval-path`, and hence the `interpreter` block in the
 report: a coverage number is unreadable without knowing which stack produced
@@ -101,12 +102,13 @@ def retrieval_path(store: Any) -> str:
 
     `SemanticSkillStore` degrades to keyword-only when `qdrant-client` is
     missing, when Qdrant is unreachable, or when the embedding model will not
-    load — each with a log line and no error. The coverage number differs by
-    path: measured before `_SEMANTIC_MATCH_FLOOR` existed, semantic recall
-    covered 6/6 scenarios on this corpus against keyword-only's 3/6. That
-    spread was mostly the old cosine-against-0.5 admission and has not been
-    re-measured since. Either way, a coverage report that does not say which
-    path produced it cannot be acted on.
+    load — each with a log line and no error. The coverage number used to
+    differ by path: before `_SEMANTIC_MATCH_FLOOR` existed, semantic recall
+    covered 6/6 scenarios on this corpus against keyword-only's 3/6, the spread
+    being the old cosine-against-0.5 admission. With the floor in place the two
+    agree — 3/6 on dev, the same scenarios. They can diverge again the moment
+    the floor, the embedding model or the corpus moves, so a coverage report
+    that does not say which path produced it still cannot be acted on.
     """
     return (
         "semantic" if getattr(store, "_semantic_available", False) else "keyword_only"
@@ -318,9 +320,10 @@ def verdict_lines(report: dict[str, Any]) -> list[str]:
         lines.append(f"Retrieval path: {path}.")
     lines.append(
         "Valid only if the agent's own process takes that same path — the agent "
-        "is /app/.venv/bin/python, not the container's bare `python`, and the "
-        "two have disagreed on this corpus: 6/6 against 3/6, measured before "
-        "the semantic floor was calibrated."
+        "is /app/.venv/bin/python, not the container's bare `python`. Those two "
+        "disagreed 6/6 against 3/6 before `_SEMANTIC_MATCH_FLOOR` was "
+        "calibrated; with the floor in place they agree, but check rather than "
+        "assume."
     )
     return lines
 
