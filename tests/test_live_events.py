@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "live_events.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "live_events.py"
 _spec = importlib.util.spec_from_file_location("live_events", _MODULE_PATH)
 le = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = le
@@ -199,7 +199,7 @@ def test_lifecycle_helper_uses_versioned_incidents_channel():
 
 
 def test_active_runtime_publishes_lifecycle_from_canonical_path():
-    source = Path("sre_agent/agent_runtime.py").read_text()
+    source = Path("src/sre_agent/agent_runtime.py").read_text()
     assert "publish_lifecycle_event" in source
     assert 'cursor = websocket.query_params.get("cursor")' in source
 

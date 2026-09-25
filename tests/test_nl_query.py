@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "nl_query.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "nl_query.py"
 _spec = importlib.util.spec_from_file_location("nl_query", _MODULE_PATH)
 nl = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = nl
@@ -152,7 +152,7 @@ def test_every_v2_recovery_probe_query_is_runnable_by_the_agent():
     import json
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1] / "benchmarks" / "datasets" / "v2"
+    root = Path(__file__).resolve().parents[1] / "evals" / "benchmarks" / "datasets" / "v2"
     queries = {
         (s.get("recovery_probe") or {}).get("query", "")
         for split in ("train", "dev", "holdout")

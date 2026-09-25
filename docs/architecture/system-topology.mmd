@@ -1,39 +1,21 @@
-%% Portrait / Word-friendly: stacked tiers inside one wrapper subgraph (TB).
-%% Detailed MCP wiring: see mcp-integration.mmd. Original twin microservices
-%% are summarized as one node here to avoid a wide gateway fan-out.
-
 graph TB
-    subgraph Topology[" "]
-        direction TB
+    Operator["Operator"] --> UI["Next.js console<br/>apps/dashboard"]
+    Slack["Optional Slack war room"] --> API
+    UI --> API["FastAPI + LangGraph<br/>src/sre_agent"]
 
-        subgraph Platform["platform + backend + sre_agent"]
-            direction TB
-            UI["dashboard"]
-            API["sre_agent runtime"]
-            STORES[("PostgreSQL · Redis · Qdrant")]
-            UI -->|requests| API
-            API -->|persist / state / vector memory| STORES
-        end
+    API --> DB[("PostgreSQL<br/>incidents · jobs · audit · manifests")]
+    API --> Redis[("Redis<br/>live events · checkpoints")]
+    API --> Qdrant[("Qdrant<br/>verified skills")]
+    API --> Worker["Durable / Temporal workers"]
 
-        subgraph Edge["edge_mcp_servers"]
-            direction TB
-            MCPS["Kubernetes MCP<br/>Prometheus MCP<br/>Loki MCP<br/>GitHub MCP<br/>Runbooks MCP"]
-        end
+    API --> Edge["Edge MCP services<br/>services/edge_mcp_servers"]
+    Worker --> Edge
+    Edge --> Sources["Kubernetes · Prometheus · Loki<br/>GitHub · Notion · sandbox"]
 
-        subgraph Target["Target_Client"]
-            direction TB
-            CP["chaos-panel"]
-            LG["load-generator"]
-            GW["api-gateway"]
-            SVC["checkout-service<br/>inventory-service"]
-            CP -->|controls| LG
-            LG -->|traffic| GW
-            GW -->|routes| SVC
-        end
-    end
+    API -. "optional traces" .-> Langfuse["Langfuse Cloud"]
+    API -. "model calls" .-> Anthropic["Anthropic API"]
 
-    MCPS -->|"MCP tool results (HTTP/SSE)"| API
-
-    style Target fill:#e1f5ff
+    style API fill:#f3e5f5
     style Edge fill:#fff3e0
-    style Platform fill:#f3e5f5
+    style UI fill:#e3f2fd
+    style DB fill:#fce4ec

@@ -31,12 +31,12 @@ def _class_fields(path: Path, class_name: str) -> set[str]:
 
 
 def test_cluster_response_contains_no_credential_fields():
-    fields = _class_fields(_ROOT / "backend" / "schemas.py", "ClusterResponse")
+    fields = _class_fields(_ROOT / "src" / "backend" / "schemas.py", "ClusterResponse")
     assert fields.isdisjoint(_SECRET_FIELDS)
 
 
 def test_cluster_token_lookup_uses_hash_not_ciphertext_or_plaintext():
-    source = (_ROOT / "backend" / "crud.py").read_text()
+    source = (_ROOT / "src" / "backend" / "crud.py").read_text()
     start = source.index("async def get_cluster_by_token")
     block = source[start : source.index("\nasync def ", start + 1)]
     assert "credential_lookup_hash(token)" in block
@@ -45,7 +45,7 @@ def test_cluster_token_lookup_uses_hash_not_ciphertext_or_plaintext():
 
 
 def test_all_confirmed_cluster_credentials_use_encrypted_type():
-    source = (_ROOT / "backend" / "models.py").read_text()
+    source = (_ROOT / "src" / "backend" / "models.py").read_text()
     tree = ast.parse(source)
     cluster = next(
         item
@@ -64,6 +64,7 @@ def test_all_confirmed_cluster_credentials_use_encrypted_type():
 def test_data_migration_covers_every_confirmed_plaintext_column():
     source = (
         _ROOT
+        / "src"
         / "backend"
         / "alembic"
         / "versions"
@@ -78,6 +79,6 @@ def test_data_migration_covers_every_confirmed_plaintext_column():
 
 
 def test_invalid_cluster_token_is_not_logged_even_partially():
-    source = (_ROOT / "sre_agent" / "api" / "v1" / "alerts.py").read_text()
+    source = (_ROOT / "src" / "sre_agent" / "api" / "v1" / "alerts.py").read_text()
     assert "token[-4:]" not in source
     assert "Invalid cluster token provided" in source

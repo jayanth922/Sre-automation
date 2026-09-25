@@ -26,11 +26,11 @@ def _load(name, rel_path):
 # `backend.models` only needs `IncidentStatus`, a plain `str` Enum with no
 # sqlalchemy/fastapi dependency chain, but importing the real `backend.models`
 # module pulls those in anyway. Load it directly from source, same pattern as
-# tests/test_checkpointer.py uses for sre_agent/checkpointer.py.
-_models = _load("backend_models_for_incident_status_test", "backend/models.py")
+# tests/test_checkpointer.py uses for src/sre_agent/checkpointer.py.
+_models = _load("backend_models_for_incident_status_test", "src/backend/models.py")
 IncidentStatus = _models.IncidentStatus
 
-_incident_status = _load("incident_status_under_test", "sre_agent/incident_status.py")
+_incident_status = _load("incident_status_under_test", "src/sre_agent/incident_status.py")
 compute_incident_status = _incident_status.compute_incident_status
 effective_status_after_run = _incident_status.effective_status_after_run
 resolved_at_for_status = _incident_status.resolved_at_for_status
@@ -251,9 +251,9 @@ def test_every_terminal_status_writer_stamps_resolved_at_through_the_helper():
 
     root = pathlib.Path(__file__).resolve().parent.parent
     writers = [
-        root / "sre_agent" / "agent_runtime.py",
-        root / "sre_agent" / "approval_flow.py",
-        root / "sre_agent" / "api" / "v1" / "mission_control.py",
+        root / "src" / "sre_agent" / "agent_runtime.py",
+        root / "src" / "sre_agent" / "approval_flow.py",
+        root / "src" / "sre_agent" / "api" / "v1" / "mission_control.py",
     ]
     for path in writers:
         source = path.read_text()

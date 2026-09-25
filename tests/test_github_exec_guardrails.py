@@ -9,7 +9,11 @@ import pytest
 
 _MODULE_PATH = (
     Path(__file__).resolve().parents[1]
-    / "edge_mcp_servers" / "mcp_servers" / "github_exec" / "guardrails.py"
+    / "services"
+    / "edge_mcp_servers"
+    / "mcp_servers"
+    / "github_exec"
+    / "guardrails.py"
 )
 _spec = importlib.util.spec_from_file_location("github_exec_guardrails", _MODULE_PATH)
 g = importlib.util.module_from_spec(_spec)

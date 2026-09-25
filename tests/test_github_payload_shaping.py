@@ -16,7 +16,11 @@ import pytest
 
 _MODULE_PATH = (
     Path(__file__).resolve().parents[1]
-    / "edge_mcp_servers" / "mcp_servers" / "github_real" / "payload.py"
+    / "services"
+    / "edge_mcp_servers"
+    / "mcp_servers"
+    / "github_real"
+    / "payload.py"
 )
 _spec = importlib.util.spec_from_file_location("github_real_payload", _MODULE_PATH)
 p = importlib.util.module_from_spec(_spec)
@@ -24,7 +28,7 @@ sys.modules[_spec.name] = p
 _spec.loader.exec_module(p)
 
 # The cap the shaped payload has to stay under, restated here rather than
-# imported: sre_agent/context_compaction.py is the downstream authority and a
+# imported: src/sre_agent/context_compaction.py is the downstream authority and a
 # silent drift between the two is exactly what this test should fail on.
 DOWNSTREAM_TOOL_RESULT_CAP = 20_000
 
@@ -148,7 +152,7 @@ def test_the_worst_case_payload_lands_under_the_downstream_tool_result_cap():
 
     assert len(encoded) < DOWNSTREAM_TOOL_RESULT_CAP, (
         f"shaped payload is {len(encoded)} chars; the head-and-tail elision in "
-        "sre_agent/context_compaction.py would run and undo the ranking"
+        "src/sre_agent/context_compaction.py would run and undo the ranking"
     )
 
 

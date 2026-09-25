@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import check_runtime_parity as crp
+from scripts.ci import check_runtime_parity as crp
 from sre_agent import runtime_preflight as rp
 
 
@@ -88,10 +88,10 @@ def test_worker_import_preflight_fails_with_a_named_missing_module(monkeypatch):
 
 def test_docker_and_compose_build_one_verified_runtime():
     root = Path(__file__).resolve().parents[1]
-    dockerfile = (root / "platform" / "Dockerfile").read_text()
-    compose = (root / "platform" / "docker-compose.yaml").read_text()
-    worker = (root / "sre_agent" / "sandbox_worker.py").read_text()
-    deploy = (root / "scripts" / "deploy_agent_runtimes.sh").read_text()
+    dockerfile = (root / "infra" / "local" / "Dockerfile").read_text()
+    compose = (root / "infra" / "local" / "docker-compose.yaml").read_text()
+    worker = (root / "src" / "sre_agent" / "sandbox_worker.py").read_text()
+    deploy = (root / "scripts" / "deploy" / "deploy_agent_runtimes.sh").read_text()
 
     assert "python -m sre_agent.runtime_preflight" in dockerfile
     assert "--write-manifest /app/.sentinel-runtime.json" in dockerfile

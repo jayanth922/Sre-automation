@@ -1,37 +1,16 @@
 flowchart TD
-    Agent["LangGraph Agent Runtime<br/>multi_agent_langgraph.py"]
-    
-    MP["mcp_tool_wrapper.py<br/>MCP Tool Bridge"]
-    
-    subgraph MCPServers["MCP Tool Servers"]
-        K8S["Kubernetes MCP<br/>cluster state<br/>pod details<br/>events"]
-        PR["Prometheus MCP<br/>golden signals<br/>time series<br/>alert status"]
-        LK["Loki MCP<br/>log search<br/>error traces<br/>log context"]
-        GH["GitHub MCP<br/>commits<br/>pull requests<br/>code changes"]
-        RB["Runbooks MCP<br/>search playbooks<br/>retrieve guides"]
-    end
-    
-    Specialists["Specialist Agents<br/>kubernetes_agent<br/>metrics_agent<br/>logs_agent<br/>github_agent<br/>runbooks_agent"]
-    
-    Supervisor["Supervisor Node<br/>Aggregate Evidence<br/>Route Decision<br/>Plan Next Step"]
-    
-    State["Incident Timeline<br/>PostgreSQL"]
-    
-    Agent --> MP
-    MP -->|HTTP calls| MCPServers
-    MP -->|Tool results| Specialists
-    K8S --> Specialists
-    PR --> Specialists
-    LK --> Specialists
-    GH --> Specialists
-    RB --> Specialists
-    Specialists --> Supervisor
-    Supervisor --> State
-    State --> Agent
+    Runtime["Bounded specialist agents"] --> Wrapper["Authenticated MCP wrapper<br/>retry + normalized outcomes"]
+    Wrapper --> Reads["Read tools<br/>Kubernetes · Prometheus · Loki<br/>GitHub · Notion"]
+    Wrapper --> Writes["Mutation tools<br/>Kubernetes executor · GitHub execution · sandbox"]
+    Reads --> Sources["Target infrastructure and knowledge sources"]
+    Writes --> Guard["Server-side allowlists and guardrails"]
+    Guard --> Sources
+    Reads --> Evidence["Structured evidence + trace artifact"]
+    Writes --> Evidence
+    Evidence --> Runtime
+    Policy["Policy + approval + mutation gateway"] --> Writes
 
-    style Agent fill:#f3e5f5
-    style MP fill:#fff3e0
-    style MCPServers fill:#e1f5ff
-    style Specialists fill:#fff3e0
-    style Supervisor fill:#f3e5f5
-    style State fill:#fce4ec
+    style Wrapper fill:#fff3e0
+    style Policy fill:#f3e5f5
+    style Writes fill:#ffebee
+    style Evidence fill:#e8f5e9

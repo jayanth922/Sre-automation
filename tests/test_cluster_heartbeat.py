@@ -71,7 +71,7 @@ def test_payload_exposes_source_reason_and_age():
 def test_agent_runtime_no_longer_fabricates_global_online_heartbeats():
     from pathlib import Path
 
-    source = Path("sre_agent/agent_runtime.py").read_text()
+    source = Path("src/sre_agent/agent_runtime.py").read_text()
     assert "_heartbeat_reconcile_loop" in source
     assert "reconcile_cluster_heartbeats" in source
     assert "Keep all clusters marked online" not in source

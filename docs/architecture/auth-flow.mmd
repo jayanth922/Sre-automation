@@ -1,30 +1,20 @@
 flowchart TD
-    Start["User visits dashboard<br/>localhost:3002 (compose)<br/>or localhost:3000 (dev)"] --> Check{"Token exists<br/>in cookie?"}
-    Check -->|No| Redirect1["Redirect to /login"]
-    Check -->|Yes| Validate{"Token valid<br/>& not expired?"}
-    Validate -->|No| Redirect1
-    Redirect1 --> LoginPage["Login Page<br/>renders form"]
-    LoginPage --> IsRegister{"Register or<br/>Login?"}
-    IsRegister -->|Register| Register["POST /auth/register<br/>Create org & user"]
-    IsRegister -->|Login| Login["POST /auth/token<br/>Verify credentials"]
-    Register --> Token["JWT token returned<br/>+ org metadata"]
-    Login --> Token
-    Token --> Store["Store in localStorage<br/>& httpOnly cookie"]
-    Store --> AuthContext["AuthProvider<br/>decodes JWT<br/>sets user context"]
-    Validate -->|Yes| Auth["Authenticated<br/>context restored"]
-    Auth --> Protected["Access Protected Routes<br/>/clusters, /incidents"]
-    Protected --> API["api() helper<br/>includes Bearer token<br/>in requests"]
-    API --> Backend["Backend validates<br/>token & org_id"]
-    Backend --> Response["Return data<br/>scoped to org"]
-    Response --> UI["Dashboard displays<br/>cluster & incident data"]
-    UI --> Logout["User clicks Logout"]
-    Logout --> Clear["Clear token<br/>from storage & cookie"]
-    Clear --> Redirect2["Redirect to /login"]
-    Redirect2 --> LoginPage
+    Visit["Visit console"] --> Cookie{"Refresh cookie present?"}
+    Cookie -->|No| Empty{"Installation has users?"}
+    Empty -->|No| Claim["First-run claim"]
+    Empty -->|Yes| Login["Login"]
+    Cookie -->|Yes| Refresh["POST /auth/refresh"]
+    Claim --> Session["Issue access token in memory<br/>set rotating httpOnly refresh cookie"]
+    Login --> Session
+    Refresh --> Session
+    Session --> API["Authenticated API request"]
+    API --> Scope["Derive user and organization<br/>server-side"]
+    Scope --> UI["Render tenant-scoped console"]
+    Refresh -->|invalid / reused| Revoke["Revoke token family<br/>clear cookie"]
+    Revoke --> Login
+    UI --> Logout["POST /auth/logout"]
+    Logout --> Revoke
 
-    style Start fill:#e3f2fd
-    style LoginPage fill:#fff3e0
-    style Token fill:#e8f5e9
-    style AuthContext fill:#f3e5f5
-    style Protected fill:#e3f2fd
-    style Logout fill:#ffebee
+    style Session fill:#e8f5e9
+    style Scope fill:#f3e5f5
+    style Revoke fill:#ffebee

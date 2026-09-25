@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 RELEASE_ROOT = BENCHMARKS / "release" / "v1"
 MODULE_PATH = BENCHMARKS / "release_gate.py"
 _spec = importlib.util.spec_from_file_location("release_gate", MODULE_PATH)
@@ -205,7 +205,7 @@ def test_unprotected_change_does_not_require_release_evidence(tmp_path):
 def test_protected_change_without_evidence_fails_closed(tmp_path):
     changed = tmp_path / "changed.txt"
     changed.write_text(
-        "sre_agent/config/prompts/agent_base_prompt.txt\n", encoding="utf-8"
+        "src/sre_agent/config/prompts/agent_base_prompt.txt\n", encoding="utf-8"
     )
 
     report = release.evaluate_impact(
@@ -222,11 +222,11 @@ def test_protected_change_without_evidence_fails_closed(tmp_path):
 def test_protected_change_requires_matching_source_digest_and_change_class(tmp_path):
     policy_path, bundle_path = _fixture_tree(tmp_path)
     repo_root = tmp_path / "repo"
-    prompt = repo_root / "sre_agent" / "config" / "prompts" / "agent.txt"
+    prompt = repo_root / "src" / "sre_agent" / "config" / "prompts" / "agent.txt"
     prompt.parent.mkdir(parents=True)
     prompt.write_text("candidate prompt\n", encoding="utf-8")
     changed = tmp_path / "changed.txt"
-    changed.write_text("sre_agent/config/prompts/agent.txt\n", encoding="utf-8")
+    changed.write_text("src/sre_agent/config/prompts/agent.txt\n", encoding="utf-8")
     policy, _ = release.load_policy(policy_path)
     source_digest = release.protected_source_digest(repo_root, policy)
 

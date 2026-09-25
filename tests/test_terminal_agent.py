@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "terminal_agent.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "terminal_agent.py"
 _spec = importlib.util.spec_from_file_location("terminal_agent", _MODULE_PATH)
 ta = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = ta

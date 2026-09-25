@@ -12,7 +12,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 def _load():
     name = "sre_agent_config_under_test"
-    spec = importlib.util.spec_from_file_location(name, _ROOT / "sre_agent" / "config.py")
+    spec = importlib.util.spec_from_file_location(name, _ROOT / "src" / "sre_agent" / "config.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     # pydantic must resolve `sre_agent.config` style only if imported as package;
@@ -165,6 +165,6 @@ def test_database_module_uses_strict_debug(monkeypatch):
     import backend.database as db
 
     assert db.engine.echo is False
-    source = (_ROOT / "backend" / "database.py").read_text(encoding="utf-8")
+    source = (_ROOT / "src" / "backend" / "database.py").read_text(encoding="utf-8")
     assert "os.getenv(\"DEBUG\")" not in source or "echo=True if os.getenv" not in source
     assert "echo=_settings.debug" in source

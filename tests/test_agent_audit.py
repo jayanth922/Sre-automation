@@ -203,7 +203,7 @@ def test_migration_targets_canonical_alembic_chain():
     from pathlib import Path
 
     migration = Path(
-        "backend/alembic/versions/d3ac85ffcc7d_add_agent_audit_logs.py"
+        "src/backend/alembic/versions/d3ac85ffcc7d_add_agent_audit_logs.py"
     ).read_text()
     assert (
         'create_table(\n        "agent_audit_logs"' in migration
@@ -212,10 +212,10 @@ def test_migration_targets_canonical_alembic_chain():
     assert "agent_audit_logs" in migration
     assert "down_revision" in migration
     assert "b1c7ceb2036b" in migration
-    assert "AgentAuditLog" in Path("backend/models.py").read_text()
+    assert "AgentAuditLog" in Path("src/backend/models.py").read_text()
     assert (
         "class AgentAuditLog"
-        not in Path("sre_agent/models.py")
+        not in Path("src/sre_agent/models.py")
         .read_text()
         .split("Compatibility re-export")[0]
     )

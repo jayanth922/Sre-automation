@@ -1,57 +1,18 @@
-graph TB
-    subgraph Routes["API v1 Routes"]
-        CL["clusters.py<br/>POST /clusters<br/>GET /clusters<br/>GET /clusters/{id}/health<br/>DELETE /clusters/{id}<br/>GET /clusters/{id}/lock<br/>POST /clusters/{id}/lock<br/>GET /clusters/{id}/audit"]
-        INC["incidents.py<br/>GET /clusters/{cluster_id}/incidents<br/>POST /clusters/{cluster_id}/trigger<br/>DELETE /clusters/{cluster_id}/incidents"]
-        JOB["jobs.py<br/>POST /clusters/{cluster_id}/jobs/trigger<br/>GET /clusters/{cluster_id}/jobs"]
-        MET["metrics.py<br/>GET /metrics/snapshot"]
-        SLO["slos.py<br/>POST /clusters/{cluster_id}/slos<br/>GET /clusters/{cluster_id}/slos<br/>GET /clusters/{cluster_id}/slos/{slo_id}/status<br/>DELETE /clusters/{cluster_id}/slos/{slo_id}"]
-        ALERT["alerts.py<br/>POST /alerts/webhook"]
-        MC["mission_control.py<br/>GET /incidents/{id}/transcript<br/>GET /incidents/{id}/logs<br/>POST /incidents/{id}/message<br/>GET /incidents/{id}/status<br/>POST /incidents/{id}/approve"]
-        ANALYTICS["analytics.py<br/>Cluster trend and analytics endpoints"]
-        RECO["recommendations.py<br/>Recommendation endpoints"]
-    end
+graph LR
+    UI["Next.js console"] --> Auth["/auth<br/>claim · login · refresh · logout"]
+    UI --> Org["/api/v1/organization<br/>members · invitations · Slack"]
+    UI --> Cluster["/api/v1/clusters<br/>settings · health · lock · audit"]
+    UI --> Incident["/api/v1/incidents<br/>timeline · status · follow-up · approvals"]
+    UI --> Ops["/api/v1<br/>jobs · manifests · services · SLOs · runbooks · analytics"]
+    Alertmanager["Alertmanager"] --> Alerts["/api/v1/alerts/webhook<br/>cluster-token boundary"]
 
-    subgraph Auth["Auth Dependencies"]
-        AD["get_current_user_and_org<br/>require_admin<br/>cluster token auth (webhook/jobs)"]
-    end
+    Auth --> DB[("PostgreSQL")]
+    Org --> Principal["Authenticated user + organization"]
+    Cluster --> Principal
+    Incident --> Principal
+    Ops --> Principal
+    Principal --> DB
+    Alerts --> DB
 
-    subgraph Models["Backend Models<br/>& Schemas"]
-        OM["Organization<br/>User<br/>Cluster<br/>auth schemas"]
-        IM["Incident<br/>IncidentTimelineEvent<br/>Job<br/>transcript schemas"]
-        HM["AuditLog<br/>AuditEvent<br/>SLO<br/>status schemas"]
-    end
-
-    Dashboard["Dashboard<br/>via Next.js rewrites"]
-
-    CL --> AD
-    INC --> AD
-    JOB --> AD
-    MET --> AD
-    SLO --> AD
-    ALERT --> AD
-    MC --> AD
-    ANALYTICS --> AD
-    RECO --> AD
-
-    CL --> OM
-    INC --> IM
-    JOB --> IM
-    SLO --> HM
-    MC --> HM
-    ANALYTICS --> HM
-    RECO --> HM
-
-    Dashboard --> CL
-    Dashboard --> INC
-    Dashboard --> JOB
-    Dashboard --> SLO
-    Dashboard --> MET
-    Dashboard --> ALERT
-    Dashboard --> MC
-    Dashboard --> ANALYTICS
-    Dashboard --> RECO
-
-    style Routes fill:#f3e5f5
-    style Auth fill:#fff3e0
-    style Models fill:#e3f2fd
-    style Dashboard fill:#e8f5e9
+    style Principal fill:#f3e5f5
+    style Alerts fill:#fff3e0

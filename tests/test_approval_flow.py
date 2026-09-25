@@ -14,7 +14,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "sre_agent" / "approval_flow.py"
+MODULE_PATH = ROOT / "src" / "sre_agent" / "approval_flow.py"
 spec = importlib.util.spec_from_file_location("approval_flow_under_test", MODULE_PATH)
 approval_flow = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = approval_flow
@@ -317,7 +317,7 @@ def test_runtime_restart_resumes_same_checkpointed_thread(monkeypatch):
     from langgraph.graph import END, StateGraph
     from langgraph.types import Command, interrupt
 
-    checkpointer_path = ROOT / "sre_agent" / "checkpointer.py"
+    checkpointer_path = ROOT / "src" / "sre_agent" / "checkpointer.py"
     cp_spec = importlib.util.spec_from_file_location("checkpointer_for_approval_test", checkpointer_path)
     checkpointer = importlib.util.module_from_spec(cp_spec)
     sys.modules[cp_spec.name] = checkpointer
@@ -362,8 +362,8 @@ def test_runtime_restart_resumes_same_checkpointed_thread(monkeypatch):
 
 
 def test_graph_and_api_enforce_verified_synchronous_resume():
-    graph_source = (ROOT / "sre_agent" / "graph_builder.py").read_text()
-    api_source = (ROOT / "sre_agent" / "api" / "v1" / "mission_control.py").read_text()
+    graph_source = (ROOT / "src" / "sre_agent" / "graph_builder.py").read_text()
+    api_source = (ROOT / "src" / "sre_agent" / "api" / "v1" / "mission_control.py").read_text()
 
     assert "interrupt(pending)" in graph_source
     # What matters is that a proposal is persisted between the investigation
@@ -386,6 +386,7 @@ def test_graph_and_api_enforce_verified_synchronous_resume():
 
     dashboard_source = (
         ROOT
+        / "apps"
         / "dashboard"
         / "app"
         / "(dashboard)"
@@ -404,16 +405,16 @@ def test_graph_and_api_enforce_verified_synchronous_resume():
 
     # And the ask has to reach that thread: the graph's interrupt is silent, so
     # approval_prepare emits it and the war room forwards that event type.
-    war_room_source = (ROOT / "sre_agent" / "war_room.py").read_text()
+    war_room_source = (ROOT / "src" / "sre_agent" / "war_room.py").read_text()
     assert 'event_type="approval"' in graph_source
     assert '"approval"' in war_room_source.split("_SURFACED = ")[1].split("\n")[0]
 
 
 def test_async_postgres_checkpointer_is_configured_for_api_restart():
-    source = (ROOT / "sre_agent" / "checkpointer.py").read_text()
-    runtime_source = (ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    source = (ROOT / "src" / "sre_agent" / "checkpointer.py").read_text()
+    runtime_source = (ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
     dependencies = (ROOT / "pyproject.toml").read_text()
-    helm_values = (ROOT / "deploy" / "helm" / "sentinel" / "values.yaml").read_text()
+    helm_values = (ROOT / "infra" / "helm" / "sentinel" / "values.yaml").read_text()
 
     assert "from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver" in source
     assert "await saver.setup()" in source
@@ -425,9 +426,10 @@ def test_async_postgres_checkpointer_is_configured_for_api_restart():
 
 
 def test_model_and_migration_include_all_durable_approval_fields():
-    model_source = (ROOT / "backend" / "models.py").read_text()
+    model_source = (ROOT / "src" / "backend" / "models.py").read_text()
     migration_source = (
         ROOT
+        / "src"
         / "backend"
         / "alembic"
         / "versions"
@@ -448,7 +450,7 @@ def test_model_and_migration_include_all_durable_approval_fields():
         assert field in model_source
         assert f'"{field}"' in migration_source
 
-    flow_source = (ROOT / "sre_agent" / "approval_flow.py").read_text()
+    flow_source = (ROOT / "src" / "sre_agent" / "approval_flow.py").read_text()
     assert "incident.status = models.IncidentStatus.AWAITING_APPROVAL" in flow_source
     assert "await _lock_incident_for_remediation(" in flow_source
 

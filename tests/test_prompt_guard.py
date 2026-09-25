@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "sre_agent" / "prompt_guard.py"
+MODULE_PATH = ROOT / "src" / "sre_agent" / "prompt_guard.py"
 _spec = importlib.util.spec_from_file_location("prompt_guard", MODULE_PATH)
 guard = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = guard

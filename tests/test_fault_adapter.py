@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 _MODULE_PATH = BENCHMARKS / "fault_adapter.py"
 _spec = importlib.util.spec_from_file_location("fault_adapter", _MODULE_PATH)
 fault_adapter = importlib.util.module_from_spec(_spec)

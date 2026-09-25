@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "checkpointer.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "checkpointer.py"
 _spec = importlib.util.spec_from_file_location("checkpointer", _MODULE_PATH)
 checkpointer = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = checkpointer
@@ -19,7 +19,7 @@ _spec.loader.exec_module(checkpointer)
 def _clean(monkeypatch):
     for k in ("CHECKPOINTER_ENABLED", "CHECKPOINTER_BACKEND"):
         monkeypatch.delenv(k, raising=False)
-    # Langfuse tracing is on by default (sre_agent/tracing.py) and thread_config()
+    # Langfuse tracing is on by default (src/sre_agent/tracing.py) and thread_config()
     # calls it unconditionally; these tests are about checkpointer behavior, not
     # tracing, so pin tracing off to keep callbacks lists deterministic.
     monkeypatch.setenv("LANGFUSE_TRACING", "false")
@@ -103,7 +103,7 @@ def test_agent_runtime_uses_configured_checkpointer():
     in fastapi/sqlalchemy/backend.database, which aren't available in this
     lightweight test environment.
     """
-    src = (Path(__file__).resolve().parents[1] / "sre_agent" / "agent_runtime.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "agent_runtime.py").read_text()
     assert "from .checkpointer import get_checkpointer" in src
     assert "checkpointer = await get_checkpointer()" in src
     assert "from langgraph.checkpoint.memory import MemorySaver" not in src

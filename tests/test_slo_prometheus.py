@@ -1,5 +1,5 @@
 """Unit tests for wiring SLO.current_value to a real Prometheus query
-(sre_agent/api/v1/slos.py::_query_current_value)."""
+(src/sre_agent/api/v1/slos.py::_query_current_value)."""
 import pytest
 
 from sre_agent.api.v1.slos import _burn_rate, _query_current_value

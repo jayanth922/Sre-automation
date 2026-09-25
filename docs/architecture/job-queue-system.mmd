@@ -1,41 +1,16 @@
 flowchart TD
-    subgraph JobLifecycle["Job Lifecycle"]
-        Create["1. Job row created in Postgres<br/>job_type: tool_call | investigation | remediation<br/>status: pending"]
-        Pick["2. Worker/runtime picks pending job<br/>cluster_id scoped"]
-        Run["3. Investigation or action executes<br/>status: running<br/>logs appended"]
-        Result["4. Result persisted<br/>status: completed or failed<br/>result JSON + timestamps"]
-    end
+    Create["Create pending job<br/>tenant · cluster · incident scope"] --> Claim["Atomic claim<br/>owner · lease · attempt"]
+    Claim --> Run["Run investigation or remediation<br/>heartbeat renews lease"]
+    Run --> Result{"Outcome"}
+    Result -->|success| Complete["COMPLETED"]
+    Result -->|partial result| Degraded["DEGRADED"]
+    Result -->|retryable and attempts remain| Retry["PENDING with backoff"]
+    Retry --> Claim
+    Result -->|attempts exhausted| Dead["DEAD_LETTER"]
+    Result -->|cancel requested| Cancel["CANCELLED"]
+    Result -->|terminal failure| Failed["FAILED"]
 
-    subgraph JobSources["Job Creation Sources"]
-        Alert["Alertmanager webhook<br/>POST /alerts/webhook"]
-        User["Dashboard trigger<br/>POST /clusters/{id}/jobs/trigger"]
-        Incident["Incident trigger/follow-up<br/>/clusters/{id}/trigger<br/>/incidents/{id}/message"]
-    end
-
-    subgraph JobTypes["Job Types"]
-        ToolCall["TOOL_CALL<br/>tool execution task"]
-        Investigation["INVESTIGATION<br/>incident analysis turn"]
-        Remediation["REMEDIATION<br/>approved action execution"]
-    end
-
-    subgraph StatusModel["Job Status Enum"]
-        Pending["PENDING"]
-        Running["RUNNING"]
-        Completed["COMPLETED"]
-        Failed["FAILED"]
-    end
-
-    JobSources --> Create
-    Create --> Pick
-    Pick --> Run
-    JobTypes --> Run
-    Run --> Result
-    Pending --> Pick
-    Pick --> Running
-    Running --> Completed
-    Running --> Failed
-
-    style JobSources fill:#e1f5ff
-    style JobLifecycle fill:#f3e5f5
-    style JobTypes fill:#fff3e0
-    style StatusModel fill:#fce4ec
+    style Claim fill:#f3e5f5
+    style Complete fill:#e8f5e9
+    style Dead fill:#ffebee
+    style Cancel fill:#fff3e0

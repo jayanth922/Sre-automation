@@ -12,7 +12,7 @@ import pytest
 
 # Imported as a package module, not loaded from its file path: the router now
 # validates per-tier provider overrides against `provider_config`, which is a
-# sibling import. `sre_agent/__init__.py` is a docstring and neither module
+# sibling import. `src/sre_agent/__init__.py` is a docstring and neither module
 # pulls in langchain, so this stays as cheap as the old path-loading trick.
 from sre_agent import model_router
 from sre_agent.provider_config import ProviderConfigError

@@ -1,259 +1,170 @@
-# Sentinel — self-hosted, multi-agent SRE reliability console
+# Sentinel
 
-Sentinel is an autonomous Site Reliability Engineering platform you run on **your
-own Kubernetes cluster**. It watches your services, opens incidents from real
-telemetry, and runs a multi-agent investigation — Observe → Orient → Decide →
-Act — that correlates metrics, logs, Kubernetes state, code changes, and
-runbooks into a root-cause hypothesis, then proposes severity-gated remediation
-with a human in the loop. It is not a SaaS: the platform, datastores, agent
-runtime, and tool servers deploy together into one namespace. Operational
-telemetry remains in that environment; prompts and trace data leave it only
-when the operator explicitly configures an external LLM provider or Langfuse
-Cloud.
+Sentinel is a self-hosted SRE investigation and remediation system. It turns
+alerts into tenant-scoped incident workflows, gathers evidence through bounded
+specialist agents, and places every mutation behind deterministic policy,
+approval, idempotency, and audit controls.
 
-Design principle throughout: **orchestrate, don't override.** Clients bring their
-own LLM, their own MCP tool servers, their own runbooks (Notion), and
-their own metric conventions — Sentinel adapts to them.
+The project is designed to demonstrate rigorous AI engineering: reproducible
+evaluation, content-addressed evidence, explicit cost bounds, durable agent
+state, grounded tool use, and fail-closed release gates. It does not present a
+single smoke run as model-quality evidence. Measured results and limitations
+are published in [AI_RESULTS.md](docs/ai/AI_RESULTS.md).
 
-## What it does
+## Core properties
 
-- **Proactive detection.** A continuous monitor sweeps every connected cluster's
-  per-service health and opens incidents on breach; Prometheus Alertmanager
-  webhooks feed the same pipeline.
-- **Multi-agent investigation (OODA).** A LangGraph supervisor coordinates
-  metrics / logs / Kubernetes / GitHub / runbooks specialists over the Model
-  Context Protocol, then a reflector forms a hypothesis and a planner decides a
-  remediation.
-- **Severity-gated remediation.** A policy gate classifies severity and
-  reversibility; low-risk reversible actions can run autonomously, everything
-  else requires human approval. Live actions are verified against the metrics
-  afterward. Read-only by default.
-- **Memory + runbooks.** Skill memory recalls what resolved similar incidents;
-  runbooks come from the client's Notion database and feed RAG.
-- **Two front doors.** A live web console and a Slack on-call bot both write to
-  the same incident conversation.
+- **Bounded investigation:** specialist model turns, tool-result context, total
+  recursion, reinvestigation rounds, and wall time are limited independently.
+- **Deterministic mutation boundary:** the mutation gateway rechecks tenant,
+  namespace, cluster lock, approval receipt, action hash, freshness, and
+  idempotency immediately before execution.
+- **Process-safe remediation:** successful actions are not replayed after a
+  worker restart, and a cleared incident cannot restart remediation.
+- **Durable state:** Postgres-backed jobs, graph checkpoints, audit records,
+  run manifests, and incident timelines survive process loss.
+- **Traceable AI behavior:** Langfuse spans, model-cost ledgers, tool evidence,
+  retrieval metrics, and immutable run manifests make a run inspectable.
+- **Evaluation-driven release:** prompt, model-routing, and tool-contract
+  changes require evidence matching the exact protected source digest.
 
 ## Architecture
 
-One namespace with in-cluster service DNS; only explicitly configured provider
-and integration endpoints require external networking:
+The FastAPI control plane and LangGraph runtime coordinate Prometheus, Loki,
+Kubernetes, GitHub, executor, and Notion runbook MCP servers. The Next.js
+console renders persisted incident state; optional Slack war-room threads
+provide the conversational on-call surface.
 
-- **API / agent runtime** — FastAPI + LangGraph; the control plane and the AI brain.
-- **Web console** — Next.js; live incident timeline, service health, SLOs,
-  analytics, runbooks, settings.
-- **Postgres** — users, orgs, clusters, incidents, timeline, SLOs, audit, refresh sessions.
-- **Redis** — live event bus (`/ws`), cache, graph checkpointer.
-- **Qdrant** — vector store for runbook / skill memory.
-- **Seven edge MCP tool servers** — the agent's hands: k8s, prometheus, loki,
-  github, runbooks, executor (scale/restart), github-exec (revert PRs). The k8s
-  and executor servers use in-cluster ServiceAccounts (RBAC), not a mounted kubeconfig.
+![System topology](docs/architecture/images/system-topology.svg)
 
-## The agent (OODA loop)
+The main investigation path is:
 
-`supervisor → specialists → reflector (orient) → planner (decide) → act_gate`
-
-The full reasoning loop runs on every investigation — severity classification,
-policy-gate decision, a dry-run remediation proposal, skill-memory recall/record,
-a generative runbook, and a human-readable resolution report. Live cluster
-mutation is governed by the policy gate + human approval (surfaced as
-`EXECUTOR_LIVE`), which is a deliberate safety control, not a feature flag.
-
-**Model routing.** Each task type is routed to a model tier (fast / balanced /
-strong) on a fixed Anthropic ladder — cheap models for narration/routing,
-strong models for reflection/planning. Sentinel is Anthropic-only by design:
-any other provider, including one named per tier via
-`MODEL_ROUTER_<TIER>_PROVIDER`, is rejected at Helm render time and again at
-startup rather than failing later in a CrashLoopBackOff. Tiers vary the model,
-never the vendor.
-
-This is static task tiering. Budget-aware downgrade and off-policy blocking
-are implemented and tested, but no production call site supplies the
-`RequestContext` they need, so neither is live. Nor is there a measurement
-that the tiering saves money: that would take a per-task cost/quality frontier
-and a router-vs-fixed-model experiment, and Sentinel runs neither. The claim
-is therefore not made anywhere — see `docs/ai/DECISIONS.md`.
-
-The expensive agent loop is bounded independently of that unproven router
-policy: every specialist has a pre-call model-turn ceiling and framework
-recursion backstop, and the reflector gets one focused reinvestigation round by
-default. Reaching a specialist ceiling preserves the evidence already gathered,
-records the exhausted limit, skips cosmetic narration, and proceeds to
-synthesis instead of buying another open-ended tool round.
-
-## Observability, security, production engineering
-
-- **Agent observability** — layered: the live incident timeline (transparency),
-  `/agent/metrics` (per-node runs/latency/errors, always on), and full Langfuse
-  Cloud span tracing of every LLM/tool/chain call with tokens & cost when
-  configured (free tier; no self-hosted option).
-- **Retrieval is measured, not asserted** — every incident-memory, verified-skill
-  and runbook lookup is counted under `/agent/metrics → retrieval`: empty rate,
-  store unavailability, tenant-scoped rate, score distribution, latency. That
-  separates "the index is down" from "this incident is genuinely novel", which
-  look identical at the call site. Relevance itself needs labels, so it lives in
-  `benchmarks/retrieval_eval.py`, whose labels are derived from contracts the
-  code already commits to rather than hand-assigned.
-- **Auth / sessions** — every HTTP and WebSocket route on the runtime requires
-  an authenticated principal; tenant and cluster context are derived
-  server-side from that principal, never accepted as trusted request input.
-  Sessions use a short-lived access token in memory + rotating refresh token
-  in an httpOnly cookie, with reuse detection and server-side revocation.
-- **Tenant isolation** — the MCP/tool plane is resolved per tenant+cluster
-  (endpoints, credentials, namespace allowlists), not shared off one
-  process-global registry; audit log entries are stamped with
-  `organization_id`/`cluster_id` at write time, not inferred after the fact.
-- **Mutation safety** — every live cluster write passes one mutation gateway
-  immediately before the tool call fires, re-checking tenant, namespace,
-  approval/action hash, cluster lock, and idempotency — not just at the API
-  layer where a lock could go stale between planning and execution. Cluster
-  credentials and provider API keys are encrypted at rest (envelope
-  encryption, versioned keys); nothing sensitive is logged or traced in the
-  clear.
-- **Guardrails** — prompt-injection defense on untrusted telemetry entering
-  prompts; action guardrails on the executor / github-exec tools; the policy
-  gate + approval as the real safety net.
-- **Durability** — investigations run as Postgres lease-backed durable jobs
-  (heartbeat renewal, bounded retry, cancellation, dead-letter queueing), and
-  graph state is checkpointed per incident against the same durable backend
-  so a human-approval pause or an API restart resumes exactly once instead of
-  re-running or silently dropping the incident.
-- **Release safety** — changes to prompts, model routing, or tool contracts
-  are gated in CI by a content-addressed evidence bundle (paired statistical
-  comparison, zero-tolerance adversarial suite, full trace accounting) keyed
-  to the exact source digest of what changed; a change without matching
-  evidence fails closed instead of shipping unverified.
-
-Measured runs, costs, negative results, and evidence limitations are published
-in [`docs/ai/AI_RESULTS.md`](docs/ai/AI_RESULTS.md). A harness smoke is reported
-there as a harness smoke, not promoted into a model-quality claim.
-
-## Quickstart — try it locally
-
-The fastest way to see Sentinel running is two Docker Compose stacks on your
-own machine: the **edge relay** (tool servers that reach your
-Prometheus/Loki/GitHub/runbooks) and the **platform** (API, agent, dashboard,
-Postgres/Redis/Qdrant — all bundled, nothing to provision separately).
-`main_start.sh` brings up both with one command.
-
-```bash
-git clone <this-repo-url> && cd Sre-automation
-
-cp .env.example .env
-./main_start.sh
+```text
+alert -> durable job -> bounded specialists -> reflection -> policy decision
+      -> approval when required -> mutation gateway -> verification -> audit
 ```
 
-That's it — no env vars to fill in first. `main_start.sh` creates
-`edge_mcp_servers/.env` for you and auto-generates every internal secret
-(`SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, `MCP_SERVICE_TOKEN` — the last
-synced across both `.env` files, nothing to hand-copy). Edge relay defaults
-point at `host.docker.internal`, so a Prometheus/Loki already running on
-your machine works with no edits.
+See [the architecture index](docs/architecture/README.md) for sequence and data
+flow diagrams.
 
-Then open **http://localhost:3002** and register — the first sign-up creates
-your organization and makes you its admin. Configuration happens from here,
-not before it: add a cluster in Settings (LLM provider + key, endpoints,
-metric conventions, GitHub repo, and optionally a Notion runbook database, a
-Jira project for ticketing, or a GitHub App install — all per-cluster, none
-required to start). Until an LLM key is set (`ANTHROPIC_API_KEY` in `.env`,
-or per-cluster from Settings), the platform runs
-fine — investigations just wait for one. Set `GITHUB_TOKEN` / `GITHUB_REPO`
-in `edge_mcp_servers/.env` when you want GitHub-backed tools (code context,
-revert PRs) — also optional. From there, either point your Alertmanager at
-`POST http://localhost:8080/api/v1/alerts/webhook` with the cluster's token,
-or just wait — the built-in health monitor opens an incident on its own once
-it sees a breach.
+## Quick start
 
-- API docs: http://localhost:8080/docs
-- Every LLM/tool call traced automatically to Langfuse Cloud (free tier) — set
-  `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` in `.env`; see ".env.example"'s
-  "Observability (Langfuse Cloud)" section. `LANGFUSE_TRACING=false` opts out.
-- Stop everything: `platform/stop.sh` and `edge_mcp_servers/stop.sh`
-- Logs: `docker compose --env-file .env -f platform/docker-compose.yaml logs -f sre-agent-api`
-
-Nothing here reaches the public internet except your LLM provider, Langfuse
-Cloud, and whatever you connect (GitHub, Notion, Jira, Slack) — Postgres,
-Redis, and Qdrant all run locally in these two stacks. This is the same
-design as production, just on one machine: when you're ready to run it for
-real inside your own infrastructure, move to the Kubernetes deploy below.
-
-## Deploy to production (same-machine Kubernetes)
-
-Build the images once, then pick one:
+Requirements: Docker with Compose, Python 3.12+, `uv`, and Node 20+ for local
+frontend development.
 
 ```bash
-# Plain manifests
-./deploy/k8s/install.sh
-
-# Helm
-helm install sentinel deploy/helm/sentinel -n sentinel --create-namespace \
-  --set secrets.secretKey=$(openssl rand -hex 32) \
-  --set secrets.postgresPassword=$(openssl rand -hex 16) \
-  --set secrets.credentialEncryptionKey=$(python -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())') \
-  --set secrets.mcpServiceToken=$(openssl rand -hex 32)
-
-# Terraform (Helm release only — BYO cluster + pre-created Secret; see deploy/terraform/README.md)
-kubectl apply -f deploy/terraform/secret.example.yaml   # edit first
-cd deploy/terraform && terraform init && terraform apply
+git clone <repository-url>
+cd Sre-automation
+bash scripts/dev/start.sh
 ```
 
-Then port-forward the console (`:3002`) and the API (`:8080`) and open the
-console to **register** — the first sign-up creates the organization and becomes
-its admin (manage teammates and roles under Team). Connect a cluster in Settings (its Prometheus/Loki endpoints, metric
-conventions, GitHub repo, Notion runbook database) and point Alertmanager at
-`POST /api/v1/alerts/webhook` with the cluster token.
+The start script creates local environment files from the shipped examples and
+generates internal secrets when they are still empty or placeholders. The stack
+boots without an LLM credential; configure the Anthropic key globally or for a
+cluster before starting an investigation.
 
-## Configure (bring your own)
+- Console: <http://localhost:3002>
+- API documentation: <http://localhost:8080/docs>
+- Stop both stacks: `bash scripts/dev/stop.sh`
+- Platform logs: `docker compose -f infra/local/docker-compose.yaml logs -f`
 
-- **LLM** — `anthropic` only. This is a deliberate narrowing, not a generic
-  LiteLLM passthrough: the specialist and planner nodes depend on reliable
-  tool/function-calling structured output, and one provider is the only
-  configuration that is actually tested end to end. Startup fails closed with
-  a migration message for every other value (`gemini`, `groq`, `ollama`,
-  `nvidia`, `openai`, `openai_compatible`), including one set per model-router
-  tier via `MODEL_ROUTER_<TIER>_PROVIDER`. What the router *does* vary is the
-  Claude model per task type — haiku for cheap classification up to opus for
-  planning — which is static task tiering, not adaptive cross-vendor routing.
-- **MCP tools** — register your own servers via `MCP_SERVERS_JSON`, merged with
-  the built-ins.
-- **Runbooks** — a cluster's Notion database; no runbooks without it.
-- **Jira** — set a cluster's Jira URL/email/API token/project key to file a
-  ticket per incident and link it back from the incident page.
-- **Slack** — either a global bot token (self-hosted), or "Add to Slack"
-  OAuth from the dashboard's Team page (multi-tenant) to mirror incidents
-  into your on-call channel and let engineers steer via `@mention`.
-- **Datastores** — deploy the bundled Postgres/Redis/Qdrant, or bring your own
-  (`*.deploy=false` + external endpoints).
+Detailed setup and verification commands live in
+[docs/getting-started/verification.md](docs/getting-started/verification.md).
 
-## Testing & benchmarks
+## Repository layout
 
-- **CI** (`.github/workflows/ci.yml`), gated behind a `quality-gate` aggregator
-  that has to see every job pass:
-  - `python-quality` — Ruff, Mypy, compileall, secret scanning.
-  - `backend-tests` — `pytest` against a real Postgres service, plus the docs
-    truthfulness suite (`tests/test_docs_truthfulness.py`).
-  - `release-evaluation` — runs `release_gate.py impact` over the PR's diff;
-    a protected prompt/model/tool change without a matching evidence bundle
-    fails the build.
-  - `migrations` — Alembic upgrade/downgrade round-trip on a clean database.
-  - `eval-smoke` — fast subset of the agent evaluation suite.
-  - `frontend` — dashboard type-check and lint.
-  - `manifests` / `terraform` — Helm and Terraform validation against
-    production defaults.
-  - `images-platform` / `images-edge` — container builds for the runtime and
-    each MCP tool server (matrixed).
-- **Quickstart smoke** (no live cluster): `bash scripts/quickstart_smoke.sh`
-  runs secret scanning, compileall, and the docs truthfulness tests as a fast
-  local pre-flight before pushing.
-- **Benchmarks** (`benchmarks/`): `sre_bench.py` / `bench_mttr.py` fire scenarios
-  at a live platform. Credentials come from env (`BENCH_ADMIN_*`,
-  `BENCH_CLUSTER_*`) or runtime bootstrap (`BENCH_BOOTSTRAP=1`) via
-  `benchmarks/fixtures.py` — no static cluster tokens are shipped.
-  Scoring is pure-function and unit-tested (`tests/test_bench_scoring.py`).
-  `release_gate.py` (used by CI above) evaluates the same kind of evidence
-  bundle offline via its `evaluate`/`impact`/`matrix` subcommands.
+```text
+apps/dashboard/                 Next.js operator console
+src/sre_agent/                  agent runtime, workflows, policies, API routes
+src/backend/                    SQLAlchemy models, CRUD, auth, migrations
+services/edge_mcp_servers/      infrastructure and knowledge MCP servers
+evals/benchmarks/               datasets, graders, ablations, release evidence
+infra/local/                    local Docker Compose runtime
+infra/helm/                     Helm chart
+infra/k8s/                      plain Kubernetes manifests
+infra/terraform/                Terraform wrapper for the Helm deployment
+examples/meridian/              reference deployment overlay and runbooks
+scripts/ci/                     deterministic CI checks
+scripts/dev/                    local lifecycle and smoke scripts
+scripts/deploy/                 deployment helpers
+scripts/smoke/                  opt-in live integration smoke tests
+scripts/tools/                  audits and operational utilities
+tests/                          unit and integration contracts
+docs/                           architecture, operations, results, and decisions
+```
 
-## Tech stack
+The import namespaces remain `sre_agent`, `backend`, and `benchmarks`; the
+package configuration maps them from `src/` and `evals/`.
 
-Python 3.12 · FastAPI · LangGraph / LangChain · Model Context Protocol ·
-Postgres · Redis · Qdrant · Next.js 16 / React 19 · Docker · Kubernetes ·
-Helm · Terraform · Langfuse.
+## Development
+
+Install the Python environment:
+
+```bash
+uv sync --frozen --extra dev --extra temporal --extra anthropic
+```
+
+Run the local quality gates:
+
+```bash
+bash scripts/ci/check_python_quality.sh
+bash scripts/ci/check_no_static_secrets.sh
+uv run pytest -q
+```
+
+For a smaller structural preflight, run
+`bash scripts/dev/quickstart_smoke.sh`.
+
+Build the dashboard:
+
+```bash
+cd apps/dashboard
+npm ci
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
+Validate deployment artifacts when the corresponding tools are installed:
+
+```bash
+bash scripts/ci/check_deploy_templates.sh
+bash scripts/ci/check_terraform.sh
+```
+
+Live benchmark campaigns make paid model calls and require explicit budget
+authorization. The release fixture, grader, schema, and statistical tests are
+offline and deterministic. Live harness credentials come from environment
+variables or the explicit `BENCH_BOOTSTRAP=1` path in
+`evals/benchmarks/fixtures.py`; no cluster token is committed.
+
+## Deployment
+
+- Local Compose: [infra/local/README.md](infra/local/README.md)
+- Kubernetes manifests: [infra/k8s/README.md](infra/k8s/README.md)
+- Helm: [infra/helm/sentinel/README.md](infra/helm/sentinel/README.md)
+- Terraform: [infra/terraform/README.md](infra/terraform/README.md)
+- Edge MCP services: [services/edge_mcp_servers/README.md](services/edge_mcp_servers/README.md)
+
+Base infrastructure contains no Meridian-specific defaults. The reference
+client is isolated under [examples/meridian](examples/meridian).
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/architecture/README.md)
+- [AI results and limitations](docs/ai/AI_RESULTS.md)
+- [Current project state](docs/ai/PROJECT_STATE.md)
+- [Durable engineering decisions](docs/ai/DECISIONS.md)
+- [Slack incident threads](docs/operations/slack-incident-threads.md)
+- [Evaluation harness](evals/benchmarks/README.md)
+
+## Security posture
+
+Secrets are read from runtime configuration or encrypted tenant records, never
+from committed defaults. HTTP, WebSocket, and MCP boundaries authenticate
+requests; tenant and cluster scope are derived server-side. See
+[SECURITY.md](SECURITY.md) for reporting and local credential hygiene.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

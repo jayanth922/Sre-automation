@@ -45,7 +45,7 @@ import pytest
 from benchmarks import release_evidence, release_gate
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE = ROOT / "benchmarks" / "release" / "v1"
+RELEASE = ROOT / "evals" / "benchmarks" / "release" / "v1"
 FIXTURE_NAMES = ("safe", "regressive-prompt", "regressive-model", "regressive-tool")
 
 
@@ -408,7 +408,7 @@ def test_the_checked_in_fixtures_match_a_fresh_generation():
 
 def test_the_dataset_directory_is_found_by_the_version_a_report_names():
     dataset = release_evidence.resolve_dataset(
-        ROOT / "benchmarks" / "adversarial", "sentinel-adversarial-v1"
+        ROOT / "evals" / "benchmarks" / "adversarial", "sentinel-adversarial-v1"
     )
 
     assert dataset.version == "sentinel-adversarial-v1"
@@ -418,7 +418,7 @@ def test_the_dataset_directory_is_found_by_the_version_a_report_names():
 def test_an_unknown_dataset_version_is_refused():
     with pytest.raises(release_evidence.ReleaseEvidenceError, match="no checked-in"):
         release_evidence.resolve_dataset(
-            ROOT / "benchmarks" / "adversarial", "sentinel-adversarial-v99"
+            ROOT / "evals" / "benchmarks" / "adversarial", "sentinel-adversarial-v99"
         )
 
 

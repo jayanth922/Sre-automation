@@ -7,10 +7,11 @@ nor the production build can notice that, because an unreferenced endpoint is
 not a type error. These tests pin the call sites instead.
 """
 
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_DASH = _ROOT / "dashboard"
+_DASH = _ROOT / "apps" / "dashboard"
 _JOBS_PAGE = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "jobs" / "page.tsx"
 _INCIDENT_PAGE = (
     _DASH
@@ -24,6 +25,7 @@ _INCIDENT_PAGE = (
 )
 _BREAK_GLASS = _DASH / "components" / "console" / "BreakGlass.tsx"
 _CLUSTER_LAYOUT = _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "layout.tsx"
+_HOME_PAGE = _DASH / "app" / "(dashboard)" / "page.tsx"
 _SETTINGS_PAGE = (
     _DASH / "app" / "(dashboard)" / "clusters" / "[id]" / "settings" / "page.tsx"
 )
@@ -31,10 +33,10 @@ _SETTINGS_PAGE = (
 
 def test_general_chat_is_not_an_unbounded_execution_surface():
     """Slack incident threads are the only user-facing conversation surface."""
-    runtime = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    runtime = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
 
     assert "chat_router" not in runtime
-    assert not (_ROOT / "sre_agent" / "api" / "v1" / "chat.py").exists()
+    assert not (_ROOT / "src" / "sre_agent" / "api" / "v1" / "chat.py").exists()
 
 
 def test_the_console_can_reach_the_emergency_lock():
@@ -71,6 +73,18 @@ def test_the_lock_is_visible_from_every_cluster_page():
     layout = _CLUSTER_LAYOUT.read_text()
     assert "<LockProvider clusterId={id}>" in layout
     assert "<BreakGlassBanner />" in layout
+
+
+def test_cluster_load_failures_are_not_rendered_as_empty_onboarding():
+    """An API outage must not tell an existing tenant to connect a new cluster."""
+    home = _HOME_PAGE.read_text()
+    layout = _CLUSTER_LAYOUT.read_text()
+
+    assert "const [loadError, setLoadError]" in home
+    assert "Could not load your clusters" in home
+    assert "if (loadError)" in home
+    assert 'setState("error")' in layout
+    assert "Could not load this cluster" in layout
 
 
 def test_the_break_glass_does_not_sit_under_the_save_bar():
@@ -111,6 +125,47 @@ def test_the_incident_page_reaches_both_ticket_endpoints():
     page = _INCIDENT_PAGE.read_text()
     assert "api.get<Ticket>(`/clusters/${id}/incidents/${incidentId}/ticket`)" in page
     assert "api.post(`/clusters/${id}/incidents/${incidentId}/ticket`" in page
+
+
+def test_console_incident_status_vocabulary_matches_the_backend():
+    """A new durable status must not silently render as a critical "Open" row."""
+    from backend.models import IncidentStatus
+
+    console = (_DASH / "lib" / "console.ts").read_text()
+    status_type = console.split("export type IncidentStatusT =", 1)[1].split(
+        "\n\n", 1
+    )[0]
+    frontend_statuses = set(re.findall(r'"([a-z_]+)"', status_type))
+    backend_statuses = {status.value for status in IncidentStatus}
+
+    assert frontend_statuses == backend_statuses
+    badge_map = console.split("const INCIDENT_STATUS_BADGE", 1)[1].split("\n}\n", 1)[0]
+    for status in backend_statuses:
+        assert f'"{status}":' in badge_map
+
+
+def test_incident_approval_cue_survives_graph_status_outage():
+    page = _INCIDENT_PAGE.read_text()
+    assert (
+        'status?.status === "WAITING_APPROVAL" || '
+        'inc.status === "awaiting_approval"'
+    ) in page
+
+
+def test_remediation_gate_status_vocabulary_matches_the_backend():
+    """Pydantic serializes ApprovalStatus by its lowercase string value."""
+    from backend.models import ApprovalStatus
+
+    page = _INCIDENT_PAGE.read_text()
+    gate_interface = page.split("interface GateApproval", 1)[1].split("\n}", 1)[0]
+    status_line = next(
+        line for line in gate_interface.splitlines() if line.strip().startswith("status:")
+    )
+    frontend_statuses = set(re.findall(r'"([a-z_]+)"', status_line))
+
+    assert frontend_statuses == {status.value for status in ApprovalStatus}
+    assert 'gates.filter((g) => g.status === "pending")' in page
+    assert 'g.status === "approved"' in page
 
 
 def test_the_ticket_panel_refetches_after_creating():

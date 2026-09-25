@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "severity_engine.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "severity_engine.py"
 _spec = importlib.util.spec_from_file_location("severity_engine", _MODULE_PATH)
 severity_engine = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = severity_engine

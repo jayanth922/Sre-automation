@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "skill_store.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "skill_store.py"
 _spec = importlib.util.spec_from_file_location("skill_store", _MODULE_PATH)
 skill_store = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = skill_store

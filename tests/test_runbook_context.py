@@ -652,7 +652,12 @@ def test_every_shipped_meridian_runbook_keeps_its_verification_step():
     exactly that probe. Fail here rather than discovering it in a benchmark
     run: either trim the runbook or raise RUNBOOK_BRIEF_MAX_CHARS.
     """
-    runbook_dir = Path(__file__).resolve().parent.parent / "runbooks" / "meridian"
+    runbook_dir = (
+        Path(__file__).resolve().parent.parent
+        / "examples"
+        / "meridian"
+        / "runbooks"
+    )
     shipped = sorted(runbook_dir.glob("*.md"))
     assert shipped, f"no runbooks found in {runbook_dir}"
 

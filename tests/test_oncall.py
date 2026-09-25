@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "sre_agent" / "oncall.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "sre_agent" / "oncall.py"
 _spec = importlib.util.spec_from_file_location("oncall", _MODULE_PATH)
 oc = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = oc

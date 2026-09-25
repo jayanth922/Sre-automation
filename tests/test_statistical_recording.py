@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ROOT / "benchmarks"
+BENCHMARKS = ROOT / "evals" / "benchmarks"
 # Appended, not prepended: `scoring` imports its siblings bare, so the
 # directory has to be importable, but the repo root should still win any
 # name collision.

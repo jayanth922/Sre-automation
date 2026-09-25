@@ -13,7 +13,11 @@ import pytest
 
 _MODULE_PATH = (
     Path(__file__).resolve().parents[1]
-    / "edge_mcp_servers" / "mcp_servers" / "executor_real" / "guardrails.py"
+    / "services"
+    / "edge_mcp_servers"
+    / "mcp_servers"
+    / "executor_real"
+    / "guardrails.py"
 )
 _spec = importlib.util.spec_from_file_location("executor_guardrails", _MODULE_PATH)
 guardrails = importlib.util.module_from_spec(_spec)

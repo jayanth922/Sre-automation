@@ -88,7 +88,7 @@ def test_invitation_fixes_role_organization_and_email_server_side():
 
 
 def test_accept_route_hashes_and_locks_token_without_using_client_role():
-    path = _ROOT / "sre_agent" / "api" / "v1" / "invitations.py"
+    path = _ROOT / "src" / "sre_agent" / "api" / "v1" / "invitations.py"
     block = _function_source(path, "accept_invitation")
     assert "auth.hash_refresh_token(payload.token)" in block
     assert ".with_for_update()" in block
@@ -98,9 +98,9 @@ def test_accept_route_hashes_and_locks_token_without_using_client_role():
 
 
 def test_creation_is_admin_only_org_scoped_and_returns_raw_token_once():
-    source = (_ROOT / "sre_agent" / "api" / "v1" / "invitations.py").read_text()
+    source = (_ROOT / "src" / "sre_agent" / "api" / "v1" / "invitations.py").read_text()
     block = _function_source(
-        _ROOT / "sre_agent" / "api" / "v1" / "invitations.py",
+        _ROOT / "src" / "sre_agent" / "api" / "v1" / "invitations.py",
         "create_invitation",
     )
     assert "dependencies=[Depends(get_current_user_and_org)]" in source
@@ -113,27 +113,28 @@ def test_creation_is_admin_only_org_scoped_and_returns_raw_token_once():
 
 def test_acceptance_writes_canonical_organization_audit_event():
     block = _function_source(
-        _ROOT / "sre_agent" / "api" / "v1" / "invitations.py",
+        _ROOT / "src" / "sre_agent" / "api" / "v1" / "invitations.py",
         "accept_invitation",
     )
     assert "models.AuditEvent" in (
-        _ROOT / "sre_agent" / "api" / "v1" / "invitations.py"
+        _ROOT / "src" / "sre_agent" / "api" / "v1" / "invitations.py"
     ).read_text()
     assert "ORG_INVITATION_ACCEPTED" in block
     assert "organization_id=invitation.organization_id" in block
 
 
 def test_registration_always_creates_a_new_organization():
-    block = _function_source(_ROOT / "backend" / "crud.py", "create_user")
+    block = _function_source(_ROOT / "src" / "backend" / "crud.py", "create_user")
     assert "get_org_by_name" not in block
     assert "models.Organization(" in block
     assert "role=models.UserRole.ADMIN" in block
 
 
 def test_model_and_migration_store_only_token_hash_and_extend_audit_scope():
-    models_source = (_ROOT / "backend" / "models.py").read_text()
+    models_source = (_ROOT / "src" / "backend" / "models.py").read_text()
     migration_source = (
         _ROOT
+        / "src"
         / "backend"
         / "alembic"
         / "versions"
@@ -150,14 +151,14 @@ def test_model_and_migration_store_only_token_hash_and_extend_audit_scope():
 
 
 def test_invitation_routers_are_mounted():
-    source = (_ROOT / "sre_agent" / "agent_runtime.py").read_text()
+    source = (_ROOT / "src" / "sre_agent" / "agent_runtime.py").read_text()
     assert 'app.include_router(invitations.organization_router, prefix="/api/v1")' in source
     assert 'app.include_router(invitations.router, prefix="/api/v1")' in source
 
 
 def _public_path_expression() -> str:
     """The one line in the dashboard middleware that decides what is public."""
-    source = (_ROOT / "dashboard" / "middleware.ts").read_text()
+    source = (_ROOT / "apps" / "dashboard" / "middleware.ts").read_text()
     for line in source.splitlines():
         if line.strip().startswith("const isPublicPath"):
             return line
@@ -179,6 +180,7 @@ def test_the_dashboard_calls_both_invitation_endpoints():
     """Mounted routers with no caller is the state this flow was just in."""
     team_page = (
         _ROOT
+        / "apps"
         / "dashboard"
         / "app"
         / "(dashboard)"
@@ -188,7 +190,7 @@ def test_the_dashboard_calls_both_invitation_endpoints():
         / "page.tsx"
     ).read_text()
     accept_page = (
-        _ROOT / "dashboard" / "app" / "(auth)" / "accept-invite" / "page.tsx"
+        _ROOT / "apps" / "dashboard" / "app" / "(auth)" / "accept-invite" / "page.tsx"
     ).read_text()
     assert "api.post<Invitation>(`/organizations/${orgId}/invitations`" in team_page
     assert 'fetch("/api/v1/invitations/accept"' in accept_page

@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "bundle": {
+        "path": "fixtures/safe.json",
+        "sha256": "b0d083a36eb8590172b92a9f7823c2eabfa19211eaf36d36afab5ecab522da3e"
+      },
+      "case_id": "safe-candidate-promotes",
+      "change_class": "mixed",
+      "expected_status": "PROMOTE"
+    },
+    {
+      "bundle": {
+        "path": "fixtures/regressive-prompt.json",
+        "sha256": "436782a4d3bd4ee37419875778ce9feb6ac8d45450cedbec4cca6cbe21684f00"
+      },
+      "case_id": "regressive-prompt-blocks",
+      "change_class": "prompt",
+      "expected_status": "BLOCK"
+    },
+    {
+      "bundle": {
+        "path": "fixtures/regressive-model.json",
+        "sha256": "4d49f1a89c19a1447c3cf587c959e229454fdde3384e196fed97609f67ddf5fe"
+      },
+      "case_id": "regressive-model-blocks",
+      "change_class": "model",
+      "expected_status": "BLOCK"
+    },
+    {
+      "bundle": {
+        "path": "fixtures/regressive-tool.json",
+        "sha256": "958370c274ffdf9219d3fb4bff117a3769cd05327e181bafe80ea562891ef634"
+      },
+      "case_id": "regressive-tool-blocks",
+      "change_class": "tool",
+      "expected_status": "BLOCK"
+    }
+  ],
+  "matrix_id": "sentinel-release-contract-v1",
+  "policy": {
+    "path": "policy.json",
+    "sha256": "316948c1cd4996be11b9df9f688606988b52f144c3f9906306ba00ce145c2717"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,209 @@
+# =============================================================================
+# Customer Edge Stack — Lightweight relay + MCP tool servers
+#
+# Connects to the client's observability stack (Prometheus, Loki) running in
+# Kubernetes via localhost port mappings. Used for the local-dev topology where
+# the local platform + edge run in Docker; the in-cluster topology uses infra/k8s.
+#
+# Usage:
+#   1. Ensure a client / workload environment is reachable (Prometheus, Loki, …)
+#   2. Create .env: cp .env.example .env  (point PROMETHEUS_URL / LOKI_URL;
+#      set EXECUTOR_ALLOWED_NAMESPACES to your workload ns if enabling ACT)
+#   3. docker compose up -d --build
+# Optional reference-client overlays: examples/
+# =============================================================================
+
+services:
+  # ============================================
+  # MCP Tool Servers (read from YOUR infra)
+  # ============================================
+  #
+  # Host ports stay 127.0.0.1-only (tests/test_mcp_auth.py enforces this —
+  # defense-in-depth alongside the MCP_SERVICE_TOKEN bearer auth). The
+  # platform stack (infra/local/docker-compose.yaml) is a separate Docker
+  # Compose project/network and previously reached these over
+  # host.docker.internal, which arrives as a non-loopback connection that a
+  # 127.0.0.1-only bind refuses outright (confirmed empirically 2026-09-11:
+  # sre-agent-api was silently running with 0 MCP tools loaded on the
+  # Codespace because of this). Fixed properly by joining both stacks to the
+  # `shared-edge-network` external network below, so the platform reaches
+  # these servers by container name (e.g. http://mcp-k8s:3000/sse) instead of
+  # via a published host port at all — see .env MCP_*_URI.
+
+  mcp-k8s:
+    build:
+      context: .
+      dockerfile: mcp_servers/k8s_real/Dockerfile
+    container_name: mcp-k8s
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4000:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  mcp-prometheus:
+    build:
+      context: .
+      dockerfile: mcp_servers/prometheus_real/Dockerfile
+    container_name: mcp-prometheus
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4001:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  mcp-loki:
+    build:
+      context: .
+      dockerfile: mcp_servers/loki_real/Dockerfile
+    container_name: mcp-loki
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4002:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  mcp-github:
+    build:
+      context: .
+      dockerfile: mcp_servers/github_real/Dockerfile
+    container_name: mcp-github
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+    ports:
+      - "127.0.0.1:4003:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  mcp-runbooks:
+    build:
+      context: .
+      dockerfile: mcp_servers/runbooks_notion/Dockerfile
+    container_name: mcp-runbooks
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+      # Static single-tenant fallback; per-cluster creds are relayed over MCP for SaaS.
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID:-}
+    ports:
+      - "127.0.0.1:4004:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  # GitHub-exec — WRITE tools for code-change remediation (revert PRs). Dry-run
+  # by default; guardrails restrict to revert/comment on allow-listed repos.
+  mcp-github-exec:
+    build:
+      context: .
+      dockerfile: mcp_servers/github_exec/Dockerfile
+    container_name: mcp-github-exec
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+    ports:
+      - "127.0.0.1:4006:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  # Executor — WRITE tools (restart/scale/patch/rollback). The ACT phase's hands.
+  # Dry-run by default; guardrails restrict actions/namespaces (see executor_real/README.md).
+  mcp-executor:
+    build:
+      context: .
+      dockerfile: mcp_servers/executor_real/Dockerfile
+    container_name: mcp-executor
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal
+      # Empty = refuse all mutations. Set in services/edge_mcp_servers/.env for a client
+      # namespace (e.g. demo-app). Reference clients: examples/.
+      - EXECUTOR_ALLOWED_NAMESPACES=${EXECUTOR_ALLOWED_NAMESPACES:-}
+      - EXECUTOR_MIN_REPLICAS=${EXECUTOR_MIN_REPLICAS:-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4005:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+  # Sandbox — runs ephemeral K8s Jobs to verify AI-generated code fixes
+  # (CodeFixVerificationWorkflow). Namespace/image/resource guardrails are
+  # env-var-driven and refuse-by-default (see sandbox_real/guardrails.py).
+  mcp-sandbox:
+    build:
+      context: .
+      dockerfile: mcp_servers/sandbox_real/Dockerfile
+    container_name: mcp-sandbox
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    environment:
+      - HOST=0.0.0.0
+      - MCP_SERVICE_TOKEN=${MCP_SERVICE_TOKEN:?required}
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal
+      - SANDBOX_NAMESPACE=${SANDBOX_NAMESPACE:-sentinel-sandbox}
+      # Empty = refuse all Jobs. Set in services/edge_mcp_servers/.env to allow the
+      # runner image(s) code-fix verification actually needs.
+      - SANDBOX_ALLOWED_IMAGES=${SANDBOX_ALLOWED_IMAGES:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:4007:3000"
+    networks:
+      - edge-network
+      - shared-edge-network
+    restart: unless-stopped
+
+networks:
+  edge-network:
+    driver: bridge
+    name: sre-edge-network
+  # Shared with infra/local/docker-compose.yaml so sre-agent-api and
+  # temporal-worker reach these servers by container name (e.g.
+  # http://mcp-k8s:3000) over an internal Docker network, without needing a
+  # published host port. Created once with:
+  #   docker network create sre-shared-network
+  shared-edge-network:
+    external: true
+    name: sre-shared-network

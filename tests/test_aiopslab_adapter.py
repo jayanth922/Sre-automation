@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "aiopslab_adapter.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "evals" / "benchmarks" / "aiopslab_adapter.py"
 _spec = importlib.util.spec_from_file_location("aiopslab_adapter", _MODULE_PATH)
 aio = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = aio

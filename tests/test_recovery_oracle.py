@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "recovery_oracle.py"
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "evals" / "benchmarks" / "recovery_oracle.py"
 _spec = importlib.util.spec_from_file_location("recovery_oracle", _MODULE_PATH)
 oracle = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = oracle
@@ -214,7 +214,7 @@ def test_oracle_evidence_is_appended_as_separate_jsonl(tmp_path):
 
 def test_live_benchmark_never_uses_incident_resolution_as_oracle():
     source = (
-        Path(__file__).resolve().parents[1] / "benchmarks" / "sre_bench.py"
+        Path(__file__).resolve().parents[1] / "evals" / "benchmarks" / "sre_bench.py"
     ).read_text()
 
     assert "_wait_resolved" not in source

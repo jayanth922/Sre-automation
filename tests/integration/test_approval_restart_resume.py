@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("CHECKPOINTER_ENABLED", "true")
 
-approval_path = ROOT / "sre_agent" / "approval_flow.py"
+approval_path = ROOT / "src" / "sre_agent" / "approval_flow.py"
 spec = importlib.util.spec_from_file_location("approval_flow_p09", approval_path)
 approval_flow = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = approval_flow
@@ -30,7 +30,7 @@ def test_approval_restart_resumes_same_thread(monkeypatch):
     from langgraph.graph import END, StateGraph
     from langgraph.types import Command, interrupt
 
-    cp_path = ROOT / "sre_agent" / "checkpointer.py"
+    cp_path = ROOT / "src" / "sre_agent" / "checkpointer.py"
     cp_spec = importlib.util.spec_from_file_location("checkpointer_p09", cp_path)
     checkpointer = importlib.util.module_from_spec(cp_spec)
     sys.modules[cp_spec.name] = checkpointer

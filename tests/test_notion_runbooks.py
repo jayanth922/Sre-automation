@@ -69,7 +69,7 @@ def round_trip(markdown: str) -> str:
 def test_shipped_runbook_survives_the_notion_round_trip_byte_for_byte(path: Path):
     """Publishing then reading back must return the runbook that was audited.
 
-    `scripts/audit_runbook_coverage.py` scores the local file. That score only
+    `scripts/tools/audit_runbook_coverage.py` scores the local file. That score only
     transfers to production if what Notion gives the agent is the same text.
     Exact equality is the right bar here: anything weaker would have passed
     while the writer was dropping every line past the 95th.
@@ -301,7 +301,7 @@ async def test_a_failed_append_fails_the_publish(notion):
 
 
 def _load_mcp_server():
-    path = REPO / "edge_mcp_servers" / "mcp_servers" / "runbooks_notion" / "server.py"
+    path = REPO / "services" / "edge_mcp_servers" / "mcp_servers" / "runbooks_notion" / "server.py"
     spec = importlib.util.spec_from_file_location("runbooks_notion_server", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -378,7 +378,7 @@ async def test_a_delete_that_keeps_being_rate_limited_fails_the_replace(notion):
 
 
 def _load_publisher():
-    path = REPO / "scripts" / "publish_meridian_runbooks.py"
+    path = REPO / "scripts" / "tools" / "publish_meridian_runbooks.py"
     spec = importlib.util.spec_from_file_location("publish_meridian_runbooks", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

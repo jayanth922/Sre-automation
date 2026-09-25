@@ -31,7 +31,7 @@ def test_agent_audit_log_lives_on_canonical_base():
 
 
 def test_sre_agent_models_is_shim_not_second_base():
-    source = (ROOT / "sre_agent" / "models.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "sre_agent" / "models.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     class_names = {
         node.name for node in tree.body if isinstance(node, ast.ClassDef)
@@ -53,7 +53,7 @@ def test_shim_reexports_same_agent_audit_log_class():
 
 
 def test_refresh_session_repr_is_not_slo():
-    source = (ROOT / "backend" / "models.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "backend" / "models.py").read_text(encoding="utf-8")
     # Locate RefreshSession class body and assert its __repr__ is self-named.
     start = source.index("class RefreshSession")
     end = source.index("\nclass ", start + 1)
@@ -85,7 +85,7 @@ def test_tablename_uniqueness_on_canonical_metadata():
 
 
 def test_alembic_env_targets_backend_base():
-    env = (ROOT / "backend" / "alembic" / "env.py").read_text(encoding="utf-8")
+    env = (ROOT / "src" / "backend" / "alembic" / "env.py").read_text(encoding="utf-8")
     assert "from backend.models import Base" in env
     assert "sre_agent.models" not in env
 
@@ -93,6 +93,7 @@ def test_alembic_env_targets_backend_base():
 def test_agent_audit_migration_exists_and_is_head_child():
     mig = (
         ROOT
+        / "src"
         / "backend"
         / "alembic"
         / "versions"

@@ -11,7 +11,7 @@ import pytest
 from sre_agent.incident_runner import CANONICAL_ENTRYPOINT, run_incident_investigation
 
 ROOT = Path(__file__).resolve().parents[1]
-DIRECT_RUNNER_CALLERS = [ROOT / "sre_agent" / "job_worker.py"]
+DIRECT_RUNNER_CALLERS = [ROOT / "src" / "sre_agent" / "job_worker.py"]
 
 
 def _imported_names(path: Path) -> set[str]:
@@ -45,14 +45,14 @@ def test_production_api_callers_use_canonical_runner_only():
 
 
 def test_mission_control_routes_investigations_through_durable_worker():
-    path = ROOT / "sre_agent" / "api" / "v1" / "mission_control.py"
+    path = ROOT / "src" / "sre_agent" / "api" / "v1" / "mission_control.py"
     imported = _imported_names(path)
     assert "sre_agent.job_worker.enqueue_and_kick" in imported
     assert "sre_agent.agent_runtime.run_graph_background_saas" not in imported
 
 
 def test_alternate_runner_is_quarantined_forwarder():
-    source = (ROOT / "sre_agent" / "agent_runtime_tasks.py").read_text()
+    source = (ROOT / "src" / "sre_agent" / "agent_runtime_tasks.py").read_text()
     assert "QUARANTINED" in source
     assert "run_incident_investigation" in source
     assert "agent_graph.astream" not in source
@@ -61,11 +61,11 @@ def test_alternate_runner_is_quarantined_forwarder():
 
 def test_no_second_production_graph_runner_module():
     """Only the canonical facade + agent_runtime implementation may invoke astream for SaaS."""
-    tasks = ROOT / "sre_agent" / "agent_runtime_tasks.py"
+    tasks = ROOT / "src" / "sre_agent" / "agent_runtime_tasks.py"
     assert "astream" not in tasks.read_text()
 
     # Documentation pointer
-    runner_doc = (ROOT / "sre_agent" / "incident_runner.py").read_text()
+    runner_doc = (ROOT / "src" / "sre_agent" / "incident_runner.py").read_text()
     assert "Canonical incident investigation runner" in runner_doc
     assert "run_incident_investigation" in runner_doc
 

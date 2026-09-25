@@ -1,14 +1,16 @@
 sequenceDiagram
     autonumber
-    actor Operator as Operator
-    participant Browser as Dashboard
+    actor Operator
+    participant Browser as Next.js console
     participant Auth as Backend /auth
     participant Store as PostgreSQL
 
-    Operator->>Browser: Open login page and submit credentials
+    Operator->>Browser: Submit credentials
     Browser->>Auth: POST /auth/token
-    Auth->>Store: Load user and verify password hash
-    Store-->>Auth: User record and org context
-    Auth-->>Browser: JWT access token + profile payload
-    Browser->>Browser: Persist token in cookie and localStorage
-    Browser-->>Operator: Redirect into protected dashboard routes
+    Auth->>Store: Verify user and create refresh session
+    Auth-->>Browser: Access token + httpOnly refresh cookie
+    Browser->>Browser: Keep access token in memory
+    Browser-->>Operator: Render protected routes
+    Browser->>Auth: POST /auth/refresh after reload or expiry
+    Auth->>Store: Rotate refresh token and detect reuse
+    Auth-->>Browser: New access token + rotated cookie
