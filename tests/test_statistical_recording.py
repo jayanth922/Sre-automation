@@ -131,9 +131,15 @@ _COMPLETE_TRACE = {
     "artifact_path": "reports/trace-evidence.jsonl",
 }
 
-# The same run, except the evidence never closed. The cost is still quoted on
-# purpose: the recorder has to drop it rather than pass it through.
+# The same run, except the span tree never closed. The cost is still quoted on
+# purpose -- see #73: span completeness and cost completeness are separate
+# questions, and only the second one may veto a cost figure.
 _INCOMPLETE_TRACE = dict(_COMPLETE_TRACE, complete=False, spans=4, cost_usd=9.99)
+
+# ...and the case where the cost accounting itself did not close. `summary()`
+# is what decides this, and it withholds the figure at source, so the recorder
+# sees a null rather than a number it has to second-guess.
+_UNPRICED_TRACE = dict(_COMPLETE_TRACE, complete=False, spans=4, cost_usd=None)
 
 
 def _rows(path: Path) -> list:
@@ -169,8 +175,24 @@ def test_a_complete_trace_records_the_cost(monkeypatch, tmp_path):
     assert "trace_incomplete" not in row["failure_categories"]
 
 
-def test_an_incomplete_trace_records_no_cost_and_says_why(monkeypatch, tmp_path):
-    """Fail closed: an unverifiable trace must not contribute a cost figure."""
+def test_an_incomplete_trace_still_records_the_cost_it_really_incurred(
+    monkeypatch, tmp_path
+):
+    """#73: an open span tree is not a reason to forget what the run cost.
+
+    This test used to assert the opposite, and that rule is what left `cost_usd`
+    null on half of both paid campaigns. The two questions are independent: an
+    investigation that correctly took no action never emits an approval,
+    mutation or verification span, so its tree reads as incomplete forever --
+    but it still called the model, and those dollars were still spent. Dropping
+    them made every budget estimate built from the campaigns run low.
+
+    Fail-closed still holds, one layer up: `trace_evidence.summary()` withholds
+    `cost_usd` when the *cost accounting* is incomplete. By the time the figure
+    reaches the recorder it has already been vouched for, so the recorder's job
+    is to carry it, not to re-judge it. The trial is still flagged
+    `trace_incomplete` -- the grade is unaffected, only the cost is.
+    """
     module = _recording(monkeypatch, tmp_path)
     spec = module.SCENARIOS[0]
 
@@ -183,8 +205,31 @@ def test_an_incomplete_trace_records_no_cost_and_says_why(monkeypatch, tmp_path)
     )
 
     row = _rows(tmp_path / "trials.jsonl")[0]
-    assert row["cost_usd"] is None, "a quoted cost on an open trace must be dropped"
+    assert row["cost_usd"] == 9.99, "a vouched cost must survive an open span tree"
     assert row["trace_complete"] is False
+    assert "trace_incomplete" in row["failure_categories"]
+
+
+def test_a_trace_whose_cost_never_priced_records_no_cost(monkeypatch, tmp_path):
+    """The fail-closed half of #73: a null from `summary()` stays a null.
+
+    The recorder must never invent a figure for a run whose token accounting
+    did not close -- a fabricated zero is worse than a gap, because it averages
+    in.
+    """
+    module = _recording(monkeypatch, tmp_path)
+    spec = module.SCENARIOS[0]
+
+    module._record_statistical_trial(
+        spec,
+        _resolved_score(spec.name),
+        trial_index=1,
+        latency_seconds=412.5,
+        trace_completeness=dict(_UNPRICED_TRACE),
+    )
+
+    row = _rows(tmp_path / "trials.jsonl")[0]
+    assert row["cost_usd"] is None
     assert "trace_incomplete" in row["failure_categories"]
 
 

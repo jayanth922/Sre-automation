@@ -183,8 +183,18 @@ def test_trial_v3_pins_diagnosis_and_trace_evidence():
     assert trial.trace_complete is True
     assert trial.trace_evidence_sha256 == "e" * 64
 
+    # An open span tree no longer voids the cost (#73) -- a run that correctly
+    # took no action can never close its tree, and still spent money.
     payload["trace_complete"] = False
-    with pytest.raises(evaluation.StatisticalEvalError, match="cannot claim a cost"):
+    reopened = evaluation.build_trial_record(**payload)
+    assert reopened.cost_usd == 0.25
+    assert reopened.trace_complete is False
+
+    # What a cost may not do is arrive with no trace behind it.
+    payload["trace_span_count"] = 0
+    payload["trace_evidence_sha256"] = None
+    payload["trace_evidence_artifact"] = None
+    with pytest.raises(evaluation.StatisticalEvalError, match="requires the trace"):
         evaluation.build_trial_record(**payload)
 
 

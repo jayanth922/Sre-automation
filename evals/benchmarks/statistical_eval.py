@@ -312,18 +312,27 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
     trace_artifact = payload["trace_evidence_artifact"]
     if trace_artifact is not None:
         trace_artifact = _string(trace_artifact, f"{field}.trace_evidence_artifact")
-    if payload["trace_complete"]:
-        if (
-            trace_span_count < 1
-            or trace_sha is None
-            or trace_artifact is None
-            or cost is None
-        ):
-            raise StatisticalEvalError(
-                f"{field} complete trace requires spans, digest, artifact, and cost"
-            )
-    elif cost is not None:
-        raise StatisticalEvalError(f"{field} incomplete trace cannot claim a cost")
+    # Span completeness and cost are separate claims (#73). A run that
+    # investigated and correctly took no action emits no approval, mutation or
+    # verification span, so its tree is incomplete by construction -- but it
+    # called the model, and those dollars were real. Refusing its cost is what
+    # left `cost_usd` null on half of both paid campaigns and made every budget
+    # estimate built from them run low.
+    #
+    # What a cost still cannot do is arrive unattributed: a figure has to come
+    # with the trace that priced it, so a trial with no span evidence at all
+    # (spans=0, no digest) may not quote one. That is the check worth keeping.
+    _has_trace_evidence = (
+        trace_span_count >= 1 and trace_sha is not None and trace_artifact is not None
+    )
+    if payload["trace_complete"] and not _has_trace_evidence:
+        raise StatisticalEvalError(
+            f"{field} complete trace requires spans, digest, and artifact"
+        )
+    if cost is not None and not _has_trace_evidence:
+        raise StatisticalEvalError(
+            f"{field} a cost figure requires the trace evidence that priced it"
+        )
     if payload["resolved"] and mttr is None:
         raise StatisticalEvalError(f"{field} resolved trial requires MTTR")
     return TrialRecord(

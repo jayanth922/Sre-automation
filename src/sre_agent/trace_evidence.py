@@ -36,6 +36,19 @@ REQUIRED_SPAN_KINDS = frozenset(
         "verification",
     }
 )
+# Spans that exist only on the act path: `graph_builder` emits them from the
+# approval gate and what follows it. A run that investigates and correctly
+# concludes no action is needed never reaches that node, so requiring them of
+# every run makes a correct no-action trial permanently incomplete -- and until
+# #73, that also discarded its cost, because cost was published only for a
+# complete trace. The v2 corpus carries deliberate negative controls, so this
+# is not a corner case; it is a quarter of the holdout split.
+#
+# `policy` stays unconditionally required. It is what separates "decided not to
+# act" from "died before deciding", and without that distinction absent
+# mutation evidence would be unreadable.
+_ACT_PATH_SPAN_KINDS = frozenset({"approval", "mutation", "verification"})
+_ALWAYS_REQUIRED_SPAN_KINDS = REQUIRED_SPAN_KINDS - _ACT_PATH_SPAN_KINDS
 REQUIRED_ATTRIBUTES = {
     "root": frozenset(
         {
@@ -346,7 +359,16 @@ class RunTraceRecorder:
             root = dict(self._roots.get(root_trace_id, {}))
         spans = [record for record in records if record["record_type"] == "child_span"]
         observed = {record["span_kind"] for record in spans}
-        missing = sorted(REQUIRED_SPAN_KINDS - observed)
+        # Evidence the run entered the act path at all. Either span means a
+        # decision to act was reached, and from there the whole act-path trio
+        # is owed: an approval with no mutation and no verification is a real
+        # gap. Neither span means the run stopped at `policy`, and there is no
+        # mutation for it to be missing.
+        entered_act_path = bool(observed & {"approval", "mutation"})
+        required = (
+            REQUIRED_SPAN_KINDS if entered_act_path else _ALWAYS_REQUIRED_SPAN_KINDS
+        )
+        missing = sorted(required - observed)
         reasons = [f"missing_span:{kind}" for kind in missing]
         if not root:
             reasons.append("root_span_missing")
@@ -386,12 +408,14 @@ class RunTraceRecorder:
         reasons = sorted(set(reasons))
         canonical = json.dumps(records, sort_keys=True, separators=(",", ":"))
         complete = not reasons
+        cost_complete = model_accounting.get("complete") is True
         return {
             "schema_version": SCHEMA_VERSION,
             "root_trace_id": root_trace_id,
             "complete": complete,
             "completeness_reasons": reasons,
-            "required_span_kinds": sorted(REQUIRED_SPAN_KINDS),
+            "required_span_kinds": sorted(required),
+            "action_path": "entered" if entered_act_path else "not_entered",
             "observed_span_kinds": sorted(observed),
             "spans": len(spans),
             "span_counts": {
@@ -399,15 +423,25 @@ class RunTraceRecorder:
                 for kind in sorted(observed)
             },
             "error_spans": sum(record["status"] == "error" for record in spans),
-            "cost_usd": model_accounting.get("cost_usd") if complete else None,
+            # Cost is published on the completeness of the accounting that
+            # produced it, not on the completeness of the span tree around it.
+            # They are different questions: a tool span missing an attribute
+            # says nothing about whether the token counts were captured, and
+            # suppressing a known cost because of it does not make the artifact
+            # more truthful -- it makes the campaign's cost the mean of
+            # whichever trials happened to have a tidy trace. `cost_complete`
+            # travels with the number so a reader never has to infer which
+            # question the null answered.
+            "cost_complete": cost_complete,
+            "cost_usd": model_accounting.get("cost_usd") if cost_complete else None,
             # Whether that cost was reported by the provider or derived from
             # tokens travels with it; the number alone is not self-describing.
             "cost_sources": (
-                model_accounting.get("cost_sources", []) if complete else []
+                model_accounting.get("cost_sources", []) if cost_complete else []
             ),
-            "tokens": model_accounting.get("tokens") if complete else None,
+            "tokens": model_accounting.get("tokens") if cost_complete else None,
             "model_latency_ms": (
-                model_accounting.get("latency_ms") if complete else None
+                model_accounting.get("latency_ms") if cost_complete else None
             ),
             "payload_capture": "redacted" if _payload_capture_enabled() else "off",
             "artifact_path": str(_artifact_path()),

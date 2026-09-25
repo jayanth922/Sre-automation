@@ -1003,6 +1003,7 @@ def _record_statistical_trial(
     latency_seconds: float,
     trace_completeness: Optional[dict],
     harness_approvals: int = 0,
+    extra_categories: tuple[str, ...] = (),
 ) -> None:
     if not STATISTICAL_RECORDING:
         return
@@ -1018,10 +1019,20 @@ def _record_statistical_trial(
         isinstance(trace_completeness, dict)
         and trace_completeness.get("complete") is True
     )
-    cost_usd = trace_completeness.get("cost_usd") if trace_complete else None
+    # Not gated on `trace_complete`: the summary already withholds this when
+    # the accounting behind it is incomplete, and re-gating it on the span tree
+    # is what made #73 -- every trial that correctly took no action recorded a
+    # null cost it had genuinely incurred, and half the campaign's cost figures
+    # went missing.
+    cost_usd = (
+        trace_completeness.get("cost_usd")
+        if isinstance(trace_completeness, dict)
+        else None
+    )
     failure_categories = set(_failure_categories(score))
     if not trace_complete:
         failure_categories.add("trace_incomplete")
+    failure_categories.update(extra_categories)
     if harness_approvals:
         # Not a failure, but the trial schema is strict about its keys and this
         # is the one free-form field in it. An arm that was authorized by the
@@ -1202,6 +1213,90 @@ async def _release_incident(
     )
 
 
+# The timeline event `sre_agent/api/v1/alerts.py` writes when it absorbs a
+# second alert into an already-open incident.
+_FOLD_EVENT_TYPE = "correlated_alert_folded"
+
+
+async def _settle_open_incidents(
+    client: httpx.AsyncClient,
+    jwt: _Token,
+    creds,
+    notes: list[str],
+) -> None:
+    """Leave nothing open for this trial's alert to fold into.
+
+    Teardown (#66) closes the incident each trial opened, which handles the
+    common case and not the others: a previous campaign, a manual run, or a
+    trial killed before its `finally` ran all leave an incident behind, and the
+    platform is *right* to fold a same-service alert into any of them. Folding
+    is correct production behaviour. It is wrong here only because consecutive
+    independent scenarios on the same handful of services, minutes apart, is a
+    shape production never has -- so the harness owes itself the precondition
+    rather than weakening the correlation logic to suit a benchmark.
+
+    When it is not asserted the alert opens no incident at all,
+    `_wait_new_incident` times out, and a paid trial is spent measuring
+    nothing. That is what `platform_failure` with zero spans looks like in the
+    #28 and #70 artifacts.
+
+    Closing goes through the same sanctioned `mark-resolved` call teardown
+    uses. Never a database write.
+    """
+    try:
+        response = await client.get(
+            f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
+            headers=await jwt.headers(),
+        )
+        response.raise_for_status()
+        incidents = response.json()
+    except Exception as exc:
+        notes.append(f"precondition: could not list open incidents: {exc}")
+        return
+    stale = [
+        incident
+        for incident in incidents
+        if str(incident.get("status") or "").lower()
+        not in _CLOSED_APPLICATION_STATUSES
+    ]
+    if not stale:
+        return
+    notes.append(
+        f"precondition: {len(stale)} incident(s) open before this trial fired; "
+        "closing them so this scenario's alert cannot fold into one"
+    )
+    for incident in stale:
+        await _release_incident(client, jwt, incident.get("id"), creds, notes)
+
+
+def _folded_alert_count(events) -> int:
+    """Foreign alerts absorbed into this trial's incident while it ran.
+
+    `_settle_open_incidents` removes the folds the harness can prevent, which
+    is the ones that exist before the alert is fired. An alert that arrives
+    *during* a trial -- the previous scenario's fault re-firing after its
+    incident was closed, 7-9 minutes into the next one in both observed cases
+    -- cannot be prevented from outside the platform, and suppressing it inside
+    the platform would mean shipping a correlation rule written for a benchmark.
+
+    So it is counted instead. The incident being graded then contains a
+    stimulus this scenario never fired, and whatever the agent did about it is
+    not attributable to the scenario; a trial in that state must be visible as
+    contaminated rather than quietly averaged into an arm.
+    """
+    count = 0
+    for event in events or ():
+        if not isinstance(event, dict):
+            continue
+        blob = " ".join(
+            str(event.get(key) or "")
+            for key in ("event_type", "type", "title", "kind", "name")
+        ).lower()
+        if _FOLD_EVENT_TYPE in blob or "folded into this incident" in blob:
+            count += 1
+    return count
+
+
 async def _fetch_run_manifest(
     client: httpx.AsyncClient,
     jwt: _Token,
@@ -1317,6 +1412,7 @@ async def _run_trial(
     # fixed.
     meta = trial_meta if trial_meta is not None else {}
     meta["notes"] = []
+    await _settle_open_incidents(client, jwt, creds, meta["notes"])
     known = await _incident_ids(client, jwt, creds)
     tracker = RecoveryOracleTracker(spec.recovery_probe, datetime.now(timezone.utc))
     await _observe_oracle(client, oracle_client, tracker, baseline=True)
@@ -1381,8 +1477,29 @@ async def _run_trial(
         trace_completeness = await _fetch_trace_completeness(
             client, jwt, incident["id"], creds
         )
+        if isinstance(trace_completeness, dict) and not trace_completeness.get(
+            "complete"
+        ):
+            # The trial record has no room for these -- its schema is closed and
+            # validated key-for-key -- and the artifact it points at is a
+            # rolling path that later runs overwrite. Without this line the only
+            # honest answer to "why was this trace incomplete" months later is
+            # that nobody can tell.
+            why = (
+                ", ".join(trace_completeness.get("completeness_reasons") or ())
+                or "unstated"
+            )
+            meta["notes"].append(f"trace incomplete: {why}")
         summary_text = transcript.get("summary") or latest_incident.get("summary") or ""
         events = transcript.get("events", [])
+        folded = _folded_alert_count(events)
+        if folded:
+            meta.setdefault("extra_categories", []).append("cross_scenario_fold")
+            meta["notes"].append(
+                f"contamination: {folded} foreign alert(s) folded into this "
+                "trial's incident while it ran; its grade is not attributable "
+                "to this scenario alone"
+            )
         result = _oracle_result(
             tracker,
             spec,
@@ -1517,6 +1634,7 @@ async def run() -> None:
                 latency_seconds=time.perf_counter() - trial_started,
                 trace_completeness=trace_completeness,
                 harness_approvals=harness_approvals,
+                extra_categories=tuple(trial_meta.get("extra_categories", ())),
             )
             _record_confidence_observations(
                 spec,

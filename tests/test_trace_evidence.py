@@ -271,3 +271,132 @@ def test_incident_metrics_uses_latest_incident_root_even_without_prior_model_cal
         "root_trace_id": "trace-latest",
         "model_root_filter": "trace-latest",
     }
+
+
+# --- #73: a correct no-action run, and the cost it still incurred ---------
+#
+# `REQUIRED_SPAN_KINDS` demanded approval, mutation and verification of every
+# run. Only `graph_builder`'s act path emits those, so an investigation that
+# reached a decision and correctly decided not to act could never produce a
+# complete trace -- and cost was published only for a complete trace, so the
+# cost it really did incur was thrown away with it. In the #70 artifact that is
+# four of eight trials carrying a null cost, two of them full ~400s
+# investigations of the corpus's deliberate negative control.
+
+_NO_ACTION_SPANS = [
+    (
+        "model",
+        {
+            "gen_ai.provider.name": "groq",
+            "gen_ai.request.model": "model-a",
+            "gen_ai.response.model": "model-a",
+            "gen_ai.usage.input_tokens": 10,
+            "gen_ai.usage.output_tokens": 4,
+            "sentinel.usage.total_tokens": 14,
+            "sentinel.cost.usd": 0.0125,
+        },
+    ),
+    ("retrieval", {"sentinel.retrieval.outcome": "no_matches"}),
+    ("tool", {"gen_ai.tool.name": "prometheus_query", "gen_ai.tool.type": "extension"}),
+    ("policy", {"sentinel.policy.decision": "no_action_required"}),
+]
+
+
+def _record(spans):
+    recorder = trace_evidence.get_run_trace_recorder()
+    recorder.start_run(**TRACE)
+    for kind, attributes in spans:
+        recorder.record_span(
+            root_trace_id=TRACE["root_trace_id"],
+            span_kind=kind,
+            name=f"{kind} span",
+            status="success",
+            attributes=attributes,
+        )
+    recorder.finish_run(TRACE["root_trace_id"], status="success")
+    return recorder.summary(
+        root_trace_id=TRACE["root_trace_id"],
+        model_accounting=MODEL_ACCOUNTING,
+    )
+
+
+def test_a_run_that_correctly_took_no_action_is_complete_and_keeps_its_cost():
+    summary = _record(_NO_ACTION_SPANS)
+
+    assert summary["complete"] is True, summary["completeness_reasons"]
+    assert summary["action_path"] == "not_entered"
+    assert summary["cost_usd"] == pytest.approx(0.0125)
+    assert summary["tokens"] == {"input": 10, "output": 4, "total": 14}
+    # The act-path kinds are not owed by a run that never entered it, and the
+    # artifact says so rather than leaving a reader to infer it.
+    assert "mutation" not in summary["required_span_kinds"]
+    assert "policy" in summary["required_span_kinds"]
+
+
+def test_a_no_action_run_still_owes_the_policy_span():
+    """The span that separates "decided not to act" from "died before deciding".
+
+    Without it, absent mutation evidence is unreadable, so it stays required
+    whatever the run did.
+    """
+    summary = _record([s for s in _NO_ACTION_SPANS if s[0] != "policy"])
+
+    assert summary["complete"] is False
+    assert "missing_span:policy" in summary["completeness_reasons"]
+
+
+def test_entering_the_act_path_owes_the_whole_act_path():
+    """An approval with nothing after it is a real gap, not correct inaction."""
+    summary = _record(
+        _NO_ACTION_SPANS + [("approval", {"sentinel.approval.outcome": "granted"})]
+    )
+
+    assert summary["action_path"] == "entered"
+    assert summary["complete"] is False
+    assert "missing_span:mutation" in summary["completeness_reasons"]
+    assert "missing_span:verification" in summary["completeness_reasons"]
+
+
+def test_cost_survives_a_span_tree_that_is_incomplete_for_other_reasons():
+    """Cost answers a different question than span completeness.
+
+    A missing tool span says nothing about whether the token counts were
+    captured. Suppressing a known cost because of it does not make the artifact
+    more truthful -- it makes a campaign's cost the mean of whichever trials
+    happened to have a tidy trace.
+    """
+    summary = _record([s for s in _NO_ACTION_SPANS if s[0] != "tool"])
+
+    assert summary["complete"] is False
+    assert "missing_span:tool" in summary["completeness_reasons"]
+    assert summary["cost_complete"] is True
+    assert summary["cost_usd"] == pytest.approx(0.0125)
+
+
+def test_cost_is_withheld_when_its_own_accounting_is_incomplete():
+    recorder = trace_evidence.get_run_trace_recorder()
+    recorder.start_run(**TRACE)
+    for kind, attributes in _NO_ACTION_SPANS:
+        recorder.record_span(
+            root_trace_id=TRACE["root_trace_id"],
+            span_kind=kind,
+            name=f"{kind} span",
+            status="success",
+            attributes=attributes,
+        )
+    recorder.finish_run(TRACE["root_trace_id"], status="success")
+
+    summary = recorder.summary(
+        root_trace_id=TRACE["root_trace_id"],
+        model_accounting={
+            **MODEL_ACCOUNTING,
+            "complete": False,
+            "completeness_reasons": ["call-1:missing_usage"],
+        },
+    )
+
+    assert summary["cost_complete"] is False
+    assert summary["cost_usd"] is None
+    assert summary["tokens"] is None
+    assert summary["complete"] is False
+    assert "model_accounting:call-1:missing_usage" in summary["completeness_reasons"]
