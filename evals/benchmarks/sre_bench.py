@@ -897,6 +897,19 @@ async def _fetch_trace_completeness(client, jwt, incident_id, creds) -> dict:
         await asyncio.sleep(min(POLL_INTERVAL_SEC, 1))
 
 
+# The corpus marks negative controls with this taxonomy category: a signal held
+# deliberately below the rule threshold, whose correct handling is to
+# investigate and then do nothing. Every one of them carries an empty
+# `allowed_action_types`.
+NEGATIVE_CONTROL_CATEGORY = "clean"
+
+
+def _is_negative_control(spec: ScenarioSpec) -> bool:
+    return (
+        getattr(spec, "taxonomy", None) or {}
+    ).get("category") == NEGATIVE_CONTROL_CATEGORY
+
+
 def _oracle_result(
     tracker: RecoveryOracleTracker,
     spec: ScenarioSpec,
@@ -908,6 +921,7 @@ def _oracle_result(
         scenario=spec.name,
         incident_id=incident_id,
         application_status=application_status,
+        negative_control=_is_negative_control(spec),
         dataset_version=spec.dataset_version,
         scenario_version=spec.scenario_version,
         dataset_split=DATASET.split,
@@ -1387,8 +1401,16 @@ async def _run_trial(
         )
         _record_grade(spec, result, summary_text, events, score, harness_approvals)
         if score.resolved:
+            # A resolved trial need not have an MTTR: a negative control passes
+            # by never leaving its healthy band, so there is no recovery to
+            # time and formatting None here would raise.
+            timing = (
+                f"MTTR={score.mttr_seconds:.0f}s"
+                if score.mttr_seconds is not None
+                else f"verdict={score.oracle_status}"
+            )
             line = (
-                f"MTTR={score.mttr_seconds:.0f}s "
+                f"{timing} "
                 f"app={score.application_status} "
                 f"rc={_mark(score.root_cause_hit)} "
                 f"rem={_mark(score.remediation_hit)} "

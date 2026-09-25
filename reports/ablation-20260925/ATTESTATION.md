@@ -104,6 +104,24 @@ Paired deltas (4 pairs, full − no_memory):
 Every graded outcome was **identical between the arms**. The only differences
 were timing and cost, both well inside their intervals.
 
+> **Correction, 2026-09-25 (while fixing #69).** Both MTTR figures above include
+> `payment_subthreshold_charge_errors`, which is a negative control. Nothing
+> broke in that scenario, so its 7.06s is the interval between its two passing
+> probes — the oracle poll cadence, not a recovery of anything. Excluding it:
+>
+> | metric | `full` | `no_memory` |
+> |---|---|---|
+> | oracle MTTR mean / median (2 real recoveries) | 786.1s / 786.1s | 801.4s / 801.4s |
+>
+> and the paired delta becomes **−15.28s over 2 pairs**, not −10.19s over 3. The
+> bootstrap interval [−58.51, +27.94] is unchanged, because at this size it is
+> simply the spread of the two real pairs. Direction and conclusion are unchanged
+> — `full` is marginally faster, and at n=2 that means nothing. What the original
+> figures misstated is the level: a 7s non-measurement pulled `full`'s reported
+> mean down by 260s, a third of the number printed. #69 now gives such a trial
+> its own verdict, `NO_ACTION_CORRECT`, which carries no MTTR at all and so
+> cannot re-enter an aggregate.
+
 ## 4. Verdict and why it is not a null result
 
 `verdicts: {"no_memory": "NOT_DEMONSTRATED"}` — diagnosis, quality and recovery
@@ -190,8 +208,19 @@ invalid — but it should not be read as a service-level hit.
 root-cause or remediation grade. This is the unarmed negative control exiting via
 the terminal-application-status path (the #65 recovery guard correctly did *not*
 fire: `failure_observed: false`). A clean scenario has no meaningful MTTR, yet it
-is currently folded into the MTTR aggregate. Tracked as **#69**, which needs a
-vocabulary decision before it can be fixed.
+is folded into the MTTR aggregate.
+
+> **Resolved, 2026-09-25 (#69).** The oracle vocabulary gained
+> `NO_ACTION_CORRECT`. A scenario the corpus marks `taxonomy.category == "clean"`
+> whose signal never leaves its healthy band now reports that verdict and no
+> MTTR. It still counts as a resolved trial and still receives a full structured
+> grade, because investigating and correctly taking no action is a pass — routing
+> it through the unresolved branch would have recorded no diagnosis, remediation
+> or safety outcome at all and graded the agent as having failed a scenario it
+> passed. A control whose signal *did* go failing now reports INVALID_SCENARIO
+> instead: the sub-threshold premise did not hold, so "take no action" no longer
+> describes the correct handling of that run. See the correction in §3 for the
+> effect on the numbers above.
 
 ## 6. Fixes verified in production during this campaign
 

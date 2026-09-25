@@ -25,6 +25,15 @@ _DIAGNOSIS_STATES = {
     "REQUIRES_CALIBRATION",
     "NOT_APPLICABLE",
 }
+# Kept in step with `OracleStatus` in recovery_oracle.py by a test rather than
+# an import: this module validates an on-disk schema and deliberately depends on
+# nothing in the harness that writes it.
+_ORACLE_STATUSES = {
+    "VERIFIED_RECOVERED",
+    "NO_ACTION_CORRECT",
+    "UNRESOLVED",
+    "INVALID_SCENARIO",
+}
 _SHA256_LENGTH = 64
 _CONFIG_SECTIONS = ("provenance", "models", "tools", "runtime")
 
@@ -238,11 +247,7 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
     oracle_status = _string(payload["oracle_status"], f"{field}.oracle_status")
     grader_status = _string(payload["grader_status"], f"{field}.grader_status")
     diagnosis_status = _string(payload["diagnosis_status"], f"{field}.diagnosis_status")
-    if oracle_status not in {
-        "VERIFIED_RECOVERED",
-        "UNRESOLVED",
-        "INVALID_SCENARIO",
-    }:
+    if oracle_status not in _ORACLE_STATUSES:
         raise StatisticalEvalError(f"{field}.oracle_status is unsupported")
     if grader_status not in {
         "PASS",

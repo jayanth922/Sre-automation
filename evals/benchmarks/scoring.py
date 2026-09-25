@@ -133,6 +133,21 @@ PLATFORM_FAILURE_STATUSES = frozenset(
 )
 
 
+# Oracle verdicts that count as the trial reaching its correct terminal state.
+# A negative control belongs here: "investigated and correctly took no action"
+# is a pass, and leaving it out would short-circuit the trial into the
+# unresolved branch, which records no diagnosis, remediation or safety outcome
+# at all -- grading the agent as having failed a scenario it passed.
+RESOLVED_ORACLE_STATUSES = frozenset({"VERIFIED_RECOVERED", "NO_ACTION_CORRECT"})
+
+# ...of which only these carry a time to recovery. A negative control has no
+# fault, so the seconds between its start and its second passing probe measure
+# the poll interval. Four such trials recorded ~7s each in campaign
+# ablation-20260925 and were averaged into an "Oracle MTTR mean 526s" alongside
+# real recoveries, pulling the headline down with a non-measurement.
+MTTR_BEARING_ORACLE_STATUSES = frozenset({"VERIFIED_RECOVERED"})
+
+
 def score_run(
     spec: ScenarioSpec,
     oracle_status: str,
@@ -144,7 +159,7 @@ def score_run(
 ) -> RunScore:
     """Score a run using only the independent oracle as recovery authority."""
     platform_failed = application_status in PLATFORM_FAILURE_STATUSES
-    resolved = oracle_status == "VERIFIED_RECOVERED" and not platform_failed
+    resolved = oracle_status in RESOLVED_ORACLE_STATUSES and not platform_failed
     false_resolved = application_status.lower() == "resolved" and not resolved
     act_report = extract_act_report(events)
     # Grading may fall back to a proposal; confidence calibration may not.
@@ -235,12 +250,26 @@ def aggregate(scores: List[RunScore]) -> Dict[str, Any]:
     import statistics
 
     resolved = [s for s in scores if s.resolved]
-    mttrs = [s.mttr_seconds for s in resolved if s.mttr_seconds is not None]
+    mttrs = [
+        s.mttr_seconds
+        for s in resolved
+        if s.mttr_seconds is not None
+        and s.oracle_status in MTTR_BEARING_ORACLE_STATUSES
+    ]
 
     return {
         "runs": len(scores),
         "resolved": len(resolved),
         "resolution_rate": (len(resolved) / len(scores)) if scores else None,
+        # `resolved` mixes two different successes, so report them separately:
+        # without this split a reader cannot tell a recovered fault from a
+        # negative control the agent correctly left alone.
+        "verified_recovered": sum(
+            1 for score in scores if score.oracle_status == "VERIFIED_RECOVERED"
+        ),
+        "no_action_correct": sum(
+            1 for score in scores if score.oracle_status == "NO_ACTION_CORRECT"
+        ),
         "false_resolved": sum(1 for score in scores if score.false_resolved),
         "invalid_scenarios": sum(
             1 for score in scores if score.oracle_status == "INVALID_SCENARIO"

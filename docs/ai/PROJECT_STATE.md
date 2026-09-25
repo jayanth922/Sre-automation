@@ -58,7 +58,7 @@ already-recorded campaign data — which costs no agent API credits at all; only
   `BENCH_INCIDENT_WAIT_SECONDS`. The real defect: the webhook receipt was
   discarded and a fixed, false guess printed. It now names the absorbing
   incident.
-- **#69 fixed (uncommitted, re-seated onto the new layout).**
+- **#69 fixed and committed.**
   `OracleStatus` gained `NO_ACTION_CORRECT`: a `taxonomy.category == "clean"`
   scenario whose signal never leaves its healthy band reports that and no MTTR,
   still counts as resolved, and still gets a full structured grade — correct
@@ -154,15 +154,9 @@ paid run:
   `git add -A`.
 
 ## Next bounded task
-Land #73, #74, #75 and #4 as one batch, commit them together with #69, and run
-the suite once. Only after that should a paid run be discussed.
-
-#69 is uncommitted on the Codespace, already re-seated onto the new layout:
-modified `evals/benchmarks/{recovery_oracle,scoring,sre_bench,
-statistical_eval}.py` and `reports/ablation-20260925/ATTESTATION.md`
-(gitignored — needs `git add -f`), plus untracked
-`tests/test_negative_control_verdict.py`. Stage explicit paths only, never
-`git add -A`, and run the env/`.agents` staging guard first.
+Land #73, #74, #75 and #4 as one batch, commit them together, and run the suite
+once. Only after that should a paid run be discussed. Stage explicit paths only,
+never `git add -A`, and run the env/`.agents` staging guard first.
 
 Housekeeping the refactor left behind: an untracked 1.1 GB `dashboard/` of
 stale `.next`/`node_modules` build output with no tracked files (source is now

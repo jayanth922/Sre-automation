@@ -19,7 +19,20 @@ from typing import Any, Literal, Optional
 OracleOperator = Literal["lt", "lte", "gt", "gte", "eq"]
 ObservationState = Literal["passing", "failing", "unknown"]
 ObservationPhase = Literal["baseline", "recovery"]
-OracleStatus = Literal["VERIFIED_RECOVERED", "UNRESOLVED", "INVALID_SCENARIO"]
+OracleStatus = Literal[
+    "VERIFIED_RECOVERED",
+    "NO_ACTION_CORRECT",
+    "UNRESOLVED",
+    "INVALID_SCENARIO",
+]
+
+# The verdicts meaning the scenario reached the terminal state its ground truth
+# asks for. `VERIFIED_RECOVERED` is a fault driven back inside the recovery
+# boundary. `NO_ACTION_CORRECT` is a negative control that was never outside it
+# and must not be acted on at all. Only the first carries a time-to-recovery --
+# there is none for something that never broke -- which is why `scoring` counts
+# a wider set as resolved than it measures MTTR over.
+ORACLE_SUCCESS_STATUSES = frozenset({"VERIFIED_RECOVERED", "NO_ACTION_CORRECT"})
 
 _OPERATORS = {
     "lt": lambda value, threshold: value < threshold,
@@ -263,13 +276,32 @@ class RecoveryOracleTracker:
         scenario: str,
         incident_id: Optional[str],
         application_status: str,
+        negative_control: bool = False,
         dataset_version: str = "legacy",
         scenario_version: str = "unversioned",
         dataset_split: str = "unspecified",
         dataset_sha256: str = "",
     ) -> OracleRunResult:
+        """Turn the observation log into one verdict.
+
+        `negative_control` says this scenario's ground truth is "the signal
+        never leaves its healthy band, so take no action" -- the corpus marks
+        those `taxonomy.category == "clean"`. Without it such a trial reports
+        VERIFIED_RECOVERED plus a few seconds of MTTR that measure the probe
+        poll interval and nothing else, and that number then drags down every
+        aggregate it lands in.
+        """
         if self.baseline_healthy is not True:
             status: OracleStatus = "INVALID_SCENARIO"
+            mttr = None
+        elif negative_control:
+            # A control that was seen failing did not hold its own premise: the
+            # sub-threshold fault crossed the boundary, so "take no action" no
+            # longer describes the correct handling of this run. That makes the
+            # trial unusable, not the agent wrong.
+            status = (
+                "INVALID_SCENARIO" if self.failure_observed else "NO_ACTION_CORRECT"
+            )
             mttr = None
         elif self.recovered_at is not None:
             status: OracleStatus = "VERIFIED_RECOVERED"
@@ -293,7 +325,7 @@ class RecoveryOracleTracker:
             failure_observed=self.failure_observed,
             false_resolved=(
                 application_status.lower() == "resolved"
-                and status != "VERIFIED_RECOVERED"
+                and status not in ORACLE_SUCCESS_STATUSES
             ),
             probe=self.probe,
             observations=tuple(self.observations),
