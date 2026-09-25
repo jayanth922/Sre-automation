@@ -213,3 +213,56 @@ def test_evidence_without_a_stamp_stays_out_of_the_chronology(monkeypatch):
 
     assert len(evaluation["evidence"]) == 4
     assert len(evaluation["timeline"]) == 3
+
+
+def test_an_interval_stamp_sorts_by_its_start():
+    """A rate is observed over a window, not at an instant, and ISO 8601
+    spells that "<start>/<end>". It belongs on the clock at its start."""
+    stamps = [
+        "2026-09-25T04:29:48Z",
+        "2026-09-25T04:09:48Z/2026-09-25T04:16:50Z",
+        "2026-09-25T04:14:48Z",
+    ]
+
+    assert sorted(stamps, key=_observed_at_sort_key) == [
+        "2026-09-25T04:09:48Z/2026-09-25T04:16:50Z",
+        "2026-09-25T04:14:48Z",
+        "2026-09-25T04:29:48Z",
+    ]
+
+
+def test_the_grader_reads_an_interval_stamp_the_same_way_the_sort_key_does():
+    """The two must agree. If the grader can parse a stamp the producer
+    could not order, the chronology arrives shuffled and the criterion
+    FAILs on evidence that was correct."""
+    timeline = [
+        {"event_type": "error rate 0.45 sustained", "observed_at": s}
+        for s in sorted(
+            [
+                "2026-09-25T04:29:48Z",
+                "2026-09-25T04:09:48Z/2026-09-25T04:16:50Z",
+                "2026-09-25T04:14:48Z",
+            ],
+            key=_observed_at_sort_key,
+        )
+    ]
+
+    grade = _temporal({"timeline": timeline})
+
+    assert grade.state == "PASS", grade.rationale
+
+
+def test_one_unreadable_stamp_still_voids_the_criterion():
+    """The all-or-nothing contract is deliberate and stays: a timeline is
+    only a chronology if every entry is on the clock. This pins that the
+    interval fix widened what parses, not what the criterion tolerates."""
+    grade = _temporal(
+        {
+            "timeline": [
+                {"event_type": "a", "observed_at": "2026-09-25T04:09:48Z"},
+                {"event_type": "b", "observed_at": "shortly after"},
+            ]
+        }
+    )
+
+    assert grade.state == "INSUFFICIENT_EVIDENCE"

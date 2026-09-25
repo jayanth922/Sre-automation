@@ -394,10 +394,23 @@ def _uncertainty(output: Optional[dict[str, Any]]) -> CriterionGrade:
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:
+    """Read one instant off an evidence stamp.
+
+    ISO 8601 also spells an observation as an interval, ``<start>/<end>``,
+    and evidence measured over a window -- an error rate, a p90 over 5m --
+    is naturally stamped that way. Anchor on the start instant rather than
+    refusing the entry: on 2026-09-25 two interval stamps voided
+    temporal_reasoning for a trial whose other six observations were
+    correct and correctly stamped, because ``_temporal`` gives up on the
+    first entry it cannot read.
+    """
     if not isinstance(value, str):
         return None
+    text = value.strip()
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None

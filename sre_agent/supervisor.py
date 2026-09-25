@@ -124,6 +124,12 @@ def _observed_at_sort_key(observed_at: Any) -> tuple:
     its peers, rather than being dropped or interleaved on string compare.
     """
     text = str(observed_at or "").strip()
+    # An ISO 8601 interval ("<start>/<end>") stamps evidence measured over a
+    # window. Order it by its start, the same instant the grader anchors on:
+    # if the two disagree the emitted chronology is out of order by
+    # construction and the criterion FAILs on correct evidence.
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
