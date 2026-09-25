@@ -48,36 +48,36 @@ already-recorded campaign data — which costs no agent API credits at all; only
   both reached only 2 valid pairs, on which every graded delta is exactly zero.
   Arm separation is proven, not asserted: of 326 leaf configuration fields
   across the arms' manifests exactly one differs (`runtime.ablation_arm`).
-- **#72 fixed and proven live.** Incident-memory promotion sat outside the
-  approval gate, so an approval-gated plan — i.e. every mutating one — ended its
-  first graph pass at `awaiting_approval` and never wrote. Promotion moved into
-  `graph_builder._act_gate_node`; verified `sre_incidents_v2` 0 → 1, correctly
-  scoped. This is what makes the recall half of memory testable at all.
-- **#71 fixed.** Its title was a misdiagnosis — the harness posts its own alert
-  and the incident opens synchronously, so alert latency never enters
-  `BENCH_INCIDENT_WAIT_SECONDS`. The real defect: the webhook receipt was
-  discarded and a fixed, false guess printed. It now names the absorbing
-  incident.
-- **#69 fixed and committed.** `OracleStatus` gained `NO_ACTION_CORRECT`: a
-  `clean` scenario that stays in its healthy band reports that and no MTTR,
-  counts as resolved, and still gets a full structured grade — correct inaction
-  is a pass. One that *did* go failing reports INVALID_SCENARIO. Verified by
-  replay: #70's "MTTR mean 526s" was two real recoveries at 786.1s averaged
-  with a 7s poll interval.
-- **#65/#66/#67/#68 fixed and committed** — trial-ending on an unarmed probe,
-  orphan incidents surviving teardown, an unchecked declared fingerprint, and an
-  unusable `--memory-coverage`. Rationale is in the docstrings; 11 tests in
-  `tests/test_bench_trial_teardown.py` fail against the pre-fix file.
-  `payment_subthreshold_charge_errors` is a deliberate negative control, not a
-  mis-set threshold — its scenario block is correct as written.
+- **#65–#75 all fixed, committed and pushed** (`3405d00`). Rationale lives in
+  the docstrings and the commit messages; each has tests that fail against the
+  pre-fix file. Four results from that work outlive the diffs:
+  - #70's reported "MTTR mean 526s" was an artifact — two real recoveries at
+    786.1s averaged with a 7s poll interval. Do not quote the published figure.
+  - `payment_subthreshold_charge_errors` is a deliberate negative control, not
+    a mis-set threshold. Its scenario block is correct as written.
+  - Incident-memory promotion now happens inside `graph_builder._act_gate_node`
+    (#72), which is what makes the recall half of memory testable at all.
+  - Both paid campaigns' `cost_usd` figures are low: the trials that took no
+    action had their real cost discarded (#73). Re-derive, don't reuse.
 
 ## Active problem
-None open. #73, #74, #75 and #4 are fixed and verified offline, uncommitted —
-see Next bounded task. One finding from #73 is not yet a tracked defect:
-`trace_evidence_artifact` on every trial points at `reports/run-trace.jsonl`,
-a rolling shared path that later runs overwrite, so content-addressed trace
-evidence does not survive the campaign that produced it. The recorded digest
-stays valid; the file it names does not.
+None open. #73, #74, #75 and #4 are fixed, verified offline and pushed. Three
+findings from that batch are not yet tracked defects:
+- `trace_evidence_artifact` on every trial points at `reports/run-trace.jsonl`,
+  a rolling shared path that later runs overwrite, so content-addressed trace
+  evidence does not survive the campaign that produced it. The recorded digest
+  stays valid; the file it names does not.
+- `expected_evidence` is dead data — 22 scenarios x 2-4 hand-written
+  assertions, loaded, validated, set on `ScenarioSpec`, read by nothing outside
+  tests. `root_cause_keywords` is worse: `scoring.py:35` calls it an "any-of
+  match against the summary" and no such match exists; its only reader is
+  `retrieval_eval.py:471`, building a query string. Evidence quality is scored
+  only by `evidence_support`, a `_semantic_criterion` stuck at
+  REQUIRES_CALIBRATION — so in practice it is not scored at all.
+- `train/bad_deploy_checkout` cannot be diagnosed correctly and is deliberately
+  left that way; see `datasets/v2/COVERAGE.md`. Retagging it to an observable
+  fault mode would buy a passing trial by deleting the record that a deployment
+  case is untestable here.
 
 ## Relevant files
 - Evaluation: `evals/benchmarks/{sre_bench,structured_grading,statistical_eval,
@@ -127,6 +127,9 @@ stays valid; the file it names does not.
 - The re-run is **not poolable** with #28. The agent is byte-identical, so the
   fingerprint and `dataset_sha256` still match and attestation passes — but the
   harness producing the measurements changed. Report it as a new experiment.
+- `holdout` is `frozen: true` in `dataset.json`. Appending to it would
+  invalidate both campaigns' attestations; a wider holdout means a declared
+  v3 split, not an edit. `dev` and `train` are unfrozen and may grow.
 - **Calibration needs ~100 more paid trials** against `minimum_samples=100`;
   the corpus holds 2.
 - Structured grading can never return `PASS`: `causal_chain` sits at
@@ -147,13 +150,13 @@ stays valid; the file it names does not.
   `git add -A`.
 
 ## Next bounded task
-Commit the #73/#74/#75/#4 batch (uncommitted on the Codespace) and rebuild the
-dashboard image — the #75 Rail change is image-baked and inert until then. Stage
-explicit paths only, never `git add -A`, and run the env/`.agents` and
-`^dashboard/` staging guards first. Only after that should a paid run be
-discussed.
+Decide what to do about the three untracked findings under Active problem. The
+first two are free and self-contained: give `expected_evidence` a reader or
+delete it, and stop pointing every trial's `trace_evidence_artifact` at one
+rolling path. Neither needs a paid run. Only after the queue is empty should a
+paid run be discussed.
 
-Invariants the batch set (detail is in the commit, not here):
+Invariants the #73/#74/#75/#4 batch set (detail is in the commits, not here):
 - **Span completeness and cost completeness are separate questions (#73).** A
   run that correctly took no action emits no approval/mutation/verification
   span, so act-path kinds are required only of a run that entered the act path,
@@ -171,7 +174,3 @@ Invariants the batch set (detail is in the commit, not here):
   100% of the injection surface that exists. Holdout, where both paid campaigns
   ran, is 4 scenarios covering 4 of 11 categories. See
   `evals/benchmarks/datasets/v2/COVERAGE.md`.
-
-Housekeeping the refactor left behind: an untracked 1.1 GB `dashboard/` of
-stale `.next`/`node_modules` build output with no tracked files (source is now
-`apps/dashboard/`), safe to `rm -rf`; and the `.venv` editable install above.

@@ -61,18 +61,30 @@ Incident classes with no representation, because no knob produces them:
 Every one of these is an ordinary production incident type. None is testable
 here today.
 
-## One scenario asks for evidence that cannot exist
+## One scenario cannot be diagnosed correctly
 
-`train/bad_deploy_checkout` is the corpus's only `deployment` scenario. Its
-root-cause keywords are `deploy, commit, rollback, regression, error rate,
-release` and it expects "deployment or release evidence identifies the
-checkout-service change" — but its injected fault is `error_rate: 0.5`, the
-same knob four other scenarios use for plain application errors. Nothing
-deploys, so there is no release artefact to find and no commit to revert. The
-agent is asked to identify a change that was never made, and the only evidence
-it can reach says "application error rate".
+The `diagnosis` criterion is an exact match: the agent's structured
+`benchmark_evaluation.diagnosis` must name the scenario's
+`ground_truth_service` and its `taxonomy.fault_mode`, both drawn from the
+closed `FAULT_MODES` vocabulary in `sre_agent.agent_state`. All 22 scenarios'
+fault modes are in that vocabulary, so nothing is capped by a typo — checked.
 
-This is the positive case. Three further scenarios mention deploys
+`train/bad_deploy_checkout` is the corpus's only `deployment` scenario, and its
+ground-truth fault mode is `bad_deploy`. Its injected fault is `error_rate:
+0.5` — the same knob four other scenarios use for plain application errors.
+Nothing deploys. To score a diagnosis hit the agent must emit `bad_deploy` for
+a fault that leaves no deploy, no release artefact and no commit anywhere in
+its reach; the only signal it can actually observe says "elevated error rate".
+Either it fails, or it guesses `bad_deploy` unevidenced and we reward the guess.
+Neither is worth a paid trial.
+
+**This is deliberately left as-is.** Retagging the scenario to a fault mode the
+environment can produce would make it pass, and would also delete the record
+that a deployment case was intended and is not testable here. Bending ground
+truth to fit what the harness can simulate is how a benchmark stops meaning
+anything. It needs a deploy adapter, not a relabel.
+
+Three further scenarios mention deploys in their prose
 (`dev/checkout_db_connection_errors`, `train/payment_dependency_cascade`,
 `train/payment_errors_cascade_to_checkout_latency`), but each makes a *negative*
 claim — "no deploy or config change correlated with the onset" — which the
@@ -82,6 +94,28 @@ absence of any deploy satisfies correctly. Those three are sound as written.
 `forbidden_action_types` for 8. The forbidden half is meaningful: it tests that
 the agent does not reach for a rollback when nothing was released. The allowed
 half is not, because the action has no referent.
+
+## `expected_evidence` is never read
+
+Each scenario carries two to four hand-written assertions of what the agent
+must show — "payment_provider_up reports the dependency unavailable",
+"the two services share no call path, so inventory cannot explain checkout
+memory". They are loaded, validated by `scenario_dataset`, and set on
+`ScenarioSpec.expected_evidence` in `scoring.py`.
+
+Nothing reads the field. Not `scoring.py`, not `structured_grading.py`, not the
+release gate. The corpus's clearest statement of what each scenario proves has
+no effect on any grade. What does grade evidence is `evidence_support`, a
+`_semantic_criterion` that sits at `REQUIRES_CALIBRATION` with no blinded
+judge — so in practice evidence quality is not scored at all, by either route.
+
+`root_cause_keywords` is nearly as inert, and worse, it is mislabelled.
+`scoring.py:35` documents it as "any-of match against the summary". No such
+match exists: the field's only reader is `retrieval_eval.py:471`, which joins
+the keywords into a query string for a retrieval experiment. It plays no part
+in `root_cause_hit`, which comes from the structured `diagnosis` criterion
+above. Anyone reading the dataclass would reasonably believe the agent's prose
+is being checked against these words. It is not.
 
 ## What this means for results already published
 
@@ -109,9 +143,16 @@ In dependency order:
    be marked unrunnable or have its expected evidence rewritten to what the
    error-rate injection actually produces. It currently costs a paid trial to
    record a failure the corpus guarantees in advance.
-3. **Rebalance holdout.** 4 scenarios is too few to separate arms and too narrow
-   to generalise. Growth here is free — it is dataset work, not app work — but
-   only after (1), or the new scenarios draw from the same seven knobs.
+3. **Read `expected_evidence`, or delete it.** A field this carefully written
+   and this thoroughly ignored is worse than no field: it reads like coverage
+   that exists. This is free and self-contained.
+4. **Rebalance holdout — but not by editing it.** 4 scenarios is too few to
+   separate arms and too narrow to generalise. `holdout` is `frozen: true` in
+   `dataset.json`, and that freeze is what makes results on it credible;
+   appending to it would silently invalidate both campaigns' attestations. A
+   wider holdout means a v3 split, declared as new, with the old one left
+   intact. `dev` and `train` are not frozen and can grow freely — though only
+   from the same seven knobs, so they buy power, not breadth.
 
-Steps 2 and 3 cost nothing to do. Step 1 is the real work, and it is
-application work outside this repo.
+Step 3 costs nothing. Step 4 is a methodology decision, not an edit. Step 1 is
+the real work, and it is application work outside this repo.
