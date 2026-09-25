@@ -151,7 +151,13 @@ findings from that batch are not yet tracked defects:
   `git add -A`.
 
 ## Next bounded task
-Decide what to do about the three untracked findings under Active problem. The
+**Before any run: rebuild `sre-agent-api`.** `src/sre_agent/trace_evidence.py`
+is image-baked, so run-scoped trace artifacts (`fb03cdd`) are inert until then
+and a run would still write one shared file. Nothing else needs it; the
+benchmark-side fixes are host code. `docker compose -p platform -f
+infra/local/docker-compose.yaml up -d --no-deps --build sre-agent-api`.
+
+Then decide what to do about the findings under Active problem. The
 first two are free and self-contained: give `expected_evidence` a reader or
 delete it, and stop pointing every trial's `trace_evidence_artifact` at one
 rolling path. Neither needs a paid run. Only after the queue is empty should a
