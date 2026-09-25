@@ -6,99 +6,90 @@ SRE agent. Deterministic policy and durable state—not model prose—control
 writes, approvals, status transitions, and operator-facing claims.
 
 ## Current milestone
-The repository-layout and documentation cleanup is complete on the isolated
-`codex/repository-layout` worktree. The first frontend quality slice is also
-complete: lint is clean, and incident/approval status rendering now matches the
-durable backend enums. Root, incident, service, and first-cluster routing have
-been audited; settings/team wiring and a local operator-flow smoke remain.
+**Benchmarking, sized to the budget.** Backend correctness, console wiring,
+repository layout, and the free coverage preflight are complete. The remaining
+decision is which memory-seeding and ablation work merits paid trials.
 
 ## Current architecture and invariants
-- Application packages live under `src/`, the web application under `apps/`,
-  edge MCP services under `services/`, evaluations under `evals/`, deployment
-  assets under `infra/`, and the Meridian reference integration under
-  `examples/meridian/`.
-- `mutation_gateway.authorize_and_execute()` is the sole fresh-incident,
-  tenant, policy, idempotency, and audit boundary. Successful actions are not
-  replayed after process death; a cleared incident cannot restart remediation.
-- Specialist reads and model turns are bounded; verification remains
-  deterministic. Approval cannot override a hard block.
-- Benchmark evidence is content-addressed to scenario, code, configuration,
-  rubric, model, and trace artifacts. Missing or inconsistent evidence blocks
-  a release claim.
-- Recovery, structured quality, safety, and complete cost traces govern
-  release. Diagnosis-only evidence cannot authorize rollout.
+- Production packages live in `src/`, the console in `apps/`, MCP services in
+  `services/`, evaluations in `evals/`, deployment assets in `infra/`, and the
+  Meridian reference integration in `examples/meridian/`.
+- `mutation_gateway.authorize_and_execute()` is the sole freshness, tenant,
+  policy, idempotency, and audit boundary. Successful actions are not replayed
+  after process death; cleared incidents cannot restart remediation.
+- `policy_gate.decide()` hard-blocks before approval. Planner risk labels and
+  other model/writer input cannot appeal deterministic policy.
+- Org scope is not cluster scope. WebSocket feeds and bare incident routes are
+  org-wide; every consumer must narrow records before rendering them.
+- Tool evidence states the question and observation time it answers. Recovery
+  is the scenario's Prometheus oracle, never the incident status.
+- Slack is the conversational action surface. The console observes and
+  configures; removed HTTP/dashboard chat paths cannot spend an agent turn.
 
 ## Completed or verified work
-- The v2 benchmark has 22 scenarios, independent recovery oracles, structured
-  grading, adversarial cases, confidence evaluation, paired statistics, four
-  ablation arms, and a content-addressed release gate. Dataset v3 adds three
-  split-specific `missing_data` scenarios.
-- Deterministic calibration and one-row statistical-smoke builders validate
-  source/rubric provenance without paid model calls or holdout leakage.
-- One authorized smoke exposed missing namespace context, MCP wrapper parsing,
-  repeated reinvestigation, specialist timeouts, and a configuration-identity
-  defect. Focused fixes are present; the original row remains immutable and
-  non-comparable.
-- Specialist execution is structurally cost-bounded to six model turns per
-  specialist, one reinvestigation round, a recursion backstop, and a 120-second
-  timeout. Limits are clamped, configurable, observable, and fingerprinted.
-- Slack incident threads remain the sole conversation surface; the unused,
-  unbounded `/api/v1/chat` route was removed.
-- The repository now has an OSS-style layout, MIT license, contribution and
-  security policies, a documentation index, current onboarding/operations
-  docs, and regenerated architecture diagrams. Historical design/audit docs
-  are explicitly archived. Eleven orphaned demo screenshots, obsolete
-  handoffs/plans, and the credential-bearing NVIDIA session note were removed.
-- Frontend lint was reduced from 29 errors and 4 warnings to zero without rule
-  suppression. Polling and timestamps initialize safely. Five unmounted
-  duplicate components—including two obsolete dashboard-chat surfaces—were
-  removed and pinned absent by reachability tests.
-- All nine durable incident states have explicit operator labels and tones.
-  Remediation-gate status casing now matches the backend enum, so pending gates
-  and Slack approval instructions cannot silently disappear. The incident row
-  preserves the approval cue when graph status is temporarily unavailable.
-- Root and cluster loading now distinguish API failure from a genuinely empty
-  tenant, preventing an outage from presenting false cluster onboarding or a
-  false missing-cluster redirect.
+- Benchmark v2 has 22 scenarios, recovery oracles, structured grading,
+  adversarial cases, paired statistics, four ablation arms, and a
+  content-addressed release gate.
+- Six authorized `inventory_slow_queries` trials cost about $1 each. Trials
+  1–5 were unresolved; trial 6 was `VERIFIED_RECOVERED` with 958-second MTTR,
+  independently confirmed recovery, and full root-cause, remediation,
+  severity, and safety scores.
+- Evidence fixes now retain specialist output across lanes, distinguish empty
+  results from wrong questions, bind runbook probes to the current query,
+  preserve chronology, and prevent unmeasured or stale evidence claims.
+- Every metric read records `evaluated_at`; deployment specifications identify
+  startup defaults rather than running state; narration cannot write
+  “Unknown” after the reflector established evidence or a causal chain.
+- Specialist execution remains bounded to six turns and one reinvestigation.
+  Open-ended reads are refused and audited without cancelling sibling calls.
+- Console wiring covers all 19 pages with truthful loading/error/empty states,
+  cluster-scoped rendering, incident investigation start, on-demand audit
+  logs, SLO deletion, and no mock data or dead links. All durable incident and
+  remediation-gate statuses match backend enums.
+- The repository has an OSS layout, license, contribution/security policies,
+  indexed current docs, explicitly archived history, and regenerated diagrams.
+  Obsolete screenshots, handoffs, demo chat components, and credential-bearing
+  session notes are removed.
 
 ## Active problem
-The frontend compiles cleanly. No local API/dashboard process is listening, so
-an authenticated operator smoke is pending; starting shared Docker services
-from this worktree could interfere with the active Claude checkout.
+Coverage is measured but partial. The skill corpus has five verified skills
+(crashloop ×2, latency, dependency, OOM) and no `high_error_rate` skill:
+`no_memory` recall is 3/6 dev and 3/4 holdout. Incident memory has zero points,
+so half that arm's intended removal is already absent. Seeding is a prerequisite
+for a defensible memory ablation. Specialists still hit the six-turn ceiling.
 
 ## Relevant files
-- Frontend: `apps/dashboard/`.
-- Runtime: `src/sre_agent/`; persistence/API models: `src/backend/`.
-- Evaluation: `evals/benchmarks/`; public evidence:
-  `docs/ai/AI_RESULTS.md`.
-- Local and production deployment: `infra/`; edge services:
-  `services/edge_mcp_servers/`.
-- Layout and documentation contracts: `tests/test_docs_truthfulness.py`,
-  `tests/test_module_reachability.py`, and `tests/test_service_topology.py`.
+- Evaluation: `evals/benchmarks/{sre_bench,structured_grading,
+  ablation_coverage,calibrate_semantic_floor}.py`.
+- Evidence/runtime: `src/sre_agent/{agent_nodes,narrative,runbook_probe,
+  runbook_queries,skill_store,investigation_limits}.py`.
+- MCP evidence: `services/edge_mcp_servers/mcp_servers/{prometheus_real,
+  loki_real,k8s_real}/server.py`.
+- Console: `apps/dashboard/app/(dashboard)/clusters/[id]/`.
 
 ## Verification commands and latest results
-- `uv run pytest -q` → **2122 passed, 7 skipped** (2026-09-24).
-- `bash scripts/dev/quickstart_smoke.sh` → passed (secret scan, compile,
-  documentation contracts, Helm RBAC, and WebSocket defaults).
-- Release fixtures reproduce with `python -m benchmarks.make_release_fixtures
-  --check`; all shell files pass `bash -n`; Docker Compose config is valid.
-- Dashboard `npm run lint`, `npx tsc --noEmit`, and `npm run build` pass.
-- Latest frontend wiring contract slice → **52 passed** plus Ruff clean.
-- `git diff --check` passes; all Mermaid sources have regenerated SVG peers.
+- `uv run pytest -q` → 2,395 passed, 6 skipped.
+- `bash scripts/ci/check_python_quality.sh` → lock, critical Ruff, curated
+  mypy, and compile checks passed.
+- Dashboard ESLint, TypeScript, and production build passed for all 19 pages.
+- Quickstart smoke, secret scan, release-fixture freshness, shell syntax, and
+  both Compose configurations passed.
+- Free semantic calibration measured a 0.764 wrong-class ceiling and 0.851
+  same-class floor; the configured 0.8 threshold rejected 161/161 wrong-class
+  pairs and retained 70/70 same-class pairs. No model call was made.
 
 ## Known blockers or risks
-- No paid benchmark campaign is authorized. Existing smoke evidence is not a
-  quality or ablation claim; semantic criteria still need two independent
-  blinded labelers, adjudication, and measured agreement.
-- Dataset v3 needs the Meridian image rebuilt and deployed; measured tenant
-  memory lacks a provenance-pinned incident corpus for a valid memory ablation.
-- Rotate the Anthropic key, Slack token, and NVIDIA credential previously
-  exposed in local output or deleted documentation. Removing a file does not
-  remove secrets from Git history; rewrite published history if applicable.
-- Never stage `.agents/`, `.env.local-backup-20260910`, or `.env.bak-*`; never
-  use `git add -A`.
+- Rough paid tiers of $88–$632 are refused. No run beyond trial 6 is authorized.
+- Semantic grading still needs calibrated blinded labels; two corpus records
+  cannot satisfy a 100-sample floor.
+- Dataset v3 lacks the rebuilt Meridian `metrics_enabled` image. Incident
+  memory remains inert until a provenance-pinned corpus exists.
+- Rotate exposed Anthropic, Slack, and NVIDIA credentials; deleting files does
+  not remove secrets from published history.
+- Never stage `.agents/`, environment backups, or use `git add -A`.
 
 ## Next bounded task
-Audit settings/team form fields and error states against their response schemas.
-Then run a local authenticated smoke when isolated services and test credentials
-are available. Keep paid benchmarks paused until explicit authorization.
+Get repository-layout PR #56 through CI and review, then merge it. Afterward,
+choose whether to seed missing `high_error_rate` skills deterministically at
+$0 or through paid train investigations, and whether the 8-trial holdout
+`full` versus `no_memory` comparison merits about $8. No paid run is authorized.

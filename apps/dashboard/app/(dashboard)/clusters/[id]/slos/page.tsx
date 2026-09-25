@@ -30,6 +30,9 @@ export default function SlosPage() {
   const [form, setForm] = useState(emptyForm)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -128,6 +131,26 @@ export default function SlosPage() {
       setCreateError(detail || (editingId ? "Could not save changes." : "Could not create SLO."))
     } finally {
       setCreating(false)
+    }
+  }
+
+  const deleteSlo = async (slo: SLO) => {
+    setDeletingId(slo.id)
+    setDeleteError(null)
+    try {
+      await api.delete(`/clusters/${id}/slos/${slo.id}`)
+      setConfirmDelete(null)
+      // Editing the row that just went away would PATCH a 404 on save.
+      if (editingId === slo.id) closeForm()
+      await load()
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      // The delete is all-or-nothing server-side, so on any failure the
+      // objective is still there — say that rather than leaving the operator
+      // to guess from a row that did not disappear.
+      setDeleteError(detail ?? `Could not delete “${slo.name}”. It is unchanged.`)
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -231,6 +254,22 @@ export default function SlosPage() {
         <>
           <SectionTitle title="Objectives" meta={`${rows.length} tracked`} action={newSloButton} />
           {form_panel}
+          {deleteError && (
+            <div
+              className="sx-empty"
+              style={{
+                textAlign: "left",
+                padding: 12,
+                marginTop: 0,
+                marginBottom: 12,
+                borderColor: "var(--crit-t)",
+                color: "var(--crit)",
+                fontSize: 12,
+              }}
+            >
+              {deleteError}
+            </div>
+          )}
           <table className="sx-tbl">
             <thead>
               <tr>
@@ -242,7 +281,7 @@ export default function SlosPage() {
                   Error budget
                 </th>
                 <th>Status</th>
-                <th></th>
+                <th style={{ width: 210 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -268,14 +307,54 @@ export default function SlosPage() {
                     <span className={`sx-badge ${r.breaching ? "crit" : r.tone}`}>{r.breaching ? "Breaching" : r.tone === "ok" ? "Healthy" : "At risk"}</span>
                   </td>
                   <td>
-                    <button
-                      type="button"
-                      className="sx-btn"
-                      style={{ flex: "none", padding: "3px 9px", fontSize: 11 }}
-                      onClick={() => startEdit(r.slo)}
-                    >
-                      Edit
-                    </button>
+                    {confirmDelete === r.slo.id ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                        <span style={{ fontSize: 10.5, color: "var(--ink3)", lineHeight: 1.4, textAlign: "right" }}>
+                          Delete this objective and its recorded budget history? Alerting is unaffected.
+                        </span>
+                        <button
+                          type="button"
+                          className="sx-btn"
+                          style={{ flex: "none", padding: "3px 9px", fontSize: 11, color: "var(--crit)", borderColor: "var(--crit-t)" }}
+                          onClick={() => deleteSlo(r.slo)}
+                          disabled={deletingId === r.slo.id}
+                        >
+                          {deletingId === r.slo.id ? "Deleting…" : "Delete"}
+                        </button>
+                        <button
+                          type="button"
+                          className="sx-btn"
+                          style={{ flex: "none", padding: "3px 9px", fontSize: 11 }}
+                          onClick={() => setConfirmDelete(null)}
+                          disabled={deletingId === r.slo.id}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button
+                          type="button"
+                          className="sx-btn"
+                          style={{ flex: "none", padding: "3px 9px", fontSize: 11 }}
+                          onClick={() => startEdit(r.slo)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="sx-btn"
+                          style={{ flex: "none", padding: "3px 9px", fontSize: 11 }}
+                          aria-label={`Delete ${r.slo.name}`}
+                          onClick={() => {
+                            setDeleteError(null)
+                            setConfirmDelete(r.slo.id)
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

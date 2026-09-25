@@ -39,21 +39,12 @@ router = APIRouter(
 # Dashboard Endpoints (User-triggered)
 # ====================================
 
-@router.post("/{cluster_id}/jobs/trigger", response_model=schemas.JobResponse)
-async def trigger_job(
-    cluster_id: uuid.UUID,
-    job: schemas.JobCreate,
-    user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db)
-):
-    """Trigger a new job for a cluster (called from Dashboard)."""
-    # Verify cluster belongs to user's org
-    cluster = await crud.get_cluster_by_id(db, cluster_id)
-    if not cluster or cluster.org_id != user.org_id:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-    
-    new_job = await crud.create_job(db, cluster_id, job)
-    return new_job
+# A job is enqueued by the alert pipeline through `enqueue_and_kick`, never by
+# hand. The route that used to sit here wrote a PENDING investigation with a
+# NULL payload; `claim_jobs` selects on status and job_type alone, so the worker
+# claimed it, found no `handler`, and dead-lettered it after three attempts. An
+# investigation with no incident behind it has nothing to investigate, so the
+# fix is the absence, not a validation branch.
 
 
 @router.get("/{cluster_id}/jobs", response_model=list[schemas.JobResponse])

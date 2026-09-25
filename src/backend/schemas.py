@@ -293,10 +293,6 @@ class IncidentTranscriptResponse(BaseModel):
     events: List[IncidentTimelineEventResponse]
 
 
-class IncidentMessageRequest(BaseModel):
-    message: str
-
-
 class ApprovalDecisionRequest(BaseModel):
     approval_request_id: uuid.UUID
     action_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
@@ -363,10 +359,6 @@ class SLOStatusResponse(BaseModel):
 # ----------------------------------------------------------------------
 
 from backend.models import JobStatus, JobType
-
-class JobCreate(BaseModel):
-    job_type: JobType = JobType.INVESTIGATION
-    payload: Optional[str] = None  # JSON string
 
 class RunManifestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

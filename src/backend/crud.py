@@ -773,21 +773,6 @@ async def delete_cluster(
 # ----------------------------------------------------------------------
 
 
-async def create_job(
-    db: AsyncSession, cluster_id: uuid.UUID, job: schemas.JobCreate
-) -> models.Job:
-    db_job = models.Job(
-        cluster_id=cluster_id,
-        job_type=job.job_type,
-        payload=job.payload,
-        status=models.JobStatus.PENDING,
-    )
-    db.add(db_job)
-    await db.commit()
-    await db.refresh(db_job)
-    return db_job
-
-
 async def get_pending_job_for_cluster(
     db: AsyncSession, cluster_id: uuid.UUID
 ) -> Optional[models.Job]:

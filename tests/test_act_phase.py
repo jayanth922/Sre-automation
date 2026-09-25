@@ -198,13 +198,34 @@ def test_critical_incident_requires_approval():
 
 
 def test_alert_namespace_cannot_downgrade_production_policy():
+    """The alert's labels are workload-controlled; the environment comes from
+    operator-owned metadata and fails closed to production.
+
+    The observable is scale-to-0, refused on PROD by `policy_engine` Rule 3.
+    It used to be a medium-risk restart, until Rule 1 stopped hard-blocking
+    those (tests/test_production_restart_authorization.py) -- a restart now
+    lands on REQUIRES_APPROVAL in *either* environment, so it can no longer
+    carry this assertion at all.
+    """
     alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "dev"})
     plan = FakePlan(
-        [FakeAction("restart", "inventory-service", {"namespace": "demo-app"})],
+        [
+            FakeAction(
+                "scale",
+                "inventory-service",
+                {"namespace": "demo-app", "replicas": 0},
+            )
+        ],
         risk_level="medium",
     )
     report = build_act_report(_state(alert, plan))
     assert report.aggregate_decision == "blocked"
+
+    # ...and the rule really is environment-sensitive, so the block above is
+    # the label being ignored rather than a refusal that would happen anyway.
+    downgraded = _state(alert, plan)
+    downgraded["metadata"]["cluster_environment"] = "dev"
+    assert build_act_report(downgraded).aggregate_decision != "blocked"
 
 
 def test_mixed_plan_executes_autonomous_holds_the_rest():

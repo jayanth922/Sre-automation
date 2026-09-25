@@ -24,11 +24,14 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .prompt_guard import UNTRUSTED_EVIDENCE_POLICY, wrap_untrusted
+from .runbook_probe import probe_window
+from .runbook_queries import extract_metric_names, extract_promql
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +208,99 @@ def _format_prior_findings(prior_findings: Optional[Dict[str, Any]]) -> str:
     return wrap_untrusted("prior_specialist_findings", "\n\n".join(blocks))
 
 
+def runbook_text_for_alert(
+    alert_context: Any, runbook_brief: Optional[str] = None
+) -> str:
+    """The runbook the graph passed, or the one enriched onto the alert.
+
+    Exported because the metrics lane probes the runbook's own PromQL before
+    the brief exists, and the probe and the brief must read the same text.
+    """
+    data = _alert_to_dict(alert_context)
+    annotations = data.get("annotations") or {}
+    return (runbook_brief or "").strip() or _safe_text(
+        annotations.get("runbook_context")
+    ).strip()
+
+
+def alert_start_time(alert_context: Any) -> Optional[datetime]:
+    """When the alert says it started, as a UTC datetime, or None.
+
+    Tolerant on purpose: the stamp arrives as RFC3339 from Alertmanager, as
+    a datetime from the ORM and occasionally as epoch seconds from a test
+    fixture, and an unparsable stamp must degrade to "no window hint"
+    rather than raise inside a brief.
+    """
+    data = _alert_to_dict(alert_context)
+    raw = data.get("starts_at") if isinstance(data, dict) else None
+    if raw is None:
+        raw = getattr(alert_context, "starts_at", None)
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = _safe_text(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _runbook_query_hints_block(runbook_text: str) -> str:
+    """Quote the runbook's own PromQL back to the specialist as work to do.
+
+    ``get_golden_signals`` is assembled from the cluster's single configured
+    latency histogram, so for an alert whose signal is a different histogram
+    it returns a healthy-looking series and the lane concludes nothing is
+    wrong. That is what happened on ``inventory_slow_queries``: the runbook
+    names ``db_query_duration_seconds_bucket`` three times, the recovery
+    oracle probes it, and no specialist turn ever asked for it.
+
+    Extraction is pure text matching, so this adds a few hundred characters
+    to one specialist's user message and no model call at all.
+    """
+    queries = extract_promql(runbook_text)
+    # The bare-name list is a fallback for a runbook that names its metric
+    # but shows no query. When a query is present it already names its own
+    # metric, and a second list scraped from prose mostly carries log-pattern
+    # strings ("db_pool_exhausted") that are not metrics at all.
+    metrics = [] if queries else extract_metric_names(runbook_text)
+    if not queries and not metrics:
+        return ""
+    body: List[str] = []
+    if queries:
+        body.append("Queries stated by the runbook:")
+        body.extend(f"  {query}" for query in queries)
+    if metrics:
+        body.append("Metrics named by the runbook: " + ", ".join(metrics))
+    payload = "\n".join(body)
+    return "\n".join(
+        [
+            "Run these before any exploratory query. get_golden_signals is "
+            "built from this cluster's one configured latency histogram, so "
+            "it cannot answer an alert whose signal is a different metric. "
+            "Pass the expressions below to get_metric / get_metric_range "
+            "exactly as written -- same metric, same label matchers, same "
+            "aggregation. Only the time window is yours to choose, and it "
+            "must end at the present, not at the alert timestamp. Do not "
+            "add, rename or drop a label matcher: the runtime already "
+            "scopes every query to this tenant's namespace, and swapping "
+            "job= for service= (or the reverse) turns a matching series "
+            "into an empty result. If a verbatim expression returns no "
+            "data, report that explicitly -- an empty result for the "
+            "runbook's own metric is itself a finding, not a reason to "
+            "relabel it or to fall back to the golden signals.",
+            wrap_untrusted("runbook_queries", payload, max_len=len(payload) + 1),
+        ]
+    )
+
+
 def build_specialist_task_brief(
     *,
     specialist_role: str,
@@ -214,6 +310,8 @@ def build_specialist_task_brief(
     runbook_brief: Optional[str] = None,
     prior_findings: Optional[Dict[str, Any]] = None,
     namespace_scope: Optional[str] = None,
+    runbook_query_hints: bool = False,
+    runbook_probe: Optional[str] = None,
 ) -> str:
     """Build a rich task brief that the specialist LLM receives as its user prompt.
 
@@ -251,9 +349,7 @@ def build_specialist_task_brief(
     # The runbook is the operator's own answer to this alert. It is passed
     # explicitly by the graph, but fall back to the enriched annotation so a
     # caller that predates this parameter still gets it.
-    runbook_text = (runbook_brief or "").strip() or _safe_text(
-        annotations.get("runbook_context")
-    ).strip()
+    runbook_text = runbook_text_for_alert(alert_context, runbook_brief)
     enforced_namespace = _safe_text(namespace_scope).strip()
 
     lines: List[str] = []
@@ -282,6 +378,17 @@ def build_specialist_task_brief(
             wrap_untrusted("runbook", runbook_text, max_len=len(runbook_text) + 1)
         )
         lines.append("")
+        if runbook_query_hints:
+            hints_block = _runbook_query_hints_block(runbook_text)
+            if hints_block:
+                lines.append(hints_block)
+                lines.append("")
+        # Measured before the first model turn, so the lane starts from the
+        # runbook's own numbers rather than from its own choice of window.
+        probe_block = (runbook_probe or "").strip()
+        if probe_block:
+            lines.append(probe_block)
+            lines.append("")
 
     prior_block = _format_prior_findings(prior_findings)
     if prior_block:
@@ -335,10 +442,27 @@ def build_specialist_task_brief(
         "Do NOT invent labels, do NOT use placeholder names like 'web-service'."
     )
     if starts_at:
+        started = alert_start_time(alert_context)
+        window_hint = ""
+        if started is not None:
+            window_start, window_end = probe_window(
+                started, now=datetime.now(timezone.utc)
+            )
+            window_hint = (
+                " Concretely: start_time="
+                f"{window_start.isoformat(timespec='seconds')}, end_time="
+                f"{window_end.isoformat(timespec='seconds')} or later."
+            )
         lines.append(
-            "2. Query the time window AROUND the alert (5-10 minutes before "
-            f"and after {starts_at}). Do not query 'now' — the issue may "
-            "have already self-resolved by the time you look."
+            "2. Query from a few minutes before the alert through the "
+            f"present. The alert is stamped {starts_at}; an instant query "
+            "evaluated AT that stamp reads a rate or histogram window "
+            "lying almost entirely before the fault, so a live regression "
+            "reads healthy. Prefer get_metric_range across the whole "
+            "incident, and for an instant get_metric leave `time` unset so "
+            "it evaluates at the present. Never pass the alert timestamp "
+            f"as the evaluation instant.{window_hint} Ending at the "
+            "present also shows a symptom that has already self-resolved."
         )
     else:
         lines.append(
@@ -921,6 +1045,86 @@ def _fallback_finding(agent_name: str, raw_response: str) -> str:
     return f"{label} here — {snippet}"
 
 
+def _format_reflector_conclusion(analysis: Any) -> str:
+    """The reflector's settled conclusion, rendered for the narrator.
+
+    Returns "" when the reflector did not actually settle on one. `hypothesis`
+    is a required field, so its mere presence proves nothing; what separates a
+    conclusion from a guess is whether anything supports it. ReflectorAnalysis
+    says so itself: "A hypothesis with no references cannot be checked by
+    anyone." An unsupported hypothesis is therefore reported as no conclusion,
+    and the narrator is told that "Unknown" is the correct answer.
+    """
+    if analysis is None:
+        return ""
+    hypothesis = _clean(_safe_text(getattr(analysis, "hypothesis", "") or ""))
+    evidence = list(getattr(analysis, "evidence", None) or [])
+    chain = list(getattr(analysis, "causal_chain", None) or [])
+    if not hypothesis or not (evidence or chain):
+        return ""
+
+    def _field(item: Any, name: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    lines = [f"Hypothesis: {hypothesis}"]
+    service = getattr(analysis, "affected_service", None)
+    if service:
+        lines.append(f"Affected service: {service}")
+    fault_mode = getattr(analysis, "fault_mode", None)
+    if fault_mode:
+        lines.append(f"Fault mode: {fault_mode}")
+    confidence = getattr(analysis, "confidence", None)
+    if isinstance(confidence, (int, float)):
+        lines.append(f"Reflector confidence: {confidence:.2f} (self-reported)")
+
+    for idx, link in enumerate(chain[:10], 1):
+        cause = _field(link, "cause")
+        effect = _field(link, "effect")
+        if cause or effect:
+            lines.append(f"Causal link {idx}: {cause or '?'} -> {effect or '?'}")
+
+    for ref in evidence[:12]:
+        claim = _field(ref, "claim")
+        if claim:
+            source = _field(ref, "source") or "unknown source"
+            lines.append(f"Evidence ({source}): {claim}")
+
+    for unknown in list(getattr(analysis, "unknowns", None) or [])[:6]:
+        lines.append(f"Still unresolved: {unknown}")
+    return "\n".join(lines)
+
+
+def _reflector_root_cause_rule(settled: bool) -> str:
+    """The narrator must not contradict the diagnosis it ships beside."""
+    if settled:
+        return (
+            "\n- THE ROOT CAUSE IS ALREADY SETTLED — DO NOT WRITE 'UNKNOWN'. "
+            "The reflector reviewed the specialists' evidence and reached a "
+            "supported conclusion, reproduced below as REFLECTOR CONCLUSION. It "
+            "ships to the benchmark and the dashboard in the SAME payload as "
+            "the words you are writing now. Past versions of you wrote 'Root "
+            "cause: Unknown' directly alongside a structured diagnosis naming a "
+            "specific fault mode on a specific service with twelve pieces of "
+            "supporting evidence; the on-call engineer reads your prose first "
+            "and stood down on it. '## Most likely root cause' MUST state that "
+            "hypothesis and name its affected service and fault mode. You are "
+            "free to qualify it, note what is still unresolved, or disagree "
+            "with it outright — say which and give your reason. What you may "
+            "NOT do is report that no root cause was found when one was."
+        )
+    return (
+        "\n- The reflector did NOT reach a supported conclusion here: either no "
+        "hypothesis, or one with no evidence behind it. 'Unknown' is then the "
+        "correct and required answer. Say plainly under '## Most likely root "
+        "cause' that the investigation did not establish one, and put the "
+        "checks that would establish it under '## Next steps to resolve'. Do "
+        "not manufacture a cause out of the alert's own prose to fill the "
+        "section."
+    )
+
+
 async def narrate_supervisor_summary(
     llm: Any,
     *,
@@ -928,6 +1132,7 @@ async def narrate_supervisor_summary(
     alert_context: Any,
     agent_results: Dict[str, Any],
     tool_failures: Optional[Dict[str, List[Dict[str, str]]]] = None,
+    reflector_analysis: Any = None,
 ) -> str:
     fallback = _fallback_summary(objective, agent_results)
     if not llm:
@@ -1013,6 +1218,10 @@ async def narrate_supervisor_summary(
         "check that would settle it (`kubectl describe pod` for an OOMKill, "
         "the deployment's `resources.limits` for a limit)."
     )
+
+    reflector_block = _format_reflector_conclusion(reflector_analysis)
+    system += _reflector_root_cause_rule(bool(reflector_block))
+
     user = (
         f"Incident objective: {objective}\n\n"
         f"Alert payload:\n{alert_block}\n\n"
@@ -1032,7 +1241,15 @@ async def narrate_supervisor_summary(
         f"Actionable label hints from the alert: {label_hints_block}\n\n"
         f"Evidence gathered (raw; attribute each item to the source named in its "
         f"heading):\n{findings_block}\n\n"
-        "Now write the wrap-up message."
+        + (
+            f"REFLECTOR CONCLUSION — the settled diagnosis that ships in the same "
+            f"payload as your wrap-up. Your '## Most likely root cause' must "
+            f"state it, or explain why you disagree:\n"
+            f"{wrap_untrusted('reflector_conclusion', reflector_block)}\n\n"
+            if reflector_block
+            else ""
+        )
+        + "Now write the wrap-up message."
     )
     out = await _invoke_llm(llm, system, user)
     return out or fallback

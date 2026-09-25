@@ -287,7 +287,8 @@ def test_a_confidence_without_a_graded_outcome_is_not_recorded(monkeypatch, tmp_
     assert _rows(tmp_path / "confidence.jsonl") == []
 
 
-def test_nothing_is_written_without_the_experiment_env(monkeypatch, tmp_path):
+def test_no_trial_row_is_written_without_the_experiment_env(monkeypatch, tmp_path):
+    """A trial row only means anything against its pair in another arm."""
     module = _load_runner(monkeypatch, tmp_path)
     spec = module.SCENARIOS[0]
     assert module.STATISTICAL_RECORDING is False
@@ -299,11 +300,79 @@ def test_nothing_is_written_without_the_experiment_env(monkeypatch, tmp_path):
         latency_seconds=1.0,
         trace_completeness=dict(_COMPLETE_TRACE),
     )
+
+    assert not (tmp_path / "trials.jsonl").exists()
+
+
+def test_a_confidence_observation_does_not_need_a_paired_experiment(
+    monkeypatch, tmp_path
+):
+    """The bug that emptied the corpus.
+
+    Both records hung off STATISTICAL_RECORDING, and `BENCH_SCENARIOS` raises
+    rather than run beside it -- so every single-scenario trial measured a real
+    (confidence, outcome) pair and dropped it unwritten. A reliability point
+    needs a fingerprint and an id; the schema asks for nothing else.
+    """
+    module = _load_runner(monkeypatch, tmp_path)
+    spec = module.SCENARIOS[0]
+    assert module.STATISTICAL_RECORDING is False
+    assert module.CONFIDENCE_RECORDING is True
+
     module._record_confidence_observations(
         spec, _resolved_score(spec.name), trial_index=1
     )
 
-    assert not (tmp_path / "trials.jsonl").exists()
+    rows = _rows(tmp_path / "confidence.jsonl")
+    assert {row["task"] for row in rows} == {"diagnosis", "remediation"}
+    assert all(row["evidence_source"] == "live_benchmark" for row in rows)
+
+
+def test_the_derived_fingerprint_satisfies_the_record_schema(monkeypatch, tmp_path):
+    """The corpus is grouped by this value and both writers parse it as a
+    lowercase SHA-256, so a derived one has to be shaped like a typed one."""
+    module = _load_runner(monkeypatch, tmp_path)
+    fingerprint = module._confidence_fingerprint()
+
+    assert len(fingerprint) == 64
+    assert all(character in "0123456789abcdef" for character in fingerprint)
+    # Derived from the run, so it is stable within it.
+    assert fingerprint == module._confidence_fingerprint()
+
+
+def test_a_typed_fingerprint_still_wins(monkeypatch, tmp_path):
+    module = _recording(monkeypatch, tmp_path)
+    assert module._confidence_fingerprint() == FINGERPRINT
+
+
+def test_repeated_single_trials_stay_readable_as_one_corpus(monkeypatch, tmp_path):
+    """`load_confidence_records` refuses a duplicate (task, pair_id,
+    fingerprint) outright, so an id that repeats across runs does not cost one
+    sample -- it makes every sample unreadable. `make_pair_id` is deterministic
+    in the trial index, which is 1 for every single-trial run.
+    """
+    from sre_agent.confidence_calibration import load_confidence_records
+
+    corpus = tmp_path / "confidence.jsonl"
+    for _ in range(3):
+        module = _load_runner(monkeypatch, tmp_path)
+        module._record_confidence_observations(
+            module.SCENARIOS[0], _resolved_score(module.SCENARIOS[0].name), trial_index=1
+        )
+
+    records, _ = load_confidence_records(corpus)
+    assert len(records) == 6
+    assert len({record.pair_id for record in records}) == 3
+
+
+def test_confidence_recording_can_be_turned_off(monkeypatch, tmp_path):
+    module = _load_runner(monkeypatch, tmp_path, BENCH_RECORD_CONFIDENCE="0")
+    assert module.CONFIDENCE_RECORDING is False
+
+    module._record_confidence_observations(
+        module.SCENARIOS[0], _resolved_score(module.SCENARIOS[0].name), trial_index=1
+    )
+
     assert not (tmp_path / "confidence.jsonl").exists()
 
 

@@ -320,3 +320,142 @@ def test_a_renamed_collection_initializer_also_fails_closed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="_ensure_collection"):
         ablation_coverage.open_store_read_only()
+
+
+# --- The split a published number is reported on ------------------------------
+
+
+def _stop_at_the_dataset_load(monkeypatch):
+    """Capture how main() asks for the split, then stop before Qdrant."""
+    seen: Dict[str, Any] = {}
+
+    def fake_load_dataset(root, version, split, **kwargs):
+        seen["split"] = split
+        seen.update(kwargs)
+        raise RuntimeError("stop here; the load is all these tests need")
+
+    monkeypatch.setattr(ablation_coverage, "load_dataset", fake_load_dataset)
+    monkeypatch.delenv("BENCH_ALLOW_HOLDOUT", raising=False)
+    monkeypatch.delenv("BENCH_DATASET_SPLIT", raising=False)
+    return seen
+
+
+def test_the_holdout_split_can_be_assessed_at_all(monkeypatch):
+    """`load_dataset` refuses the protected split unless asked, and this was
+    calling it without asking — so the one split a published number is
+    reported on was the one split the preflight could never check."""
+    seen = _stop_at_the_dataset_load(monkeypatch)
+
+    exit_code = ablation_coverage.main(
+        [
+            "--split",
+            "holdout",
+            "--allow-holdout",
+            "--organization-id",
+            "org-1",
+            "--cluster-id",
+            "cluster-1",
+        ]
+    )
+
+    assert exit_code == ablation_coverage.EXIT_ERROR  # the stub raised
+    assert seen["split"] == "holdout"
+    assert seen["allow_holdout"] is True
+
+
+def test_the_holdout_stays_protected_unless_it_is_asked_for(monkeypatch):
+    """Assessing it reveals which holdout scenarios learned memory can reach,
+    so it takes the same explicit opt-in `sre_bench` requires."""
+    seen = _stop_at_the_dataset_load(monkeypatch)
+
+    ablation_coverage.main(
+        ["--organization-id", "org-1", "--cluster-id", "cluster-1"]
+    )
+
+    assert seen["allow_holdout"] is False
+
+
+def test_the_environment_grants_holdout_access_the_same_way_the_benchmark_does(
+    monkeypatch,
+):
+    """BENCH_ALLOW_HOLDOUT, so a preflight and its run are configured alike."""
+    seen = _stop_at_the_dataset_load(monkeypatch)
+    monkeypatch.setenv("BENCH_ALLOW_HOLDOUT", "true")
+
+    ablation_coverage.main(
+        [
+            "--split",
+            "holdout",
+            "--organization-id",
+            "org-1",
+            "--cluster-id",
+            "cluster-1",
+        ]
+    )
+
+    assert seen["allow_holdout"] is True
+
+
+# --- A hit, and a hit that is about this incident -----------------------------
+
+
+@dataclass
+class _ScoredSkill:
+    skill_id: str
+    signature: Any
+
+
+def test_a_retrieved_skill_is_not_yet_a_relevant_one():
+    """The semantic path compares a cosine similarity against `propose_skills`'
+    0.5, a number written for `match_score`'s scale, so it returns skills from
+    unrelated failure classes. `skill_hit` counts those; `signature_hit` is the
+    number a "learned memory helped" claim rests on."""
+    scenarios = [_Scenario("oom_pair", {"alertname": "A"})]
+    report = ablation_coverage.assess_split(
+        scenarios,
+        propose=lambda probe: [
+            _ScoredSkill("latency-inventory-service", _Signature("latency"))
+        ],
+        signature_of=lambda probe: _Signature("oom"),
+        incident_points=0,
+        path="semantic",
+        score_of=lambda signature, skill: (
+            1.0 if signature.failure_class == skill.signature.failure_class else 0.0
+        ),
+    )
+
+    assert report["skill_hits"] == 1
+    assert report["signature_hits"] == 0
+    assert report["pairs"][0]["signature_matches"] == []
+    assert any("Weaker than that reads" in line
+               for line in ablation_coverage.verdict_lines(report))
+
+
+def test_a_skill_from_the_scenarios_own_failure_class_counts():
+    scenarios = [_Scenario("oom_pair", {"alertname": "A"})]
+    report = ablation_coverage.assess_split(
+        scenarios,
+        propose=lambda probe: [_ScoredSkill("oom-checkout-service", _Signature("oom"))],
+        signature_of=lambda probe: _Signature("oom"),
+        incident_points=0,
+        path="semantic",
+        score_of=lambda signature, skill: (
+            1.0 if signature.failure_class == skill.signature.failure_class else 0.0
+        ),
+    )
+
+    assert report["signature_hits"] == 1
+    assert report["pairs"][0]["signature_matches"] == ["oom-checkout-service"]
+    assert not any("Weaker than that reads" in line
+                   for line in ablation_coverage.verdict_lines(report))
+
+
+def test_ungraded_relevance_is_unknown_and_never_reported_as_zero():
+    """A zero here would read like a finding — that the corpus holds nothing
+    relevant — when it only means nothing checked."""
+    report = _assess([_Scenario("p", {"alertname": "A"})], hits_for=("A",))
+
+    assert report["skill_hits"] == 1
+    assert report["signature_hits"] is None
+    assert report["pairs"][0]["signature_hit"] is None
+    assert any("not graded" in line for line in ablation_coverage.verdict_lines(report))

@@ -33,13 +33,21 @@ export default function InsightsPage() {
   const [askErr, setAskErr] = useState(false)
 
   // Latest health snapshot for this cluster, plus a recent feed.
+  //
+  // The insights stream is org-scoped, not cluster-scoped: it carries every
+  // cluster this organization can see. Narrowing it to the cluster in the URL
+  // is this page's job. It used to fall back to `snapshots[0]` when this
+  // cluster had not swept yet, which rendered another cluster's services,
+  // error rates and p95s under this cluster's heading — and "Recent sweeps"
+  // below was never narrowed at all. A cluster with no snapshot has no
+  // snapshot; the empty state already says so honestly.
   const snapshots = useMemo(() => {
     return events
       .map((e) => e.payload as unknown as HealthSnapshot)
-      .filter((p) => p && p.kind === "cluster_health")
+      .filter((p) => p && p.kind === "cluster_health" && p.cluster_id === id)
       .reverse()
-  }, [events])
-  const latest = snapshots.find((s) => s.cluster_id === id) ?? snapshots[0]
+  }, [events, id])
+  const latest = snapshots[0]
 
   const ask = async () => {
     const question = q.trim()

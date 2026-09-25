@@ -77,23 +77,22 @@ async def test_closed_incident_follow_up_queues_same_thread(monkeypatch):
         )
         return event
 
-    async def fake_get_cluster_by_id(db, requested_cluster_id):
-        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
-
     def fake_create_task(coro):
         scheduled["coroutine"] = coro
         coro.close()
         return SimpleNamespace()
 
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
-    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control.asyncio, "create_task", fake_create_task)
 
-    response = await mission_control.send_incident_message(
-        str(incident_id),
-        schemas.IncidentMessageRequest(message="What changed recently after the deploy?"),
-        user=user,
-        db=fake_db,
+    cluster = SimpleNamespace(id=cluster_id, org_id=org_id, name="cluster-a")
+    response = await mission_control.handle_incident_message(
+        fake_db,
+        incident,
+        cluster,
+        "What changed recently after the deploy?",
+        source="slack",
+        user_id=str(user.id),
     )
 
     assert response["status"] == "FOLLOW_UP_QUEUED"
@@ -147,9 +146,6 @@ async def test_closed_incident_chat_only_message_gets_immediate_reply(monkeypatc
         )
         return event
 
-    async def fake_get_cluster_by_id(db, requested_cluster_id):
-        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
-
     def fake_create_task(coro):
         scheduled["coroutine"] = coro
         coro.close()
@@ -164,16 +160,18 @@ async def test_closed_incident_chat_only_message_gets_immediate_reply(monkeypatc
         return None
 
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
-    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control.asyncio, "create_task", fake_create_task)
     monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
     monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
 
-    response = await mission_control.send_incident_message(
-        str(incident_id),
-        schemas.IncidentMessageRequest(message="Thanks"),
-        user=user,
-        db=fake_db,
+    cluster = SimpleNamespace(id=cluster_id, org_id=org_id, name="cluster-a")
+    response = await mission_control.handle_incident_message(
+        fake_db,
+        incident,
+        cluster,
+        "Thanks",
+        source="slack",
+        user_id=str(user.id),
     )
 
     # A chat-only message ("Thanks") is answered immediately from existing
@@ -212,9 +210,6 @@ async def test_direct_reply_is_traced_under_the_incident_session(monkeypatch):
                                 pending_supervisor=False, handled_at=None):
         return SimpleNamespace(id=uuid.uuid4())
 
-    async def fake_get_cluster_by_id(db, requested_cluster_id):
-        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
-
     async def fake_build_chat_reply(message, incident, cluster, org_langfuse=None):
         return "It is still remediating."
 
@@ -231,16 +226,18 @@ async def test_direct_reply_is_traced_under_the_incident_session(monkeypatch):
     from sre_agent import tracing
 
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
-    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
     monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
     monkeypatch.setattr(tracing, "trace_run", fake_trace_run)
 
-    response = await mission_control.send_incident_message(
-        str(incident_id),
-        schemas.IncidentMessageRequest(message="What is the status?"),
-        user=user,
-        db=fake_db,
+    cluster = SimpleNamespace(id=cluster_id, org_id=org_id, name="cluster-a")
+    response = await mission_control.handle_incident_message(
+        fake_db,
+        incident,
+        cluster,
+        "What is the status?",
+        source="slack",
+        user_id=str(user.id),
     )
 
     assert response["status"] == "RESPONDED"
@@ -279,9 +276,6 @@ async def test_chat_reply_on_a_running_incident_is_traced_too(monkeypatch):
                                 pending_supervisor=False, handled_at=None):
         return SimpleNamespace(id=uuid.uuid4())
 
-    async def fake_get_cluster_by_id(db, requested_cluster_id):
-        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
-
     async def fake_build_chat_reply(message, incident, cluster, org_langfuse=None):
         return "Still gathering evidence."
 
@@ -299,16 +293,18 @@ async def test_chat_reply_on_a_running_incident_is_traced_too(monkeypatch):
     from sre_agent import tracing
 
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
-    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control, "_build_chat_reply", fake_build_chat_reply)
     monkeypatch.setattr(mission_control, "_tracing_context_for_cluster", fake_tracing_context)
     monkeypatch.setattr(tracing, "trace_run", fake_trace_run)
 
-    response = await mission_control.send_incident_message(
-        str(incident_id),
-        schemas.IncidentMessageRequest(message="What is the status?"),
-        user=user,
-        db=fake_db,
+    cluster = SimpleNamespace(id=cluster_id, org_id=org_id, name="cluster-a")
+    response = await mission_control.handle_incident_message(
+        fake_db,
+        incident,
+        cluster,
+        "What is the status?",
+        source="slack",
+        user_id=str(user.id),
     )
 
     assert response["status"] == "RESPONDED"
@@ -466,7 +462,7 @@ def test_timeline_event_to_response_includes_pending_state():
         speaker_role="user",
         title="You",
         content="What changed?",
-        payload_json='{"source": "dashboard_chat", "mode": "post_summary_follow_up"}',
+        payload_json='{"source": "slack", "mode": "post_summary_follow_up"}',
         pending_supervisor=True,
         handled_at=now,
         created_at=now,
@@ -475,7 +471,7 @@ def test_timeline_event_to_response_includes_pending_state():
     response = mission_control._timeline_event_to_response(event)
 
     assert isinstance(response, schemas.IncidentTimelineEventResponse)
-    assert response.payload == {"source": "dashboard_chat", "mode": "post_summary_follow_up"}
+    assert response.payload == {"source": "slack", "mode": "post_summary_follow_up"}
     assert response.pending_supervisor is True
     assert response.handled_at == now
 
@@ -499,9 +495,6 @@ async def test_investigated_follow_up_uses_durable_investigation_queue(monkeypat
     )
     captured = {}
 
-    async def fake_get_cluster_by_id(db, requested_cluster_id):
-        return SimpleNamespace(id=requested_cluster_id, org_id=org_id, name="cluster-a")
-
     async def fake_create_event(*args, **kwargs):
         return SimpleNamespace(id=uuid.uuid4())
 
@@ -523,7 +516,6 @@ async def test_investigated_follow_up_uses_durable_investigation_queue(monkeypat
         coro.close()
         raise AssertionError("follow-up must not create an in-process graph task")
 
-    monkeypatch.setattr(mission_control.crud, "get_cluster_by_id", fake_get_cluster_by_id)
     monkeypatch.setattr(mission_control.crud, "create_incident_timeline_event", fake_create_event)
     monkeypatch.setattr(incident_timeline, "load_incident_chat_context", fake_load_context)
     monkeypatch.setattr(job_worker, "enqueue_and_kick", fake_enqueue)
@@ -534,12 +526,14 @@ async def test_investigated_follow_up_uses_durable_investigation_queue(monkeypat
         lambda: type("Store", (), {"append_log": lambda *args: None})(),
     )
 
-    response = await mission_control.send_incident_message(
-        str(incident_id),
-        schemas.IncidentMessageRequest(message="Investigate the remaining errors"),
-        user=user,
-        db=FakeDb(incident),
-        owned_incident=incident,
+    cluster = SimpleNamespace(id=cluster_id, org_id=org_id, name="cluster-a")
+    response = await mission_control.handle_incident_message(
+        FakeDb(incident),
+        incident,
+        cluster,
+        "Investigate the remaining errors",
+        source="slack",
+        user_id=str(user.id),
     )
 
     assert response["status"] == "QUEUED"
@@ -547,7 +541,7 @@ async def test_investigated_follow_up_uses_durable_investigation_queue(monkeypat
     assert captured["cluster_id"] == cluster_id
     assert captured["incident_id"] == incident_id
     assert captured["alert_labels"] == {"service": "checkout"}
-    assert captured["triggered_by"] == "dashboard_chat"
+    assert captured["triggered_by"] == "slack"
     assert captured["idempotency_key"].startswith(f"follow-up:{incident_id}:")
 
 

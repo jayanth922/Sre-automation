@@ -500,12 +500,10 @@
   backend selection to reason about or keep safe. The Hermes safety review
   above is retained as historical record (not deleted, per this project's
   append-only decision-log convention) even though its subject no longer
-  exists in the codebase. `docs/PROJECT_CONTEXT.md`, `docs/INTEGRATION_PLAN.md`,
-  `docs/COMPETITIVE_AUDIT.md`, and `docs/ai/PHASE5_DETERMINISTIC_PIPELINE_PLAN.md`
-  contain historical narrative describing the Hermes integration as it was
-  built and reviewed; where those docs asserted Hermes was actively in use
-  or an open decision, they were annotated as superseded by this entry
-  rather than rewritten wholesale.
+  exists in the codebase. The contemporaneous design notes were later removed
+  during documentation cleanup; the retained competitive audit lives at
+  `docs/archive/audits/COMPETITIVE_AUDIT.md` and is historical rather than a
+  statement of current behavior.
 - **Rejected alternative:** Keep `HermesRuntime` in place, unused but
   available behind the env var, in case a future need for an autonomous
   third-party actor arises. Rejected because unused, unreviewed-to-safety
@@ -1307,8 +1305,8 @@ decision procedures: a numbered set of measurements that selects exactly one
 (with `namespace="meridian"`), the actions it forbids and why, and a
 `## Verification` section carrying the benchmark's own recovery probe, its
 operator and threshold, and the two-consecutive-passes rule.
-`scripts/audit_runbook_coverage.py` grades every v2 scenario against this and
-`scripts/audit_runbook_controls.py` checks the grader by deleting properties
+`scripts/tools/audit_runbook_coverage.py` grades every v2 scenario against this and
+`scripts/tools/audit_runbook_controls.py` checks the grader by deleting properties
 and asserting the score drops.
 
 **Reason.** Measured on the live Notion corpus: retrieval was correct for
@@ -1609,8 +1607,8 @@ without a caller, exactly one was a genuine gap (the emergency lock, now
 wired). The other thirteen were this decision, the Alertmanager webhook, two
 endpoints whose data already arrives embedded in a list response, and three
 absences that are themselves deliberate — one of which,
-`POST /clusters/{id}/jobs/trigger`, is pinned by an assertion that it stays
-absent (`tests/test_console_wiring.py:38`).
+`POST /clusters/{id}/jobs/trigger`, has since been removed outright (see "A job
+may only be enqueued by a writer that stamps its handler").
 
 **Rejected alternative.** Adding buttons "for parity", leaving Slack as one of
 two ways to approve. Two writable surfaces for the same state transition means
@@ -1650,3 +1648,452 @@ not silently compared.
 dollar gate. It can be useful later for model-tier downgrade, but it cannot stop
 the call that crosses the threshold, incomplete provider usage makes it
 unavailable, and a raised exception near finalization risks a paid retry.
+
+
+## One Slack message, one handler, one turn
+
+**Decision.** Anything said inside a tracked war-room thread — @mention or
+plain reply — runs the same body in `slack_bot.build_slack_app`
+(`_route_war_room_text`): the approval commands get first refusal on the text,
+then `war_room.route_thread_reply` takes it into
+`mission_control.handle_incident_message`. The `app_mention` and `message`
+handlers are thin entry points onto that one body, and `_claim_event`
+deduplicates on `(channel, ts)` so exactly one of them acts.
+
+**Reason.** The two events had separate bodies and drifted. `app_mention`
+resolved the incident id from the registry and then handed it to
+`nl_query.handle_chat_message`, the *ad hoc* dispatcher, which has no way to
+touch a running investigation — it answered "Got it, I'll fold that into the
+live investigation at the next checkpoint" and nothing did. On the product's
+only communication surface, an @-mentioned `approve fix` was worse still: it
+became small talk instead of an approval. Slack delivers a mention in a
+channel the bot belongs to as *both* events with the same `(channel, ts)`, so
+merging the bodies without a claim would have replaced one false answer with
+two real agent turns for one sentence.
+
+**Consequences.** The bot-echo guard had to move into the shared body with
+it. `_on_thread_message` had always dropped `bot_id` messages and
+`_on_mention` never needed to, because the worst a mention could produce was
+an inert sentence; a mention that starts an investigation makes the agent's
+own war-room posts — which do carry @mentions — a loop.
+
+The claim table is bounded (512, oldest evicted) because
+socket mode runs for weeks; a duplicate always lands milliseconds after its
+original, so eviction cannot lose one. A message with no `ts` is never
+deduplicated — a rare double reply beats a silently dropped question.
+`format_reply`'s `steer` branch is now unreachable from Slack; it is kept, and
+made truthful, for any other caller that hands the ad hoc dispatcher an
+incident id. Correctness does not depend on believing anything about Slack's
+fan-out: it holds whether one event arrives or both, in either order.
+
+**Rejected alternative.** Having `app_mention` return early whenever the
+thread is a war room, leaving the `message` handler as sole owner. Fewer
+moving parts, but it silently assumes the workspace subscribes to
+`message.channels`; where it does not, every @mention in an incident thread
+would go unanswered, and the failure would look like the bot being down.
+
+
+## A retrieval that returns something is not coverage
+
+**Decision.** `ablation_coverage.py` reports two numbers per split, not one:
+`skill_hit` (retrieval returned anything) and `signature_hit` (something it
+returned shares the scenario's failure class, scored with `match_score` at the
+same 0.5 floor `propose_skills` declares). The verdict line says when they
+disagree. The retrieval floor itself is left alone.
+
+**Reason.** The preflight exists so `no_memory` reporting NOT_DEMONSTRATED
+cannot be confused with an empty corpus, and it was making exactly that
+mistake one level down. `skill_hit` was `bool(skills)`, and the docstring
+called the check "exact". On v2 it read COVERED 22/22. The honest numbers are
+22/22 retrieve something, 12/22 retrieve their own failure class, and **4/22**
+retrieve a skill matching class *and* service. Three of the five stored skills
+are for services (`pdf-thumbnailer`, `ocr-extractor`, `thumb-worker`) that no
+scenario touches, and `checkout-service` — the corpus's most common — has no
+skill at all.
+
+**Consequences.** The divergence has a single cause worth naming: on the
+keyword path `propose_skills`' `threshold=0.5` is `match_score`'s scale, where
+0.5 means "same failure class". `SemanticSkillStore._find_matching` compares
+that same 0.5 against a Qdrant *cosine* similarity, which short signature
+strings clear on embedding proximity alone. So the semantic path admits
+skills the keyword path rejects, and the planner prompt can carry a skill
+learned from an unrelated incident. Buying the `no_memory` arm on this corpus
+buys 4 pairs that test whether relevant memory helps and 18 that test whether
+irrelevant memory hurts — a real question, but not the one the arm is named
+for.
+
+**Rejected alternative.** Tightening the semantic floor now. It would change
+what a paid run measures, and no data in the repo says what a defensible
+cosine floor is; picking one by eye would substitute a guess for the
+measurement the preflight is supposed to protect. Recorded as a blocker
+instead.
+
+## A runbook's query is extracted, not recalled
+
+**Decision.** `src/sre_agent/runbook_queries.py` lifts PromQL out of runbook
+markdown with regexes — no model call — and `build_specialist_task_brief`
+quotes the result into the metrics specialist's user message, above an
+instruction to run those expressions verbatim before exploring. The metrics
+prompt's opening move changed from `get_golden_signals` to "the runbook's
+queries, if the brief lists any".
+
+**Reason.** The one graded trial failed because the Prometheus specialist
+queried `http_request_duration_seconds_bucket` while the runbook named
+`db_query_duration_seconds_bucket` in three places — the same metric the
+recovery oracle probes. This was not inattention. `metrics_profile` holds
+exactly one `latency_histogram` per cluster and `q_service_latency`
+interpolates it, so `get_golden_signals` *cannot* return any other histogram;
+the specialist opened with the tool the prompt told it to open with and got a
+healthy service during a live incident. The prompt also promised a "metric
+hint from the task brief" that no code produced — `grep -rn "metric_hint"`
+matched the prompt line and nothing else.
+
+**Consequences.** Extraction is deterministic and testable, so the failure
+mode is a missing hint rather than a hallucinated metric, and it costs no
+tokens to produce. Three rejections earn their complexity: templated queries
+(`service="<service>"`) are dropped, because running one returns nothing and
+manufactures the very "no data is a finding" conclusion the block teaches;
+LogQL, shell and SQL are dropped; and the bare metric-name list is emitted
+only when no query was found, because scraping prose otherwise yields
+log-pattern strings like `db_pool_exhausted` that are not metrics. On the
+real `examples/meridian/runbooks/high-latency.md` the first extracted query is the
+`db_query_duration_seconds_bucket` p90 the oracle probes.
+
+**Rejected alternative.** Telling the specialist to "read the runbook
+carefully" or adding a metric-selection model call. Both buy turns, and the
+user's constraint on this work was that cost must not rise. Also rejected:
+widening `metrics_profile` to hold many histograms — a schema change that
+would not have helped, since the runbook names the metric the profile would
+still have to be taught.
+
+## A wall-clock cut-off is a budget boundary, not a tool failure
+
+**Decision.** When a specialist hits `SPECIALIST_TIMEOUT_SECONDS` mid-call,
+its report is now the tool results already collected — `_partial_evidence_digest`
+renders the last 12 `ToolMessage`s, 600 chars each — plus a note saying the
+lane was cut off at a budget boundary. Before, the handler *replaced* the
+response with an error string. A soft deadline reserving `min(30, timeout//3)`
+seconds also declines to start a turn the clock cannot finish, narration is
+skipped for any cut-short lane, and the reason (`turn_limit`, `soft_deadline`,
+`timeout`) is recorded on the finding and the artifact.
+
+**Reason.** The graded trial's supervisor was told there were no application
+logs. There were: `query_logs` ran 31 times at a median of 0.1s. The 120s went
+entirely to model latency (p90 26.1s, max 68.6s), and the handler threw away
+every result the lane had already collected. The timeout was not raised —
+raising it buys turns the clock currently cuts off, which is a real cost
+increase.
+
+**Consequences.** Latency now degrades the report instead of erasing it, and
+a supervisor reasoning over a truncated lane can see that it is truncated.
+The 30s headroom is the measured p90 of a specialist turn, so the deadline
+usually costs nothing and occasionally forfeits one turn to save a whole
+lane's evidence. Skipping narration on a cut-short lane also removes a model
+call — narration was 6 calls for $0.0153 on the graded trial.
+
+**Rejected alternative.** Raising the timeout, and retrying the killed call.
+Both spend more to fix a reporting bug.
+
+## The live transport had no output ceiling at all
+
+**Decision.** `route_llm`'s LiteLLM branch now applies
+`SREConstants.model.default_max_tokens` when the caller passes none, matching
+the provider branch, and `_create_llm` sets a specialist turn's ceiling from
+the new `SPECIALIST_MAX_OUTPUT_TOKENS` limit (default 3,000).
+
+**Reason.** `default_max_tokens = 4096` is documented and applied through
+`get_model_config` on the legacy provider path. The live path is LiteLLM —
+every graded run shows `gen_ai.provider.name: litellm` — and it forwarded
+kwargs unchanged, so a call with no explicit `max_tokens` had no ceiling.
+One specialist turn in the graded trial emitted 6,402 tokens, 68.6s of that
+lane's 120s at a measured 89 tok/s.
+
+**Consequences.** A specialist turn is a report, not an essay: across the
+trial's 85 turns output was p50 484, p75 857, p90 2,339, so a 3,000 ceiling
+leaves nine turns in ten untouched and clips 7, removing 10,118 output tokens
+(-$0.15 of $2.53) and ~114s. The limit is env-tunable and clamped to
+[256, 16000].
+
+**Rejected alternative.** Leaving the LiteLLM path uncapped and documenting
+4,096 as the default anyway. The two transports disagreeing silently is how
+this went unnoticed through every graded run so far.
+
+
+## The runbook's own query is measured before the lane's first turn
+
+**Decision.** `src/sre_agent/runbook_probe.py` evaluates the PromQL a runbook
+names over `[alert - 5m, now]` and hands the first, peak and latest value to
+the metrics lane inside its brief, before any model call. It runs through the
+lane's *already bound* `get_metric_range`, so the probe inherits the tenant
+namespace injection, the argument gate and the audit trail, and opens no
+second MCP client. It is fail-soft: a probe that errors, times out or matches
+nothing adds a note and changes nothing else.
+
+**Reason.** Quoting the query to the model was not enough. The 2026-09-22
+`inventory_slow_queries` trial ran the right expression at the wrong instant
+— the alert timestamp, which the harness stamps at fault injection — so the
+`rate(...[5m])` window was almost entirely pre-fault: 0.0221s against a 1.0s
+threshold. The lane took the runbook's healthy branch and escalated a live
+2.1s regression as "no action required". Choosing the evaluation instant for
+a rate window is arithmetic, not judgement.
+
+**Consequences.** The lane starts from a number instead of from a choice of
+window, at the cost of one Prometheus range read per incident and no model
+tokens. The brief also now forbids editing a runbook query's label matchers:
+the same trial rewrote `job=` to `namespace`/`service`, which the series does
+not carry, and read the empty result as "metric unavailable". The probe
+window is 28 minutes so it stays inside `namespace_scope`'s 30-minute
+investigation cap; a test asserts the probe's real arguments pass that gate.
+
+**Rejected alternative.** Prompt-only — telling the model to query "now".
+The brief had already told it the opposite ("do not query 'now'") and the
+model obeyed; swapping one instruction for another leaves the outcome to
+sampling, and this repo's precedent (`runbook_queries.py`) is to make the
+deterministic part deterministic.
+
+## The LangGraph step ceiling is sized to trip after the turn budget
+
+**Decision.** A specialist's `recursion_limit` is
+`specialist_model_turns * 3 + 2`, and `GraphRecursionError` is caught like
+any other budget boundary: the lane reports its partial-evidence digest with
+a note, and records `cut_short = "recursion_limit"`.
+
+**Reason.** `create_react_agent` is built here with a `pre_model_hook`, which
+is a real graph node, so one tool round costs three steps (hook, agent,
+tools) and T model turns need `3T - 1`. The old backstop was `2T + 2` — 14
+steps against the 17 a six-turn budget was meant to buy. The framework limit
+therefore always fired before the graceful turn counter could, and it raised
+instead of returning: the 2026-09-22 logs lane died twice reporting "no data"
+after Loki had already answered.
+
+**Consequences.** The explicit turn budget is the binding limit again and the
+step ceiling is what it was meant to be, a backstop against a runaway graph.
+Adding or removing a node in the specialist graph changes the multiplier;
+`_REACT_STEPS_PER_TURN` names it in one place, with a test that pins it
+against the configured turn count.
+
+**Rejected alternative.** Raising the limit without catching the error. A
+step ceiling is a budget, and every other budget in this lane — turns, wall
+clock, call count — keeps the evidence already paid for.
+
+## An environment ban belongs in the gate that can be appealed
+
+**Decision.** `policy_engine` Rule 1 — block a PROD restart whose plan risk
+score clears `POLICY_RESTART_RISK_THRESHOLD` — is deleted, and a comment in
+its place records why it cannot come back. The intent stays in
+`policy_gate.decide`, where it is already enforced from measured state:
+telemetry must be known, severity must sit inside the autonomy band, and a
+calibration artifact must clear the threshold.
+
+**Reason.** The score Rule 1 judged was the planner's own `risk_level` string
+mapped by `act_phase._plan_risk_score` (low 2.0, medium 5.0, high 8.0), so
+only a plan that labelled itself "low" ever passed — the same untrusted-writer
+inversion Rule 4 already records for `explicit_approval`. `calculate_risk_score`
+also adds 0.5 per dangerous action, so proposing a restart raised the very
+number used to judge it. Worse, an `evaluate_action` verdict is final:
+`policy_gate.decide` returns BLOCKED before the approval ladder runs and
+`_act_gate_node` builds the ACT report before looking up the approval, so no
+human could authorize what the rule refused. The 2026-09-23 trial is the
+evidence — a SEV3 restart with complete telemetry, blocked outright,
+UNRESOLVED.
+
+**Consequences.** A production restart now reaches REQUIRES_APPROVAL in
+production *and* development. Two environment-spoofing tests used the PROD
+restart block as their observable and would have passed either way after this;
+both move to scale-to-0, which is still environment-discriminated, each with a
+contrast case. Trial 6 took the new path end to end: `requires_approval` →
+approve → four live remediations → oracle-verified recovery.
+
+**Rejected alternative.** Keeping Rule 1 and reading a trustworthy risk signal
+instead. There is no such signal at that layer — `evaluate_action` sees the
+proposed action and the plan's self-description, and nothing else. The PROD
+rollback floor (Rule 2b) is the documented precedent for moving a ban into
+`decide`.
+
+## A confidence observation is not a paired trial
+
+**Decision.** `CONFIDENCE_RECORDING` is its own gate, defaulting on for any
+live benchmark run. Outside a paired experiment the runner derives the config
+fingerprint from the config that shapes the run and the pair id from a
+per-process `RUN_ID`. Trial rows stay gated on the four `BENCH_*` experiment
+vars.
+
+**Reason.** Both records hung off `STATISTICAL_RECORDING`, and `BENCH_SCENARIOS`
+raises rather than run beside it, so every single-scenario trial measured a
+real (confidence, outcome) pair and dropped it unwritten: five live incidents,
+zero samples, and a runtime that stays uncalibrated because the corpus it needs
+is never written. The two records do not need the same identity — a trial row
+means something only against its pair in another arm, which is what
+`PAIR_SEED` protects; a confidence observation is one reliability point, and
+its schema asks for a fingerprint and an id and nothing else.
+
+**Consequences.** `reports/sre-bench-confidence.jsonl` accumulates across
+ordinary single-scenario runs. The id must not repeat:
+`load_confidence_records` rejects a duplicate
+`(task, pair_id, config_fingerprint)` outright, and `make_pair_id` is
+deterministic in a trial index that is 1 for every single-trial run, so a
+repeat would not cost one sample — it would make the whole corpus unreadable.
+The corpus groups by task, not scenario, so it must be spread across scenarios
+before a threshold built from it means anything.
+
+## The benchmark may play approver, and must say so
+
+**Decision.** `BENCH_AUTO_APPROVE=1` lets the harness clear a pending approval
+through the same two calls the dashboard makes — `GET /status` for the
+`approval_request_id` and `action_hash`, then `POST /approve`. It is off by
+default, bounded by `BENCH_AUTO_APPROVE_LIMIT` (3), counted into the grade
+record's `harness_approvals`, and stamped onto the trial's
+`failure_categories` as `harness_approved`.
+
+**Reason.** `awaiting_approval` is terminal in `TERMINAL_APPLICATION_STATUSES`
+and nothing ever cleared it, so a plan the gate correctly held for a human
+ended the trial there and scored UNRESOLVED. On a production cluster
+`policy_gate` holds every rollback and every uncalibrated mutation, which is
+the behaviour we want; the benchmark could only ever punish it.
+
+**Consequences.** The number a trial reports changes meaning with the flag on
+— "can the agent fix this once authorized", not "unaided" — so the count is
+recorded in both artifacts and an authorized arm can never be read back, or
+diffed against an unaided one, as autonomous. This is not a DB bypass and not
+a new code path: the graph still verifies the hash against the plan it runs,
+and the Prometheus oracle still decides recovery on its own.
+
+**Rejected alternative.** Treating `awaiting_approval` as a success. That
+scores an unexecuted plan as a fix and would have made `false_resolved`
+meaningless.
+
+
+## An empty observability result must carry its own validity verdict
+
+**Decision.** A Loki query that returns nothing now says why: whether the
+selector was valid, and if not, which label or value does not exist.
+`query_logs` reports `streams_matched` and, on any empty result,
+`selector_valid` plus an `empty_result_reason`. An invalid selector is phrased
+"INVALID QUERY, NOT EVIDENCE"; a valid selector over a quiet window is phrased
+"This IS genuine evidence of silence". `analyze_log_patterns` forwards the
+verdict instead of rebuilding a payload without it.
+
+**Reason.** Loki answers a selector naming a label it does not have exactly the
+way it answers a service that logged nothing: HTTP 200, zero streams. In trial 6
+the Application Logs specialist ran five queries against `{app="..."}` — a label
+this Loki does not index — and concluded, verbatim, "no evidence of a Loki tool
+failure (no error/exception in the response, just `count: 0`) ... there's
+nothing in the logs to contradict the Prometheus specialist's Branch A finding."
+A query that could never have matched was promoted to a finding. This is #35's
+class — a failure laundered into a success string — reached through a different
+door: the call succeeded, and only the question was malformed.
+
+**Consequences.** Every empty log result now carries either a warning that
+forbids reading it as evidence, or a note confirming the silence is real. The
+diagnosis costs one to three extra Loki calls, only on empty results, and is
+best-effort: when the label index cannot be read it returns `selector_valid:
+null` and still refuses to call the result silence. A tool may now spend a round
+trip to establish that it has nothing useful to say.
+
+**Rejected alternative.** Validating selectors before every query. That pays the
+label-index cost on all calls to protect the minority that come back empty, and
+still cannot separate a typo from a genuinely quiet service — only the empty
+result raises the question worth answering.
+
+## A runbook may not name telemetry the cluster does not have
+
+**Decision.** `examples/meridian/runbooks/high-error-rate.md` Step 4 and
+`downstream-dependency-failure.md` Step 2 now select on `service`, the label
+this Loki indexes, rather than `app`, which it does not have.
+
+**Reason.** Step 4's rule is "if any of the three returns lines → Branch D".
+A selector on a nonexistent label returns zero lines unconditionally, so Branch
+D — the database-connectivity remediation — was unreachable by construction. The
+runbook did not merely fail to help; it routed every database-side fault to
+Branch A or E. The agent was following the corpus correctly.
+
+**Consequences.** The agent reads runbooks from Notion, not from the repo, so
+the fix reached it only on republish (2026-09-23, four pages, 12 changed lines;
+the other two drafts went out byte-identical). The live corpus now holds no
+LogQL selector naming `app`, and `audit_runbook_coverage.py` scores 22/22
+against the dump taken after the write rather than against the local drafts.
+`evals/benchmarks/datasets/v{2,3}/runbook_corpus_snapshot.json` were regenerated from
+that same dump. They are dumps of what Notion served, so they must always be
+regenerated with `scripts/tools/dump_notion_runbook_corpus.py` and never hand-edited,
+or the snapshot stops describing the corpus anyone read.
+
+The `kubectl -l app=<service>` selectors elsewhere in the corpus were left
+alone: pods do carry an `app` label. Only Loki lacks one, and only Loki's
+silence was being read as evidence.
+
+**Rejected alternative.** Teaching the tool to accept `app` as an alias for
+`service`. That hides a corpus defect behind a tool that silently rewrites the
+operator's query, and the next wrong label — on a cluster whose labels differ —
+would get no such courtesy.
+
+## A job may only be enqueued by a writer that stamps its handler
+
+**Decision.** `POST /clusters/{id}/jobs/trigger`, `backend.crud.create_job` and
+`schemas.JobCreate` are deleted. `sre_agent.job_store.enqueue_investigation`,
+reached through `enqueue_and_kick`, is the only path that may write a row to
+`jobs`.
+
+**Reason.** `claim_jobs` selects on `status == PENDING AND job_type ==
+INVESTIGATION AND cancel_requested_at IS NULL` and nothing else. `create_job`
+wrote exactly that shape from caller-supplied fields, `job_type` defaulting to
+`INVESTIGATION` and `payload` to `NULL`. The worker claimed the row, read
+`handler` out of an empty payload in `execute_claimed_job`, raised
+`DurableJobError("unsupported job handler: None")`, and retried to
+`max_attempts` before dead-lettering — burning a lease each round. The console
+never called it, so it never fired, but any authenticated org member could reach
+it. Two components were each locally correct and jointly wrong: the claimer's
+predicate and the writer's defaults agree only while every writer stamps a
+handler.
+
+**Consequences.** There is no hand-start for a job. An investigation with no
+incident behind it has nothing to investigate, which was already the recorded
+reason the console never wired the route; this closes it at the server instead
+of relying on the console's restraint. `tests/test_durable_jobs.py` pins both
+halves — `encode_investigation_payload` stamps `run_graph_background_saas`, and
+`crud` exposes no `create_job` — so a future helper that writes a claimable row
+without a handler fails the suite rather than the worker. `JobType` keeps its
+import in `src/backend/schemas.py`, because `JobResponse` still uses it.
+
+**Rejected alternative.** Keeping the route and refusing a payload-less
+investigation. That leaves a mounted endpoint whose only valid input is a
+payload no caller can construct — the handler name and idempotency key are
+internal — so every honest request would be refused, and the helper behind it
+would stay available to the next caller who skips the route.
+
+
+## A cosine and a match_score are not the same number
+
+**Decision.** Semantic skill recall admits on `_SEMANTIC_MATCH_FLOOR = 0.80`, a
+constant measured over the v2 corpus, never on `find_matching`'s `threshold`. A
+skill the keyword pass already admitted keeps its `match_score`; a cosine may
+add a candidate but may not rescore or outrank one.
+
+**Reason.** `match_score` is additive — 0.5 failure class + 0.3 service + 0.2
+alert name — so `threshold=0.5` means exactly "same failure class".
+`SemanticSkillStore._find_matching` tested Qdrant cosines against that same 0.5
+and merged the two with `max()`, comparing scales that share nothing but the
+0..1 range. Embedding all 22 v2 signatures with the production model and
+scoring all 231 pairs shows the distance: pairs sharing a failure class score
+0.851 at worst, pairs that do not score 0.764 at best, and a 0.5 cutoff admits
+all 161 wrong-class pairs. That is the entire population, not a tail — the
+filed example, `checkout_memory_leak_oom` retrieving
+`latency-inventory-service`, was typical rather than unlucky.
+
+**Consequences.** `evals/benchmarks/calibrate_semantic_floor.py` is that measurement,
+kept runnable and free (local embedding model, no LLM). It exits non-zero if
+the populations stop being separable or if the constant leaves the gap, so a
+changed embedding model or `signature_text()` fails loudly instead of quietly
+restoring the old behaviour. `find_matching` now returns two scales — keyword
+hits first, ordered by `match_score`, then semantic-only hits by cosine — which
+is why `ablation_coverage.py` recomputes `match_score` for `signature_hit`
+instead of reading the score it was handed. That file's "semantic 6/6 against
+keyword-only 3/6" coverage figure was produced by the defect; it is now marked
+as pre-fix and has not been re-measured.
+
+**Rejected alternative.** Scoring semantic candidates with `match_score` and
+letting cosine only nominate them. `_skill_by_id` resolves Qdrant points
+against the same in-memory dict the keyword pass already scanned, so the two
+candidate sets are identical and the semantic path would collapse into a no-op
+— deleting the feature rather than calibrating it. Its purpose is to reach a
+skill whose wording matches when the failure-class keywords miss, and that
+requires cosine to admit something `match_score` rejects.

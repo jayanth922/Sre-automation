@@ -573,15 +573,18 @@ async def handle_incident_message(
     cluster: models.Cluster,
     message: str,
     *,
-    source: str = "dashboard_chat",
+    source: str,
     user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Post a follow-up message for an incident and queue a new investigation turn.
 
-    Shared by the dashboard HTTP route and the Slack war-room integration —
-    `source` distinguishes the two in persisted timeline events, `user_id` is
-    best-effort (Slack messages have no per-request JWT-backed user).
+    Reached from the Slack war room alone (`war_room.route_thread_reply`). The
+    dashboard route that also called this is gone: it queued a full agent turn
+    for any org member and no mounted component reached it. `source` is
+    required rather than defaulted, so a second surface has to name itself in
+    the timeline instead of inheriting a label from a route that no longer
+    exists; `user_id` stays best-effort (Slack messages carry no JWT).
     """
     message = message.strip()
     if not message:
@@ -802,41 +805,6 @@ async def handle_incident_message(
         "job_id": str(follow_up_job.id),
     }
 
-
-@router.post("/{incident_id}/message")
-async def send_incident_message(
-    incident_id: str,
-    payload: schemas.IncidentMessageRequest,
-    user: models.User = Depends(get_current_user_and_org),
-    db: AsyncSession = Depends(database.get_db),
-    owned_incident: models.Incident = Depends(get_owned_incident),
-):
-    """
-    Post a follow-up message for an incident and queue a new investigation turn.
-    """
-    message = payload.message.strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
-
-    incident_uuid = uuid.UUID(incident_id)
-    incident_obj = owned_incident
-    # Direct unit calls do not resolve FastAPI dependencies. Keep those calls
-    # on the same centralized authorization path instead of duplicating a load.
-    if not hasattr(incident_obj, "id"):
-        incident_obj = await get_owned_incident(incident_uuid, user, db)
-
-    cluster = await crud.get_cluster_by_id(db, incident_obj.cluster_id)
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Incident not found")
-
-    return await handle_incident_message(
-        db,
-        incident_obj,
-        cluster,
-        message,
-        source="dashboard_chat",
-        user_id=str(user.id),
-    )
 
 @router.get("/{incident_id}/status")
 async def get_incident_status(

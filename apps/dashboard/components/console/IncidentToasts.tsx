@@ -10,6 +10,10 @@ import { useLiveStream } from "@/lib/useLiveStream"
 
 interface Toast {
   id: string
+  // Which cluster this incident belongs to. Required, not optional: the
+  // incidents channel is org-wide, and a toast that cannot say where it came
+  // from is one this cluster's page must not render.
+  clusterId: string
   kind: "opened" | "awaiting_approval" | "resolved"
   incidentId?: string
   title: string
@@ -50,10 +54,26 @@ export function IncidentToasts() {
       const kind = ev.type as Toast["kind"]
       if (kind !== "opened" && kind !== "awaiting_approval" && kind !== "resolved") continue
       const p = (ev.payload ?? {}) as Record<string, unknown>
+      // The incidents channel is org-scoped, so it carries every cluster this
+      // organization owns. An event with no cluster_id cannot be placed, and
+      // is dropped rather than shown — the same fail-closed rule the server
+      // applies to unscoped events one layer up. Which cluster a toast belongs
+      // to is decided here; whether it is *this* cluster is decided at render,
+      // because this component lives in the cluster layout and survives
+      // navigation between sibling clusters.
+      const clusterId = typeof p.cluster_id === "string" ? p.cluster_id : undefined
+      if (!clusterId) continue
       const incidentId = (ev.incident_id ?? (p.incident_id as string) ?? undefined) as string | undefined
       const title = (p.alert_name as string) || (p.summary as string) || "Incident"
       const tid = `${incidentId ?? "x"}:${kind}:${ev.ts}`
-      const toast: Toast = { id: tid, kind, incidentId, title, detail: p.summary as string | undefined }
+      const toast: Toast = {
+        id: tid,
+        clusterId,
+        kind,
+        incidentId,
+        title,
+        detail: p.summary as string | undefined,
+      }
       setToasts((prev) => [...prev.filter((t) => t.id !== tid), toast].slice(-4))
       // Approval prompts linger; open/resolve auto-dismiss.
       if (kind !== "awaiting_approval") {
@@ -69,11 +89,18 @@ export function IncidentToasts() {
     }
   }, [])
 
-  if (toasts.length === 0) return null
+  // Only this cluster's incidents. A sibling's toast here would disclose its
+  // alert name and summary, and clicking it would build a URL pairing this
+  // cluster with that incident — a guaranteed 404. The filter lives here
+  // rather than at ingest because this component is mounted in the cluster
+  // layout, which Next reuses across sibling [id] routes: `id` changes under
+  // a component that never unmounts, and queued toasts outlive the move.
+  const mine = toasts.filter((t) => t.clusterId === id)
+  if (mine.length === 0) return null
 
   return (
     <div className="sx-toasts" role="status" aria-live="polite">
-      {toasts.map((t) => {
+      {mine.map((t) => {
         const m = META[t.kind]
         const go = () => {
           if (t.incidentId) router.push(`/clusters/${id}/incidents/${t.incidentId}`)

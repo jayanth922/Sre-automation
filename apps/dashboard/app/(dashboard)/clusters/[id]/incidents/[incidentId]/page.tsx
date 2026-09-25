@@ -105,6 +105,20 @@ interface AgentMetrics {
   total_ms: number
 }
 
+/** One flight-recorder row. The endpoint folds Redis step logs into the same
+ *  shape as `agent_audit_logs`, so a row may carry a prose line in `tool_args`
+ *  and nothing else; every field past the id is therefore optional. */
+interface AuditRow {
+  id: string
+  timestamp?: string | null
+  agent_name?: string | null
+  tool_name?: string | null
+  tool_args?: string | null
+  status?: string | null
+  result?: string | null
+  error_message?: string | null
+}
+
 function sourceTag(ev: TimelineEvent): { cls: string; label: string } | null {
   const hay = `${ev.event_type} ${ev.title ?? ""} ${JSON.stringify(ev.payload ?? {})}`.toLowerCase()
   if (/prometheus|metric|latency|error rate|p95|p99/.test(hay)) return { cls: "metric", label: "metric" }
@@ -173,6 +187,9 @@ export default function IncidentConsolePage() {
   const [ticketErr, setTicketErr] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState(0)
   const lastLive = useRef(0)
+  const [audit, setAudit] = useState<AuditRow[] | null>(null)
+  const [auditBusy, setAuditBusy] = useState(false)
+  const [auditErr, setAuditErr] = useState<string | null>(null)
 
   const loadTranscript = useCallback(async () => {
     try {
@@ -221,6 +238,23 @@ export default function IncidentConsolePage() {
       /* the panel stays hidden unless this cluster has Jira configured */
     }
   }, [id, incidentId])
+
+  // On demand, not on mount. This is the one response on the page whose size
+  // scales with how long the agent ran - full tool arguments and results - and
+  // an operator wants it only when the timeline above left a question open.
+  const loadAudit = async () => {
+    setAuditBusy(true)
+    setAuditErr(null)
+    try {
+      const { data } = await api.get<AuditRow[]>(`/incidents/${incidentId}/logs`)
+      setAudit(data)
+    } catch (e) {
+      const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      setAuditErr(typeof d === "string" ? d : "Could not read the flight recorder.")
+    } finally {
+      setAuditBusy(false)
+    }
+  }
 
   const createTicket = async () => {
     setTicketBusy(true)
@@ -277,6 +311,25 @@ export default function IncidentConsolePage() {
     return (
       <ConsolePage crumb="incidents" title="Incident not found" live={false}>
         <div className="sx-empty">This incident could not be loaded.</div>
+      </ConsolePage>
+    )
+  }
+
+  // The incident endpoints are org-scoped, not cluster-scoped:
+  // `get_owned_incident` joins on `Cluster.org_id`, so this page will happily
+  // load a sibling cluster's incident and render it under this cluster's
+  // breadcrumb, navigation and rail. Only the ticket call has a cluster in its
+  // path, so it fails alone and everything around it still looks right. The
+  // URL asserts which cluster this is; if the incident disagrees, the URL is
+  // wrong and the page should say so rather than quietly present the wrong
+  // cluster's investigation as this one's.
+  if (tx.incident.cluster_id !== id) {
+    return (
+      <ConsolePage crumb="incidents" title="Incident not found" live={false}>
+        <div className="sx-empty">
+          This incident belongs to a different cluster. Open it from that
+          cluster&apos;s incident list.
+        </div>
       </ConsolePage>
     )
   }
@@ -634,6 +687,100 @@ export default function IncidentConsolePage() {
               </div>
             </div>
           )}
+
+          <div className="sx-remedy">
+            <div className="h">◆ Tool calls</div>
+            {audit === null ? (
+              <>
+                <div className="sx-action">
+                  <div className="at">
+                    <span className="sx-badge neutral">not loaded</span> Flight recorder
+                  </div>
+                  <div className="ad">
+                    Every tool call made for this incident, with its arguments, result and
+                    error. The timeline above is the curated account; this is the raw one.
+                  </div>
+                </div>
+                <div className="sx-btnrow">
+                  <button className="sx-btn" onClick={loadAudit} disabled={auditBusy}>
+                    {auditBusy ? "Loading…" : "Load tool calls"}
+                  </button>
+                </div>
+              </>
+            ) : audit.length === 0 ? (
+              <div className="sx-action">
+                <div className="at">
+                  <span className="sx-badge neutral">empty</span> Nothing recorded
+                </div>
+                <div className="ad">
+                  No tool call is on file for this incident. Either none ran, or this
+                  incident predates the flight recorder.
+                </div>
+              </div>
+            ) : (
+              <>
+                {audit.map((row) => (
+                  <div className="sx-action" key={row.id} style={{ marginBottom: 8 }}>
+                    <div className="at">
+                      <span className={`sx-badge ${liveStatusTone(row.status ?? undefined)}`}>
+                        {(row.status ?? "info").toLowerCase()}
+                      </span>
+                      {row.tool_name || "—"}
+                      <span
+                        style={{
+                          marginLeft: "auto",
+                          fontWeight: 400,
+                          fontSize: 11,
+                          color: "var(--ink3)",
+                        }}
+                      >
+                        {row.agent_name || "agent"}
+                        {row.timestamp ? ` · ${timeAgo(row.timestamp)}` : ""}
+                      </span>
+                    </div>
+                    {row.error_message && (
+                      <div className="gate" style={{ color: "var(--crit)" }}>
+                        {row.error_message}
+                      </div>
+                    )}
+                    {(row.tool_args || row.result) && (
+                      <details>
+                        <summary
+                          style={{
+                            cursor: "pointer",
+                            fontSize: 11,
+                            color: "var(--ink3)",
+                            marginTop: 7,
+                          }}
+                        >
+                          arguments and result
+                        </summary>
+                        {row.tool_args && (
+                          <div className="ad" style={{ maxHeight: 200, overflow: "auto" }}>
+                            {row.tool_args}
+                          </div>
+                        )}
+                        {row.result && (
+                          <div className="ad" style={{ maxHeight: 200, overflow: "auto" }}>
+                            {row.result}
+                          </div>
+                        )}
+                      </details>
+                    )}
+                  </div>
+                ))}
+                <div className="sx-dry" style={{ textAlign: "left", color: "var(--ink3)" }}>
+                  {audit.length} {audit.length === 1 ? "entry" : "entries"}, newest first.
+                  Arguments and results are redacted where they are written, not here.
+                </div>
+              </>
+            )}
+            {auditErr && (
+              <div className="sx-dry" style={{ textAlign: "left", color: "var(--crit)" }}>
+                {auditErr}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </ConsolePage>

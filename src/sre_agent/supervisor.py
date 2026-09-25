@@ -109,6 +109,30 @@ def _json_serializer(obj):
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 
+def _observed_at_sort_key(observed_at: Any) -> tuple:
+    """Order a derived chronology by real time.
+
+    ``benchmark_evaluation.timeline`` is graded as a chronology, but it is
+    derived from ``ReflectorAnalysis.evidence``, which the model returns in
+    whatever order it argued its case. On 2026-09-22 that cost
+    temporal_reasoning a FAIL ("reported evidence timeline is not
+    chronological") on evidence that was itself correct and correctly
+    stamped. Sorting a derived chronology is deterministic work and belongs
+    here, not in the prompt.
+
+    A stamp that will not parse sorts last, keeping the model's order among
+    its peers, rather than being dropped or interleaved on string compare.
+    """
+    text = str(observed_at or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return (1, 0.0, text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (0, parsed.timestamp(), text)
+
+
 class InvestigationPlan(BaseModel):
     """Investigation plan created by supervisor."""
 
@@ -1349,6 +1373,11 @@ User's query: {current_query}
                     alert_context=alert_context,
                     agent_results=agent_results,
                     tool_failures=state.get("agent_tool_failures", {}) or {},
+                    # The structured benchmark_evaluation built a few lines
+                    # below draws its diagnosis from this same object. Without
+                    # it here, the prose and the structure in one payload
+                    # disagreed about whether a root cause had been found.
+                    reflector_analysis=reflector_analysis,
                 )
             except Exception as e:
                 logger.warning(
@@ -1414,15 +1443,26 @@ User's query: {current_query}
                                 getattr(reflector_analysis, "unknowns", [])
                             ),
                         },
+                        # `evidence` above stays in the order the
+                        # reflector argued it. This is the chronology, and
+                        # it is graded as one, so it is sorted by stamp.
                         "timeline": [
                             {
                                 "event_type": evidence.claim,
                                 "observed_at": evidence.observed_at,
                             }
-                            for evidence in getattr(
-                                reflector_analysis, "evidence", []
+                            for evidence in sorted(
+                                (
+                                    item
+                                    for item in getattr(
+                                        reflector_analysis, "evidence", []
+                                    )
+                                    if item.observed_at
+                                ),
+                                key=lambda item: _observed_at_sort_key(
+                                    item.observed_at
+                                ),
                             )
-                            if evidence.observed_at
                         ],
                     },
                     "remediation_actions": [

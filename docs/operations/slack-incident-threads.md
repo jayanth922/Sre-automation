@@ -7,7 +7,9 @@ the same incident workflow.
 
 ## Supported interactions
 
-- Mention the app for a natural-language metrics query or incident follow-up.
+- Mention the app for a bounded natural-language metrics query. A bare mention
+  classified as an investigation steer only acknowledges the request because
+  it has no tracked incident context.
 - Reply in a tracked incident thread without repeating the mention.
 - Approve or deny a remediation gate.
 - Approve a proposed fix, acknowledge a verified fix, or mark a human-resolved
@@ -48,3 +50,9 @@ uv run python -m sre_agent.integrations.slack_bot
 Do not place real Slack tokens in documentation, fixtures, screenshots, or
 terminal captures. The bot is optional and failures to post must not change the
 incident's authoritative state.
+
+The former authenticated `POST /incidents/{id}/message` bridge and its two
+unmounted dashboard callers were removed. They could spend a full agent turn
+outside the tracked Slack workflow. Thread replies now call the shared
+incident-message handler directly, keeping Slack as the only conversational
+transport without duplicating investigation logic.

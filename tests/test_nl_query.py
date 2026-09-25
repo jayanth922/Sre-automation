@@ -244,16 +244,17 @@ def test_classify_chat_message_modes():
     assert nl.classify_chat_message("please roll it back")["mode"] == "steer"
 
 
-def test_incident_message_payload():
-    path, body = nl.build_incident_message_payload("inc-1", "focus on logs")
-    assert path == "/api/v1/incidents/inc-1/message"
-    assert body == {"message": "focus on logs"}
+def test_a_steer_no_longer_hands_back_a_removed_address():
+    """The steer branch used to return a POST descriptor nothing dispatched.
 
-
-def test_handle_chat_message_steer_builds_post():
+    `POST /incidents/{id}/message` is gone. `slack_bot.format_reply` keys off
+    `mode` alone, so dropping the descriptor changes nothing an operator sees
+    -- it only stops the dispatcher publishing a 404 address.
+    """
     out = asyncio.run(nl.handle_chat_message("focus on the logs", incident_id="inc-1"))
     assert out["mode"] == "steer"
-    assert out["post"]["path"] == "/api/v1/incidents/inc-1/message"
+    assert "post" not in out
+    assert not hasattr(nl, "build_incident_message_payload")
 
 
 def test_handle_chat_message_greeting():
@@ -324,7 +325,7 @@ def test_handle_chat_message_with_incident_id_still_steers_not_chats():
         nl.handle_chat_message("tell me a joke", incident_id="inc-1", llm=_CapturingChatLLM("x"))
     )
     assert out["mode"] == "steer"
-    assert out["post"]["path"] == "/api/v1/incidents/inc-1/message"
+    assert "post" not in out
 
 
 # ── production-grade augmentation: live catalog, real parser, LLM fallback ──

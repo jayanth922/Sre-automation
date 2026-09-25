@@ -35,8 +35,8 @@ console on port 3002.
 - [`app/(dashboard)/`](app/%28dashboard%29/): authenticated operator routes.
 - [`components/console/`](components/console/): navigation and shared console
   presentation.
-- [`components/dashboard/`](components/dashboard/): incident and SLO workflow
-  components.
+- [`components/console/`](components/console/): shared operator shell and live
+  incident notifications.
 - [`lib/`](lib/): authenticated API client, live stream, and shared types.
 - [`middleware.ts`](middleware.ts): public/protected route boundary.
 - [`next.config.ts`](next.config.ts): API rewrites for the local and deployed

@@ -59,12 +59,16 @@ its own 5xx.
 **Step 4 — Are the errors database-side?**
 
 ```
-query_logs(logql='{app="<service>"} |= "db_pool_exhausted"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
-query_logs(logql='{app="<service>"} |= "db_connection_refused"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
-query_logs(logql='{app="<service>"} |= "db_timeout"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
+query_logs(logql='{service="<service>"} |= "db_pool_exhausted"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
+query_logs(logql='{service="<service>"} |= "db_connection_refused"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
+query_logs(logql='{service="<service>"} |= "db_timeout"', limit=5, start_time="<alert-start-minus-5m>", end_time="<alert-start-plus-5m>")
 ```
 
 If any of the three returns lines → **Branch D**.
+
+The stream label is `service`, not `app`. If a query comes back with
+`selector_valid: false`, the selector was wrong and the empty result is not
+evidence — fix the selector and re-run before reading anything into it.
 
 **Step 5 — Otherwise the fault is in this service's own code or config** →
 **Branch E**.

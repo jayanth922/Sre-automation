@@ -92,6 +92,7 @@ The following checks are deterministic and do not make model calls:
 
 ```bash
 uv run python -m benchmarks.make_release_fixtures --check
+uv run python evals/benchmarks/calibrate_semantic_floor.py
 uv run python evals/benchmarks/release_gate.py matrix \
   --matrix evals/benchmarks/release/v1/ci-matrix.json \
   --output reports/release-matrix.json
@@ -102,6 +103,12 @@ Do not run `sre_bench.py`, an ablation campaign, or another live model-backed
 benchmark without explicit budget authorization. The existing smoke result is
 documented in [AI_RESULTS.md](../ai/AI_RESULTS.md) and is not a comparable
 model-quality row.
+
+The ablation coverage preflight is also model-free, but it needs a
+provenance-pinned skill-store export plus explicit tenant identifiers. See
+`evals/benchmarks/README.md` before running
+`evals/benchmarks/ablation_coverage.py`; never treat partial recall coverage as
+a completed memory ablation.
 
 ## Optional live MCP smoke
 

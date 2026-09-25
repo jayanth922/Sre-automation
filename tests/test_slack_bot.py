@@ -53,7 +53,9 @@ def _build_real_app_with_registry(registry):
 
 def test_format_reply_modes():
     assert "SRE agent" in sb.format_reply({"mode": "greeting"})
-    assert "fold that into" in sb.format_reply({"mode": "steer"})
+    steer = sb.format_reply({"mode": "steer"})
+    assert "fold that into" not in steer          # it never did fold it in
+    assert "incident's Slack thread" in steer
     q = sb.format_reply({"mode": "query", "valid": True, "executed": True, "promql": "sum(x)", "data": [1]})
     assert "sum(x)" in q and "[1]" in q
 
@@ -113,7 +115,7 @@ def test_process_mention_strips_mention_and_replies():
     reply = asyncio.run(sb.process_mention("<@U123> focus on logs", "inc-1", respond, handler=fake_handler))
     assert posted["seen_text"] == "focus on logs"          # mention stripped
     assert posted["msg"] == reply                          # reply posted
-    assert "fold that into" in reply
+    assert "incident's Slack thread" in reply              # and it points somewhere real
 
 
 def test_process_mention_query_path():
@@ -125,6 +127,286 @@ def test_process_mention_query_path():
 
     reply = asyncio.run(sb.process_mention("<@U1> checkout error rate", None, respond, handler=fake_handler))
     assert "rate(errors[5m])" in reply
+
+
+def test_a_mention_inside_a_war_room_reaches_the_real_conversational_turn():
+    """The module docstring promised this long before the code did it.
+
+    `_on_mention` used to resolve the incident id from the registry and then
+    hand it to the ad hoc dispatcher, which cannot touch a running
+    investigation. The operator got "I'll fold that into the live
+    investigation at the next checkpoint" and nothing folded it in. A mention
+    inside a war room is the same act as a reply inside it, so it takes the
+    same path.
+    """
+    import sre_agent.war_room as war_room_mod
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+
+    posted = []
+
+    async def fake_say(text, thread_ts):
+        posted.append((text, thread_ts))
+
+    seen = {}
+
+    async def fake_default_handler(text, incident_id, asker_email=None):
+        seen["text"] = text
+        seen["incident_id"] = incident_id
+        return {"status": "RESPONDED", "response": "Rolled back at 14:02."}
+
+    original = war_room_mod._default_handler
+    war_room_mod._default_handler = fake_default_handler
+    try:
+        asyncio.run(
+            app.handlers["app_mention"](
+                {
+                    "channel": "C1",
+                    "thread_ts": "T1",
+                    "ts": "T5",
+                    "text": "<@U9> what changed right before this?",
+                    "user": "U42",
+                },
+                fake_say,
+            )
+        )
+    finally:
+        war_room_mod._default_handler = original
+
+    assert seen["incident_id"] == "inc-1"
+    assert seen["text"] == "what changed right before this?"   # mention stripped
+    # Posted into the war-room thread, not as a reply to the mention itself.
+    assert posted == [("Rolled back at 14:02.", "T1")]
+
+
+def test_one_mention_buys_one_agent_turn_not_two():
+    """Slack delivers a mention in a channel the bot is in as both an
+    `app_mention` and a `message`, carrying the same `(channel, ts)`. Both
+    handlers now route war-room text into a real agent turn, so without the
+    claim one sentence costs two investigations and posts two answers.
+
+    Whichever event arrives first must win, because which one that is isn't
+    ours to decide — so this drives both orders.
+    """
+    import sre_agent.war_room as war_room_mod
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+
+    def run(first, second):
+        registry = WarRoomRegistry()
+        registry.open("inc-1", ThreadRef("C1", "T1"))
+        app = _build_real_app_with_registry(registry)
+
+        posted = []
+        turns = []
+
+        async def fake_say(text, thread_ts):
+            posted.append(text)
+
+        async def fake_default_handler(text, incident_id, asker_email=None):
+            turns.append(text)
+            return {"status": "RESPONDED", "response": "once"}
+
+        event = {
+            "channel": "C1",
+            "thread_ts": "T1",
+            "ts": "T5",
+            "text": "<@U9> is the error rate back down?",
+            "user": "U42",
+        }
+
+        original = war_room_mod._default_handler
+        war_room_mod._default_handler = fake_default_handler
+        try:
+
+            async def both():
+                await app.handlers[first](dict(event), fake_say)
+                await app.handlers[second](dict(event), fake_say)
+
+            asyncio.run(both())
+        finally:
+            war_room_mod._default_handler = original
+        return turns, posted
+
+    turns, posted = run("app_mention", "message")
+    assert len(turns) == 1 and posted == ["once"]
+
+    turns, posted = run("message", "app_mention")
+    assert len(turns) == 1 and posted == ["once"]
+
+
+def test_the_bot_never_answers_its_own_mention():
+    """The agent's own war-room posts can carry an @mention.
+
+    While a mention only produced an inert sentence that cost nothing; now it
+    starts a real investigation turn, so an echo of the bot's own message is a
+    loop. Both events drop it, because the guard lives in the body they share
+    rather than in one of them.
+    """
+    import sre_agent.war_room as war_room_mod
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+
+    posted = []
+
+    async def fake_say(text, thread_ts):
+        posted.append(text)
+
+    async def fake_default_handler(text, incident_id, asker_email=None):  # pragma: no cover
+        raise AssertionError("the bot must not investigate its own message")
+
+    event = {
+        "bot_id": "B1",
+        "channel": "C1",
+        "thread_ts": "T1",
+        "ts": "T8",
+        "text": "<@U9> paging the on-call",
+        "user": "U9",
+    }
+
+    original = war_room_mod._default_handler
+    war_room_mod._default_handler = fake_default_handler
+    try:
+
+        async def both():
+            await app.handlers["app_mention"](dict(event), fake_say)
+            await app.handlers["message"](dict(event), fake_say)
+
+        asyncio.run(both())
+    finally:
+        war_room_mod._default_handler = original
+
+    assert posted == []
+
+
+def test_a_mention_outside_a_war_room_still_answers_cold():
+    """Closing the war-room path must not make the bot mute everywhere else.
+    A mention with no tracked incident behind it keeps going to the ad hoc
+    dispatcher, and keeps replying under the mention.
+    """
+    from sre_agent.integrations import slack_bot as real_sb
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+    app = _build_real_app_with_registry(registry)
+
+    posted = []
+
+    async def fake_say(text, thread_ts):
+        posted.append((text, thread_ts))
+
+    seen = {}
+
+    async def fake_dispatcher(text, incident_id, session_key=None):
+        seen["incident_id"] = incident_id
+        seen["session_key"] = session_key
+        return {"mode": "chat", "reply": "No incident open on that cluster."}
+
+    original = real_sb._default_handler
+    real_sb._default_handler = fake_dispatcher
+    try:
+        asyncio.run(
+            app.handlers["app_mention"](
+                {"channel": "C9", "ts": "T9", "text": "<@U9> anything on fire?", "user": "U42"},
+                fake_say,
+            )
+        )
+    finally:
+        real_sb._default_handler = original
+
+    assert seen["incident_id"] is None
+    assert seen["session_key"] == "slack-chat:C9:U42"
+    assert posted == [("No incident open on that cluster.", "T9")]
+
+
+def test_approval_commands_are_reachable_by_mention_too():
+    """`@sre approve fix` is a command, not a question.
+
+    The matchers already normalize a mention prefix away, but before the two
+    handlers shared a body only a plain reply ever reached them: an @-mentioned
+    approval went to the chat dispatcher instead. On the product's only
+    communication surface, an approval that silently becomes small talk is the
+    worst possible failure.
+    """
+    import sre_agent.war_room as war_room_mod
+    from sre_agent.war_room import ThreadRef, WarRoomRegistry
+
+    registry = WarRoomRegistry()
+    registry.open("inc-1", ThreadRef("C1", "T1"))
+
+    calls = []
+
+    async def fake_route_fix_approval(text, thread, reg, approver_email, poster):
+        calls.append((text, thread.thread_ts))
+        await poster(thread, "Approved — running the fix.")
+        return {"status": "APPROVED"}
+
+    async def fake_default_handler(text, incident_id, asker_email=None):  # pragma: no cover
+        raise AssertionError("an approval must never fall through to the chat path")
+
+    original_route = war_room_mod.route_fix_approval_command
+    original_handler = war_room_mod._default_handler
+    war_room_mod.route_fix_approval_command = fake_route_fix_approval
+    war_room_mod._default_handler = fake_default_handler
+    try:
+        # build_slack_app imports the routes when it is called, so the patch
+        # has to be in place before the app is built.
+        app = _build_real_app_with_registry(registry)
+
+        posted = []
+
+        async def fake_say(text, thread_ts):
+            posted.append((text, thread_ts))
+
+        asyncio.run(
+            app.handlers["app_mention"](
+                {
+                    "channel": "C1",
+                    "thread_ts": "T1",
+                    "ts": "T7",
+                    "text": "<@U9> approve fix",
+                    "user": "U42",
+                },
+                fake_say,
+            )
+        )
+    finally:
+        war_room_mod.route_fix_approval_command = original_route
+        war_room_mod._default_handler = original_handler
+
+    assert calls == [("approve fix", "T1")]
+    assert posted == [("Approved — running the fix.", "T1")]
+
+
+def test_the_claim_table_cannot_grow_without_bound():
+    """Socket mode runs for weeks. Evicting the oldest claim is safe because a
+    duplicate arrives within milliseconds of its original — but the eviction
+    has to actually happen.
+    """
+    sb._claimed_events.clear()
+    try:
+        for i in range(sb._CLAIM_CAPACITY + 50):
+            assert sb._claim_event("C1", f"ts-{i}") is True
+        assert len(sb._claimed_events) <= sb._CLAIM_CAPACITY
+
+        # The newest claim is still held...
+        last = f"ts-{sb._CLAIM_CAPACITY + 49}"
+        assert sb._claim_event("C1", last) is False
+        # ...and the oldest has been evicted, so it would be handled again.
+        assert sb._claim_event("C1", "ts-0") is True
+
+        # A message with no ts is never deduplicated: a rare double reply beats
+        # a question silently dropped.
+        assert sb._claim_event("C1", "") is True
+        assert sb._claim_event("C1", "") is True
+    finally:
+        sb._claimed_events.clear()
 
 
 def test_merged_app_registers_message_handler_only_with_registry():

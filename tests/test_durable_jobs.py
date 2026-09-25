@@ -18,6 +18,26 @@ def _ids():
     return uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
 
+def test_no_write_path_can_enqueue_a_job_the_worker_cannot_execute():
+    """`claim_jobs` selects on status and job_type; the worker demands a handler.
+
+    Those two facts only agree while every writer stamps the handler.
+    `POST /clusters/{id}/jobs/trigger` and its `crud.create_job` did not - they
+    wrote a PENDING investigation with a NULL payload, which the worker claimed,
+    failed on, and dead-lettered after `max_attempts`. Both are removed; this
+    pins the encoder's half of the contract and the helper's continued absence.
+    """
+    from backend import crud
+
+    payload = encode_investigation_payload(
+        incident_id=uuid.uuid4(),
+        cluster_id=uuid.uuid4(),
+        alert_name="CheckoutHighErrorRate",
+    )
+    assert payload["handler"] == "run_graph_background_saas"
+    assert not hasattr(crud, "create_job")
+
+
 def test_duplicate_alert_delivery_reuses_active_job():
     store = InMemoryDurableJobStore()
     cluster_id, org_id, incident_id = _ids()

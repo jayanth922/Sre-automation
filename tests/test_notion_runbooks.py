@@ -37,7 +37,7 @@ from sre_agent.notion_runbooks import (
 )
 
 REPO = Path(__file__).resolve().parent.parent
-RUNBOOK_DIR = REPO / "runbooks" / "meridian"
+RUNBOOK_DIR = REPO / "examples" / "meridian" / "runbooks"
 
 
 def notion_echo(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

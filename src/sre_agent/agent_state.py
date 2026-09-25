@@ -113,6 +113,40 @@ class InvestigationFindings(BaseModel):
     )
 
 
+# The closed vocabulary for ReflectorAnalysis.fault_mode.
+#
+# Grading a free-text fault mode against a fixed taxonomy measures vocabulary
+# luck, not diagnosis: the 2026-09-22 trial named the right service and the
+# right mechanism and still FAILed for answering
+# "injected_query_latency_runtime_config" where the taxonomy says "slow_query".
+# Publishing the label set is what makes the field gradable at all, and it is
+# only the label set -- never which label belongs to any one incident.
+#
+# tests/test_structured_grading.py asserts every shipped scenario's
+# taxonomy.fault_mode appears here, so a new scenario cannot introduce a mode
+# the diagnosing agent is never offered.
+FAULT_MODES: tuple[str, ...] = (
+    "bad_deploy",
+    "charge_failure",
+    "compound_degradation",
+    "concurrent_benign_signal",
+    "db_connectivity",
+    "exporter_down_beside_real_fault",
+    "exporter_down_on_the_caller",
+    "exporter_down_without_fault",
+    "latency",
+    "latency_cascade",
+    "memory_leak",
+    "payment_gateway_failure",
+    "provider_outage",
+    "resource_exhaustion",
+    "retry_amplified_latency",
+    "slow_query",
+    "sub_threshold",
+    "traffic_shift",
+)
+
+
 class CausalLink(BaseModel):
     """One explicit cause→effect link used by structured evaluation."""
 
@@ -151,7 +185,12 @@ class ReflectorAnalysis(BaseModel):
         None, description="Exact service identifier implicated by the evidence"
     )
     fault_mode: Optional[str] = Field(
-        None, description="Concise snake_case failure mode implicated by the evidence"
+        None,
+        description=(
+            "Failure mode implicated by the evidence. Use exactly one of these "
+            "values, verbatim: " + ", ".join(FAULT_MODES) + ". Leave null when "
+            "the evidence fits none of them -- never invent a new label."
+        ),
     )
     causal_chain: List[CausalLink] = Field(
         default_factory=list,
@@ -159,7 +198,12 @@ class ReflectorAnalysis(BaseModel):
     )
     evidence: List[EvidenceReference] = Field(
         default_factory=list,
-        description="Source references that support the diagnosis",
+        description=(
+            "Source references that support the diagnosis. Required whenever a "
+            "hypothesis is given: one entry per claim relied on, each carrying "
+            "observed_at when the finding it came from is timestamped. A "
+            "hypothesis with no references cannot be checked by anyone."
+        ),
     )
     unknowns: List[str] = Field(
         default_factory=list,

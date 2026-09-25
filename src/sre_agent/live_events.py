@@ -456,9 +456,17 @@ async def publish_lifecycle_event(
     summary: str = "",
     org_id: Optional[str] = None,
     status: Optional[str] = None,
+    cluster_id: Optional[str] = None,
     bus: Optional[EventBus] = None,
 ) -> None:
-    """Publish cluster incident lifecycle (opened/resolved/status_changed)."""
+    """Publish cluster incident lifecycle (opened/resolved/status_changed).
+
+    `cluster_id` is what lets a cluster-scoped consumer narrow this feed. The
+    channel is shared across an organization and `org_id` only gets it as far
+    as the right tenant, so without this the console cannot tell its own
+    cluster's incidents from a sibling's -- and the incident toasts, mounted
+    on every cluster page, showed both.
+    """
     bus = bus or get_event_bus()
     payload = {
         "incident_id": str(incident_id),
@@ -467,6 +475,8 @@ async def publish_lifecycle_event(
     }
     if status:
         payload["status"] = status
+    if cluster_id:
+        payload["cluster_id"] = str(cluster_id)
     try:
         await bus.publish(
             INCIDENTS_LIFECYCLE_CHANNEL,

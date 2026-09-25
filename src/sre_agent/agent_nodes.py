@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from .act_phase import measured_evidence_for_trace
@@ -32,15 +34,33 @@ from .incident_timeline import (
 from .investigation_limits import investigation_limits
 from .narrative import (
     SPECIALIST_LABELS,
+    alert_start_time,
     build_specialist_task_brief,
     narrate_specialist_finding,
+    runbook_text_for_alert,
 )
 from .prompt_loader import prompt_loader
+from .runbook_probe import (
+    metrics_probe_caller,
+    probe_payload,
+    probe_runbook_queries,
+)
 
 # Logging will be configured by the main entry point
 logger = logging.getLogger(__name__)
 
 _SPECIALIST_ROLE_METADATA_KEY = "sentinel.specialist_role"
+
+# Seconds of the specialist wall-clock budget reserved so the last turn can
+# finish. Measured p90 specialist model-call latency on the graded
+# inventory_slow_queries run was 26.1s (p95 42.3s, max 68.6s), so a turn
+# started with less than this left is likely to be killed mid-flight: paid
+# for, and discarded.
+_TURN_HEADROOM_SECONDS = 30
+# How much of each already-collected tool result survives into the digest a
+# cut-short lane reports.
+_PARTIAL_EVIDENCE_TOOL_CHARS = 600
+_PARTIAL_EVIDENCE_MAX_TOOLS = 12
 
 
 def _bounded_agent_result(response: str, max_chars: Optional[int] = None) -> str:
@@ -59,6 +79,212 @@ def _bounded_agent_result(response: str, max_chars: Optional[int] = None) -> str
     head = available // 2
     tail = available - head
     return text[:head] + marker + text[-tail:]
+
+
+def _turn_headroom_seconds(timeout_seconds: int) -> int:
+    """Seconds of the lane budget reserved so the last started turn finishes.
+
+    A short configured budget still spends two thirds of itself on turns;
+    reserving a flat 30s out of the 15s minimum would stop the lane before
+    its first tool round.
+    """
+    return min(_TURN_HEADROOM_SECONDS, max(int(timeout_seconds), 0) // 3)
+
+
+# create_react_agent wires pre_model_hook → agent → tools → pre_model_hook,
+# so one tool round costs three LangGraph steps, not two. Budgeting two made
+# the framework backstop (14) bite in the middle of turn five of a six-turn
+# budget, and GraphRecursionError is a crash, not the graceful boundary
+# below: the 2026-09-22 trial lost its whole logs lane to it, twice.
+_REACT_STEPS_PER_TURN = 3
+
+
+def _specialist_recursion_limit(model_turns: int) -> int:
+    """The framework backstop, sized to trip after the explicit turn budget."""
+    return max(1, int(model_turns)) * _REACT_STEPS_PER_TURN + 2
+
+
+# A lane that answered without calling a single tool did not investigate: the
+# model returned its opening sentence and stopped. Every other boundary in this
+# lane is detected and labelled; this one was not, so the 2026-09-22 metrics
+# lane reported 19 characters ("I'll verify current") as a complete finding
+# while Prometheus held the 1.59s fault that decided the incident. One retry is
+# cheaper than an evidence lane silently contributing nothing to a whole run.
+_NO_TOOL_RETRY_MIN_SECONDS = 20.0
+_NO_TOOL_RETRY_DIRECTIVE = (
+    "Your previous turn returned no tool calls, so you gathered no evidence. "
+    "Do not answer from the brief alone. Call the tools you need now, then "
+    "report what they actually returned."
+)
+_NO_TOOL_LANE_NOTE = (
+    "This lane called no tools, so it collected no evidence of its own and "
+    "the text above is a preamble rather than a finding. Do not treat it as "
+    "observed data, and do not report this lane's subject as checked."
+)
+# ...with one exception. The runbooks lane's domain is the procedure itself,
+# and build_specialist_task_brief() already inlines the authoritative runbook
+# for this alert. When it is there, the lane has nothing left to retrieve and
+# answering from it is the contract, not a skipped investigation. On
+# 2026-09-22 the guard above read that as a silent lane and bought a second
+# run of it. With no runbook inlined the lane does have to go and find one,
+# so the exemption is conditional on the brief, not on the lane alone.
+_RUNBOOK_SUFFICIENT_AGENTS = frozenset({"runbooks_agent"})
+
+# A turn that ran out of output tokens and a model that declined to call a
+# tool are different failures with opposite fixes, and until now they were
+# recorded identically -- nothing in this lane read the provider's stop
+# reason at all. LiteLLM normalises Anthropic's "max_tokens" to OpenAI's
+# "length", so both spellings arrive depending on the backend in use.
+_TRUNCATION_FINISH_REASONS = frozenset(
+    {"length", "max_tokens", "max_output_tokens"}
+)
+_TRUNCATED_LANE_NOTE = (
+    "This lane was cut off at its output-token ceiling before it produced a "
+    "tool call or a finding, so it collected no evidence of its own. That is "
+    "a budget boundary, not a finding that this lane's subject is healthy: "
+    "do not report this lane's subject as checked."
+)
+# Telling a model that was cut off mid-sentence "do not answer from the brief
+# alone" wastes the retry: it never got as far as an answer. Ask for brevity
+# instead, which is the one thing that makes the second attempt fit.
+_TRUNCATED_RETRY_DIRECTIVE = (
+    "Your previous turn hit the output-token ceiling before it produced "
+    "anything usable. Do not restate the brief and do not plan at length. "
+    "Call your first tool immediately, then report only what it returned."
+)
+
+# The hard ceiling on everything salvaged for one lane, probe measurement
+# and tool digest together. It sits under narrative._truncate's own 1800-char
+# cap on a finding entering the next lane's brief, so salvage can never be
+# larger than a finding that survives that cap -- it costs no payload an
+# ordinary finding would not have cost. _partial_evidence_digest's own bounds
+# (600 chars x 12 results) are deliberately looser, because on the cut-short
+# paths the digest *is* the whole lane report; here it is an addition to one.
+# Nothing in this path calls a model: the probe ran before the lane's first
+# turn and the tool results were already on the wire.
+_SALVAGE_MAX_CHARS = 1500
+# Two thirds of it, so a long probe can never crowd the tool results out
+# entirely. A real probe block is a few hundred chars.
+_PROBE_SALVAGE_MAX_CHARS = 1000
+
+
+def _finish_reason(message: Any) -> str:
+    """The provider's stop reason for one model turn, lowercased."""
+    for holder in ("response_metadata", "additional_kwargs"):
+        payload = getattr(message, holder, None)
+        if not isinstance(payload, dict):
+            continue
+        for key in ("finish_reason", "stop_reason"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    return ""
+
+
+def _bounded_lines(text: str, limit: int) -> str:
+    """Trim to whole lines within `limit`, saying how many were dropped."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    kept = head.rsplit("\n", 1)[0] if "\n" in head else head
+    dropped = text.count("\n") - kept.count("\n")
+    return (
+        f"{kept}\n[{dropped} further line(s) omitted here; the full "
+        "transcript is in this run's evidence artifact]"
+    )
+
+
+def _probe_measurement_note(runbook_probe_block: str) -> str:
+    """The runbook probe's numbers, restated as a finding of the runtime's."""
+    payload = probe_payload(runbook_probe_block)
+    if not payload:
+        return ""
+    return (
+        "Runbook query probe -- measured by the runtime before this lane's "
+        "first turn, so these are arithmetic over live series and not a "
+        "model's claim:\n" + payload[:_PROBE_SALVAGE_MAX_CHARS]
+    )
+
+
+def _salvaged_evidence(
+    messages: List[Any], runbook_probe_block: str, existing: str = ""
+) -> str:
+    """Everything the runtime already holds for a lane that reported nothing.
+
+    Both sources are deterministic and already bought. Neither is re-added
+    when the text the lane is carrying already contains it: the timeout and
+    recursion handlers append the same digest, and salvage must not say
+    anything twice.
+    """
+    parts: List[str] = []
+    probe_note = _probe_measurement_note(runbook_probe_block)
+    if probe_note and probe_note not in (existing or ""):
+        parts.append(probe_note)
+    if _EVIDENCE_DIGEST_HEADER not in (existing or ""):
+        digest = _partial_evidence_digest(
+            messages, reason="stopped without writing a finding"
+        )
+        if digest:
+            parts.append(digest)
+    # The probe goes first and is never the part that gets cut: it is a
+    # single decisive number, and on 2026-09-23 it was the number the whole
+    # incident turned on.
+    return _bounded_lines("\n\n".join(parts), _SALVAGE_MAX_CHARS)
+
+
+def _cut_short_reason(
+    turn_budget: "SpecialistTurnBudget",
+    *,
+    budget_hit: bool,
+    now: float,
+    soft_deadline: float,
+) -> str:
+    """Which boundary, if any, should stop this lane before the next round.
+
+    Both boundaries only bite when the model has actually asked for another
+    tool round: a lane that is about to write its report is never cut off.
+    """
+    if budget_hit:
+        return "turn_limit"
+    if turn_budget.requested_another_round and now >= soft_deadline:
+        return "soft_deadline"
+    return ""
+
+
+_EVIDENCE_DIGEST_HEADER = "Evidence collected before this lane "
+
+
+def _partial_evidence_digest(
+    messages: List[Any], *, reason: str = "was cut short"
+) -> str:
+    """Report what a cut-short lane actually collected.
+
+    The tool results already on the wire were paid for and are as valid as
+    any others. Replacing them with a bare "timed out" string is what made
+    the graded inventory_slow_queries trial tell the supervisor it had no
+    application logs -- after Loki had answered four times, in about 0.1s
+    each. The deadline is a budget boundary, not a tool failure, and the
+    brief should say so.
+    """
+    entries: List[str] = []
+    for msg in messages:
+        if not hasattr(msg, "tool_call_id"):
+            continue
+        name = getattr(msg, "name", None) or "unknown_tool"
+        marker = " (tool failed)" if getattr(msg, "status", "success") == "error" else ""
+        body = str(getattr(msg, "content", "") or "").strip()
+        if len(body) > _PARTIAL_EVIDENCE_TOOL_CHARS:
+            body = body[:_PARTIAL_EVIDENCE_TOOL_CHARS] + " …[truncated]"
+        entries.append(f"- `{name}`{marker}: {body or '(empty result)'}")
+    if not entries:
+        return ""
+    total = len(entries)
+    dropped = max(total - _PARTIAL_EVIDENCE_MAX_TOOLS, 0)
+    if dropped:
+        entries = entries[-_PARTIAL_EVIDENCE_MAX_TOOLS:]
+    header = f"{_EVIDENCE_DIGEST_HEADER}{reason} ({total} tool results"
+    header += f", {dropped} older ones omitted here):" if dropped else "):"
+    return header + "\n" + "\n".join(entries)
 
 
 async def _artifact_backed_trace_metadata(
@@ -138,6 +364,7 @@ class SpecialistTurnBudget:
     limit: int
     turns: int = 0
     exhausted: bool = False
+    requested_another_round: bool = False
 
     def observe(self, agent_step: Any) -> bool:
         self.turns += 1
@@ -146,10 +373,15 @@ class SpecialistTurnBudget:
             if isinstance(agent_step, dict)
             else []
         )
-        requests_another_round = any(
+        # Recorded, not just tested: the wall-clock deadline needs to know
+        # whether the model is asking for another tool round before deciding
+        # there is no time left to grant one.
+        self.requested_another_round = any(
             bool(getattr(message, "tool_calls", None)) for message in messages
         )
-        self.exhausted = self.turns >= self.limit and requests_another_round
+        self.exhausted = (
+            self.turns >= self.limit and self.requested_another_round
+        )
         return self.exhausted
 
 
@@ -164,6 +396,14 @@ def _load_agent_config() -> Dict[str, Any]:
 def _create_llm(provider: str = "anthropic", router_enabled: Optional[bool] = None, **kwargs):
     """Create a specialist LLM, routed to the balanced tier by the model router."""
     from .model_router import TaskType, route_llm
+
+    # Bound the output length of a specialist turn. Without this the live
+    # LiteLLM transport applies no ceiling at all (see model_router), and a
+    # single turn can spend a third of the lane's wall-clock budget writing
+    # prose no downstream consumer reads.
+    kwargs.setdefault(
+        "max_tokens", investigation_limits().specialist_max_output_tokens
+    )
     return route_llm(
         TaskType.SPECIALIST,
         provider=provider,
@@ -354,6 +594,36 @@ class BaseAgentNode:
             logger.warning(f"Unknown agent type for agent: {self.name}")
             return "unknown"
 
+    async def _probe_runbook_queries(self, state: AgentState) -> str:
+        """Measure the runbook's own PromQL before this lane's first turn.
+
+        Timing a rate window is arithmetic, and the 2026-09-22 trial showed
+        what it costs to leave it to a model: the runbook's query ran at the
+        alert stamp, read a pre-fault window, and routed a live regression to
+        the runbook's do-nothing branch. Fail-soft by construction — any
+        failure leaves the lane exactly as it was, with every tool bound.
+        """
+        try:
+            runbook_text = runbook_text_for_alert(state.get("alert_context"))
+            if not runbook_text:
+                return ""
+            caller = metrics_probe_caller(self.tools)
+            if caller is None:
+                return ""
+            return await probe_runbook_queries(
+                runbook_text,
+                tool_caller=caller,
+                alert_started_at=alert_start_time(state.get("alert_context")),
+            )
+        except Exception as probe_error:
+            logger.warning(
+                "%s - runbook query probe skipped (%s): %s",
+                self.name,
+                type(probe_error).__name__,
+                probe_error,
+            )
+            return ""
+
     async def __call__(self, state: AgentState) -> Dict[str, Any]:
         """Process the current state and return updated state."""
         try:
@@ -396,6 +666,39 @@ class BaseAgentNode:
                 for key, value in (state.get("agent_results") or {}).items()
                 if key != agent_key and value
             }
+            # Set Audit Context — before the runbook probe below, so its
+            # tool call is attributed to this incident and lane exactly like
+            # a model-issued one.
+            incident_id = None
+            if state.get("alert_context"):
+                # alert_context is a Pydantic model, or dict?
+                # Check type or try access
+                ac = state.get("alert_context")
+                if hasattr(ac, "incident_id"):
+                     incident_id = str(ac.incident_id) if ac.incident_id else None
+                # If incident_id not directly on alert_context, maybe we need to pass it in state separately
+                # or derive it. For now, we'll try to use what we have.
+
+            # Also try to get from metadata if set by higher level
+            if not incident_id:
+                incident_id = state.get("metadata", {}).get("incident_id")
+
+            set_audit_context(
+                incident_id=incident_id,
+                agent_name=self.name,
+                investigation_scope=True,
+            )
+
+            # Only the lane that can run PromQL, plus the single-agent
+            # ablation arm, which must differ from the full arm in the
+            # ablated dimension and nothing else.
+            runbook_hints = agent_type in ("metrics", "single")
+            # Kept, not merely passed. These are the runtime's own numbers for
+            # the runbook's gating query; if the lane that receives them never
+            # reports, they are still the best evidence in the incident.
+            runbook_probe_block = (
+                await self._probe_runbook_queries(state) if runbook_hints else ""
+            )
             agent_prompt = build_specialist_task_brief(
                 specialist_role=specialist_role,
                 objective=state.get("current_query", "") or self.name,
@@ -405,11 +708,29 @@ class BaseAgentNode:
                 namespace_scope=(state.get("metadata") or {}).get(
                     "cluster_namespace"
                 ),
+                runbook_query_hints=runbook_hints,
+                runbook_probe=runbook_probe_block,
+            )
+
+            # Answering without a tool call is this lane's contract only
+            # while the runbook it would have fetched is already in hand.
+            runbook_answerable = bool(
+                agent_key in _RUNBOOK_SUFFICIENT_AGENTS
+                and runbook_text_for_alert(state.get("alert_context"))
             )
 
             # We'll collect all messages and the final response
             all_messages = []
             agent_response = ""
+            # Two facts this lane never recorded, and could not report
+            # without: whether the provider stopped a turn at the output
+            # ceiling, and whether the model ever emitted a text block at
+            # all. Without the first, a lane cut off mid-turn was labelled a
+            # lane that declined to investigate. Without the second, deciding
+            # whether anything is worth salvaging means pattern-matching our
+            # own notes back out of the response.
+            response_truncated = False
+            model_text_captured = False
             # Genuine tool-call failures for this specialist, keyed off
             # ToolMessage.status == "error" (set by langgraph's ToolNode when
             # a bound tool raises). This is the ONLY reliable signal for "the
@@ -431,40 +752,44 @@ class BaseAgentNode:
             # Stream the agent execution to capture tool calls with timeout
             logger.info(f"{self.name} - Starting agent execution")
 
-            # Set Audit Context
-            incident_id = None
-            if state.get("alert_context"):
-                # alert_context is a Pydantic model, or dict?
-                # Check type or try access
-                ac = state.get("alert_context")
-                if hasattr(ac, "incident_id"):
-                     incident_id = str(ac.incident_id) if ac.incident_id else None
-                # If incident_id not directly on alert_context, maybe we need to pass it in state separately
-                # or derive it. For now, we'll try to use what we have.
-
-            # Also try to get from metadata if set by higher level
-            if not incident_id:
-                incident_id = state.get("metadata", {}).get("incident_id")
-
-            set_audit_context(
-                incident_id=incident_id,
-                agent_name=self.name,
-                investigation_scope=True,
-            )
-
             fit_reports = []
             limits = investigation_limits()
             turn_budget = SpecialistTurnBudget(limits.specialist_model_turns)
+            # "" while the lane ran to completion; otherwise the boundary that
+            # stopped it. Drives both the evidence digest and the decision to
+            # skip the narration model call for a lane that has nothing new
+            # to narrate.
+            cut_short_reason = ""
+            # Counted across the retry too: a lane that never reaches a tool
+            # has not investigated, however long its prose.
+            tool_calls_made = 0
             try:
                 timeout_seconds = limits.specialist_timeout_seconds
+                # Stop *starting* a turn the clock cannot finish, instead of
+                # paying for one and throwing it away at the deadline. A very
+                # short configured budget still gets to spend two thirds of
+                # itself on turns.
+                soft_deadline = (
+                    time.monotonic()
+                    + timeout_seconds
+                    - _turn_headroom_seconds(timeout_seconds)
+                )
 
-                async def execute_agent():
+                async def execute_agent(extra_directive: str = ""):
                     nonlocal agent_response  # Fix scope issue - allow access to outer variable
+                    nonlocal cut_short_reason
+                    nonlocal tool_calls_made
+                    nonlocal response_truncated
+                    nonlocal model_text_captured
                     chunk_count = 0
                     # Isolated chat history: only this specialist's system
                     # prompt + alert-aware brief. See the note at the top
                     # of __call__ for why we don't include state["messages"].
                     isolated_messages = [system_message, user_message]
+                    if extra_directive:
+                        isolated_messages.append(
+                            HumanMessage(content=extra_directive)
+                        )
                     logger.info(
                         f"{self.name} - Executing agent with {isolated_messages}"
                     )
@@ -472,10 +797,13 @@ class BaseAgentNode:
                         {"messages": isolated_messages},
                         config={
                             "metadata": specialist_trace_metadata(self.agent_type),
-                            # A tool round consumes an agent step and a tools
-                            # step. The explicit counter below is the graceful
-                            # boundary; this is the framework backstop.
-                            "recursion_limit": limits.specialist_model_turns * 2 + 2,
+                            # The explicit counter below is the graceful
+                            # boundary; this is the framework backstop, and it
+                            # has to sit above the step cost of a full turn
+                            # budget or it fires first and raises.
+                            "recursion_limit": _specialist_recursion_limit(
+                                limits.specialist_model_turns
+                            ),
                         },
                     )
                     async for chunk in agent_stream:
@@ -491,6 +819,7 @@ class BaseAgentNode:
                                     all_messages.append(msg)
                                     # Log tool calls being made
                                     if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                        tool_calls_made += len(msg.tool_calls)
                                         logger.info(
                                             f"{self.name} - Agent making {len(msg.tool_calls)} tool calls"
                                         )
@@ -544,17 +873,47 @@ class BaseAgentNode:
                                             )
                                         if content:
                                             agent_response = content
+                                            model_text_captured = True
                                             logger.info(
                                                 f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
                                             )
+                                        finish_reason = _finish_reason(msg)
+                                        if finish_reason in _TRUNCATION_FINISH_REASONS:
+                                            response_truncated = True
+                                            logger.warning(
+                                                "%s - model turn stopped on '%s': the "
+                                                "output ceiling was reached before the "
+                                                "turn finished (%d chars, %d tool call(s))",
+                                                self.name,
+                                                finish_reason,
+                                                len(str(content or "")),
+                                                len(getattr(msg, "tool_calls", []) or []),
+                                            )
 
-                            if turn_budget.observe(agent_step):
-                                budget_note = (
-                                    "Investigation turn limit reached after "
-                                    f"{turn_budget.turns} model calls; the requested "
-                                    "next tool round was not executed. Continue from "
-                                    "the evidence already collected."
-                                )
+                            stop_reason = _cut_short_reason(
+                                turn_budget,
+                                budget_hit=turn_budget.observe(agent_step),
+                                now=time.monotonic(),
+                                soft_deadline=soft_deadline,
+                            )
+                            if stop_reason:
+                                cut_short_reason = stop_reason
+                                if stop_reason == "turn_limit":
+                                    budget_note = (
+                                        "Investigation turn limit reached after "
+                                        f"{turn_budget.turns} model calls; the requested "
+                                        "next tool round was not executed. Continue from "
+                                        "the evidence already collected."
+                                    )
+                                else:
+                                    budget_note = (
+                                        "Investigation wall-clock budget nearly spent "
+                                        f"after {turn_budget.turns} model calls; the "
+                                        "requested next tool round was not started, so "
+                                        "this lane reports what it has rather than being "
+                                        "killed mid-call and losing it. Continue from "
+                                        "the evidence already collected."
+                                    )
                                 agent_response = (
                                     f"{agent_response}\n\n{budget_note}"
                                     if agent_response
@@ -617,19 +976,182 @@ class BaseAgentNode:
                     f"{self.name} - Executing agent with timeout of {timeout_seconds} seconds"
                 )
                 with capture_fit_reports() as fit_reports:
+                    started_at = time.monotonic()
                     await asyncio.wait_for(execute_agent(), timeout=timeout_seconds)
+                    # Nothing stopped this lane and it still never called a
+                    # tool: the model wrote a preamble and returned. Ask once
+                    # more, explicitly, while there is clock left to answer in.
+                    if (
+                        not cut_short_reason
+                        and not tool_calls_made
+                        and not runbook_answerable
+                    ):
+                        remaining = timeout_seconds - (time.monotonic() - started_at)
+                        if remaining >= _NO_TOOL_RETRY_MIN_SECONDS:
+                            logger.warning(
+                                "%s - lane returned %d chars with no tool call "
+                                "after %d model call(s); retrying once with an "
+                                "explicit directive",
+                                self.name,
+                                len(str(agent_response or "")),
+                                turn_budget.turns,
+                            )
+                            # The first attempt produced no evidence, so there
+                            # is nothing in it worth carrying into the retry.
+                            first_attempt_truncated = response_truncated
+                            agent_response = ""
+                            response_truncated = False
+                            model_text_captured = False
+                            # execute_agent reads soft_deadline from this
+                            # scope at call time; the original one is already
+                            # spent, and leaving it would cut the retry off
+                            # before its first tool round.
+                            soft_deadline = (
+                                time.monotonic()
+                                + remaining
+                                - _turn_headroom_seconds(int(remaining))
+                            )
+                            await asyncio.wait_for(
+                                execute_agent(
+                                    extra_directive=(
+                                        _TRUNCATED_RETRY_DIRECTIVE
+                                        if first_attempt_truncated
+                                        else _NO_TOOL_RETRY_DIRECTIVE
+                                    )
+                                ),
+                                timeout=remaining,
+                            )
                 logger.info(f"{self.name} - Agent execution completed")
 
             except asyncio.TimeoutError:
+                cut_short_reason = "timeout"
                 logger.error(
                     f"{self.name} - Agent execution timed out after {timeout_seconds} seconds"
                 )
-                agent_response = f"Agent execution timed out after {timeout_seconds} seconds. The agent may be stuck on a tool call or LLM response."
+                # Keep what was already collected. Overwriting agent_response
+                # here used to discard every tool result this lane had paid
+                # for and report the lane as having returned nothing.
+                timeout_note = (
+                    f"Investigation stopped at the {timeout_seconds}s wall-clock "
+                    "limit while a model call was still in flight. This is a "
+                    "budget boundary, not a tool failure: the evidence below was "
+                    "collected before the cut-off and is as valid as any other. "
+                    "Reason from it, and do not report this lane as having "
+                    "returned no data."
+                )
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        timeout_note,
+                        _partial_evidence_digest(all_messages),
+                    )
+                    if part
+                )
+
+            except GraphRecursionError as recursion_error:
+                # A step ceiling is a budget, and every budget in this lane
+                # keeps the evidence it has already paid for. Losing it here
+                # is what made the 2026-09-22 trial report "the logs agent
+                # hit a recursion limit before returning anything" twice,
+                # after Loki had already answered.
+                cut_short_reason = "recursion_limit"
+                logger.error(
+                    "%s - LangGraph step backstop reached after %d model "
+                    "call(s): %s",
+                    self.name,
+                    turn_budget.turns,
+                    recursion_error,
+                )
+                recursion_note = (
+                    "Investigation stopped at the framework's step ceiling "
+                    f"after {turn_budget.turns} model calls, with a tool "
+                    "round in flight. This is a budget boundary, not a tool "
+                    "failure: the evidence below was collected before the "
+                    "cut-off and is as valid as any other. Reason from it, "
+                    "and do not report this lane as having returned no data."
+                )
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        recursion_note,
+                        _partial_evidence_digest(all_messages),
+                    )
+                    if part
+                )
 
             except Exception as e:
                 logger.error(f"{self.name} - Agent execution failed: {e}")
                 logger.exception("Full exception details:")
-                agent_response = f"Agent execution failed: {str(e)}"
+                # Say what broke, then still hand over what was collected:
+                # a failure on the fourth tool round does not un-answer the
+                # first three.
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        f"Agent execution failed: {str(e)}",
+                        _partial_evidence_digest(all_messages),
+                    )
+                    if part
+                )
+
+            # A lane that never called a tool has not given a short answer;
+            # it has given an absent one. Label it so the reflector and the
+            # trial record both see a missing lane, instead of reading its
+            # opening sentence as though it were observed data.
+            if not tool_calls_made and not cut_short_reason and not runbook_answerable:
+                cut_short_reason = (
+                    "output_truncated" if response_truncated else "no_tool_calls"
+                )
+                logger.error(
+                    "%s - lane produced no tool calls in %d model call(s) (%s); "
+                    "reporting it as collecting no evidence",
+                    self.name,
+                    turn_budget.turns,
+                    (
+                        "cut off at the output ceiling"
+                        if response_truncated
+                        else "the model returned without calling one"
+                    ),
+                )
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        (
+                            _TRUNCATED_LANE_NOTE
+                            if response_truncated
+                            else _NO_TOOL_LANE_NOTE
+                        ),
+                    )
+                    if part
+                )
+
+            # Whatever stopped the lane, evidence the runtime already holds is
+            # not the model's to lose. A probe measurement and a completed
+            # tool round are facts about the incident; the notes above are
+            # facts about the lane. On 2026-09-23 two lanes wrote no text --
+            # one cut off at the ceiling holding a pre-measured p90 of 2.023s
+            # against a 1.0s threshold, one out of turns holding ten tool
+            # results -- and the reflector was handed neither, so it reported
+            # the gating measurement as never taken. Both are bounded above
+            # and neither costs a model call.
+            if not model_text_captured:
+                salvage = _salvaged_evidence(
+                    all_messages, runbook_probe_block, agent_response
+                )
+                if salvage:
+                    agent_response = (
+                        f"{agent_response}\n\n{salvage}" if agent_response else salvage
+                    )
+                    logger.info(
+                        "%s - lane wrote no finding; salvaged %d chars of "
+                        "evidence the runtime already held",
+                        self.name,
+                        len(salvage),
+                    )
 
             # Debug: Check what we captured
             logger.info(
@@ -672,6 +1194,7 @@ class BaseAgentNode:
                 "turns": turn_budget.turns,
                 "limit": turn_budget.limit,
                 "exhausted": turn_budget.exhausted,
+                "cut_short": cut_short_reason,
             }
             artifact_metadata["specialist_turn_budgets"] = specialist_budgets
             state_agent_response = (
@@ -688,7 +1211,10 @@ class BaseAgentNode:
                 # output, etc.) is preserved in the structured payload, but the
                 # visible chat content reads like a teammate's Slack post.
                 narrative_text = ""
-                if not turn_budget.exhausted:
+                # A lane stopped at a boundary has already appended the note
+                # that explains itself; paying for a narration call to restate
+                # a truncated report is the one model call here with no reader.
+                if not cut_short_reason:
                     try:
                         narrative_text = await narrate_specialist_finding(
                             self.llm,
@@ -718,6 +1244,7 @@ class BaseAgentNode:
                     "turns": turn_budget.turns,
                     "limit": turn_budget.limit,
                     "exhausted": turn_budget.exhausted,
+                    "cut_short": cut_short_reason,
                 }
                 if artifact_reference is not None:
                     finding_payload["evidence_artifact_ref"] = artifact_reference

@@ -9,7 +9,6 @@ operations in production environments.
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -31,15 +30,24 @@ def evaluate_action(
     Evaluate if a remediation action is allowed based on deterministic rules.
 
     Rules:
-    - Block RESTART on PROD unless risk_score < 3
     - Block DELETE on PROD
     - Block SCALE DOWN to 0 on PROD
     - Allow all actions in non-PROD environments
 
+    A RESTART or a ROLLBACK on PROD is deliberately *not* decided here; both
+    are left to `policy_gate.decide`, for the reasons Rules 1 and 4 record. A
+    verdict returned from this function is final, so it is the wrong place for
+    anything a person is supposed to be able to authorize. The gate always
+    holds a PROD rollback for a human; it holds a PROD restart until telemetry
+    is known, severity is inside the autonomy band, and a calibration artifact
+    clears the threshold.
+
     Args:
         action: The remediation action to evaluate
         environment: Environment name (e.g., "production", "staging", "dev")
-        risk_score: Risk score from remediation plan (0-10 scale, lower is safer)
+        risk_score: Plan risk score (0-10 scale, lower is safer). Logged for
+            audit and kept because it is part of the `evaluate_fn` contract
+            `policy_gate.decide` calls this through; no rule reads it (Rule 1).
 
     Returns:
         Tuple of (is_allowed: bool, reason: str)
@@ -52,17 +60,45 @@ def evaluate_action(
         f"🔒 PolicyEngine: Evaluating action '{action_type}' on '{target}' in '{environment}' (risk: {risk_score})"
     )
 
-    # Rule 1: Block RESTART on PROD unless risk < threshold (configurable)
-    restart_risk_threshold = float(os.getenv("POLICY_RESTART_RISK_THRESHOLD", "3.0"))
-    if action_type == "restart" and env_lower == "production":
-        if risk_score >= restart_risk_threshold:
-            reason = f"RESTART blocked on PROD: Risk score {risk_score} >= {restart_risk_threshold}"
-            logger.warning(f"🚫 PolicyEngine: {reason}")
-            return False, reason
-        else:
-            reason = f"RESTART allowed on PROD: Risk score {risk_score} < {restart_risk_threshold}"
-            logger.info(f"✅ PolicyEngine: {reason}")
-            return True, reason
+    # Rule 1: a restart on PROD is gated by the autonomy ladder, not here.
+    #
+    # This rule used to hard-block a PROD restart whenever `risk_score` was at
+    # or above POLICY_RESTART_RISK_THRESHOLD (default 3.0). It is the defect
+    # Rule 4 below records, in the same file, with the same two halves.
+    #
+    # No human could appeal it. A block returned here is final in
+    # `policy_gate.decide`, and `_act_gate_node` builds the whole ACT report
+    # *before* it looks the approval up. Live on 2026-09-23, the
+    # inventory_slow_queries trial: the agent diagnosed the fault correctly,
+    # proposed the right restart, and still closed UNRESOLVED — the action
+    # came back "Blocked by policy: RESTART blocked on PROD: Risk score 5.0 >=
+    # 3.0", the incident parked at `awaiting_approval`, and nothing could
+    # clear it.
+    #
+    # And the number it read is the planner's own label. `risk_score` arrives
+    # from `act_phase._plan_risk_score`, which maps the plan's `risk_level`
+    # string through low=2.0 / medium=5.0 / high=8.0 and defaults to 5.0. So
+    # against a 3.0 threshold a model could unblock its own production restart
+    # by calling its plan "low", while every plan that did not self-assess —
+    # the default — was blocked permanently. That is the inversion
+    # `policy_gate` refuses one step later ("a model's self-reported
+    # confidence is not authorization"), reached here through a field the
+    # planner writes while reading untrusted evidence, exactly like the
+    # `explicit_approval` flag in Rule 4.
+    #
+    # It was also a plan-level number enforced per action: `decide_plan` hands
+    # the same score to every action, so an unrelated action could raise the
+    # score that blocked the restart — and `calculate_risk_score` adds 0.5 for
+    # each "dangerous" action in the plan, so proposing a restart raised the
+    # very score used to judge it.
+    #
+    # The intent — no reckless restart of production — is what the gate is
+    # for, and the gate enforces it from measured state instead of a label:
+    # unknown telemetry, a severity above the autonomy band, and an
+    # uncalibrated or below-threshold remediation probability each floor a
+    # restart at REQUIRES_APPROVAL, which a human *can* clear. A restart is
+    # REVERSIBLE there and stays eligible for autonomy once those are
+    # satisfied, which is what makes the ACT phase more than decorative.
 
     # Rule 2: Block DELETE on PROD
     if action_type in ["delete", "patch"] and "delete" in action_type and env_lower == "production":

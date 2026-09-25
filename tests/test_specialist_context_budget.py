@@ -238,6 +238,22 @@ async def test_specialist_persists_fit_summary_in_state_metadata(monkeypatch):
                     ]
                 }
             )
+            # Emitted on the stream as well as into the hook: a lane that
+            # yields no tool call at all is treated as having gathered no
+            # evidence and is asked again, which is not what this test is
+            # measuring.
+            yield {
+                "agent": {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {"id": "t1", "name": "query_logs", "args": {}}
+                            ],
+                        )
+                    ]
+                }
+            }
             yield {"agent": {"messages": [AIMessage(content="done")]}}
 
     def _fake_create_react_agent(model, tools, **kwargs):
