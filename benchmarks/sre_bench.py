@@ -56,6 +56,7 @@ from statistical_eval import (  # noqa: E402
     append_trial,
     build_trial_record,
     build_trial_schedule,
+    configuration_fingerprint,
     make_pair_id,
 )
 from structured_grading import append_grader_record  # noqa: E402
@@ -432,8 +433,44 @@ async def _fire_alert(
     r.raise_for_status()
 
 
-async def _wait_new_incident(client, jwt, known, creds) -> Optional[dict]:
-    for _ in range(10):
+# meridian's own api-gateway OOMKills without anyone asking it to, so "an
+# incident that was not here before" is not the same claim as "the incident
+# this scenario caused". Binding the wrong one grades a trial against a
+# scenario it never ran.
+INCIDENT_WAIT_SEC = int(os.getenv("BENCH_INCIDENT_WAIT_SECONDS", "60"))
+
+
+def _matches_scenario(incident: dict, spec: Optional[ScenarioSpec]) -> bool:
+    """Whether this incident is the one `spec`'s alert opened.
+
+    Incident titles are written as ``[service] AlertName``, and the alertname
+    is what the webhook dedups on, so it is the field that actually
+    identifies the stimulus. With no spec to check against, every new
+    incident qualifies -- the old behaviour, kept for callers that have no
+    scenario in hand.
+    """
+    if spec is None:
+        return True
+    alertname = str(spec.alert.get("alertname", "")).strip()
+    if not alertname:
+        return True
+    return alertname.lower() in str(incident.get("title", "")).lower()
+
+
+async def _wait_new_incident(
+    client, jwt, known, creds, spec: Optional[ScenarioSpec] = None
+) -> Optional[dict]:
+    """The incident this scenario's alert opened, or None if it opened none.
+
+    None is a real answer, not only a slow one: the platform dedups a firing
+    alert into an already-open incident with the same identity and discards
+    it (`sre_agent/api/v1/alerts.py`). A stale incident left open by an
+    earlier campaign therefore makes its scenario unrunnable until that
+    incident is closed, and no wait however long will produce a new one.
+    """
+    deadline = asyncio.get_running_loop().time() + INCIDENT_WAIT_SEC
+    unrelated: set[str] = set()
+    while True:
         await asyncio.sleep(2)
         r = await client.get(
             f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
@@ -441,9 +478,17 @@ async def _wait_new_incident(client, jwt, known, creds) -> Optional[dict]:
         )
         r.raise_for_status()
         for inc in r.json():
-            if inc["id"] not in known:
+            if inc["id"] in known:
+                continue
+            if _matches_scenario(inc, spec):
                 return inc
-    return None
+            if inc["id"] not in unrelated:
+                unrelated.add(inc["id"])
+                print(
+                    f"     ignoring unrelated incident {str(inc.get('title'))[:48]!r}"
+                )
+        if asyncio.get_running_loop().time() >= deadline:
+            return None
 
 
 async def _fetch_incident(client, jwt, incident_id, creds) -> Optional[dict]:
@@ -605,7 +650,16 @@ async def _wait_for_recovery(
             latest = current
         application_status = str(latest.get("status") or "").lower()
 
-        if tracker.recovered_at is not None:
+        # An unarmed probe (`require_failure_observation: false`) can report
+        # recovery on its very first observation, because for a negative
+        # control the healthy band is where the metric already sits. Breaking
+        # on that tore the trial down seconds after the alert fired, before the
+        # agent had emitted a single span, and the run was then graded
+        # INSUFFICIENT_EVIDENCE for a question it was never given time to
+        # answer. Wait for the investigation to finish instead. Armed probes
+        # are unaffected: they cannot set `recovered_at` at all without having
+        # observed the failure first.
+        if tracker.recovered_at is not None and tracker.failure_observed:
             break
         if (
             AUTO_APPROVE
@@ -893,6 +947,162 @@ def _record_confidence_observations(
         )
 
 
+# `TERMINAL_APPLICATION_STATUSES` means "this investigation stopped", which
+# is not the same as "this incident is closed". A parked incident still dedups
+# the next identical alert, and one whose investigation is still live still
+# folds in the next alert for the same service.
+_CLOSED_APPLICATION_STATUSES = {"resolved", "closed"}
+
+
+async def _release_incident(
+    client: httpx.AsyncClient,
+    jwt: _Token,
+    incident_id: Optional[str],
+    creds,
+    notes: list[str],
+) -> None:
+    """Close the incident this trial opened, before the next scenario fires.
+
+    A trial that ends with its incident still open leaves that incident in the
+    next scenario's way. If its investigation is still running, the next alert
+    for the same service folds into it and that scenario never gets an incident
+    at all; if the next trial is a second run of the same scenario, the
+    identical alert title is deduped away instead. Either way a trial is lost,
+    and which trials are lost depends on timing rather than on the arm, so the
+    damage is not even symmetric between the arms being compared.
+
+    This is the same class of operator action the harness already performs for
+    approvals: a sanctioned API call, never a database write. `mark-resolved`
+    also cancels any in-flight investigation, so the agent is not left spending
+    tokens on a scenario nobody is measuring any more.
+    """
+    if not incident_id:
+        return
+    try:
+        current = await _fetch_incident(client, jwt, incident_id, creds)
+    except Exception as exc:
+        notes.append(f"teardown: could not read incident {incident_id[:8]}: {exc}")
+        return
+    if current is None:
+        return
+    status = str(current.get("status") or "").lower()
+    if status in _CLOSED_APPLICATION_STATUSES:
+        return
+    try:
+        response = await client.post(
+            f"{creds.base_url}/api/v1/incidents/{incident_id}/mark-resolved",
+            headers=await jwt.headers(),
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        notes.append(f"teardown: could not close incident {incident_id[:8]}: {exc}")
+        return
+    notes.append(
+        f"teardown: closed incident {incident_id[:8]} (was "
+        f"{status or 'unknown'}) so it cannot absorb the next scenario's alert"
+    )
+
+
+async def _fetch_run_manifest(
+    client: httpx.AsyncClient,
+    jwt: _Token,
+    incident_id: str,
+    creds,
+) -> Optional[dict]:
+    """Return the run manifest recorded for this incident's job, if any."""
+    response = await client.get(
+        f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/jobs",
+        headers=await jwt.headers(),
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list):
+        return None
+    job = next(
+        (
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("incident_id") or "") == str(incident_id)
+        ),
+        None,
+    )
+    if job is None:
+        return None
+    embedded = job.get("run_manifest")
+    if isinstance(embedded, dict) and isinstance(embedded.get("manifest"), dict):
+        return embedded["manifest"]
+    job_id = job.get("id")
+    if not job_id:
+        return None
+    detail = await client.get(
+        f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}"
+        f"/jobs/{job_id}/manifest",
+        headers=await jwt.headers(),
+    )
+    if detail.status_code == 404:
+        return None
+    detail.raise_for_status()
+    payload = detail.json()
+    if not isinstance(payload, dict):
+        return None
+    inner = payload.get("manifest")
+    return inner if isinstance(inner, dict) else payload
+
+
+async def _verify_declared_fingerprint(
+    client: httpx.AsyncClient,
+    jwt: _Token,
+    incident_id: Optional[str],
+    creds,
+) -> None:
+    """Stop the campaign if the declared fingerprint is not what actually ran.
+
+    `BENCH_CONFIG_FINGERPRINT` is operator-declared, and import-time validation
+    only checks that it is 64 hex characters. The first thing that compares it
+    against a real run manifest is `benchmarks/ablation_eval.py`, which runs
+    after every trial has already been paid for -- so a value that is merely
+    well-formed invalidates a whole campaign retroactively. Checking it against
+    the first trial's manifest makes that mistake cost one trial instead.
+
+    An unavailable manifest is not evidence of a mismatch (the job may still be
+    running), so that case warns and continues. Only a manifest that actually
+    disagrees stops the campaign.
+    """
+    if not CONFIG_FINGERPRINT or not incident_id:
+        return
+    try:
+        manifest = await _fetch_run_manifest(client, jwt, incident_id, creds)
+    except Exception as exc:
+        print(f"[fingerprint] could not verify the declared value: {exc}")
+        return
+    if manifest is None:
+        print(
+            "[fingerprint] no run manifest for the first trial yet; the "
+            "declared value stays unverified until attestation"
+        )
+        return
+    try:
+        actual = configuration_fingerprint(manifest)
+    except Exception as exc:
+        print(f"[fingerprint] the first trial's manifest cannot be hashed: {exc}")
+        return
+    if actual == CONFIG_FINGERPRINT:
+        print(
+            "[fingerprint] declared value verified against the first trial's "
+            f"manifest ({actual[:12]})"
+        )
+        return
+    raise SystemExit(
+        "BENCH_CONFIG_FINGERPRINT does not describe the configuration that "
+        f"ran: declared {CONFIG_FINGERPRINT}, the first trial's manifest "
+        f"hashes to {actual}. Every trial recorded under the declared value "
+        "would fail arm attestation, so this campaign is stopping after one "
+        "trial rather than after all of them. Re-declare the fingerprint from "
+        "a real manifest (benchmarks/ablation/README.md) and start again."
+    )
+
+
 async def _run_trial(
     client: httpx.AsyncClient,
     jwt: _Token,
@@ -900,7 +1110,14 @@ async def _run_trial(
     fault_adapter: Optional[MeridianAdminConfigAdapter],
     spec: ScenarioSpec,
     creds,
+    trial_meta: Optional[dict[str, Any]] = None,
 ):
+    # Facts the caller needs even when the trial raises: which incident this
+    # trial opened, and what teardown did about it. The return value cannot
+    # carry them, because `finally` runs after the return value is already
+    # fixed.
+    meta = trial_meta if trial_meta is not None else {}
+    meta["notes"] = []
     known = await _incident_ids(client, jwt, creds)
     tracker = RecoveryOracleTracker(spec.recovery_probe, datetime.now(timezone.utc))
     await _observe_oracle(client, oracle_client, tracker, baseline=True)
@@ -938,7 +1155,8 @@ async def _run_trial(
             _record_grade(spec, result, "", [], score)
             return score, f"FAILED (stimulus: {exc})", None, 0
 
-        incident = await _wait_new_incident(client, jwt, known, creds)
+        incident = await _wait_new_incident(client, jwt, known, creds, spec)
+        meta["incident_id"] = (incident or {}).get("id")
         if not incident:
             result = _oracle_result(
                 tracker,
@@ -949,7 +1167,11 @@ async def _run_trial(
             append_oracle_result(ORACLE_RESULTS_PATH, result)
             score = _score_without_output(spec, result)
             _record_grade(spec, result, "", [], score)
-            return score, "FAILED (no incident)", None, 0
+            return score, (
+                "FAILED (no incident in "
+                f"{INCIDENT_WAIT_SEC}s -- an already-open incident with this "
+                "alertname would have deduped it away)"
+            ), None, 0
 
         latest_incident, harness_approvals = await _wait_for_recovery(
             client, jwt, incident, oracle_client, tracker, creds
@@ -1000,6 +1222,9 @@ async def _run_trial(
             await fault_adapter.cleanup(client, leases)
         elif manual_fault_started:
             await _await_manual_cleanup(spec)
+        await _release_incident(
+            client, jwt, meta.get("incident_id"), creds, meta["notes"]
+        )
 
 
 async def run() -> None:
@@ -1055,6 +1280,9 @@ async def run() -> None:
             dataset_sha256=DATASET.sha256,
             randomize=STATISTICAL_RECORDING,
         )
+        # `BENCH_CONFIG_FINGERPRINT` is a declaration until something checks
+        # it against a manifest. Do that once, after the first trial.
+        fingerprint_verified = False
         for position, (scenario_name, trial_index) in enumerate(schedule, 1):
             spec = by_name[scenario_name]
             print(
@@ -1063,6 +1291,7 @@ async def run() -> None:
                 flush=True,
             )
             trial_started = time.perf_counter()
+            trial_meta: dict[str, Any] = {}
             score, line, trace_completeness, harness_approvals = await _run_trial(
                 client,
                 jwt,
@@ -1070,6 +1299,7 @@ async def run() -> None:
                 fault_adapter,
                 spec,
                 creds,
+                trial_meta,
             )
             _record_statistical_trial(
                 spec,
@@ -1086,6 +1316,13 @@ async def run() -> None:
             )
             all_scores.append(score)
             print(line)
+            for note in trial_meta.get("notes", ()):
+                print(f"   {note}")
+            if not fingerprint_verified:
+                fingerprint_verified = True
+                await _verify_declared_fingerprint(
+                    client, jwt, trial_meta.get("incident_id"), creds
+                )
             if position < len(schedule):
                 await asyncio.sleep(COOLDOWN_SEC)
         print()

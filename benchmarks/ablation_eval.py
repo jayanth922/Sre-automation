@@ -109,6 +109,27 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def load_coverage(path: Path) -> dict[str, Any]:
+    """Read a corpus-coverage artifact from benchmarks/ablation_coverage.py.
+
+    This is not a run manifest and carries no `runtime` section; routing it
+    through `load_manifest` made `--memory-coverage` unusable from the CLI.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise AblationEvalError(
+            f"cannot read coverage artifact {path}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise AblationEvalError(
+            f"coverage artifact {path} is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AblationEvalError(f"coverage artifact {path} must be an object")
+    return payload
+
+
 def attest_arm(
     manifest: dict[str, Any],
     *,
@@ -554,7 +575,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             pass_k=args.pass_k,
             bootstrap_seed=args.bootstrap_seed,
             memory_coverage=(
-                load_manifest(args.memory_coverage) if args.memory_coverage else None
+                load_coverage(args.memory_coverage) if args.memory_coverage else None
             ),
         )
     except (AblationEvalError, StatisticalEvalError) as exc:
