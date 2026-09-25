@@ -370,6 +370,151 @@ def _sandbox_params_ready(
     return True
 
 
+# Statuses that mean the action actually changed something. Mirrors
+# verified_learning._SUCCESS_STATUSES minus REVERT_REQUESTED, which describes a
+# fix being undone rather than applied.
+_EXECUTED_STATUSES = {"EXECUTED", "OK", "SUCCESS"}
+
+
+def _promote_incident_memory(
+    state: Any,
+    report_payload: Dict[str, Any],
+    *,
+    eligibility: Optional[Dict[str, Any]],
+    incident_id: Any,
+    metadata: Dict[str, Any],
+    execution_context: Any = None,
+    memory: Any = None,
+) -> bool:
+    """Write a verified resolution into incident memory. True if it was stored.
+
+    This lives in the ACT node, beside the skill promotion, because that is the
+    only place an approval-gated remediation is ever observed succeeding. The
+    equivalent block at the end of `_run_graph_impl` sees only the first graph
+    pass, which for a gated plan ends at `awaiting_approval` with nothing
+    executed. `memory` is injectable for tests.
+    """
+    if not eligibility or not eligibility.get("eligible_for_success"):
+        return False
+
+    if not current_ablation().writes_learned_memory:
+        # Frozen for every arm during an experiment, control included: arms run
+        # sequentially against one cluster, so a write here would hand the next
+        # arm a corpus this one never had.
+        logger.info(
+            "🧪 Ablation: learned-memory writes frozen — incident memory not stored"
+        )
+        return False
+
+    if not incident_id or not str(incident_id).strip():
+        # build_provenance raises on this; say what happened instead.
+        logger.warning("Incident memory not stored: the run carries no incident_id")
+        return False
+
+    from .act_phase import live_outcome_summary
+    from .verified_learning import (
+        LearningEligibility,
+        build_provenance,
+        memory_metadata_for_promotion,
+    )
+
+    if memory is None:
+        from .memory_store import get_memory_store
+
+        memory = get_memory_store()
+    if not memory.is_available():
+        # A verified success that cannot be written deserves a warning, not
+        # silence: silence is how the collection stayed empty unnoticed.
+        logger.warning(
+            "Incident memory not stored for %s: memory store unavailable",
+            incident_id,
+        )
+        return False
+
+    def _field(obj: Any, name: str) -> Any:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(name)
+        return getattr(obj, name, None)
+
+    state_get = state.get if isinstance(state, dict) else lambda k, d=None: getattr(state, k, d)
+    alert_name = _field(state_get("alert_context"), "alert_name") or "Unknown"
+    root_cause = (
+        _field(state_get("reflector_analysis"), "hypothesis") or "Unknown root cause"
+    )
+
+    commands = [
+        str(item.get("command") or item.get("action_type") or "").strip()
+        for item in (report_payload.get("live_results") or [])
+        if isinstance(item, dict)
+        and str(item.get("status", "")).upper() in _EXECUTED_STATUSES
+    ]
+    commands = [c for c in commands if c]
+    resolution = live_outcome_summary(report_payload) or "Remediation executed."
+    if commands:
+        resolution += "\n\nExecuted:\n" + "\n".join(f"- {c}" for c in commands)
+
+    # Scope keys decide whether this row is ever recallable: the search is
+    # tenant-filtered, so an unscoped write is stored and then never found --
+    # the same shape of silence as #72 itself. State metadata carries them on
+    # the normal path; the execution context is the fallback for resumed and
+    # benchmark runs that rebuild state without them.
+    organization_id = metadata.get("organization_id") or getattr(
+        execution_context, "organization_id", None
+    )
+    cluster_id = metadata.get("cluster_id") or getattr(
+        execution_context, "cluster_id", None
+    )
+    if not organization_id:
+        logger.warning(
+            "Incident memory for %s is being written without an organization_id; "
+            "tenant-scoped recall will not find it",
+            incident_id,
+        )
+
+    eligibility_obj = LearningEligibility(**eligibility)
+    provenance = build_provenance(
+        incident_id=str(incident_id),
+        eligibility=eligibility_obj,
+        artifact_kind="memory",
+        run_manifest_sha256=metadata.get("run_manifest_sha256"),
+        config_fingerprint=os.getenv("SENTINEL_CONFIG_FINGERPRINT", "").strip() or None,
+    )
+    stored = memory.store_incident(
+        str(incident_id),
+        symptoms=f"Alert: {alert_name}",
+        root_cause=root_cause,
+        resolution=resolution,
+        metadata=memory_metadata_for_promotion(
+            eligibility=eligibility_obj,
+            provenance=provenance,
+            extra={
+                "alert_name": alert_name,
+                "resolution": resolution,
+                "severity": report_payload.get("severity"),
+                # Cross-link to the skill recorded from the same success, so the
+                # two learned artifacts can be reconciled after the fact.
+                "skill_id": (report_payload.get("recorded_skill") or {}).get(
+                    "skill_id"
+                ),
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ),
+        organization_id=organization_id,
+        cluster_id=cluster_id,
+    )
+    if stored:
+        logger.info(
+            "🧠 Stored verified resolution in incident memory: %s", incident_id
+        )
+    else:
+        logger.warning(
+            "Incident memory write reported failure for %s", incident_id
+        )
+    return bool(stored)
+
+
 async def _act_gate_node(
     state: AgentState,
     execution_context: Any = None,
@@ -794,6 +939,52 @@ async def _act_gate_node(
             logger.warning(f"Skill learning failed (non-fatal): {skill_err}")
             learning = {}
 
+        # One verdict shared by every artifact promoted below. The skill, the
+        # incident memory and the runbook must agree about whether this run was
+        # a verified success; deriving it separately for each invites them to
+        # disagree.
+        eligibility = learning.get("learning_eligibility")
+        if eligibility is None:
+            try:
+                from .verified_learning import assess_learning_eligibility
+
+                eligibility = assess_learning_eligibility(
+                    act_report=report_payload,
+                    verification_outcome=report_payload.get("verification"),
+                    live_results=report_payload.get("live_results"),
+                    executed=report_payload.get("executed"),
+                    human_approved=human_approved,
+                ).to_dict()
+            except Exception as elig_err:
+                logger.warning(
+                    f"Learning eligibility could not be derived (non-fatal): {elig_err}"
+                )
+                eligibility = None
+
+        # Incident memory belongs here, beside the skill, because this is where
+        # a verified live success is actually observed. The equivalent block at
+        # the end of `_run_graph_impl` never sees one: every mutating plan is
+        # approval-gated, so the first graph pass finishes at
+        # `awaiting_approval` with nothing executed, re-derives `dry_run`, and
+        # skips the write -- the execution then happens in a resumed run that
+        # does not re-enter that block. The observable result was an
+        # `sre_incidents_v2` collection holding zero points globally, not merely
+        # per tenant, while `sre_skills_v1` filled up normally; that in turn left
+        # the no_memory ablation arm's recall half inert in every arm, control
+        # included, so the arm could not measure what it claimed to remove.
+        try:
+            report_payload["stored_incident_memory"] = _promote_incident_memory(
+                state,
+                report_payload,
+                eligibility=eligibility,
+                incident_id=incident_id,
+                metadata=metadata,
+                execution_context=execution_context,
+            )
+        except Exception as mem_err:
+            logger.warning(f"Incident memory promotion failed (non-fatal): {mem_err}")
+            report_payload["stored_incident_memory"] = False
+
         # Generative runbook: only promote verified recoveries as successful
         # exemplars. Blocked/dry-run/failed/unknown outcomes may write a negative
         # postmortem marked as such, never a successful runbook.
@@ -801,7 +992,6 @@ async def _act_gate_node(
             from .runbook_generator import input_from_act, write_runbook, write_runbook_generative
             from .verified_learning import assess_learning_eligibility
 
-            eligibility = learning.get("learning_eligibility")
             if eligibility is None:
                 eligibility = assess_learning_eligibility(
                     act_report=report_payload,

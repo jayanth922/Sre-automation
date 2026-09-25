@@ -1724,6 +1724,13 @@ async def _run_graph_impl(
                     )
 
             run_manifest_id = str(existing_manifest.id)
+            # The manifest's content hash, not just its row id. Three readers
+            # -- act_phase, graph_builder and the promotion block below -- ask
+            # state metadata for `run_manifest_sha256` to stamp provenance on a
+            # learned artifact, and nothing had ever written that key, so every
+            # recorded skill carried `run_manifest_sha256: null` and could not
+            # be tied back to the configuration that produced it.
+            run_manifest_sha256 = existing_manifest.manifest_sha256
             root_trace_id = existing_manifest.root_trace_id
 
         from .trace_evidence import get_run_trace_recorder
@@ -1766,6 +1773,7 @@ async def _run_graph_impl(
                 "cluster_namespace": runtime.context.namespace,
                 "cluster_environment": runtime.context.environment,
                 "run_manifest_id": run_manifest_id,
+                "run_manifest_sha256": run_manifest_sha256,
                 "root_trace_id": root_trace_id,
             },
             "requires_collaboration": True,
