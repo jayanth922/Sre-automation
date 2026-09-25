@@ -1,0 +1,8 @@
+arm=full
+image=sha256:a4b0737494bc5fbb2bebc1dd7c1768001718c75dc91f0e81f3804fa0f60a74f0
+fingerprint=1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14
+fingerprint_source=configuration_fingerprint(#28 manifest-full.json)
+harness_commit=a5a1a9a304eb7372624fd8a315d0139162357f57
+experiment=ablation-20260925 pair_seed=ablation-20260925-seed1
+split=holdout runs=1 timeout=2700 fault=automatic auto_approve=1
+started=2026-09-25T08:42:22+00:00

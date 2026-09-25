@@ -1,0 +1,539 @@
+{
+  "schema_version": 1,
+  "run": {
+    "job_id": "3b1560b4-cd77-4dd1-a9c0-30a9583370cd",
+    "incident_id": "b723fc23-05f3-428d-a13f-71cf74ae371c",
+    "created_at": "2026-09-25T09:11:13.974464+00:00"
+  },
+  "tenant": {
+    "organization_id": "9240f8b0-d140-4393-aab7-f348a414d337",
+    "cluster_id": "bcbd9577-3195-45e4-b840-da592647459c",
+    "namespace": "meridian",
+    "environment": "production",
+    "context_version": 8
+  },
+  "provenance": {
+    "code_sha": "13a7a555db6bf9a943c1c804975c07147e3a44ca",
+    "working_tree_dirty": false,
+    "graph": {
+      "version": "1",
+      "sha256": "7f7212f61f236ee872ecb9b7f89f370444abd7180da8981e0712bd74b03b7055"
+    },
+    "prompts": {
+      "version": "sha256-v1",
+      "files": {
+        "agent_base_prompt": {
+          "sha256": "aebc1bbc7a6a7f07f9cf4c8a24cf8dec8bb4d10fa68059a39522a6a1fd1e820a",
+          "bytes": 6489
+        },
+        "data_pattern_guide": {
+          "sha256": "d274a9b1a6a5f86be771bdf937ca943c6719eeb7a4d7c1ba876637bbc463da66",
+          "bytes": 1270
+        },
+        "executive_summary_system": {
+          "sha256": "a4de25dd2a8a95674f9b549842f9b6d104d2b69247384fd83ccbda943efc940d",
+          "bytes": 2972
+        },
+        "executive_summary_user_template": {
+          "sha256": "f9e6e572e30162b495fcd3f0d78a947b799c22eb844d01b00780cd4da5486894",
+          "bytes": 284
+        },
+        "github_agent_prompt": {
+          "sha256": "c87090145e394b5af71b249385f9e60d89edf4fd09eba20cf1c8c851e6c7fe15",
+          "bytes": 4338
+        },
+        "kubernetes_agent_prompt": {
+          "sha256": "5b523dcf108562ac7573c8705b4067ed71d920e6d8813ecc65faa168383b1993",
+          "bytes": 2819
+        },
+        "logs_agent_prompt": {
+          "sha256": "5e63e0efe76a45477584fe92833c0129a3eb8c5fa5a1a29c35aad1c357efa52b",
+          "bytes": 4332
+        },
+        "metrics_agent_prompt": {
+          "sha256": "4f812756234f21284d844fb441ce77ae17427e159840183b73252cf4c30d6484",
+          "bytes": 2755
+        },
+        "runbooks_agent_prompt": {
+          "sha256": "152d8cbe7a506b3ff7e0665a8e6fa7c7ae9580fbc6a8c5cceeac5250298e7ff8",
+          "bytes": 1715
+        },
+        "single_agent_prompt": {
+          "sha256": "e73e54cb9e99874319679ccb9d1774e768c97e8a3eefd33ea3817e0cf5a7712a",
+          "bytes": 2485
+        },
+        "supervisor_aggregation_system": {
+          "sha256": "52527231d6d612bfbd0b56dcdaa7d01c07ad6e02e26d5a125f21096da6025c44",
+          "bytes": 2839
+        },
+        "supervisor_fallback_prompt": {
+          "sha256": "c6e5edb8df3d91355f7ac41c7e9028f9139ff4bf9c7f94492840c768d1d51070",
+          "bytes": 1432
+        },
+        "supervisor_multi_agent_prompt": {
+          "sha256": "5823c24cfcd7b59a0f3e34af9cf1a5cea83119881f2c1d9f665174adccffe7dd",
+          "bytes": 20388
+        },
+        "supervisor_plan_aggregation": {
+          "sha256": "503ac1f7aa3d1bb753b9f409277085fc9bf4a7032e23195db71f8fc10e2e64b3",
+          "bytes": 746
+        },
+        "supervisor_planning_prompt": {
+          "sha256": "e000dcfe9edb1247a4fd45de1358986ca88a3e584e835be2965e19c9008bf8d1",
+          "bytes": 3032
+        },
+        "supervisor_standard_aggregation": {
+          "sha256": "8c4665c29b2168ffcdce036739fef3c71b814f738bc85d04e6e48f184708bab1",
+          "bytes": 1885
+        }
+      }
+    },
+    "dataset": {
+      "version": "live-input/v1",
+      "fixture_version": null
+    }
+  },
+  "models": {
+    "requested_cluster_model": "claude-sonnet-5",
+    "routes": [
+      {
+        "task_type": "routing",
+        "tier": "fast",
+        "provider": "anthropic",
+        "model_id": "claude-haiku-4-5-20251001",
+        "temperature": 0.3,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "routing \u2192 fast tier on 'anthropic' (model=claude-haiku-4-5-20251001)"
+      },
+      {
+        "task_type": "narration",
+        "tier": "fast",
+        "provider": "anthropic",
+        "model_id": "claude-haiku-4-5-20251001",
+        "temperature": 0.3,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "narration \u2192 fast tier on 'anthropic' (model=claude-haiku-4-5-20251001)"
+      },
+      {
+        "task_type": "greeting",
+        "tier": "fast",
+        "provider": "anthropic",
+        "model_id": "claude-haiku-4-5-20251001",
+        "temperature": 0.3,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "greeting \u2192 fast tier on 'anthropic' (model=claude-haiku-4-5-20251001)"
+      },
+      {
+        "task_type": "specialist",
+        "tier": "balanced",
+        "provider": "anthropic",
+        "model_id": "claude-sonnet-5",
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "specialist \u2192 balanced tier on 'anthropic' (model=claude-sonnet-5)"
+      },
+      {
+        "task_type": "aggregation",
+        "tier": "balanced",
+        "provider": "anthropic",
+        "model_id": "claude-sonnet-5",
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "aggregation \u2192 balanced tier on 'anthropic' (model=claude-sonnet-5)"
+      },
+      {
+        "task_type": "reflection",
+        "tier": "strong",
+        "provider": "anthropic",
+        "model_id": "claude-opus-5",
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "reflection \u2192 strong tier on 'anthropic' (model=claude-opus-5)"
+      },
+      {
+        "task_type": "planning",
+        "tier": "strong",
+        "provider": "anthropic",
+        "model_id": "claude-opus-5",
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "reasoning_effort": null,
+        "seed": null,
+        "router_reason": "planning \u2192 strong tier on 'anthropic' (model=claude-opus-5)"
+      }
+    ],
+    "fallback_chain": [
+      "anthropic"
+    ]
+  },
+  "tools": {
+    "schema_version": "1",
+    "schemas": [
+      {
+        "name": "analyze_log_patterns",
+        "version": "1",
+        "description_sha256": "0de25ca98a698d9e9daa877afd03a4c9e0ed17456823ec34412c96d84121b24f",
+        "schema_sha256": "5275131ee67fb4a8d6f3e514d5c103193922fd756dfee5d1b91e3b716ca805f0"
+      },
+      {
+        "name": "check_k8s_health",
+        "version": "1",
+        "description_sha256": "eede2f94d11fcc4616c45974bf7615473366edce39607f0e3b3cd28bbb59b50c",
+        "schema_sha256": "221b711094c8058c0c15ddb85d88bf22acb733857decebfda34ad4de83c5ccba"
+      },
+      {
+        "name": "check_prometheus_health",
+        "version": "1",
+        "description_sha256": "603f587669ddfe54164f2f8159e7bb9f0c296d1c18174717a46e910407cf3bdc",
+        "schema_sha256": "7b0fd427bfa03c96706adba6acf4ab397733a18907f571b1eae90f4b5dce41b0"
+      },
+      {
+        "name": "comment_on_pr",
+        "version": "1",
+        "description_sha256": "0002d2aff1443e4641b16a9ec9ffdf8f625176cf210a184e221c2553cdc29217",
+        "schema_sha256": "5381881525b5a05944d2c3ffd299ebbe7e8a6b7978c5d63187eef3bb5c9142f7"
+      },
+      {
+        "name": "create_fix_pr",
+        "version": "1",
+        "description_sha256": "010a1bb06fb7d022cadbf029f27a264a4f418f5327daefc824c83e503a5e5b36",
+        "schema_sha256": "838cd56a296431f084714edd4b483df36f893113307a3047c02688dd62da9dc6"
+      },
+      {
+        "name": "create_revert_pr",
+        "version": "1",
+        "description_sha256": "360b581d0e7513bf08f3937ccc08c061ce061146cc8ffb7a3dd8bf600c125d7d",
+        "schema_sha256": "d60c2a11a3058f39f812a1e5f7538570be3dfe7aa6dd867ded44881c2ff02e5c"
+      },
+      {
+        "name": "executor_health",
+        "version": "1",
+        "description_sha256": "883a279593a8a5ef939ac936e179bc937f7b9fd6998ebbf4556a5c400f3c6e77",
+        "schema_sha256": "c664b878c048a79f641349c378a7b08cda4a6863df94e90780cb1b6de3ccaa51"
+      },
+      {
+        "name": "get_commit",
+        "version": "1",
+        "description_sha256": "3fae62277e1f487d2b84e2ea35e46aecfe178b35a25c077921fb95ef051958c7",
+        "schema_sha256": "90ae05fe6e6e5c449290451ae79d83ca409b0894d757030bdd0311f92a09bdfe"
+      },
+      {
+        "name": "get_common_resolutions",
+        "version": "1",
+        "description_sha256": "3e2cfec9eff57d78b09df8088ab3218016efffdd342d84f0d9b81fda7b4c9d77",
+        "schema_sha256": "24775e764d4740ca3683812d7661744cc5145a1010f1e05d262a406c49a60802"
+      },
+      {
+        "name": "get_current_time",
+        "version": "1",
+        "description_sha256": "2e3fb1e9728c3fd70d74c7206f8e6319eac7c1184d173e01eced648767b5e05a",
+        "schema_sha256": "107670393a8519f191abaef42e9401a68d7105a21fdd3e422a4261ef7e5193f1"
+      },
+      {
+        "name": "get_deployment_config",
+        "version": "1",
+        "description_sha256": "10a7e2de18999f514a743e2a2d40ea6173eb6be0d540230f459f7e4fc706b571",
+        "schema_sha256": "095ba1ad87ddab664d548b9a934c8293449a0c5a73768a4c2dc6f27716e1e8f1"
+      },
+      {
+        "name": "get_deployment_spec",
+        "version": "1",
+        "description_sha256": "a41826d613add43a5c9ba7fc19892a18184499e7dcbae294981d5af02a3954b0",
+        "schema_sha256": "c8cd25653d7a6e549ae1e7ae2ab900ec2573080478e275decd549241a3b4c99e"
+      },
+      {
+        "name": "get_deployment_status",
+        "version": "1",
+        "description_sha256": "ef5206b3465dc5c0cd85e60784b2aa7e7c75b5acb48659558423f1c964693bb4",
+        "schema_sha256": "9e520a93bc145b8e7ce603b2585a9ee18e6492beb2b8938f1274c92187959f26"
+      },
+      {
+        "name": "get_error_logs",
+        "version": "1",
+        "description_sha256": "54a1a64d71159ad9ea4cdd129b606c036926f823c8d66cc04e78d282ba5e084d",
+        "schema_sha256": "60b9bf404ae33404fb8ea1b30630ee165c23192de387248d322205de07c5111a"
+      },
+      {
+        "name": "get_escalation_procedures",
+        "version": "1",
+        "description_sha256": "5117fa0ebac65b7f8b0de6ae71082a96698832a21e96f463f6292782d7a3ee24",
+        "schema_sha256": "30cfea4d5279d288c87bb4e4aeabab40bbc9824cf8b64f1182fe50e1e0627add"
+      },
+      {
+        "name": "get_golden_signals",
+        "version": "1",
+        "description_sha256": "2225c12e90c3c7612a601d1dd4d48b48385c1048c331931ef7e8d72739dc7433",
+        "schema_sha256": "0524b4abeef539a23246ece1300b47b56064e5997cbf871056b7f0684690e311"
+      },
+      {
+        "name": "get_incident_playbook",
+        "version": "1",
+        "description_sha256": "db52aabdea67d1bb4ecd5866729b7840f22a75c0d9e176e40d4fa5c1ecb8a964",
+        "schema_sha256": "095907dad08ae9b5eaa7558ba8b2fec39794053ea1d3c6e0f087b961f3de07f9"
+      },
+      {
+        "name": "get_metric",
+        "version": "1",
+        "description_sha256": "64e4a524a66cbd33f310ef9c27db70a761cea421b3272915714a8f67d7dc4a8e",
+        "schema_sha256": "2b5259e1d61c01079bf9b85971362432fa35fcb0f8c0cc80bc802ab48709cdb6"
+      },
+      {
+        "name": "get_metric_range",
+        "version": "1",
+        "description_sha256": "31eb9e6b33e40624366fb5d7611ad2c5c09075fc644b21b0065bb172f92adf41",
+        "schema_sha256": "01f23b0576074aa5bbc939d41471f82a14fc92698f89b4cb08a18abb27d3f220"
+      },
+      {
+        "name": "get_node_status",
+        "version": "1",
+        "description_sha256": "621a4198c7137c79f389a4e48f08bff38c1d725f848e51a10e4b56a048e5b8f1",
+        "schema_sha256": "1e4d25232a2a7a977da5f40520f5319c9b91e0d778d26a594384cf9565dfd2aa"
+      },
+      {
+        "name": "get_pod_logs",
+        "version": "1",
+        "description_sha256": "1930f264d85cd7bf4debb5c3bf8d6886bae54d59d40921892559a92ebfcf3513",
+        "schema_sha256": "812a667008f71f7ed52090509c7c7888f18dcd60ec15336d90555024dd7ba2e9"
+      },
+      {
+        "name": "get_pod_status",
+        "version": "1",
+        "description_sha256": "f2cab0d60c68e4c96bc608440303ae5c41efcc0c8e459626e51d79202de6ac06",
+        "schema_sha256": "6c8a500bd104e494b0b3ae22f5b26ae06c60c0e2e35e7fb2608615536f9e1a92"
+      },
+      {
+        "name": "get_pull_request",
+        "version": "1",
+        "description_sha256": "6547b59ce33149c0a81f6a85771f5d6c54e9b09527ecd6ae0ff232e9c9779dee",
+        "schema_sha256": "8ed49d0a3c09f6de8b4090662e4a15cdae35698ee31c2becce7d627aa216b94d"
+      },
+      {
+        "name": "get_repository_file",
+        "version": "1",
+        "description_sha256": "d15a29d76e097b0db0bf03f70accbae959eb4e5523ec3a117b29009d66857b79",
+        "schema_sha256": "ec500f01d70609298ab2172e28b1a8774db7370c6681c36c351d942973f86dc4"
+      },
+      {
+        "name": "get_runbook_content",
+        "version": "1",
+        "description_sha256": "619f05aa586a9e972438aa42a1f120531ded0ea479341803335623e9a4e1673c",
+        "schema_sha256": "2f4e1808261b408ef29ae97b6ae3145a416f68087450808eb63d8c92ac87080b"
+      },
+      {
+        "name": "get_service_endpoints",
+        "version": "1",
+        "description_sha256": "224596eae1a069f706f1830f7ff87ef995eb825b8bc3abde8e9d6d31ba9d7223",
+        "schema_sha256": "eed65c875a1bdcae0b7b3f6a8cc6afedaa9fcf958567b974ac0793f774c3c1f0"
+      },
+      {
+        "name": "get_troubleshooting_guide",
+        "version": "1",
+        "description_sha256": "6347b8dc2edef26c4c39f5269094673327be9c4a9ca59e18b74aaffbf6409527",
+        "schema_sha256": "1936dffd7877b3ae92954301e4c26c7c9a3a25c8a21eb577c80907ca75711a65"
+      },
+      {
+        "name": "github_exec_health",
+        "version": "1",
+        "description_sha256": "959b17837c53ba18fdbd698173cb76f23f558f12d9eda111ed1690cfce8451aa",
+        "schema_sha256": "982aee85478dd7f16defd3ccc883ae8e0e00dbf4ceb93bdcd36e178c9793336b"
+      },
+      {
+        "name": "list_commits",
+        "version": "1",
+        "description_sha256": "52b0d85e14c3433cded42b9d39cd9ff3256b403fc2de541e0df03bf0b8e18b4a",
+        "schema_sha256": "6df4f7a8ab74d1f8c704e51d6779bda4ba4da4121144d31c4b09cb2b7662aca3"
+      },
+      {
+        "name": "list_deployments",
+        "version": "1",
+        "description_sha256": "787171f2b1ecf0959ecec71af26985078e30f20327ec95e71fa1c2a43af2c604",
+        "schema_sha256": "5364a18114854c3f29a1c61824b49001bacf3a7618c5c9d9e1b022d7c3bb128d"
+      },
+      {
+        "name": "list_events",
+        "version": "1",
+        "description_sha256": "2135d801d0f651ff66aee4dbfc0bb17850af7df5b83881dd99ac79417693ddbb",
+        "schema_sha256": "2a6de8ce4b082d18db916f652e036f8798783f9a0193e84661fd6808e313a3aa"
+      },
+      {
+        "name": "list_metric_names",
+        "version": "1",
+        "description_sha256": "2b69e7ccba36d09a6b6bd29195fab02ab856d97e1aaa0605984c829e03346796",
+        "schema_sha256": "31f0adb4450462020a04a9fc75cfbe3007d317b27f4b9789102dcc5bb084bd46"
+      },
+      {
+        "name": "list_namespaces",
+        "version": "1",
+        "description_sha256": "2876fb0dc282b78b8c70d0bfc2ffc7261c62935baa28268a95ba3e9adb52caca",
+        "schema_sha256": "b3a97e0549e043750812e94edba86219f16123222ce5a433710a7b37d15238b5"
+      },
+      {
+        "name": "list_network_policies",
+        "version": "1",
+        "description_sha256": "9fccef77ad5699b223eba4d2d8ca0cbfe096d1a5075689ac50efcae26a8a019b",
+        "schema_sha256": "096c8ca268438e7ccd7bab21209524b0f517250103f6f5de61c4af0b1b6929e0"
+      },
+      {
+        "name": "list_pods",
+        "version": "1",
+        "description_sha256": "a58f28525f85f5603ddfabbf2de25a1a9a1ebaffd5b656ce69956195f8d67ebf",
+        "schema_sha256": "17ff49ee123e7e7fa2e5497eb924e2c2d38ea7af0cd072544616b2623834bbd6"
+      },
+      {
+        "name": "list_pull_requests",
+        "version": "1",
+        "description_sha256": "db61761a6b55421abf8443e7a0930517d9eef95cf691f57502f092f562c5c1c4",
+        "schema_sha256": "c013abde7e86695516c8edb0ab3d0bc8241a5ff1ad59c503caa118584a777efe"
+      },
+      {
+        "name": "list_repository_files",
+        "version": "1",
+        "description_sha256": "d29f2fec37459bbe3dae484ee121d8d69b07b41bf05e26a6914cbf66ac61b30c",
+        "schema_sha256": "b410deaa0d549a4f7ac3000530d8b5d6668ad07bd7fca78c3749370dce828ba4"
+      },
+      {
+        "name": "list_services",
+        "version": "1",
+        "description_sha256": "8fc2ba48b3d3c89f288fa22e20afc1c6a16b176286e437499a6d1757ebcb7add",
+        "schema_sha256": "0065e0b22cb9104fd4162576967d8947d6263a6c37bc81347ebb9b1d26f6e90f"
+      },
+      {
+        "name": "patch_deployment_env",
+        "version": "1",
+        "description_sha256": "aec76ad22834a65c045c62f5d7416890dae474cf0a6d70d1150f02b33a12c9cc",
+        "schema_sha256": "f28a220a6afcc47534d22ab86df3f8bf0f4ea6274c7bb8ac1f5720162a5a3c56"
+      },
+      {
+        "name": "patch_resource_limits",
+        "version": "1",
+        "description_sha256": "b52bff608fc73854c59d14b8254099b066588022d80cbd67870ca4f1613b13b1",
+        "schema_sha256": "a8516c6e2188cfdada0fb22bb07aeed101357eaad7d97a53a3d9de48b6abca75"
+      },
+      {
+        "name": "query_logs",
+        "version": "1",
+        "description_sha256": "9a8ffea063f35c4fa2bb02554c9e35ae4295aafc432fc35fb20a4df9736ddea6",
+        "schema_sha256": "fdd00566a59632b26d2d9273d96021864ed97e3f5da656cc737906fde1cd3ed6"
+      },
+      {
+        "name": "recreate_pod",
+        "version": "1",
+        "description_sha256": "911fde505cb8ac5c253cd0d97b318b46ef147ccb22c5a3c7950726b5a42e3eb9",
+        "schema_sha256": "0611c60b8dc70ac6c99263dbbbf7884d6b4684d44a08a075a1d953927d9a6a42"
+      },
+      {
+        "name": "restart_deployment",
+        "version": "1",
+        "description_sha256": "b3a679c39e8a3257d011f72518b3506e42476ab65caa8c33afaeebb87f14dbe8",
+        "schema_sha256": "16a7da47a951f2bb0d635a56eb4a6596f965bae4cefbb92663b87262c7f37354"
+      },
+      {
+        "name": "rollback_deployment",
+        "version": "1",
+        "description_sha256": "92f292746f4edb791cfd6c0238b8c5b68e9a7995d138e8b3c054babd941062c3",
+        "schema_sha256": "fc1cd64af4b2e012f69d60328e23040d4e2a7d38e90fcce229f89b3d87d2e6b0"
+      },
+      {
+        "name": "sandbox_health",
+        "version": "1",
+        "description_sha256": "9a1fa2e77d29c294ac00823d6ad919d2951f67efdac8617d418c44ddbd997fe0",
+        "schema_sha256": "61d5dd89f2c42719a8c9452e8823f9e0c9b3218638b4463eca506409787c2058"
+      },
+      {
+        "name": "sandbox_logs",
+        "version": "1",
+        "description_sha256": "120da569c6d98e7e24c2951df76f33852ba9741a2984bbf329841950e205297c",
+        "schema_sha256": "53afa75fefd9dc0e14a1dd339a85194833f214e179f6fa8edecae198b86bef03"
+      },
+      {
+        "name": "sandbox_provision",
+        "version": "1",
+        "description_sha256": "f530e5fce94dc2a52c5d9ed660485f88e989fcb4c051493ceb075978afaa92ea",
+        "schema_sha256": "f2a1c9bfe632c661406fe26187c5da951de04977e2e674bff45a18cd5c236963"
+      },
+      {
+        "name": "sandbox_status",
+        "version": "1",
+        "description_sha256": "08bbb45a2a0a991a402eab70bcef40937eebdd77a258cfddb5bfa1962d647a58",
+        "schema_sha256": "761e4d856f8b706b30e650a435eb6c7e329dc15102241b8ec776d8711ef8543e"
+      },
+      {
+        "name": "sandbox_teardown",
+        "version": "1",
+        "description_sha256": "cd6b6af99c88c20adf3196eb5303a53af1e22c8436ee1cb0e2f9e0e113a5e113",
+        "schema_sha256": "43a9dd551ad5b375ef304058bf0819afb29f0744a02d2cdc5377e301893308d5"
+      },
+      {
+        "name": "scale_deployment",
+        "version": "1",
+        "description_sha256": "a5a40cbc8b29efbb6310013730d2614f46e73a2ab2888cf15c6a21ea3355dab9",
+        "schema_sha256": "7d9e0fa230d6395842a72aff9f06296b2fb9cb0ebe9fc67340768512432deaa8"
+      },
+      {
+        "name": "search_runbooks",
+        "version": "1",
+        "description_sha256": "09267c08abdc92fe8d1e9e0afcf643c2724ae10e4b2fa3ada8c875c7865ff8c6",
+        "schema_sha256": "6799400984423c0356934bb19c70065132385685441782ee4977dd714aaa67e0"
+      },
+      {
+        "name": "validate_promql_syntax",
+        "version": "1",
+        "description_sha256": "0b4e334fcd3829bff01d7f54a3eaea4841707f8e3fce14609671ab7ab9e6a760",
+        "schema_sha256": "a6392e6d9a5cb0dad03a36bbdbbddfb9069990208e5eb250d693d530ec3f6baa"
+      }
+    ],
+    "io_reference": {
+      "uri": "trace://e06df0331208409e8f645fb021d0af74/tool-io",
+      "capture": "metadata-only"
+    }
+  },
+  "runtime": {
+    "checkpointer_backend": "postgres",
+    "model_router_enabled": "true",
+    "model_router_backend": "litellm",
+    "executor_live": "true",
+    "act_phase_enabled": "true",
+    "investigation_limits": {
+      "specialist_model_turns": 6,
+      "specialist_timeout_seconds": 120,
+      "specialist_max_output_tokens": 4096,
+      "reinvestigation_rounds": 1
+    },
+    "ablation_arm": "full",
+    "ablation_experiment": true,
+    "learned_memory_writes": false
+  },
+  "input": {
+    "sha256": "a7905f9b22a5e4688ef9a79592c88e646c1c181d3e42ce08a143010a4953876e",
+    "sanitized": {
+      "alert_name": "PaymentServiceHighErrorRate",
+      "annotations": {
+        "description": "Error rate exceeded 10%. Charges are failing at the provider boundary.",
+        "runbook_context": "RUNBOOK: High Error Rate \u2014 Elevated 5xx / Application Errors\nservice=checkout-service / payment-service / inventory-service, incident type=high_error_rate, severity=critical, owner=Checkout Platform, escalation=#checkout-oncall\nsource: https://app.notion.com/p/High-Error-Rate-Elevated-5xx-Application-Errors-3cd25b2daaf18119b74afdf56d8b4fd5\nThis is the operator-authored procedure for this alert. Work it first and in order; use open-ended search only for what it does not cover. Check each step against live tool output \u2014 if a precondition does not hold, report that instead of skipping the step silently.\n\n## High Error Rate \u2014 Elevated 5xx / Application Errors\n**Alert Name:** CheckoutHighErrorRate, PaymentServiceHighErrorRate, PaymentFailureSpike, InventoryHighErrorRate\n**Service:** checkout-service / payment-service / inventory-service\n**Incident Type:** error_rate\n**Severity:** SEV1\n**Owner Team:** meridian-oncall\n\n## Summary\nFour different faults raise these alerts and they need four different fixes.\nWork the decision procedure below in order and stop at the first branch that\nmatches. Do not skip to remediation: the wrong action on the right alert is\nscored as a failure, and three of the four branches forbid the action that\nlooks most obvious.\n\nAct only at or above these thresholds. Below them the service is healthy.\n\n| Service | Signal | Healthy baseline | Act at or above |\n|---|---|---|---|\n| checkout-service | error ratio | 0.35 (inventory holds) | **0.45** |\n| payment-service | error ratio | ~0.00 | **0.10** |\n| inventory-service | error rate | 3.3% ratio | **0.3 errors/sec** |\n\n## Decision procedure\nRun these in order. Each step is a query and a test; the first test that\npasses selects the branch.\n\n**Step 1 \u2014 Is it actually above threshold?**\n\n```\nsum(rate(http_errors_total{service=\"<service>\"}[5m])) / clamp_min(sum(rate(http_requests_total{service=\"<service>\"}[5m])), 1)\n```\n\nCompare to the table above. If the measured value is **below** the \"act at or\nabove\" threshold \u2192 **Branch A**. Stop here.\n\n**Step 2 \u2014 Is",
+        "summary": "11.8% error rate on payment-service in the last 5 minutes"
+      },
+      "labels": {
+        "alertname": "PaymentServiceHighErrorRate",
+        "service": "payment-service",
+        "severity": "critical"
+      },
+      "severity": "critical",
+      "starts_at": "2026-09-25T09:11:08.496991+00:00"
+    }
+  },
+  "trace": {
+    "root_trace_id": "e06df0331208409e8f645fb021d0af74"
+  }
+}

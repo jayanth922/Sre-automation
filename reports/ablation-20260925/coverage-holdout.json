@@ -1,0 +1,89 @@
+{
+  "blind_pairs": [],
+  "cluster_id": "bcbd9577-3195-45e4-b840-da592647459c",
+  "dataset_sha256": "69b636707179fab0d684f2a60ba6e54639082e683df83a48c5dc7647e178d6d7",
+  "dataset_split": "holdout",
+  "dataset_version": "sentinel-sre-v2",
+  "incident_memory_points": 0,
+  "interpreter": {
+    "executable": "/workspaces/Sre-automation/.venv/bin/python",
+    "prefix": "/workspaces/Sre-automation/.venv",
+    "version": "3.12.3"
+  },
+  "observable_pairs": 4,
+  "organization_id": "9240f8b0-d140-4393-aab7-f348a414d337",
+  "pairs": [
+    {
+      "alert_name": "PaymentProviderDown",
+      "blind": false,
+      "failure_class": "dependency",
+      "recall_possible": false,
+      "scenario": "payment_provider_outage",
+      "service": "payment-service",
+      "signature_hit": true,
+      "signature_matches": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-dependency-payment-service"
+      ],
+      "skill_hit": true,
+      "skills_retrieved": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-dependency-payment-service"
+      ]
+    },
+    {
+      "alert_name": "CheckoutMemoryApproachingLimit",
+      "blind": false,
+      "failure_class": "oom",
+      "recall_possible": false,
+      "scenario": "checkout_memory_leak_oom",
+      "service": "checkout-service",
+      "signature_hit": true,
+      "signature_matches": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-oom-pdf-thumbnailer"
+      ],
+      "skill_hit": true,
+      "skills_retrieved": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-oom-pdf-thumbnailer"
+      ]
+    },
+    {
+      "alert_name": "InventorySlowQueries",
+      "blind": false,
+      "failure_class": "latency",
+      "recall_possible": false,
+      "scenario": "inventory_slow_with_checkout_noise",
+      "service": "inventory-service",
+      "signature_hit": true,
+      "signature_matches": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-latency-inventory-service"
+      ],
+      "skill_hit": true,
+      "skills_retrieved": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-latency-inventory-service"
+      ]
+    },
+    {
+      "alert_name": "PaymentServiceHighErrorRate",
+      "blind": false,
+      "failure_class": "high_error_rate",
+      "recall_possible": false,
+      "scenario": "payment_subthreshold_charge_errors",
+      "service": "payment-service",
+      "signature_hit": true,
+      "signature_matches": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-high_error_rate-payment-service",
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-high_error_rate-checkout-service"
+      ],
+      "skill_hit": true,
+      "skills_retrieved": [
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-high_error_rate-payment-service",
+        "skill-9240f8b0-d140-4393-aab7-f348a414d337-bcbd9577-3195-45e4-b840-da592647459c-high_error_rate-checkout-service"
+      ]
+    }
+  ],
+  "recall_possible": false,
+  "retrieval_path": "semantic",
+  "scenario_count": 4,
+  "signature_hits": 4,
+  "skill_hits": 4,
+  "skills_in_store": 7
+}

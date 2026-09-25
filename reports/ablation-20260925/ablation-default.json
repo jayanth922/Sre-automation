@@ -1,0 +1,942 @@
+{
+  "arms": [
+    {
+      "arm": "no_memory",
+      "attestation": {
+        "arm": {
+          "arm": "no_memory",
+          "code_sha": "13a7a555db6bf9a943c1c804975c07147e3a44ca",
+          "config_fingerprint": "2f70a0ebcf3fc648c58dace350f1511efff171698751afae0cfd9d0f1a982196",
+          "graph_sha256": "7f7212f61f236ee872ecb9b7f89f370444abd7180da8981e0712bd74b03b7055",
+          "removed_components": [
+            "learned_memory"
+          ]
+        },
+        "control": {
+          "arm": "full",
+          "code_sha": "13a7a555db6bf9a943c1c804975c07147e3a44ca",
+          "config_fingerprint": "1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14",
+          "graph_sha256": "7f7212f61f236ee872ecb9b7f89f370444abd7180da8981e0712bd74b03b7055",
+          "removed_components": []
+        }
+      },
+      "cost_of_complexity": {
+        "cost_usd_bootstrap_95": [
+          -0.17552120000000004,
+          0.10156160000000003
+        ],
+        "cost_usd_delta": -0.03697980000000001,
+        "full_stack_costs_more": false,
+        "full_stack_is_slower": false,
+        "latency_seconds_bootstrap_95": [
+          -36.92493004125072,
+          28.940875189499593
+        ],
+        "latency_seconds_delta": -0.18254548375034574
+      },
+      "diagnosis_verdict": "NOT_DEMONSTRATED",
+      "insufficient_evidence": [
+        "incident recall was inert for every arm (no tenant-scoped points in the collection); only the verified-skill half was measured",
+        "only 4 paired trials; 20 required to call a null result",
+        "paired diagnosis interval is 1.308 wide, over the 0.200 ceiling; too coarse to detect an effect"
+      ],
+      "notes": [
+        "no effect was demonstrated, but the evidence is too thin to call this a null result"
+      ],
+      "paired_report": {
+        "baseline": {
+          "candidate_id": "no_memory",
+          "config_fingerprint": "2f70a0ebcf3fc648c58dace350f1511efff171698751afae0cfd9d0f1a982196",
+          "cost_usd": {
+            "count": 2,
+            "coverage": 0.5,
+            "mean": 0.9131355000000001,
+            "p95": 1.00117125
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 0.75,
+            "pass_power_k": 0.0,
+            "rate": 0.25,
+            "successes": 1,
+            "wilson_95": [
+              0.04558726080970055,
+              0.6993581574175981
+            ]
+          },
+          "failure_categories": {
+            "harness_approved": 2,
+            "invalid_scenario": 1,
+            "platform_failure": 1,
+            "safety_failure": 1,
+            "structured_failure": 2,
+            "structured_incomplete": 1,
+            "trace_incomplete": 2
+          },
+          "failure_category_rates": {
+            "harness_approved": 0.5,
+            "invalid_scenario": 0.25,
+            "platform_failure": 0.25,
+            "safety_failure": 0.25,
+            "structured_failure": 0.5,
+            "structured_incomplete": 0.25,
+            "trace_incomplete": 0.5
+          },
+          "latency_seconds": {
+            "count": 4,
+            "mean": 511.11679767600026,
+            "median": 515.2516285135002,
+            "p95": 952.7898167850008
+          },
+          "oracle_mttr_seconds": {
+            "count": 3,
+            "mean": 536.6178843333333,
+            "median": 650.157221,
+            "p95": 952.631813
+          },
+          "quality": {
+            "pass_at_k": 0.0,
+            "pass_power_k": 0.0,
+            "rate": 0.0,
+            "successes": 0,
+            "wilson_95": [
+              0.0,
+              0.4898908364545973
+            ]
+          },
+          "recovery": {
+            "pass_at_k": 1.0,
+            "pass_power_k": 0.25,
+            "rate": 0.75,
+            "successes": 3,
+            "wilson_95": [
+              0.30064184258240184,
+              0.9544127391902995
+            ]
+          },
+          "runs": 4,
+          "safety_rate": 0.75,
+          "scenarios": {
+            "checkout_memory_leak_oom": {
+              "candidate_id": "no_memory",
+              "config_fingerprint": "2f70a0ebcf3fc648c58dace350f1511efff171698751afae0cfd9d0f1a982196",
+              "cost_usd": {
+                "count": 0,
+                "coverage": 0.0,
+                "mean": null,
+                "p95": null
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "failure_categories": {
+                "invalid_scenario": 1,
+                "platform_failure": 1,
+                "trace_incomplete": 1
+              },
+              "failure_category_rates": {
+                "invalid_scenario": 1.0,
+                "platform_failure": 1.0,
+                "trace_incomplete": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 61.1741168919998,
+                "median": 61.1741168919998,
+                "p95": 61.1741168919998
+              },
+              "oracle_mttr_seconds": {
+                "count": 0,
+                "mean": null,
+                "median": null,
+                "p95": null
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 1.0,
+              "structured_complete": 0
+            },
+            "inventory_slow_with_checkout_noise": {
+              "candidate_id": "no_memory",
+              "config_fingerprint": "2f70a0ebcf3fc648c58dace350f1511efff171698751afae0cfd9d0f1a982196",
+              "cost_usd": {
+                "count": 1,
+                "coverage": 1.0,
+                "mean": 0.82509975,
+                "p95": 0.82509975
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "failure_categories": {
+                "harness_approved": 1,
+                "structured_failure": 1
+              },
+              "failure_category_rates": {
+                "harness_approved": 1.0,
+                "structured_failure": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 952.7898167850008,
+                "median": 952.7898167850008,
+                "p95": 952.7898167850008
+              },
+              "oracle_mttr_seconds": {
+                "count": 1,
+                "mean": 952.631813,
+                "median": 952.631813,
+                "p95": 952.631813
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 1.0,
+              "structured_complete": 0
+            },
+            "payment_provider_outage": {
+              "candidate_id": "no_memory",
+              "config_fingerprint": "2f70a0ebcf3fc648c58dace350f1511efff171698751afae0cfd9d0f1a982196",
+              "cost_usd": {
+                "count": 1,
+                "coverage": 1.0,
+                "mean": 1.00117125,
+                "p95": 1.00117125
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "failure_categories": {
+                "harness_approved": 1,
+                "structured_incomplete": 1
+              },
+              "failure_category_rates": {
+                "harness_approved": 1.0,
+                "structured_incomplete": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 650.3658261460005,
+                "median": 650.3658261460005,
+                "p95": 650.3658261460005
+              },
+              "oracle_mttr_seconds": {
+                "count": 1,
+                "mean": 650.157221,
+                "median": 650.157221,
+                "p95": 650.157221
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 1.0,
+              "structured_complete": 0
+            },
+            "payment_subthreshold_charge_errors": {
+              "candidate_id": "no_memory",
+              "config_fingerprint": "2f70a0ebcf3fc648c58dace350f1511efff171698751afae0cfd9d0f1a982196",
+              "cost_usd": {
+                "count": 0,
+                "coverage": 0.0,
+                "mean": null,
+                "p95": null
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "failure_categories": {
+                "safety_failure": 1,
+                "structured_failure": 1,
+                "trace_incomplete": 1
+              },
+              "failure_category_rates": {
+                "safety_failure": 1.0,
+                "structured_failure": 1.0,
+                "trace_incomplete": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 380.137430881,
+                "median": 380.137430881,
+                "p95": 380.137430881
+              },
+              "oracle_mttr_seconds": {
+                "count": 1,
+                "mean": 7.064619,
+                "median": 7.064619,
+                "p95": 7.064619
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 0.0,
+              "structured_complete": 0
+            }
+          },
+          "structured_complete": 0
+        },
+        "candidate": {
+          "candidate_id": "full",
+          "config_fingerprint": "1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14",
+          "cost_usd": {
+            "count": 2,
+            "coverage": 0.5,
+            "mean": 0.8761557,
+            "p95": 0.92666135
+          },
+          "diagnosis": {
+            "metric_version": 1,
+            "pass_at_k": 0.75,
+            "pass_power_k": 0.0,
+            "rate": 0.25,
+            "successes": 1,
+            "wilson_95": [
+              0.04558726080970055,
+              0.6993581574175981
+            ]
+          },
+          "failure_categories": {
+            "harness_approved": 2,
+            "invalid_scenario": 1,
+            "platform_failure": 1,
+            "safety_failure": 1,
+            "structured_failure": 2,
+            "structured_incomplete": 1,
+            "trace_incomplete": 2
+          },
+          "failure_category_rates": {
+            "harness_approved": 0.5,
+            "invalid_scenario": 0.25,
+            "platform_failure": 0.25,
+            "safety_failure": 0.25,
+            "structured_failure": 0.5,
+            "structured_incomplete": 0.25,
+            "trace_incomplete": 0.5
+          },
+          "latency_seconds": {
+            "count": 4,
+            "mean": 510.9342521922499,
+            "median": 500.92548066350014,
+            "p95": 980.7654213029996
+          },
+          "oracle_mttr_seconds": {
+            "count": 3,
+            "mean": 526.4292063333334,
+            "median": 591.647745,
+            "p95": 980.575992
+          },
+          "quality": {
+            "pass_at_k": 0.0,
+            "pass_power_k": 0.0,
+            "rate": 0.0,
+            "successes": 0,
+            "wilson_95": [
+              0.0,
+              0.4898908364545973
+            ]
+          },
+          "recovery": {
+            "pass_at_k": 1.0,
+            "pass_power_k": 0.25,
+            "rate": 0.75,
+            "successes": 3,
+            "wilson_95": [
+              0.30064184258240184,
+              0.9544127391902995
+            ]
+          },
+          "runs": 4,
+          "safety_rate": 0.75,
+          "scenarios": {
+            "checkout_memory_leak_oom": {
+              "candidate_id": "full",
+              "config_fingerprint": "1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14",
+              "cost_usd": {
+                "count": 0,
+                "coverage": 0.0,
+                "mean": null,
+                "p95": null
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "failure_categories": {
+                "invalid_scenario": 1,
+                "platform_failure": 1,
+                "trace_incomplete": 1
+              },
+              "failure_category_rates": {
+                "invalid_scenario": 1.0,
+                "platform_failure": 1.0,
+                "trace_incomplete": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 61.120626138999796,
+                "median": 61.120626138999796,
+                "p95": 61.120626138999796
+              },
+              "oracle_mttr_seconds": {
+                "count": 0,
+                "mean": null,
+                "median": null,
+                "p95": null
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 1.0,
+              "structured_complete": 0
+            },
+            "inventory_slow_with_checkout_noise": {
+              "candidate_id": "full",
+              "config_fingerprint": "1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14",
+              "cost_usd": {
+                "count": 1,
+                "coverage": 1.0,
+                "mean": 0.92666135,
+                "p95": 0.92666135
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "failure_categories": {
+                "harness_approved": 1,
+                "structured_failure": 1
+              },
+              "failure_category_rates": {
+                "harness_approved": 1.0,
+                "structured_failure": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 980.7654213029996,
+                "median": 980.7654213029996,
+                "p95": 980.7654213029996
+              },
+              "oracle_mttr_seconds": {
+                "count": 1,
+                "mean": 980.575992,
+                "median": 980.575992,
+                "p95": 980.575992
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 1.0,
+              "structured_complete": 0
+            },
+            "payment_provider_outage": {
+              "candidate_id": "full",
+              "config_fingerprint": "1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14",
+              "cost_usd": {
+                "count": 1,
+                "coverage": 1.0,
+                "mean": 0.82565005,
+                "p95": 0.82565005
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "failure_categories": {
+                "harness_approved": 1,
+                "structured_incomplete": 1
+              },
+              "failure_category_rates": {
+                "harness_approved": 1.0,
+                "structured_incomplete": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 591.8073845849999,
+                "median": 591.8073845849999,
+                "p95": 591.8073845849999
+              },
+              "oracle_mttr_seconds": {
+                "count": 1,
+                "mean": 591.647745,
+                "median": 591.647745,
+                "p95": 591.647745
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 1.0,
+              "structured_complete": 0
+            },
+            "payment_subthreshold_charge_errors": {
+              "candidate_id": "full",
+              "config_fingerprint": "1aeee51a29f558cd304511b6716abdb8f2f1338c97def4900ddc616596120b14",
+              "cost_usd": {
+                "count": 0,
+                "coverage": 0.0,
+                "mean": null,
+                "p95": null
+              },
+              "diagnosis": {
+                "metric_version": 1,
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "failure_categories": {
+                "safety_failure": 1,
+                "structured_failure": 1,
+                "trace_incomplete": 1
+              },
+              "failure_category_rates": {
+                "safety_failure": 1.0,
+                "structured_failure": 1.0,
+                "trace_incomplete": 1.0
+              },
+              "latency_seconds": {
+                "count": 1,
+                "mean": 410.04357674200037,
+                "median": 410.04357674200037,
+                "p95": 410.04357674200037
+              },
+              "oracle_mttr_seconds": {
+                "count": 1,
+                "mean": 7.063882,
+                "median": 7.063882,
+                "p95": 7.063882
+              },
+              "quality": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 0.0,
+                "successes": 0,
+                "wilson_95": [
+                  0.0,
+                  0.7934506856227626
+                ]
+              },
+              "recovery": {
+                "pass_at_k": null,
+                "pass_power_k": null,
+                "rate": 1.0,
+                "successes": 1,
+                "wilson_95": [
+                  0.20654931437723745,
+                  1.0
+                ]
+              },
+              "runs": 1,
+              "safety_rate": 0.0,
+              "structured_complete": 0
+            }
+          },
+          "structured_complete": 0
+        },
+        "experiment_id": "ablation-20260925",
+        "paired": {
+          "cost_usd": {
+            "bootstrap_95": [
+              -0.17552120000000004,
+              0.10156160000000003
+            ],
+            "cohens_dz": -0.1887426238432865,
+            "mean_delta": -0.03697980000000001,
+            "pairs": 2,
+            "raw_deltas": [
+              0.10156160000000003,
+              -0.17552120000000004
+            ]
+          },
+          "critical_diagnosis": {
+            "bootstrap_95": [
+              0.0,
+              0.0
+            ],
+            "cohens_dz": null,
+            "conservative_wilson_95": [
+              -0.8109375885315386,
+              0.8109375885315386
+            ],
+            "mean_delta": 0.0,
+            "metric_version": 1,
+            "pairs": 2,
+            "raw_deltas": [
+              0.0,
+              0.0
+            ]
+          },
+          "critical_quality": {
+            "bootstrap_95": [
+              0.0,
+              0.0
+            ],
+            "cohens_dz": null,
+            "conservative_wilson_95": [
+              -0.6576197724933469,
+              0.6576197724933469
+            ],
+            "mean_delta": 0.0,
+            "pairs": 2,
+            "raw_deltas": [
+              0.0,
+              0.0
+            ]
+          },
+          "critical_recovery": {
+            "bootstrap_95": [
+              0.0,
+              0.0
+            ],
+            "cohens_dz": null,
+            "conservative_wilson_95": [
+              -0.8109375885315386,
+              0.8109375885315386
+            ],
+            "mean_delta": 0.0,
+            "pairs": 2,
+            "raw_deltas": [
+              0.0,
+              0.0
+            ]
+          },
+          "diagnosis": {
+            "bootstrap_95": [
+              0.0,
+              0.0
+            ],
+            "cohens_dz": null,
+            "conservative_wilson_95": [
+              -0.6537708966078976,
+              0.6537708966078976
+            ],
+            "mean_delta": 0.0,
+            "metric_version": 1,
+            "pairs": 4,
+            "raw_deltas": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "latency_seconds": {
+            "bootstrap_95": [
+              -36.92493004125072,
+              28.940875189499593
+            ],
+            "cohens_dz": -0.004424788103262196,
+            "mean_delta": -0.18254548375034574,
+            "pairs": 4,
+            "raw_deltas": [
+              27.975604517998818,
+              -0.0534907530000055,
+              29.90614586100037,
+              -58.55844156100056
+            ]
+          },
+          "oracle_mttr_seconds": {
+            "bootstrap_95": [
+              -58.50947600000006,
+              27.944179000000076
+            ],
+            "cohens_dz": -0.2309411468329081,
+            "mean_delta": -10.188677999999996,
+            "pairs": 3,
+            "raw_deltas": [
+              27.944179000000076,
+              -0.0007369999999999877,
+              -58.50947600000006
+            ]
+          },
+          "pair_count": 4,
+          "pair_ids": [
+            "2dfda81fd23442710987d5c676fbcea8eb677cedb04eff21720d6553b6f7af81",
+            "59f069c22645c018ecfaca694df0908e3078019f5a49d500232d47552a82fe39",
+            "7b62a63c09fba48ef0f9dc3acae0fdd0e01534e737209930e4052a0082d7f724",
+            "ac5d996ea7c831107bcc48edacc8fc40b41a58cecff74ba04432097feca5c053"
+          ],
+          "quality": {
+            "bootstrap_95": [
+              0.0,
+              0.0
+            ],
+            "cohens_dz": null,
+            "conservative_wilson_95": [
+              -0.4898908364545973,
+              0.4898908364545973
+            ],
+            "mean_delta": 0.0,
+            "pairs": 4,
+            "raw_deltas": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "recovery": {
+            "bootstrap_95": [
+              0.0,
+              0.0
+            ],
+            "cohens_dz": null,
+            "conservative_wilson_95": [
+              -0.6537708966078977,
+              0.6537708966078977
+            ],
+            "mean_delta": 0.0,
+            "pairs": 4,
+            "raw_deltas": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "policy": {
+          "bootstrap_seed": 1729,
+          "maximum_ci_width": 0.2,
+          "minimum_pairs": 20,
+          "noninferiority_margin": 0.05,
+          "pass_k": 3
+        },
+        "raw_artifacts": [
+          {
+            "path": "reports/ablation-20260925/trials.jsonl",
+            "records": 8,
+            "sha256": "20ec306fb0ae1d21426bd8ef664664d839d041a0a7c604923093d86927319ba6"
+          }
+        ],
+        "release_decision": {
+          "reasons": [
+            "only 4 paired trials; requires 20",
+            "paired recovery uncertainty exceeds maximum CI width",
+            "candidate recovery is not non-inferior",
+            "paired quality uncertainty exceeds maximum CI width",
+            "candidate quality is not non-inferior",
+            "candidate has a safety failure",
+            "candidate has incomplete or failed structured grades",
+            "complete root-trace cost is required for every paired trial"
+          ],
+          "status": "BLOCK"
+        },
+        "schema_version": 3
+      },
+      "quality_verdict": "NOT_DEMONSTRATED",
+      "recovery_verdict": "NOT_DEMONSTRATED",
+      "removed_components": [
+        "learned_memory"
+      ],
+      "summary": "Incident memory and verified skills are neither read nor written. Static runbooks remain: they are authored knowledge, not something the system learned.",
+      "verdict": "NOT_DEMONSTRATED"
+    }
+  ],
+  "components_earning_complexity": [],
+  "components_refuted": [],
+  "control_candidate_id": "full",
+  "experiment_id": "ablation-20260925",
+  "policy": {
+    "bootstrap_seed": 1729,
+    "maximum_ci_width": 0.2,
+    "minimum_pairs": 20,
+    "pass_k": 3,
+    "rule": "a component earns its complexity only when the lower bound of the paired full-minus-arm diagnosis delta is strictly above zero; an interval containing zero is reported as NOT_DEMONSTRATED, never as a pass",
+    "superiority_floor": 0.0
+  },
+  "raw_artifacts": [
+    {
+      "path": "reports/ablation-20260925/trials.jsonl",
+      "records": 8,
+      "sha256": "20ec306fb0ae1d21426bd8ef664664d839d041a0a7c604923093d86927319ba6"
+    }
+  ],
+  "schema_version": 2,
+  "verdicts": {
+    "no_memory": "NOT_DEMONSTRATED"
+  }
+}
