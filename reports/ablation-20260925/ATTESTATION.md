@@ -137,21 +137,48 @@ establish is anything about learned memory's value.
 
 ## 5. Defects surfaced
 
-**`checkout_memory_leak_oom` failed in both arms** — no incident within the 60s
-window, recorded as INVALID_SCENARIO. Root cause proven, not inferred: the alert
-is `CheckoutMemoryApproachingLimit` (`process_memory_bytes_simulated > 200000000`,
-`for: 1m`); injection is `leak_kb_per_request: 512.0`; measured live heap at the
-time was **76,903,424 bytes against a 200,000,000 threshold**. From a cold heap
-it cannot cross *and hold for a minute* inside a 60s window. It passed in the
-previous campaign only because the heap was already elevated; the checkout pod
-had restarted ~35 minutes before this campaign. Filed as **#71**, which also
-covers the harness asserting an unverified dedup cause in its failure message.
+**`checkout_memory_leak_oom` failed in both arms** — no incident was opened for
+it, recorded as INVALID_SCENARIO.
+
+> **Correction, 2026-09-25 (while fixing #71).** This section originally gave a
+> heap-accumulation root cause and called it "proven, not inferred". That was
+> wrong, and it was not proven. The harness fires the scenario's alert itself
+> (`_fire_alert` posts to `/api/v1/alerts/webhook`) and the platform opens the
+> incident synchronously inside that request, so the Prometheus rule's
+> `> 200000000` threshold and `for: 1m` duration have no say in whether an
+> incident appears. Neither does the length of the wait window. The original
+> text reached for the same kind of unchecked explanation that #71 was filed
+> against.
+
+**The actual cause, from the incident records.** The alert was absorbed by the
+same-service fold — the #66 failure mode, arriving through a path #66's teardown
+does not close. The correlation is exact across all four trials of this scenario:
+
+| trial fired | open `[checkout-service]` incident at that moment | incident opened? |
+|---|---|---|
+| 06:10:29 (2026-09-24 campaign) | none — last closed 05:56:00 | yes, `5f33f459` |
+| 06:43:15 (2026-09-24 campaign) | none — last closed 06:31:00 | yes, `c59aeb96` |
+| 08:52:46 (this campaign, full) | `5a90bd14` 08:45:00→08:54:00 | **no** |
+| 09:35:36 (this campaign, no_memory) | `4cbf6a4f` 09:27:00→09:37:00 | **no** |
+
+In both failing trials the preceding scenario's checkout-service incidents were
+still open, 7–9 minutes old and well inside the 120-minute fold window. In both
+succeeding trials they had closed 12–14 minutes earlier.
+
+The harness's own failure message asserted a third explanation — dedup against
+an already-open incident with the same alertname — which is also false here: the
+only two incidents titled `[checkout-service] CheckoutMemoryApproachingLimit`
+closed at 06:23:59 and 07:07:57, hours before either failing trial. Three
+explanations were offered for this failure and all three were reached without
+evidence. That is what #71 fixes: `_fire_alert` now keeps the webhook's own
+receipt (`incidents_created` / `incidents_folded`), and `_diagnose_missing_incident`
+names the absorbing incident instead of guessing.
 
 The failure is **arm-symmetric** — it costs a pair but does not bias the
 comparison. `BENCH_INCIDENT_WAIT_SECONDS` was deliberately *not* raised for the
 second arm alone: that would have made the arms unequal in harness
-configuration, and would have bought no pair anyway, since pairing needs a valid
-trial in both arms.
+configuration, and — now that the cause is known — would have bought no pair
+anyway, since no wait of any length produces an incident that was folded away.
 
 **Coverage caveat:** `checkout_memory_leak_oom`'s recorded signature match is
 `…-oom-pdf-thumbnailer`, a different service from the scenario's
@@ -210,6 +237,8 @@ confirmed, and open incidents cleared through the sanctioned mark-resolved API.
 
 Not authorized, recorded for costing only: 20 paired trials per arm on the
 holdout split, with incident memory actually populated for the tenant so the
-recall half of the component is under test rather than inert, and #71 fixed so
-slow-accumulation scenarios are not lost. Until then the honest statement is
+recall half of the component is under test rather than inert, and the
+same-service fold kept off the scenario boundary so trials are not silently
+absorbed (see the correction in section 5; #71 now makes that visible when it
+happens). Until then the honest statement is
 the one above — no effect observed, evidence too thin to conclude there is none.

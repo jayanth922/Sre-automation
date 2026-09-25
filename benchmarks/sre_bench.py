@@ -35,6 +35,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -51,7 +52,12 @@ from recovery_oracle import (  # noqa: E402
     append_oracle_result,
 )
 from scenario_dataset import load_dataset  # noqa: E402
-from scoring import ScenarioSpec, aggregate, score_run  # noqa: E402
+from scoring import (  # noqa: E402
+    PLATFORM_FAILURE_STATUSES,
+    ScenarioSpec,
+    aggregate,
+    score_run,
+)
 from statistical_eval import (  # noqa: E402
     append_trial,
     build_trial_record,
@@ -403,9 +409,31 @@ async def _incident_ids(client: httpx.AsyncClient, jwt: _Token, creds) -> set[st
     return {inc["id"] for inc in r.json()}
 
 
+@dataclass(frozen=True)
+class AlertReceipt:
+    """What the platform did with the alert this trial fired.
+
+    The webhook reports in its own response body how many incidents it created,
+    how many it folded into an already-open incident, and how many resolved
+    alerts it reconciled. The harness used to discard that body, which left it
+    able to observe only "no new incident appeared" -- so when it had to say why,
+    it stated a fixed guess instead. See `_diagnose_missing_incident`.
+    """
+
+    created: int
+    folded: int
+    reconciled: int
+    raw: dict
+
+    @property
+    def absorbed(self) -> bool:
+        """Delivered and accepted, but it opened no incident of its own."""
+        return self.created == 0
+
+
 async def _fire_alert(
     client: httpx.AsyncClient, spec: ScenarioSpec, started_at: datetime, creds
-) -> None:
+) -> AlertReceipt:
     payload = {
         "version": "4",
         "status": "firing",
@@ -431,13 +459,40 @@ async def _fire_alert(
         headers={"Authorization": f"Bearer {creds.cluster_token}"},
     )
     r.raise_for_status()
+    # A malformed or absent body must not fail a trial that the platform
+    # accepted: the receipt is diagnostic, not part of the stimulus contract.
+    try:
+        body = r.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return AlertReceipt(
+        created=int(body.get("incidents_created") or 0),
+        folded=int(body.get("incidents_folded") or 0),
+        reconciled=int(body.get("resolved_reconciled") or 0),
+        raw=body,
+    )
 
 
 # meridian's own api-gateway OOMKills without anyone asking it to, so "an
 # incident that was not here before" is not the same claim as "the incident
 # this scenario caused". Binding the wrong one grades a trial against a
 # scenario it never ran.
+#
+# One global number, deliberately, rather than something derived per scenario
+# from its alert's `for:` duration. The harness posts the alert itself
+# (`_fire_alert`) and the platform opens the incident synchronously inside that
+# request, so Prometheus detection latency never enters this wait: across the
+# 2026-09-24 campaign every incident's `created_at` equals its trial's oracle
+# `started_at` to the second. A missing incident is therefore never a slow one,
+# and a longer window cannot produce one -- what it actually means is worked out
+# by `_diagnose_missing_incident`.
 INCIDENT_WAIT_SEC = int(os.getenv("BENCH_INCIDENT_WAIT_SECONDS", "60"))
+
+# Mirrors `_FOLD_WINDOW_MINUTES` in `sre_agent/api/v1/alerts.py`. Used only to
+# name a likely absorber in a diagnostic message, never to decide a verdict.
+FOLD_WINDOW_MINUTES = 120
 
 
 def _matches_scenario(incident: dict, spec: Optional[ScenarioSpec]) -> bool:
@@ -489,6 +544,136 @@ async def _wait_new_incident(
                 )
         if asyncio.get_running_loop().time() >= deadline:
             return None
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _fold_candidate(open_incidents: list, service: str) -> Optional[dict]:
+    """The open same-service incident this alert could have folded into.
+
+    Follows `_find_fold_target` in `sre_agent/api/v1/alerts.py` only as far as
+    naming a suspect -- same service, opened inside the fold window, most recent
+    first. It deliberately does not re-implement that function's parked-status
+    conditions: duplicating a safety rule in the harness invites the two copies
+    to drift, and a named candidate the harness cannot fully confirm is already
+    far better evidence than the fixed guess it replaces.
+    """
+    if not service:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=FOLD_WINDOW_MINUTES)
+    best: Optional[dict] = None
+    best_at: Optional[datetime] = None
+    prefix = f"[{service.lower()}]"
+    for inc in open_incidents:
+        if not str(inc.get("title", "")).lower().startswith(prefix):
+            continue
+        created = _parse_ts(inc.get("created_at"))
+        if created is None or created < cutoff:
+            continue
+        if best_at is None or created > best_at:
+            best, best_at = inc, created
+    return best
+
+
+async def _diagnose_missing_incident(
+    client, jwt, creds, spec: Optional[ScenarioSpec],
+    receipt: Optional[AlertReceipt],
+) -> tuple[str, str]:
+    """Why this scenario's alert opened no incident. Observed, not assumed.
+
+    Returns `(application_status, reason)`.
+
+    This replaces a fixed string that asserted one cause -- "an already-open
+    incident with this alertname would have deduped it away" -- without ever
+    checking. The cost of that guess was not hypothetical: when
+    `checkout_memory_leak_oom` produced no incident in both arms of the
+    2026-09-25 campaign, its attestation recorded a *different* unverified cause
+    (a memory threshold the heap could not reach in the window) as "root cause
+    proven, not inferred". Both explanations were reached without evidence, and
+    the alert's real fate was recorded nowhere, because the one authoritative
+    answer -- the webhook's own response body -- was being thrown away.
+
+    The heap explanation could not have been right: the harness fires the alert
+    itself, so the Prometheus rule's threshold and `for:` duration have no say in
+    whether an incident opens.
+    """
+    counts = ""
+    if receipt is not None:
+        counts = (
+            f" [webhook receipt: created={receipt.created}"
+            f" folded={receipt.folded} reconciled={receipt.reconciled}]"
+        )
+
+    alert = (spec.alert if spec else None) or {}
+    alertname = str(alert.get("alertname", "")).strip()
+    service = str(alert.get("service", "")).strip()
+    title = f"[{service}] {alertname}" if service and alertname else ""
+
+    try:
+        r = await client.get(
+            f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
+            headers=await jwt.headers(),
+        )
+        r.raise_for_status()
+        open_incidents = [
+            inc
+            for inc in r.json()
+            if str(inc.get("status", "")).lower() != "resolved"
+        ]
+    except Exception as exc:
+        return (
+            "incident_not_created",
+            "no incident appeared, and the incident list could not be read to "
+            f"say why ({type(exc).__name__}: {exc}).{counts}",
+        )
+
+    exact = next(
+        (
+            inc
+            for inc in open_incidents
+            if title and str(inc.get("title", "")).strip().lower() == title.lower()
+        ),
+        None,
+    )
+    if exact is not None:
+        return (
+            "incident_absorbed",
+            f"deduped into already-open incident {str(exact.get('id'))[:8]} "
+            f"({exact.get('status')}, opened {str(exact.get('created_at'))[:19]}) "
+            f"carrying the same title {title!r}.{counts}",
+        )
+
+    fold = _fold_candidate(open_incidents, service)
+    if fold is not None:
+        return (
+            "incident_absorbed",
+            f"folded into open same-service incident {str(fold.get('id'))[:8]} "
+            f"({fold.get('status')}, opened {str(fold.get('created_at'))[:19]}, "
+            f"title {str(fold.get('title'))!r}), inside the "
+            f"{FOLD_WINDOW_MINUTES}-minute same-service fold window.{counts}",
+        )
+
+    if receipt is not None and receipt.folded:
+        return (
+            "incident_absorbed",
+            "the platform folded this alert into an existing incident that is "
+            f"no longer open, so it cannot be named here.{counts}",
+        )
+
+    return (
+        "incident_not_created",
+        "the alert was delivered but the platform created, folded and "
+        "reconciled nothing, and no open incident can account for it. The "
+        "stimulus reached the platform and vanished inside it." + counts,
+    )
 
 
 async def _fetch_incident(client, jwt, incident_id, creds) -> Optional[dict]:
@@ -768,7 +953,7 @@ def _failure_categories(score) -> tuple[str, ...]:
         categories.add("unresolved")
     if score.false_resolved:
         categories.add("false_resolved")
-    if score.application_status in {"incident_not_created", "stimulus_failed"}:
+    if score.application_status in PLATFORM_FAILURE_STATUSES:
         categories.add("platform_failure")
     if score.resolved and score.grader_status == "INCOMPLETE":
         categories.add("structured_incomplete")
@@ -1140,8 +1325,9 @@ async def _run_trial(
             started_at = datetime.now(timezone.utc)
         tracker.begin(started_at)
 
+        receipt: Optional[AlertReceipt] = None
         try:
-            await _fire_alert(client, spec, started_at, creds)
+            receipt = await _fire_alert(client, spec, started_at, creds)
             await _observe_oracle(client, oracle_client, tracker)
         except Exception as exc:
             result = _oracle_result(
@@ -1158,19 +1344,20 @@ async def _run_trial(
         incident = await _wait_new_incident(client, jwt, known, creds, spec)
         meta["incident_id"] = (incident or {}).get("id")
         if not incident:
+            application_status, reason = await _diagnose_missing_incident(
+                client, jwt, creds, spec, receipt
+            )
             result = _oracle_result(
                 tracker,
                 spec,
                 incident_id=None,
-                application_status="incident_not_created",
+                application_status=application_status,
             )
             append_oracle_result(ORACLE_RESULTS_PATH, result)
             score = _score_without_output(spec, result)
             _record_grade(spec, result, "", [], score)
             return score, (
-                "FAILED (no incident in "
-                f"{INCIDENT_WAIT_SEC}s -- an already-open incident with this "
-                "alertname would have deduped it away)"
+                f"FAILED (no incident in {INCIDENT_WAIT_SEC}s: {reason})"
             ), None, 0
 
         latest_incident, harness_approvals = await _wait_for_recovery(

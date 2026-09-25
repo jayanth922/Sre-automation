@@ -120,6 +120,19 @@ def _confidence(value: Any) -> Optional[float]:
     return parsed if 0 <= parsed <= 1 else None
 
 
+# Outcomes where the harness or the platform, not the agent, is the reason a
+# trial has no result. Defined once because two call sites branch on it --
+# `score_run` here and `_failure_categories` in `sre_bench` -- and a status added
+# to one but not the other silently grades a harness failure as an agent failure.
+PLATFORM_FAILURE_STATUSES = frozenset(
+    {
+        "incident_not_created",
+        "incident_absorbed",
+        "stimulus_failed",
+    }
+)
+
+
 def score_run(
     spec: ScenarioSpec,
     oracle_status: str,
@@ -130,10 +143,7 @@ def score_run(
     incident_severity: str = "",
 ) -> RunScore:
     """Score a run using only the independent oracle as recovery authority."""
-    platform_failed = application_status in {
-        "incident_not_created",
-        "stimulus_failed",
-    }
+    platform_failed = application_status in PLATFORM_FAILURE_STATUSES
     resolved = oracle_status == "VERIFIED_RECOVERED" and not platform_failed
     false_resolved = application_status.lower() == "resolved" and not resolved
     act_report = extract_act_report(events)
