@@ -58,7 +58,7 @@ already-recorded campaign data — which costs no agent API credits at all; only
   `BENCH_INCIDENT_WAIT_SECONDS`. The real defect: the webhook receipt was
   discarded and a fixed, false guess printed. It now names the absorbing
   incident.
-- **#69 fixed (uncommitted, at pre-refactor paths — see Next bounded task).**
+- **#69 fixed (uncommitted, re-seated onto the new layout).**
   `OracleStatus` gained `NO_ACTION_CORRECT`: a `taxonomy.category == "clean"`
   scenario whose signal never leaves its healthy band reports that and no MTTR,
   still counts as resolved, and still gets a full structured grade — correct
@@ -98,8 +98,11 @@ paid run:
   misses them.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → **2453 passed, 6 skipped** (2026-09-25,
-  after #69, at pre-refactor paths). There is no `--timeout` plugin here.
+- `.venv/bin/python -m pytest -q` → **2459 passed, 6 skipped** (2026-09-25,
+  new layout, #69 applied). There is no `--timeout` plugin here. The Codespace
+  `.venv` still has an editable install pointing at the deleted `sre_agent/`;
+  pytest works anyway via `pythonpath = ["src", "evals"]`, but anything running
+  `python -c "import sre_agent"` outside pytest needs a reinstall.
 - `scripts/ci/check_python_quality.sh` → ruff critical, mypy, compileall clean.
 - `evals/benchmarks/ablation_coverage.py --split {dev,holdout}` → free. Needs
   `SKILL_STORE_PATH`; the live store is a docker volume, so `docker cp
@@ -151,17 +154,16 @@ paid run:
   `git add -A`.
 
 ## Next bounded task
-Re-seat the uncommitted #69 work on the new layout, then land #73, #74, #75 and
-#4 as one batch, commit everything together, and run the suite once. Only after
-that should a paid run be discussed.
+Land #73, #74, #75 and #4 as one batch, commit them together with #69, and run
+the suite once. Only after that should a paid run be discussed.
 
-#69 is uncommitted on the Codespace at **pre-refactor paths**: modified
-`benchmarks/{recovery_oracle,scoring,sre_bench,statistical_eval}.py` and
-`reports/ablation-20260925/ATTESTATION.md` (gitignored — needs `git add -f`),
-plus untracked `tests/test_negative_control_verdict.py`. Those four source paths
-are now `evals/benchmarks/...`, so save the diff before pulling
-(`git diff > /tmp/69.patch`) and re-apply it with
-`git apply --directory=evals` rather than merging in place. The test file loads
-its modules by file path — repoint it at `parents[1] / "evals" / "benchmarks"`,
-the convention the rest of `tests/` now uses. Stage explicit paths only, never
+#69 is uncommitted on the Codespace, already re-seated onto the new layout:
+modified `evals/benchmarks/{recovery_oracle,scoring,sre_bench,
+statistical_eval}.py` and `reports/ablation-20260925/ATTESTATION.md`
+(gitignored — needs `git add -f`), plus untracked
+`tests/test_negative_control_verdict.py`. Stage explicit paths only, never
 `git add -A`, and run the env/`.agents` staging guard first.
+
+Housekeeping the refactor left behind: an untracked 1.1 GB `dashboard/` of
+stale `.next`/`node_modules` build output with no tracked files (source is now
+`apps/dashboard/`), safe to `rm -rf`; and the `.venv` editable install above.

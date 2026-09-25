@@ -100,7 +100,9 @@ def test_module_cli_subprocess_invalid():
         **dict(**{k: v for k, v in __import__("os").environ.items()}),
         "SECRET_KEY": "dev-secret",
         "LLM_PROVIDER": "groq",
-        "PYTHONPATH": str(_ROOT),
+        # The package moved under src/ in the layout refactor, so the repo root
+        # alone no longer puts it on the child's path.
+        "PYTHONPATH": str(_ROOT / "src"),
     }
     proc = subprocess.run(
         [sys.executable, "-m", "sre_agent.provider_config"],
