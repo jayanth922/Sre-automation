@@ -63,17 +63,15 @@ already-recorded campaign data — which costs no agent API credits at all; only
 ## Active problem
 None open. #73, #74, #75 and #4 are fixed, verified offline and pushed. Three
 findings from that batch are not yet tracked defects:
-- `trace_evidence_artifact` on every trial points at `reports/run-trace.jsonl`,
-  a rolling shared path that later runs overwrite, so content-addressed trace
-  evidence does not survive the campaign that produced it. The recorded digest
-  stays valid; the file it names does not.
-- `expected_evidence` is dead data — 22 scenarios x 2-4 hand-written
-  assertions, loaded, validated, set on `ScenarioSpec`, read by nothing outside
-  tests. `root_cause_keywords` is worse: `scoring.py:35` calls it an "any-of
+- `_parse_records` aborts the whole calibration set on the first record with
+  no structured output, so one unusable row discards every good one. Of 38
+  recorded grader records, 22 carry structured output and 19 are pinned to the
+  current rubric; the all-or-nothing read yields zero. Strictness is right —
+  silently dropping cases would bias the set — but the count belongs in the
+  result, not in an exception.
+- `root_cause_keywords` is mislabelled: `scoring.py:35` calls it an "any-of
   match against the summary" and no such match exists; its only reader is
-  `retrieval_eval.py:471`, building a query string. Evidence quality is scored
-  only by `evidence_support`, a `_semantic_criterion` stuck at
-  REQUIRES_CALIBRATION — so in practice it is not scored at all.
+  `retrieval_eval.py:471`, building a query string.
 - `train/bad_deploy_checkout` cannot be diagnosed correctly and is deliberately
   left that way; see `datasets/v2/COVERAGE.md`. Retagging it to an observable
   fault mode would buy a passing trial by deleting the record that a deployment
@@ -130,8 +128,11 @@ findings from that batch are not yet tracked defects:
 - `holdout` is `frozen: true` in `dataset.json`. Appending to it would
   invalidate both campaigns' attestations; a wider holdout means a declared
   v3 split, not an edit. `dev` and `train` are unfrozen and may grow.
-- **Calibration needs ~100 more paid trials** against `minimum_samples=100`;
-  the corpus holds 2.
+- **Calibration needs ~100 more paid trials** against `minimum_samples=100`.
+  19 recorded grader records are now loadable (they were not before the
+  schema-drift fix), so the gap is ~80, not ~100 — but see the aborting reader
+  above, which still has to be cleared before any of them can be built into a
+  case set.
 - Structured grading can never return `PASS`: `causal_chain` sits at
   `REQUIRES_CALIBRATION` with no blinded judge. Read per-criterion states and
   scalar hits. In #28, 6 of 8 rows carry `structured_failure`.

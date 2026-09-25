@@ -31,6 +31,20 @@ _RECORD_KEYS = {
     "raw_output",
     "score",
 }
+# Additive producer changes must not brick the consumer. `harness_approvals`
+# was added to `append_grader_record` in 2b73497 and never added here, and
+# because the check was an exact set equality, every grader record written
+# since -- both paid campaigns, all of it -- was rejected as schema-invalid.
+# The calibration corpus could never have been built from real evidence, which
+# is a strange way for "calibration needs ~100 more trials" to be false.
+#
+# Unknown keys are still refused. Known-additive ones are named here instead,
+# so the next field added to the producer degrades to "not carried" rather
+# than "nothing loads at all".
+_OPTIONAL_RECORD_KEYS = {
+    "harness_approvals",
+    "expected_evidence_coverage",
+}
 
 
 class CalibrationCaseError(ValueError):
@@ -78,7 +92,11 @@ def _parse_records(raw: bytes) -> list[dict[str, Any]]:
             record = json.loads(line)
         except json.JSONDecodeError as exc:
             raise CalibrationCaseError(f"line {line_number} is invalid JSON") from exc
-        if not isinstance(record, dict) or set(record) != _RECORD_KEYS:
+        if not isinstance(record, dict):
+            raise CalibrationCaseError(f"line {line_number} is not an object")
+        keys = set(record)
+        unknown = keys - _RECORD_KEYS - _OPTIONAL_RECORD_KEYS
+        if not _RECORD_KEYS <= keys or unknown:
             raise CalibrationCaseError(
                 f"line {line_number} keys do not match grader-record schema v1"
             )
@@ -183,6 +201,10 @@ def build_case_set(
                 "oracle_status": record["oracle_status"],
                 "application_status": record["application_status"],
                 "source_output_sha256": record["raw_output_sha256"],
+                # Stays in the private mapping, never the review case: a judge
+                # told the harness approved the action is no longer blinded to
+                # how the run reached its outcome.
+                "harness_approvals": record.get("harness_approvals"),
             }
         )
     return CalibrationCaseSet(

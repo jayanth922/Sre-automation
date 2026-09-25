@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -504,6 +505,91 @@ def grade_structured_output(
     )
 
 
+_COVERAGE_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "that", "with", "this", "from", "its", "are",
+        "was", "were", "has", "have", "had", "not", "but", "any", "all",
+        "which", "while", "than", "then", "there", "their", "them", "they",
+        "cannot", "does", "did", "been", "being", "into", "over", "under",
+        "identifies", "shows", "reports", "indicates", "confirms",
+    }
+)
+_COVERAGE_MATCH_RATIO = 0.6
+
+
+def _coverage_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9_]+", text.lower())
+        if len(token) > 2 and token not in _COVERAGE_STOPWORDS
+    }
+
+
+def _emitted_evidence_text(output: Optional[dict[str, Any]]) -> str:
+    if not isinstance(output, dict):
+        return ""
+    parts: list[str] = []
+    for entry in output.get("evidence") or []:
+        if isinstance(entry, dict):
+            parts.extend(str(value) for value in entry.values() if value is not None)
+        elif entry is not None:
+            parts.append(str(entry))
+    return " ".join(parts)
+
+
+def evidence_coverage(spec: Any, output: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Which of a scenario's expected facts appear in the agent's evidence.
+
+    `expected_evidence` is the corpus's clearest statement of what each
+    scenario proves -- two to four hand-written assertions apiece, across all
+    22 scenarios. Nothing read it. It was parsed, validated, carried onto
+    `ScenarioSpec`, and consulted by no grader, gate or report, so the corpus
+    could disagree with every run ever recorded and no artifact would say so.
+
+    This is a lexical coverage indicator and deliberately **not** a criterion.
+    It does not enter `overall_status`, it cannot fail a run, and it is not a
+    substitute for `evidence_support` -- that criterion sits at
+    REQUIRES_CALIBRATION precisely because deciding whether an agent showed its
+    work needs a blinded judge, and scoring token overlap instead would be
+    claiming to have one. A miss here means these words never appeared in the
+    structured evidence, not that the agent lacked the fact.
+
+    What it is good for: finding expectations no run has ever satisfied, which
+    is either a scenario asking for something the environment cannot produce
+    (see `datasets/v2/COVERAGE.md`) or a real gap worth a paid trial.
+    """
+    expected = [
+        str(item) for item in (getattr(spec, "expected_evidence", None) or []) if item
+    ]
+    emitted = _coverage_tokens(_emitted_evidence_text(output))
+    items = []
+    matched_count = 0
+    for item in expected:
+        wanted = _coverage_tokens(item)
+        if not wanted:
+            ratio = 0.0
+        else:
+            ratio = len(wanted & emitted) / len(wanted)
+        matched = bool(wanted) and ratio >= _COVERAGE_MATCH_RATIO
+        matched_count += int(matched)
+        items.append(
+            {
+                "expectation": item,
+                "matched": matched,
+                "token_ratio": round(ratio, 3),
+                "missing_tokens": sorted(wanted - emitted),
+            }
+        )
+    return {
+        "method": "lexical_token_overlap",
+        "match_ratio_threshold": _COVERAGE_MATCH_RATIO,
+        "graded": False,
+        "expected_count": len(expected),
+        "matched_count": matched_count,
+        "items": items,
+    }
+
+
 def append_grader_record(
     path: Path,
     *,
@@ -538,6 +624,10 @@ def append_grader_record(
         "raw_output": raw_output,
         "score": score.to_dict(),
         "harness_approvals": harness_approvals,
+        # Unjudged diagnostic, not a grade -- see `evidence_coverage`.
+        "expected_evidence_coverage": evidence_coverage(
+            spec, extract_structured_output(events)
+        ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:

@@ -94,7 +94,10 @@ def test_complete_trace_requires_root_all_span_kinds_and_semantic_attributes():
     assert summary["observed_span_kinds"] == sorted(trace_evidence.REQUIRED_SPAN_KINDS)
     assert root["attributes"]["gen_ai.operation.name"] == "invoke_workflow"
     assert root["attributes"]["gen_ai.conversation.id"] == "incident-123"
-    assert stat.S_IMODE(trace_evidence._artifact_path().stat().st_mode) == 0o600
+    # The run's own artifact, not the shared base file: records are
+    # scoped per trace so a trial cites evidence that is only its own.
+    artifact = trace_evidence._artifact_path(TRACE["root_trace_id"])
+    assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
 
 
 def test_missing_span_or_required_attribute_fails_closed():

@@ -108,9 +108,41 @@ class _PendingTool:
     input_payload: Optional[str]
 
 
-def _artifact_path() -> Path:
+def _artifact_base() -> Path:
     configured = os.getenv("TRACE_EVIDENCE_PATH", "").strip()
     return Path(configured or "reports/run-trace.jsonl")
+
+
+def _artifact_path(root_trace_id: Optional[str] = None) -> Path:
+    """One file per run, named for the trace it holds.
+
+    Every trial used to cite the same constant path. That made the release
+    gate's own cross-check vacuous -- both sides of
+    `record["artifact_path"] != trial.trace_evidence_artifact` were the string
+    "reports/run-trace.jsonl" for every trial ever recorded, so a check written
+    to catch a trial citing the wrong artifact could not fail. The release
+    fixtures already model the intended shape
+    (`traces/{release_id}/{arm}/{pair_id}.json`), so the gate was being tested
+    against evidence shaped unlike anything the harness produces.
+
+    It also meant the evidence never travelled with the campaign that cited it.
+    Trials land in `reports/<campaign>/trials.jsonl` on the host while their
+    traces accumulate in one unbounded shared file inside the agent container:
+    retrieving a single run means scanning every record written since the
+    volume was created, and archiving a campaign directory captures none of it.
+
+    A record with no trace id has nowhere better to go than the base file, and
+    that record is exactly the one worth still being able to find.
+    """
+    base = _artifact_base()
+    identifier = _text(root_trace_id)
+    if identifier is None:
+        return base
+    safe = "".join(
+        character if character.isalnum() or character in "-_" else "-"
+        for character in identifier
+    )
+    return base.parent / base.stem / f"{safe}{base.suffix or '.jsonl'}"
 
 
 def _text(value: Any) -> Optional[str]:
@@ -162,7 +194,7 @@ class RunTraceRecorder:
             json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
         ).encode("utf-8")
         try:
-            path = _artifact_path()
+            path = _artifact_path(record.get("root_trace_id"))
             path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
             try:
@@ -444,7 +476,7 @@ class RunTraceRecorder:
                 model_accounting.get("latency_ms") if cost_complete else None
             ),
             "payload_capture": "redacted" if _payload_capture_enabled() else "off",
-            "artifact_path": str(_artifact_path()),
+            "artifact_path": str(_artifact_path(root_trace_id)),
             "records_sha256": (
                 hashlib.sha256(canonical.encode("utf-8")).hexdigest()
                 if records
