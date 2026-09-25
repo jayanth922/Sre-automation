@@ -1416,7 +1416,12 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
        hypothesis with no sources cannot be checked by anyone. Every reference
        must name its source and exact query/resource/log/commit locator, and
        carry observed_at (ISO-8601) whenever the finding it came from is
-       timestamped; never invent a locator or a timestamp
+       timestamped; never invent a locator or a timestamp. Where a finding
+       above carries a "Runbook query probe" block, that is the runtime's own
+       execution record rather than a model's report: its query strings and
+       observation times are exact, so cite them verbatim -- quoting them is
+       not inventing a locator, and omitting the reference because the prose
+       around it is imprecise loses the only exact source in the incident
     4. List material unknowns and assess confidence level (0.0-1.0)
     5. Determine if deeper investigation is needed
     6. Recommend only the evidence agents that should investigate further,

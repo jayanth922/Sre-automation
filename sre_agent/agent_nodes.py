@@ -194,13 +194,19 @@ def _bounded_lines(text: str, limit: int) -> str:
     )
 
 
+# Matched against text that may already have been cut to a cap, so it is
+# the opening clause rather than the whole note: a truncated copy still
+# answers "is this lane already carrying the probe?" correctly.
+_PROBE_NOTE_HEADER = "Runbook query probe -- measured by the runtime"
+
+
 def _probe_measurement_note(runbook_probe_block: str) -> str:
     """The runbook probe's numbers, restated as a finding of the runtime's."""
     payload = probe_payload(runbook_probe_block)
     if not payload:
         return ""
     return (
-        "Runbook query probe -- measured by the runtime before this lane's "
+        f"{_PROBE_NOTE_HEADER} before this lane's "
         "first turn, so these are arithmetic over live series and not a "
         "model's claim:\n" + payload[:_PROBE_SALVAGE_MAX_CHARS]
     )
@@ -218,7 +224,7 @@ def _salvaged_evidence(
     """
     parts: List[str] = []
     probe_note = _probe_measurement_note(runbook_probe_block)
-    if probe_note and probe_note not in (existing or ""):
+    if probe_note and _PROBE_NOTE_HEADER not in (existing or ""):
         parts.append(probe_note)
     if _EVIDENCE_DIGEST_HEADER not in (existing or ""):
         digest = _partial_evidence_digest(
@@ -1152,6 +1158,33 @@ class BaseAgentNode:
                         self.name,
                         len(salvage),
                     )
+
+            # Salvage above fires only for a lane that wrote nothing at all.
+            # A lane that wrote one sentence of preamble and then ran out of
+            # turns is not silent, so it kept the sentence and dropped the
+            # measurement: on 2026-09-25 the metrics lane did exactly that,
+            # and the reflector -- told never to invent a locator, and handed
+            # four prose reports containing none -- returned an empty evidence
+            # list twice, which cost that trial both the evidence and the
+            # timeline criterion. Whether the lane found words for the probe
+            # is a fact about the lane; the probe is arithmetic over live
+            # series either way, and it is the only exact query string and
+            # observation time anyone downstream ever gets.
+            probe_note = _probe_measurement_note(runbook_probe_block)
+            if probe_note and _PROBE_NOTE_HEADER not in (agent_response or ""):
+                # Appended last on purpose: the finding is cut to 1800 chars
+                # before it enters the next lane's brief, so the lane's own
+                # prose is what survives there, while the reflector -- which
+                # reads the untruncated report -- gets both.
+                agent_response = (
+                    f"{agent_response}\n\n{probe_note}"
+                    if agent_response
+                    else probe_note
+                )
+                logger.info(
+                    "%s - carried the runbook probe into the lane report",
+                    self.name,
+                )
 
             # Debug: Check what we captured
             logger.info(

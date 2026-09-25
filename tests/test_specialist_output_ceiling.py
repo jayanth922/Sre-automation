@@ -36,6 +36,7 @@ from sre_agent.agent_nodes import (
     _EVIDENCE_DIGEST_HEADER,
     _NO_TOOL_LANE_NOTE,
     _NO_TOOL_RETRY_DIRECTIVE,
+    _PROBE_NOTE_HEADER,
     _SALVAGE_MAX_CHARS,
     _TRUNCATED_LANE_NOTE,
     _TRUNCATED_RETRY_DIRECTIVE,
@@ -220,6 +221,29 @@ def _run(node):
             }
         )
     )
+
+
+def _metrics_lane(monkeypatch, fake_astream, *, probe=None):
+    """The one lane the runbook probe is executed for."""
+    node = _lane(
+        monkeypatch,
+        fake_astream,
+        name="Performance Metrics Agent",
+        agent_type="metrics",
+    )
+    block = _probe_block() if probe is None else probe
+
+    async def fake_probe(state):
+        return block
+
+    node._probe_runbook_queries = fake_probe
+    return node
+
+
+def _only_report(result):
+    results = result["agent_results"]
+    assert len(results) == 1, results.keys()
+    return next(iter(results.values()))
 
 
 @pytest.fixture
@@ -447,3 +471,64 @@ def test_a_lane_that_did_write_a_finding_is_left_alone(monkeypatch):
     assert "The pool is exhausted at 412 waiters." in report
     assert _EVIDENCE_DIGEST_HEADER not in report
     assert "raw log text" not in report
+
+
+# --- #64: a lane that spoke must not delete what the runtime measured ------
+
+
+def test_a_lane_that_spoke_and_stopped_early_still_carries_the_probe(monkeypatch):
+    """The hole the 2026-09-23 fix left open, found on 2026-09-25.
+
+    Salvage fires only for a lane that wrote nothing at all. The metrics
+    lane wrote one sentence of preamble and then stopped, so it was not
+    silent, so the measurement was dropped -- and the reflector, told never
+    to invent a locator and handed four prose reports containing none,
+    returned an empty evidence list twice. That cost the trial both the
+    evidence and the timeline criterion, for a reason that has nothing to
+    do with how well it investigated.
+    """
+
+    async def fake_astream(payload, config=None):
+        yield {
+            "agent": {
+                "messages": [AIMessage(content="I'll work the runbook in order.")]
+            }
+        }
+
+    report = _only_report(_run(_metrics_lane(monkeypatch, fake_astream)))
+
+    assert "I'll work the runbook in order." in report
+    assert "peak 2.023" in report
+
+
+def test_the_probe_is_carried_exactly_once(monkeypatch):
+    """A silent lane already gets it from salvage; it must not arrive twice."""
+
+    async def fake_astream(payload, config=None):
+        yield {"tools": {"messages": [_tool_message("query_metrics", "p90 1.98")]}}
+
+    report = _only_report(_run(_metrics_lane(monkeypatch, fake_astream)))
+
+    assert report.count("peak 2.023") == 1
+
+
+def test_a_lane_with_nothing_measured_gains_nothing(monkeypatch):
+    """No probe ran, so there is no runtime measurement to carry."""
+
+    async def fake_astream(payload, config=None):
+        yield {"agent": {"messages": [AIMessage(content="Nothing measurable here.")]}}
+
+    report = _only_report(_run(_metrics_lane(monkeypatch, fake_astream, probe="")))
+
+    assert _PROBE_NOTE_HEADER not in report
+
+
+def test_a_probe_already_carried_in_cut_form_is_not_said_again():
+    """Salvage caps what it returns, so the copy a lane carries can be
+    shorter than the note itself. Matching the whole note would read a cut
+    copy as absent and append the measurement a second time."""
+    block = _probe_block("x" * 4000)
+    cut = _probe_measurement_note(block)[:200]
+
+    assert _PROBE_NOTE_HEADER in cut
+    assert _salvaged_evidence([], block, cut) == ""
