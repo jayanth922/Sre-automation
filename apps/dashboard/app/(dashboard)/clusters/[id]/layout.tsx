@@ -19,6 +19,7 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
   const [cluster, setCluster] = useState<Cluster | null>(null)
   const [openIncidents, setOpenIncidents] = useState(0)
   const [awaitingApproval, setAwaitingApproval] = useState(0)
+  const [approvalDegraded, setApprovalDegraded] = useState(false)
   const [state, setState] = useState<"loading" | "ready" | "missing" | "error">("loading")
   const lastLen = useRef(0)
 
@@ -56,10 +57,14 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
 
   const refreshApproval = useCallback(async () => {
     try {
-      const { data } = await api.get<{ count: number }>(`/clusters/${id}/incidents/awaiting-approval`)
+      const { data } = await api.get<{ count: number; degraded?: boolean }>(`/clusters/${id}/incidents/awaiting-approval`)
       setAwaitingApproval(data.count ?? 0)
+      // An incident the server could not read is not an incident it knows is
+      // unpaused. Carry that doubt to the rail rather than rendering a partial
+      // count as though it were the whole answer.
+      setApprovalDegraded(Boolean(data.degraded))
     } catch {
-      /* ignore */
+      setApprovalDegraded(true)
     }
   }, [id])
 
@@ -131,7 +136,7 @@ export default function ClusterLayout({ children }: { children: React.ReactNode 
     <ClusterContext.Provider value={cluster}>
       <LockProvider clusterId={id}>
         <div className="sx-app">
-          <Rail cluster={cluster} openIncidents={openIncidents} awaitingApproval={awaitingApproval} />
+          <Rail cluster={cluster} openIncidents={openIncidents} awaitingApproval={awaitingApproval} approvalDegraded={approvalDegraded} />
           <main className="sx-main sx-scroll">
             {/* Every page, not just Settings: an operator watching the agent's
                 fixes get refused needs to find out why where they already are. */}

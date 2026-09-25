@@ -1,3 +1,4 @@
+import logging
 from typing import List, Any
 import uuid
 
@@ -7,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import schemas, crud, models, database
 from sre_agent.api.v1.auth_deps import get_current_user_and_org, require_admin
 from sre_agent.api.v1.ownership import get_owned_cluster
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/clusters",
@@ -136,21 +139,52 @@ async def get_awaiting_approval(
     open_incidents = [i for i in incidents if i.status != models.IncidentStatus.RESOLVED][:50]
 
     pending: list[str] = []
+    unchecked = 0
     try:
         from sre_agent.api.v1.mission_control import get_agent_graph
         graph = await get_agent_graph(cluster_id)
-        for inc in open_incidents:
-            try:
-                st = await graph.aget_state({"configurable": {"thread_id": str(inc.id)}})
-                if st and st.tasks and st.tasks[0].interrupts:
-                    pending.append(str(inc.id))
-            except Exception:
-                continue
     except Exception:
-        # Graph/checkpointer unavailable — report none rather than erroring.
-        pending = []
+        # The checkpointer is *where* "paused for approval" lives, so without it
+        # this endpoint has no answer. Returning 0 was indistinguishable from a
+        # real "nothing is waiting", which dropped the rail cue on incidents
+        # that genuinely were paused — the one state that cannot wait for
+        # someone to notice, because nothing moves until a human approves.
+        # Report the count as unknown and let the console say so.
+        logger.exception(
+            "awaiting-approval: agent graph unavailable for cluster %s", cluster_id
+        )
+        return {
+            "incident_ids": [],
+            "count": 0,
+            "checked": 0,
+            "unchecked": len(open_incidents),
+            "degraded": True,
+        }
 
-    return {"incident_ids": pending, "count": len(pending)}
+    for inc in open_incidents:
+        try:
+            st = await graph.aget_state({"configurable": {"thread_id": str(inc.id)}})
+        except Exception:
+            # One unreadable thread is not the endpoint failing, but it is one
+            # incident whose approval state nobody knows. Counting it keeps the
+            # difference between "checked, not paused" and "could not check".
+            logger.warning(
+                "awaiting-approval: could not read graph state for incident %s",
+                inc.id,
+                exc_info=True,
+            )
+            unchecked += 1
+            continue
+        if st and st.tasks and st.tasks[0].interrupts:
+            pending.append(str(inc.id))
+
+    return {
+        "incident_ids": pending,
+        "count": len(pending),
+        "checked": len(open_incidents) - unchecked,
+        "unchecked": unchecked,
+        "degraded": unchecked > 0,
+    }
 
 
 @router.delete("/{cluster_id}", status_code=204)

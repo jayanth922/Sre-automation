@@ -9,6 +9,7 @@ interface RailProps {
   cluster: Cluster
   openIncidents: number
   awaitingApproval?: number
+  approvalDegraded?: boolean
 }
 
 const MONITOR = [
@@ -27,7 +28,7 @@ const RECORDS = [
   { n: "11", label: "Settings", seg: "settings" },
 ]
 
-export function Rail({ cluster, openIncidents, awaitingApproval = 0 }: RailProps) {
+export function Rail({ cluster, openIncidents, awaitingApproval = 0, approvalDegraded = false }: RailProps) {
   const pathname = usePathname()
   const { user, logout } = useAuth()
   const base = `/clusters/${cluster.id}`
@@ -47,8 +48,17 @@ export function Rail({ cluster, openIncidents, awaitingApproval = 0 }: RailProps
     >
       <span className="n">{it.n}</span>
       {it.label}
-      {it.seg === "incidents" && awaitingApproval > 0 && (
-        <span className="ct approve" title={`${awaitingApproval} awaiting your approval`}>{awaitingApproval} ⏸</span>
+      {it.seg === "incidents" && (awaitingApproval > 0 || approvalDegraded) && (
+        <span
+          className="ct approve"
+          title={
+            approvalDegraded
+              ? "Approval state could not be read for every open incident, so this count may be short"
+              : `${awaitingApproval} awaiting your approval`
+          }
+        >
+          {awaitingApproval > 0 ? awaitingApproval : ""}{approvalDegraded ? "?" : ""} ⏸
+        </span>
       )}
       {it.seg === "incidents" && openIncidents > 0 && <span className="ct">{openIncidents}</span>}
     </Link>
