@@ -58,14 +58,12 @@ already-recorded campaign data — which costs no agent API credits at all; only
   `BENCH_INCIDENT_WAIT_SECONDS`. The real defect: the webhook receipt was
   discarded and a fixed, false guess printed. It now names the absorbing
   incident.
-- **#69 fixed and committed.**
-  `OracleStatus` gained `NO_ACTION_CORRECT`: a `taxonomy.category == "clean"`
-  scenario whose signal never leaves its healthy band reports that and no MTTR,
-  still counts as resolved, and still gets a full structured grade — correct
-  inaction is a pass, and the unresolved branch records no safety outcome at
-  all, which is the whole point of a control. One that *did* go failing reports
-  INVALID_SCENARIO. Verified by replaying the recorded trials: #70's "MTTR mean
-  526s" was two real recoveries at 786.1s averaged with a 7s poll interval.
+- **#69 fixed and committed.** `OracleStatus` gained `NO_ACTION_CORRECT`: a
+  `clean` scenario that stays in its healthy band reports that and no MTTR,
+  counts as resolved, and still gets a full structured grade — correct inaction
+  is a pass. One that *did* go failing reports INVALID_SCENARIO. Verified by
+  replay: #70's "MTTR mean 526s" was two real recoveries at 786.1s averaged
+  with a 7s poll interval.
 - **#65/#66/#67/#68 fixed and committed** — trial-ending on an unarmed probe,
   orphan incidents surviving teardown, an unchecked declared fingerprint, and an
   unusable `--memory-coverage`. Rationale is in the docstrings; 11 tests in
@@ -74,18 +72,12 @@ already-recorded campaign data — which costs no agent API credits at all; only
   mis-set threshold — its scenario block is correct as written.
 
 ## Active problem
-Three open defects plus one corpus task, all to be landed together before any
-paid run:
-- **#73** — `cost_usd` is null on half the trials, including two negative
-  controls that ran full ~400s investigations. Campaign cost figures are the
-  mean of half the trials, so every budget estimate built from them runs low.
-- **#74** — the same-service fold still straddles the scenario boundary. #66's
-  teardown closes incidents *between* scenarios, but both observed folds landed
-  7–9 min *into* the next one. 4-for-4 correlation with whether a trial opened
-  an incident. #71 makes it visible; it does not prevent it.
-- **#75** — `get_awaiting_approval` swallows checkpointer failures with a bare
-  `except` and reports 0, so a gated incident reads as no incident.
-- **#4** — test varied software incident types.
+None open. #73, #74, #75 and #4 are fixed and verified offline, uncommitted —
+see Next bounded task. One finding from #73 is not yet a tracked defect:
+`trace_evidence_artifact` on every trial points at `reports/run-trace.jsonl`,
+a rolling shared path that later runs overwrite, so content-addressed trace
+evidence does not survive the campaign that produced it. The recorded digest
+stays valid; the file it names does not.
 
 ## Relevant files
 - Evaluation: `evals/benchmarks/{sre_bench,structured_grading,statistical_eval,
@@ -98,11 +90,12 @@ paid run:
   misses them.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -q` → **2459 passed, 6 skipped** (2026-09-25,
-  new layout, #69 applied). There is no `--timeout` plugin here. The Codespace
+- `.venv/bin/python -m pytest -q` → **2477 passed, 6 skipped** (2026-09-25,
+  after the #73/#74/#75/#4 batch). No `--timeout` plugin here. The Codespace
   `.venv` still has an editable install pointing at the deleted `sre_agent/`;
-  pytest works anyway via `pythonpath = ["src", "evals"]`, but anything running
-  `python -c "import sre_agent"` outside pytest needs a reinstall.
+  pytest works anyway via `pythonpath = ["src", "evals"]`, but anything doing
+  `python -c "import sre_agent"` outside pytest needs `.venv/bin/pip install
+  -e .` (`uv` is not on PATH).
 - `scripts/ci/check_python_quality.sh` → ruff critical, mypy, compileall clean.
 - `evals/benchmarks/ablation_coverage.py --split {dev,holdout}` → free. Needs
   `SKILL_STORE_PATH`; the live store is a docker volume, so `docker cp
@@ -154,9 +147,30 @@ paid run:
   `git add -A`.
 
 ## Next bounded task
-Land #73, #74, #75 and #4 as one batch, commit them together, and run the suite
-once. Only after that should a paid run be discussed. Stage explicit paths only,
-never `git add -A`, and run the env/`.agents` staging guard first.
+Commit the #73/#74/#75/#4 batch (uncommitted on the Codespace) and rebuild the
+dashboard image — the #75 Rail change is image-baked and inert until then. Stage
+explicit paths only, never `git add -A`, and run the env/`.agents` and
+`^dashboard/` staging guards first. Only after that should a paid run be
+discussed.
+
+Invariants the batch set (detail is in the commit, not here):
+- **Span completeness and cost completeness are separate questions (#73).** A
+  run that correctly took no action emits no approval/mutation/verification
+  span, so act-path kinds are required only of a run that entered the act path,
+  and `cost_usd` is gated on the cost accounting's own flag. `statistical_eval`
+  carried the same coupling; a cost may still never arrive without the trace
+  evidence that priced it. Same defect class as #69.
+- **A benchmark asserts the precondition it controls and records the
+  contamination it cannot (#74).** Same-service folding is correct production
+  behaviour (12/12 in shadow mode), wrong only in the benchmark's shape, so the
+  fix is harness-side: settle open incidents before firing, tag observed folds
+  `cross_scenario_fold`. The trial schema is closed — reasons go to the notes.
+- **"Nothing waiting" and "I could not tell" are different answers (#75).**
+- **Incident-type breadth is blocked on the Meridian app, not the dataset
+  (#4).** All 22 scenarios drive one adapter and seven `/admin/config` knobs —
+  100% of the injection surface that exists. Holdout, where both paid campaigns
+  ran, is 4 scenarios covering 4 of 11 categories. See
+  `evals/benchmarks/datasets/v2/COVERAGE.md`.
 
 Housekeeping the refactor left behind: an untracked 1.1 GB `dashboard/` of
 stale `.next`/`node_modules` build output with no tracked files (source is now
