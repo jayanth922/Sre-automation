@@ -59,6 +59,12 @@ already-recorded campaign data — which costs no agent API credits at all; only
     (#72), which is what makes the recall half of memory testable at all.
   - Both paid campaigns' `cost_usd` figures are low: the trials that took no
     action had their real cost discarded (#73). Re-derive, don't reuse.
+- **`root_cause_keywords` is not a grading input and must not become one.** Its
+  comment claimed an "any-of match against the summary" that never existed.
+  Implementing it would have made the benchmark passable by prose. `root_cause_hit`
+  comes from the typed `diagnosis` criterion; the field's real reader is
+  `retrieval_eval.py`, seeding a memory corpus. Pinned by two tests in
+  `tests/test_bench_scoring.py`.
 - **The release gate now has evidence to run on.** `root_traces` is one of the
   five kinds `release_gate.py` requires and nothing but `make_release_fixtures`
   had ever written one, so the gate had only ever run against fixtures it
@@ -74,10 +80,7 @@ already-recorded campaign data — which costs no agent API credits at all; only
   refused, correctly — two of its four trials emitted byte-identical output.
 
 ## Active problem
-None open. Two findings are not yet tracked defects:
-- `root_cause_keywords` is mislabelled: `scoring.py:35` calls it an "any-of
-  match against the summary" and no such match exists; its only reader is
-  `retrieval_eval.py:471`, building a query string.
+None open. One standing decision, not a defect:
 - `train/bad_deploy_checkout` cannot be diagnosed correctly and is deliberately
   left that way; see `datasets/v2/COVERAGE.md`. Retagging it to an observable
   fault mode would buy a passing trial by deleting the record that a deployment
@@ -172,9 +175,10 @@ and a run would still write one shared file. Nothing else needs it; the
 benchmark-side fixes are host code. `docker compose -p platform -f
 infra/local/docker-compose.yaml up -d --no-deps --build sre-agent-api`.
 
-Then `root_cause_keywords` — free, self-contained: implement the documented
-any-of match against the summary, or fix the comment. Only after the queue is
-empty should a paid run be discussed.
+The fix queue is empty. What is left is exercise, not repair: end-to-end runs
+through the console that drive alert to incident to approval to remediation to
+verified recovery, and a release-gate evaluation now that `root_traces` has a
+producer. Only after that should a paid benchmark run be discussed.
 
 Invariants the #73/#74/#75/#4 batch set (detail is in the commits, not here):
 - **Span completeness and cost completeness are separate questions (#73).** A

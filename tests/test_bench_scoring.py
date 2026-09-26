@@ -203,6 +203,59 @@ def test_score_run_does_not_credit_recovery_when_no_incident_was_created():
     assert score.notes == "platform outcome: incident_not_created"
 
 
+def test_grading_never_reads_root_cause_keywords():
+    """The field is retrieval-corpus text, not a grading input.
+
+    `ScenarioSpec.root_cause_keywords` was documented for a long time as an
+    "any-of match against the summary". No such match existed. Implementing one
+    later would look like honouring the comment while quietly making the
+    benchmark passable by prose: an agent that writes the word "deploy" would
+    score a diagnosis hit without having identified anything. This pins the
+    absence so the comment cannot drift back into a feature.
+    """
+    right_words = _spec_bad_deploy()
+    wrong_words = _spec_bad_deploy()
+    wrong_words.root_cause_keywords = ["zebra", "quasar"]
+    events = [_summary_event(), _act_event(["rollback"], severity="SEV1")]
+    summary_text = "deploy regression; rollback required"
+
+    scored = [
+        scoring.score_run(
+            spec,
+            "VERIFIED_RECOVERED",
+            "resolved",
+            summary_text,
+            events,
+            mttr_seconds=120.0,
+            incident_severity="SEV1",
+        )
+        for spec in (right_words, wrong_words)
+    ]
+
+    assert scored[0].root_cause_hit == scored[1].root_cause_hit
+    assert scored[0].structured_grade == scored[1].structured_grade
+
+
+def test_the_right_words_do_not_rescue_the_wrong_diagnosis():
+    """Prose naming every keyword still fails when the typed fields are wrong."""
+    spec = _spec_bad_deploy()
+
+    score = scoring.score_run(
+        spec,
+        "VERIFIED_RECOVERED",
+        "resolved",
+        "deploy regression; rollback required",
+        [
+            _summary_event(service="payment-service", fault_mode="dependency_outage"),
+            _act_event(["rollback"], severity="SEV1"),
+        ],
+        mttr_seconds=120.0,
+        incident_severity="SEV1",
+    )
+
+    assert score.root_cause_hit is False
+
+
 def test_aggregate_rates():
     spec = _spec_bad_deploy()
     scores = [

@@ -32,7 +32,18 @@ class ScenarioSpec:
     name: str
     alert: Dict[str, str]  # alertname, severity, service, summary, description
     ground_truth_service: str
-    root_cause_keywords: List[str]  # any-of match against the summary
+    # NOT a grading input. The comment here used to call this an "any-of match
+    # against the summary"; no such match has ever existed, and one must not be
+    # added -- `graders/README.md` is explicit that deterministic criteria
+    # consume typed fields only, because a substring match against agent prose
+    # is passed by naming the right word rather than by finding the fault.
+    # `root_cause_hit` comes from the `diagnosis` criterion, which compares
+    # emitted `service`/`fault_mode` against the typed ground truth.
+    #
+    # Its one real reader is `retrieval_eval.py`, which joins these into the
+    # `root_cause` text of a seeded memory corpus. Pinned by
+    # `test_grading_never_reads_root_cause_keywords`.
+    root_cause_keywords: List[str]
     expected_action_types: Set[str]  # e.g. {"rollback", "revert_commit"}
     expected_severity_band: Set[str]  # e.g. {"SEV1", "SEV2"}
     recovery_probe: Any  # RecoveryProbe, kept I/O-free here
