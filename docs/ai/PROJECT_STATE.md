@@ -78,6 +78,13 @@ already-recorded campaign data — which costs no agent API credits at all; only
   skipped rows and their reasons now reported in the manifest instead of
   aborting the build. `ablation-20260924/grades-no_memory.jsonl` is still
   refused, correctly — two of its four trials emitted byte-identical output.
+- **The agent image builds again.** `infra/local/Dockerfile` copied the code
+  from its post-#56 `src/` home but declared `ENV PYTHONPATH=/app/src` *after*
+  the two `RUN` steps that import `sre_agent.runtime_preflight`, so every
+  rebuild died at `ModuleNotFoundError`. It went unnoticed for a month because
+  the running containers predated the refactor — an image nobody rebuilds
+  cannot fail to build. Pinned statically by
+  `tests/test_image_build_contract.py` (5 tests, 1 fails pre-fix).
 
 ## Active problem
 None open. One standing decision, not a defect:
@@ -169,11 +176,17 @@ artifact means adding the test that writes it with the real producer and reads
 it with the real consumer.
 
 ## Next bounded task
-**Before any run: rebuild `sre-agent-api`.** `src/sre_agent/trace_evidence.py`
-is image-baked, so run-scoped trace artifacts (`fb03cdd`) are inert until then
-and a run would still write one shared file. Nothing else needs it; the
-benchmark-side fixes are host code. `docker compose -p platform -f
-infra/local/docker-compose.yaml up -d --no-deps --build sre-agent-api`.
+`sre-agent-api` and `temporal-worker` have been rebuilt and are healthy;
+run-scoped trace artifacts (`fb03cdd`) are live in the image. Platform swept
+clean and ready: 181/181 incidents resolved (no orphans), Meridian at every
+declared fault baseline, 0 active alerts, Alertmanager proven to reach
+`/api/v1/alerts/webhook` from inside the cluster with its cluster token, skill
+store 7, incident memory 1 point, runbooks 15, Slack/Langfuse/Prometheus/Loki/
+Notion/GitHub configured. `clusters.k8s_token` is unset by design — the k8s
+MCP uses its self-hosted `KUBERNETES_API_SERVER_HOST` fallback. Cluster status
+reads `degraded` whenever no alert has fired recently: Alertmanager is the only
+heartbeat source, so the status decays between incidents. That is the design,
+not a fault.
 
 The fix queue is empty. What is left is exercise, not repair: end-to-end runs
 through the console that drive alert to incident to approval to remediation to

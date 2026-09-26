@@ -30,7 +30,15 @@ RUN uv sync --frozen --no-dev --extra temporal --extra anthropic
 # infra/helm/sentinel/templates/temporal-worker.yaml), so both entrypoints use
 # exactly the same SDK build.
 
-# Copy application code — only platform-relevant modules
+# Copy application code — only platform-relevant modules.
+# PYTHONPATH must be set *before* the preflight below, not with the runtime
+# environment further down: the PR #56 move to `src/` left the import root
+# declared after the two RUN steps that import from it, so every rebuild of
+# this image died at `No module named 'sre_agent'`. Nothing caught it because
+# the running containers predate the refactor -- an image that is never
+# rebuilt cannot fail to build.
+ENV PYTHONPATH="/app/src"
+
 COPY src/sre_agent/ ./src/sre_agent/
 COPY src/backend/   ./src/backend/
 COPY alembic.ini ./
@@ -45,8 +53,7 @@ RUN SENTINEL_CODE_SHA="${SENTINEL_CODE_SHA}" \
     SENTINEL_RUNTIME_MANIFEST=/app/.sentinel-runtime.json \
     /app/.venv/bin/python -m sre_agent.runtime_preflight --role worker
 
-ENV PYTHONPATH="/app/src" \
-    PYTHONDONTWRITEBYTECODE=1 \
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     SENTINEL_CODE_SHA=${SENTINEL_CODE_SHA} \
     SENTINEL_RUNTIME_MANIFEST=/app/.sentinel-runtime.json
