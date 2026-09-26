@@ -59,16 +59,22 @@ already-recorded campaign data — which costs no agent API credits at all; only
     (#72), which is what makes the recall half of memory testable at all.
   - Both paid campaigns' `cost_usd` figures are low: the trials that took no
     action had their real cost discarded (#73). Re-derive, don't reuse.
+- **The release gate now has evidence to run on.** `root_traces` is one of the
+  five kinds `release_gate.py` requires and nothing but `make_release_fixtures`
+  had ever written one, so the gate had only ever run against fixtures it
+  produced itself; neither campaign emitted the artifact. `sre_bench` now
+  writes one validated record per trial, from the same numbers and at the same
+  moment as the trial that cites it, through the gate's own parser
+  (`build_root_trace_record`). Default path
+  `reports/sre-bench-root-traces.jsonl`, env `BENCH_ROOT_TRACE_RESULTS_PATH`.
+- **The calibration corpus is buildable from real evidence.** Replay of the
+  committed campaign grades: **0 blinded cases before, 7 after**, with the
+  skipped rows and their reasons now reported in the manifest instead of
+  aborting the build. `ablation-20260924/grades-no_memory.jsonl` is still
+  refused, correctly — two of its four trials emitted byte-identical output.
 
 ## Active problem
-None open. #73, #74, #75 and #4 are fixed, verified offline and pushed. Three
-findings from that batch are not yet tracked defects:
-- `_parse_records` aborts the whole calibration set on the first record with
-  no structured output, so one unusable row discards every good one. Of 38
-  recorded grader records, 22 carry structured output and 19 are pinned to the
-  current rubric; the all-or-nothing read yields zero. Strictness is right —
-  silently dropping cases would bias the set — but the count belongs in the
-  result, not in an exception.
+None open. Two findings are not yet tracked defects:
 - `root_cause_keywords` is mislabelled: `scoring.py:35` calls it an "any-of
   match against the summary" and no such match exists; its only reader is
   `retrieval_eval.py:471`, building a query string.
@@ -115,24 +121,19 @@ findings from that batch are not yet tracked defects:
   image-baked: rebuild, then `up -d --no-build --force-recreate`.
 
 ## Known blockers or risks
-- **No further paid run is authorized**, and none should be proposed until the
-  whole batch above is landed. The $88–$632 tiers stay refused. Measured basis
-  for any future estimate: 4 priced trials, mean $0.895, range $0.825–$1.001 —
-  but see #73, these lean low. Costed only: 8-trial re-run with memory seeded
-  ≈$18; the 20-pair campaign §9 calls conclusive ≈$47 (range $40–60), which on
-  a 4-scenario holdout means 5 repetitions each, measuring run-to-run variance
-  more than scenario breadth.
+- **No further paid run is authorized**; the $88–$632 tiers stay refused.
+  Measured basis for any estimate: 4 priced trials, mean $0.895, range
+  $0.825–$1.001 — low, per #73. Costed only: seeded 8-trial re-run ≈$18; the
+  20-pair campaign §9 calls conclusive ≈$47, which on a 4-scenario holdout is
+  5 repetitions each — run-to-run variance more than scenario breadth.
 - The re-run is **not poolable** with #28. The agent is byte-identical, so the
   fingerprint and `dataset_sha256` still match and attestation passes — but the
   harness producing the measurements changed. Report it as a new experiment.
 - `holdout` is `frozen: true` in `dataset.json`. Appending to it would
   invalidate both campaigns' attestations; a wider holdout means a declared
   v3 split, not an edit. `dev` and `train` are unfrozen and may grow.
-- **Calibration needs ~100 more paid trials** against `minimum_samples=100`.
-  19 recorded grader records are now loadable (they were not before the
-  schema-drift fix), so the gap is ~80, not ~100 — but see the aborting reader
-  above, which still has to be cleared before any of them can be built into a
-  case set.
+- **Calibration needs ~80 more paid trials** against `minimum_samples=100`.
+  The corpus is buildable now; it is just small.
 - Structured grading can never return `PASS`: `causal_chain` sits at
   `REQUIRES_CALIBRATION` with no blinded judge. Read per-criterion states and
   scalar hits. In #28, 6 of 8 rows carry `structured_failure`.
@@ -143,12 +144,26 @@ findings from that batch are not yet tracked defects:
 - Incident recall was inert in **both** arms of both campaigns — 0 points in
   the collection — so neither measured the recall half of memory. Both
   attestations say so and return NOT_DEMONSTRATED; do not restate either as a
-  null result. #72 makes the writes work, so a seeded re-run would finally put
-  that half under test. Dataset v3 is not runnable (the Meridian image lacks the
-  `metrics_enabled` rebuild).
+  null result. #72 makes the writes work. Dataset v3 is not runnable (the
+  Meridian image lacks the `metrics_enabled` rebuild).
 - Rotate the Anthropic key and Slack token exposed in terminal output.
 - Never stage `.agents/`, `.env.local-backup-20260910` or `.env.bak-*`; never
   `git add -A`.
+
+## The cascade, four sites
+"Span completeness is not outcome completeness" has now been found in four
+places: `trace_evidence.summary()`, `statistical_eval._parse_trial` (cost),
+`release_evidence.verify_root_traces`, and — found while writing the round-trip
+test, fixed with it — `_parse_trial`'s MTTR rule. #69 made correct inaction
+`resolved` and MTTR-less by design, but that rule still required an MTTR of any
+`resolved` trial, so every negative control raised on `append_trial` and its
+record was never written. The verdict existed; the evidence for it did not. A
+control may now carry no MTTR, and may not carry one.
+
+The shape to watch for: a closed validator in one module, its producer in
+another, no round-trip test — four defects so far. Adding a field to an
+artifact means adding the test that writes it with the real producer and reads
+it with the real consumer.
 
 ## Next bounded task
 **Before any run: rebuild `sre-agent-api`.** `src/sre_agent/trace_evidence.py`
@@ -157,11 +172,9 @@ and a run would still write one shared file. Nothing else needs it; the
 benchmark-side fixes are host code. `docker compose -p platform -f
 infra/local/docker-compose.yaml up -d --no-deps --build sre-agent-api`.
 
-Then decide what to do about the findings under Active problem. The
-first two are free and self-contained: give `expected_evidence` a reader or
-delete it, and stop pointing every trial's `trace_evidence_artifact` at one
-rolling path. Neither needs a paid run. Only after the queue is empty should a
-paid run be discussed.
+Then `root_cause_keywords` — free, self-contained: implement the documented
+any-of match against the summary, or fix the comment. Only after the queue is
+empty should a paid run be discussed.
 
 Invariants the #73/#74/#75/#4 batch set (detail is in the commits, not here):
 - **Span completeness and cost completeness are separate questions (#73).** A

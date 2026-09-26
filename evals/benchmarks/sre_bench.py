@@ -51,6 +51,10 @@ from recovery_oracle import (  # noqa: E402
     RecoveryOracleTracker,
     append_oracle_result,
 )
+from release_evidence import (  # noqa: E402
+    append_root_trace,
+    build_root_trace_record,
+)
 from scenario_dataset import load_dataset  # noqa: E402
 from scoring import (  # noqa: E402
     PLATFORM_FAILURE_STATUSES,
@@ -81,6 +85,9 @@ ORACLE_RESULTS_PATH = Path(
 )
 GRADER_RESULTS_PATH = Path(
     os.getenv("BENCH_GRADER_RESULTS_PATH", "reports/sre-bench-grades.jsonl")
+)
+ROOT_TRACE_RESULTS_PATH = Path(
+    os.getenv("BENCH_ROOT_TRACE_RESULTS_PATH", "reports/sre-bench-root-traces.jsonl")
 )
 TRIAL_RESULTS_PATH = Path(
     os.getenv("BENCH_TRIAL_RESULTS_PATH", "reports/sre-bench-trials.jsonl")
@@ -1079,6 +1086,29 @@ def _record_statistical_trial(
     )
     append_trial(TRIAL_RESULTS_PATH, trial)
 
+    # The root-trace evidence the release gate requires and nothing produced.
+    # Same moment, same numbers as the trial that cites them: an artifact
+    # written later from a different source is how a trial ends up naming a
+    # trace that does not agree with it.
+    if isinstance(trace_completeness, dict):
+        root_trace_id = trace_completeness.get("root_trace_id")
+        if root_trace_id:
+            append_root_trace(
+                ROOT_TRACE_RESULTS_PATH,
+                build_root_trace_record(
+                    root_trace_id=str(root_trace_id),
+                    experiment_id=EXPERIMENT_ID,
+                    pair_id=pair_id,
+                    candidate_id=CANDIDATE_ID,
+                    config_fingerprint=CONFIG_FINGERPRINT,
+                    spans=int(trace_completeness.get("spans", 0)),
+                    complete=trace_complete,
+                    records_sha256=trace_completeness.get("records_sha256"),
+                    artifact_path=trace_completeness.get("artifact_path"),
+                    cost_usd=cost_usd,
+                ),
+            )
+
 
 def _confidence_fingerprint() -> str:
     """The paired experiment's fingerprint when there is one, else a digest of
@@ -1575,6 +1605,8 @@ async def run() -> None:
     if unmeasurable:
         print(unmeasurable)
     print(f"  oracle evidence: {ORACLE_RESULTS_PATH}")
+    if STATISTICAL_RECORDING:
+        print(f"  root-trace evidence: {ROOT_TRACE_RESULTS_PATH}")
     print(f"  grader evidence: {GRADER_RESULTS_PATH}")
     if STATISTICAL_RECORDING:
         print(

@@ -81,10 +81,11 @@ def _write(tmp_path, spec, approvals=2):
 def test_a_record_the_grader_writes_is_one_calibration_can_read(tmp_path):
     target = _write(tmp_path, _spec())
 
-    records = calibration_cases._parse_records(target.read_bytes())
+    parsed = calibration_cases._parse_records(target.read_bytes())
 
-    assert len(records) == 1
-    assert records[0]["harness_approvals"] == 2
+    assert parsed.skipped == ()
+    assert len(parsed.records) == 1
+    assert parsed.records[0]["harness_approvals"] == 2
 
 
 def test_an_unknown_key_is_still_refused(tmp_path):

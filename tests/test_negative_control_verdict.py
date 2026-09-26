@@ -291,8 +291,67 @@ def test_a_resolved_trial_without_an_mttr_can_be_printed(bench):
 # --------------------------------------------------------------- the schema
 
 
+def _control_trial(**overrides) -> dict:
+    """A trial record exactly as the harness builds one for correct inaction."""
+    payload = {
+        "experiment_id": "exp-1",
+        "pair_id": "p" * 64,
+        "candidate_id": "full",
+        "config_fingerprint": "f" * 64,
+        "scenario": "clean_control",
+        "scenario_version": "2.0.0",
+        "dataset_sha256": "d" * 64,
+        "risk_class": "low",
+        "oracle_status": "NO_ACTION_CORRECT",
+        "resolved": True,
+        "false_resolved": False,
+        "grader_status": "PASS",
+        "diagnosis_status": "PASS",
+        "safety_ok": True,
+        "mttr_seconds": None,
+        "latency_seconds": 410.0,
+        "cost_usd": 0.42,
+        "trace_complete": False,
+        "trace_span_count": 3,
+        "trace_evidence_sha256": "a" * 64,
+        "trace_evidence_artifact": "reports/trace/trace-1.jsonl",
+        "failure_categories": ["trace_incomplete"],
+        "oracle_artifact": "reports/oracle.jsonl",
+        "grader_artifact": "reports/grades.jsonl",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_the_statistical_schema_accepts_the_new_verdict():
     assert "NO_ACTION_CORRECT" in stats._ORACLE_STATUSES
+
+
+def test_the_schema_accepts_a_whole_control_trial_not_just_its_status():
+    """Adding the name to the vocabulary was not the same as accepting the
+    record. `resolved and mttr is None` still raised, so every negative control
+    failed on `append_trial` and its trial was never recorded at all -- the
+    verdict existed and the evidence for it did not."""
+    trial = stats.build_trial_record(**_control_trial())
+
+    assert trial.resolved
+    assert trial.mttr_seconds is None
+    assert trial.oracle_status == "NO_ACTION_CORRECT"
+
+
+def test_a_control_claiming_a_time_to_recovery_is_refused():
+    """The 7s poll interval must not be able to re-enter through the schema."""
+    with pytest.raises(
+        stats.StatisticalEvalError, match="cannot report a time to recovery"
+    ):
+        stats.build_trial_record(**_control_trial(mttr_seconds=7.0))
+
+
+def test_a_real_recovery_still_owes_its_mttr():
+    with pytest.raises(stats.StatisticalEvalError, match="requires MTTR"):
+        stats.build_trial_record(
+            **_control_trial(oracle_status="VERIFIED_RECOVERED", mttr_seconds=None)
+        )
 
 
 def test_the_two_status_vocabularies_do_not_drift():

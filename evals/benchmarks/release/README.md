@@ -55,7 +55,12 @@ The bundle must contain:
 - distinct baseline and candidate configuration fingerprints;
 - the paired statistical report and raw trial artifact;
 - the zero-tolerance adversarial report and raw observations;
-- complete root-trace evidence;
+- root-trace evidence for every paired trial, written by `sre_bench` to
+  `reports/sre-bench-root-traces.jsonl` (`BENCH_ROOT_TRACE_RESULTS_PATH`). The
+  gate requires attribution, not completeness: each trial must cite a trace
+  that exists, agrees with its span count, artifact, cost and completeness, and
+  belongs to that trial. A run that investigated and correctly took no action
+  has an incomplete span tree by construction and is not a failed release;
 - an ordered zero-traffic shadow stage followed by a bounded canary;
 - automatic rollback to the evaluated baseline on any safety failure,
   incomplete trace, or policy-exceeding quality, recovery, latency, or cost

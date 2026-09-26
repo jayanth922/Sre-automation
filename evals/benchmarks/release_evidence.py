@@ -78,8 +78,10 @@ def _sha256_text(value: Any, field: str) -> str:
     return value
 
 
-def _parse_root_trace(payload: Any, line_number: int) -> dict[str, Any]:
-    field = f"root trace line {line_number}"
+def _parse_root_trace(
+    payload: Any, line_number: int, *, field: Optional[str] = None
+) -> dict[str, Any]:
+    field = field or f"root trace line {line_number}"
     if not isinstance(payload, dict):
         raise ReleaseEvidenceError(f"{field} must be an object")
     if set(payload) != _ROOT_TRACE_KEYS:
@@ -115,6 +117,55 @@ def _parse_root_trace(payload: Any, line_number: int) -> dict[str, Any]:
                 f"{field}.cost_usd must be a non-negative number"
             )
     return payload
+
+
+def build_root_trace_record(
+    *,
+    root_trace_id: str,
+    experiment_id: str,
+    pair_id: str,
+    candidate_id: str,
+    config_fingerprint: str,
+    spans: int,
+    complete: bool,
+    records_sha256: Optional[str],
+    artifact_path: Optional[str],
+    cost_usd: Optional[float],
+) -> dict[str, Any]:
+    """Build one root-trace evidence record, validated as the gate will read it.
+
+    This artifact had a reader and no writer. `root_traces` is one of the five
+    evidence kinds the release gate requires, and the only thing that has ever
+    produced it is `make_release_fixtures.py` -- so the gate could be run
+    against fixtures it generated itself and against nothing else. Neither paid
+    campaign emitted one, which is why neither was ever gated.
+
+    Building the record here, next to `_parse_root_trace`, is deliberate. The
+    grader-record schema drifted for exactly as long as its producer lived in
+    one module and its validator in another; a producer that validates through
+    its consumer's own parser cannot drift from it silently.
+    """
+    payload = {
+        "schema_version": ROOT_TRACE_SCHEMA_VERSION,
+        "root_trace_id": root_trace_id,
+        "experiment_id": experiment_id,
+        "pair_id": pair_id,
+        "candidate_id": candidate_id,
+        "config_fingerprint": config_fingerprint,
+        "spans": spans,
+        "complete": complete,
+        "records_sha256": records_sha256,
+        "artifact_path": artifact_path,
+        "cost_usd": cost_usd,
+    }
+    return _parse_root_trace(payload, 0, field="root trace record")
+
+
+def append_root_trace(path: Path, record: dict[str, Any]) -> None:
+    """Append one validated root-trace record to the evidence artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 def load_root_traces(path: Path) -> tuple[tuple[dict[str, Any], ...], ArtifactEvidence]:
@@ -260,9 +311,17 @@ def verify_root_traces(
         trial for trial in trials if trial.candidate_id in {baseline_id, candidate_id}
     ]
     for trial in paired:
-        if not trial.trace_complete:
+        # An incomplete trace is not a failed trial (#73). A run that
+        # investigated and correctly took no action emits no approval,
+        # mutation or verification span, so its tree is incomplete by
+        # construction -- rejecting it here would fail the release on exactly
+        # the behaviour the negative controls exist to reward. What the gate
+        # is owed is not completeness but attribution: evidence that resolves
+        # to a trace, and a trace that agrees with it.
+        if trial.trace_evidence_sha256 is None:
             reasons.append(
-                f"trial {trial.pair_id}/{trial.candidate_id} has an incomplete root trace"
+                f"trial {trial.pair_id}/{trial.candidate_id} records no root "
+                "trace evidence"
             )
             continue
         record = by_digest.get(trial.trace_evidence_sha256)
@@ -298,16 +357,16 @@ def verify_root_traces(
                 f"trial {trial.pair_id}/{trial.candidate_id} reports a cost its "
                 "root trace does not"
             )
-        if not record["complete"]:
+        if record["complete"] != trial.trace_complete:
             reasons.append(
-                f"trial {trial.pair_id}/{trial.candidate_id} claims a complete "
-                "trace that the trace record calls incomplete"
+                f"trial {trial.pair_id}/{trial.candidate_id} and its root trace "
+                "disagree about whether the trace is complete"
             )
     unclaimed = len(traces) - len(
         {
             trial.trace_evidence_sha256
             for trial in paired
-            if trial.trace_complete and trial.trace_evidence_sha256 in by_digest
+            if trial.trace_evidence_sha256 in by_digest
         }
     )
     if unclaimed > 0:

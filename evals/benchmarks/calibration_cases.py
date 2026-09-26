@@ -52,11 +52,40 @@ class CalibrationCaseError(ValueError):
 
 
 @dataclass(frozen=True)
+class SkippedRecord:
+    """A well-formed grader record that is not reviewable.
+
+    Not the same thing as corrupt evidence. A record whose digest does not
+    match its output, or whose keys are not the grader schema, says the file
+    cannot be trusted and the whole build must stop. A record that carries no
+    structured evaluation, or was graded against a rubric that has since
+    changed, says only that this one run cannot be judged -- every other run in
+    the file still can.
+    """
+
+    line_number: int
+    scenario: Optional[str]
+    reason: str
+
+
+@dataclass(frozen=True)
+class ParsedEvidence:
+    records: tuple[dict[str, Any], ...]
+    skipped: tuple[SkippedRecord, ...]
+
+
+@dataclass(frozen=True)
 class CalibrationCaseSet:
     review_cases: tuple[dict[str, Any], ...]
     private_mapping: tuple[dict[str, Any], ...]
     input_sha256: str
     key_fingerprint: str
+    # What was in the file but is not in the review set, and why. Dropping
+    # cases silently would bias the corpus toward whatever the current rubric
+    # happens to grade; reporting the drop keeps the bias measurable.
+    skipped: tuple[SkippedRecord, ...] = ()
+    # Reviewable records found, before `limit` narrows them.
+    eligible_count: int = 0
 
 
 def _sha256(data: bytes) -> str:
@@ -79,11 +108,19 @@ def _load_key(path: Path) -> bytes:
     return key
 
 
-def _parse_records(raw: bytes) -> list[dict[str, Any]]:
+def _parse_records(raw: bytes) -> ParsedEvidence:
+    """Split grader evidence into what can be reviewed and what cannot.
+
+    Integrity failures still raise -- they mean the file is not the evidence it
+    claims to be. Eligibility failures are collected instead: a corpus of 38
+    records where 16 predate the current rubric should yield 22 cases, not an
+    exception naming line 3.
+    """
     lines = raw.decode("utf-8").splitlines()
     if not lines:
         raise CalibrationCaseError("grader evidence is empty")
     records: list[dict[str, Any]] = []
+    skipped: list[SkippedRecord] = []
     seen_outputs: set[str] = set()
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
@@ -134,11 +171,18 @@ def _parse_records(raw: bytes) -> list[dict[str, Any]]:
             raise CalibrationCaseError(
                 f"line {line_number}.raw_output_sha256 does not match raw_output"
             )
+        scenario = record.get("scenario")
+        scenario = scenario if isinstance(scenario, str) else None
         structured = extract_structured_output(events)
         if not isinstance(structured, dict):
-            raise CalibrationCaseError(
-                f"line {line_number} has no structured benchmark evaluation"
+            skipped.append(
+                SkippedRecord(
+                    line_number=line_number,
+                    scenario=scenario,
+                    reason="no structured benchmark evaluation",
+                )
             )
+            continue
         score = record["score"]
         grade = score.get("structured_grade") if isinstance(score, dict) else None
         if (
@@ -146,12 +190,26 @@ def _parse_records(raw: bytes) -> list[dict[str, Any]]:
             or grade.get("rubric_version") != EXPECTED_RUBRIC_VERSION
             or grade.get("rubric_sha256") != EXPECTED_RUBRIC_SHA256
         ):
-            raise CalibrationCaseError(
-                f"line {line_number} is not pinned to the current "
-                f"{EXPECTED_RUBRIC_VERSION} rubric digest"
+            skipped.append(
+                SkippedRecord(
+                    line_number=line_number,
+                    scenario=scenario,
+                    reason=(
+                        "is not pinned to the current "
+                        f"{EXPECTED_RUBRIC_VERSION} rubric digest"
+                    ),
+                )
             )
+            continue
         records.append(record)
-    return records
+    return ParsedEvidence(records=tuple(records), skipped=tuple(skipped))
+
+
+def skip_reason_counts(skipped: Sequence[SkippedRecord]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in skipped:
+        counts[entry.reason] = counts.get(entry.reason, 0) + 1
+    return counts
 
 
 def build_case_set(
@@ -164,7 +222,20 @@ def build_case_set(
         raise CalibrationCaseError("blind key must contain at least 32 bytes")
     if limit is not None and limit < 1:
         raise CalibrationCaseError("limit must be positive")
-    records = _parse_records(raw)
+    parsed = _parse_records(raw)
+    records = list(parsed.records)
+    if not records:
+        # Still fails closed on a file with nothing to review -- an empty case
+        # set that writes successfully is how a judge gets calibrated on zero
+        # cases and nobody notices.
+        detail = ", ".join(
+            f"{reason} ({count})"
+            for reason, count in sorted(skip_reason_counts(parsed.skipped).items())
+        )
+        raise CalibrationCaseError(
+            f"no grader record is reviewable: {len(parsed.skipped)} skipped"
+            + (f" -- {detail}" if detail else "")
+        )
 
     def keyed_digest(record: dict[str, Any]) -> str:
         material = record["raw_output_sha256"].encode("utf-8")
@@ -212,6 +283,8 @@ def build_case_set(
         private_mapping=tuple(mapping),
         input_sha256=_sha256(raw),
         key_fingerprint=_sha256(blind_key),
+        skipped=parsed.skipped,
+        eligible_count=len(records),
     )
 
 
@@ -235,6 +308,12 @@ def write_case_set(
         "schema_version": SCHEMA_VERSION,
         "rubric_version": EXPECTED_RUBRIC_VERSION,
         "cases": len(case_set.review_cases),
+        # A reviewer comparing two manifests needs to see that the second one
+        # covers fewer runs because the rubric moved, not because the agent
+        # produced fewer of them.
+        "eligible_records": case_set.eligible_count,
+        "skipped_records": len(case_set.skipped),
+        "skipped_reasons": skip_reason_counts(case_set.skipped),
         "input_sha256": case_set.input_sha256,
         "blind_key_fingerprint": case_set.key_fingerprint,
         "review_sha256": _sha256(review),
@@ -271,6 +350,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             mapping_path=args.private_mapping_output,
             manifest_path=args.manifest_output,
         )
+        print(
+            f"cases: {len(case_set.review_cases)} "
+            f"(reviewable {case_set.eligible_count}, "
+            f"skipped {len(case_set.skipped)})"
+        )
+        for reason, count in sorted(skip_reason_counts(case_set.skipped).items()):
+            print(f"  skipped {count}: {reason}")
     except (OSError, CalibrationCaseError) as exc:
         parser.error(str(exc))
     return 0

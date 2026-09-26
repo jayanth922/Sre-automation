@@ -333,7 +333,19 @@ def _parse_trial(payload: Any, line_number: int) -> TrialRecord:
         raise StatisticalEvalError(
             f"{field} a cost figure requires the trace evidence that priced it"
         )
-    if payload["resolved"] and mttr is None:
+    # A time to recovery is owed by a trial that recovered something, not by
+    # every trial that passed. #69 made correct inaction a pass and, correctly,
+    # gave it no MTTR -- the seconds between a negative control's start and its
+    # second passing probe measure the poll interval, not a recovery. This
+    # check still read `resolved`, so every negative control raised here on
+    # `append_trial` and its trial record was never written at all: the fourth
+    # site of the same "span completeness is not outcome completeness" mistake.
+    if oracle_status == "NO_ACTION_CORRECT":
+        if mttr is not None:
+            raise StatisticalEvalError(
+                f"{field} correct inaction cannot report a time to recovery"
+            )
+    elif payload["resolved"] and mttr is None:
         raise StatisticalEvalError(f"{field} resolved trial requires MTTR")
     return TrialRecord(
         experiment_id=_string(payload["experiment_id"], f"{field}.experiment_id"),

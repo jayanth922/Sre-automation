@@ -117,6 +117,77 @@ def test_stale_rubric_digest_fails_closed():
         calibration_cases.build_case_set(_raw(record), blind_key=b"k" * 32)
 
 
+def _unreviewable(scenario: str, output: str) -> dict:
+    """A record the grader really wrote: real output, no structured block."""
+    record = _record(scenario, output)
+    record["raw_output"]["events"] = [{"event_type": "step", "payload": {}}]
+    encoded = json.dumps(
+        record["raw_output"], sort_keys=True, separators=(",", ":")
+    ).encode()
+    record["raw_output_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return record
+
+
+def test_one_unreviewable_record_does_not_discard_the_others():
+    stale = _record("stale", "graded on an older rubric")
+    stale["score"]["structured_grade"]["rubric_sha256"] = "0" * 64
+
+    cases = calibration_cases.build_case_set(
+        _raw(_unreviewable("bare", "no structured block"), stale, _record("ok", "out")),
+        blind_key=b"k" * 32,
+    )
+
+    assert len(cases.review_cases) == 1
+    assert cases.eligible_count == 1
+    assert {entry.scenario for entry in cases.skipped} == {"bare", "stale"}
+    assert {entry.line_number for entry in cases.skipped} == {1, 2}
+    assert calibration_cases.skip_reason_counts(cases.skipped) == {
+        "no structured benchmark evaluation": 1,
+        "is not pinned to the current sre-structured-v1 rubric digest": 1,
+    }
+
+
+def test_corrupt_evidence_still_stops_the_whole_build():
+    tampered = _record("bad", "original")
+    tampered["raw_output"]["summary_text"] = "tampered"
+
+    with pytest.raises(calibration_cases.CalibrationCaseError, match="does not match"):
+        calibration_cases.build_case_set(
+            _raw(_record("good", "out"), tampered), blind_key=b"k" * 32
+        )
+
+
+def test_a_file_with_nothing_reviewable_still_fails_closed():
+    with pytest.raises(
+        calibration_cases.CalibrationCaseError, match="no grader record is reviewable"
+    ):
+        calibration_cases.build_case_set(
+            _raw(_unreviewable("a", "one"), _unreviewable("b", "two")),
+            blind_key=b"k" * 32,
+        )
+
+
+def test_manifest_reports_what_was_left_out(tmp_path):
+    cases = calibration_cases.build_case_set(
+        _raw(_unreviewable("bare", "skip me"), _record("ok", "out")),
+        blind_key=b"k" * 32,
+    )
+    manifest = tmp_path / "manifest.json"
+
+    calibration_cases.write_case_set(
+        cases,
+        review_path=tmp_path / "review.jsonl",
+        mapping_path=tmp_path / "mapping.jsonl",
+        manifest_path=manifest,
+    )
+
+    payload = json.loads(manifest.read_text())
+    assert payload["cases"] == 1
+    assert payload["eligible_records"] == 1
+    assert payload["skipped_records"] == 1
+    assert payload["skipped_reasons"] == {"no structured benchmark evaluation": 1}
+
+
 def test_written_manifest_content_addresses_both_outputs(tmp_path):
     cases = calibration_cases.build_case_set(
         _raw(_record("a", "output")), blind_key=b"k" * 32

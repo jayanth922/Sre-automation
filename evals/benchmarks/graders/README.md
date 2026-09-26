@@ -28,8 +28,13 @@ uv run python -m benchmarks.calibration_cases reports/sre-bench-grades.jsonl \
 The HMAC key makes selection reproducible without putting scenario identity in
 the review artifact. The private map and key stay with the evaluation owner;
 labelers receive only `calibration-review.jsonl`. The script rejects duplicate
-outputs, digest mismatches, missing structured evaluations, and records pinned
-to another rubric version or digest. Source-output hashes remain only in the
+outputs and digest mismatches — those say the evidence file is not what it
+claims to be, and the build stops. A record carrying no structured evaluation,
+or graded against a rubric that has since changed, is skipped instead: it is
+one unreviewable run, not a corrupt corpus. Every skip is counted by reason in
+the manifest (`skipped_records`, `skipped_reasons`) and printed, because
+silently dropping cases would bias the set toward whatever the current rubric
+happens to grade. A file with nothing reviewable in it still fails closed. Source-output hashes remain only in the
 private map, so a labeler cannot join an opaque case back to the raw corpus. It
 never calls a model or Langfuse, so creating the review set has no API cost.
 
