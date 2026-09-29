@@ -62,6 +62,46 @@ def test_candidate_clean_logs_is_resolved():
     assert verdict.status == "RESOLVED"
 
 
+def test_candidate_failed_without_signature_is_regressed_not_resolved():
+    # The old error is gone, but the run still failed: a different failure is not
+    # recovery.
+    baseline = _result("FAILED", SIGNATURE)
+    candidate = _result("FAILED", "ImportError: cannot import name 'retry'")
+    verdict = diff_logs(SIGNATURE, baseline, candidate)
+    assert verdict.status == "REGRESSED"
+    assert "different failure" in verdict.detail
+
+
+def test_verdict_carries_bounded_evidence_for_both_runs():
+    noise = [f"request {i} ok" for i in range(50)]
+    baseline_logs = "\n".join(noise[:20] + [SIGNATURE] + noise[20:])
+    candidate_logs = "\n".join(noise + ["x" * 1000])
+    verdict = diff_logs(
+        SIGNATURE, _result("FAILED", baseline_logs), _result("SUCCEEDED", candidate_logs)
+    )
+    assert verdict.status == "RESOLVED"
+    base = verdict.evidence["baseline"]
+    assert base["signature_found"] is True
+    assert base["signature_line"] == 21
+    assert base["excerpt_kind"] == "signature"
+    assert base["excerpt_start_line"] == 19
+    assert len(base["excerpt"]) == 5
+    assert SIGNATURE in base["excerpt"][2]
+    cand = verdict.evidence["candidate"]
+    assert cand["signature_found"] is False
+    assert cand["signature_line"] is None
+    assert cand["excerpt_kind"] == "tail"
+    assert cand["total_lines"] == 51
+    assert len(cand["excerpt"]) == 6
+    assert len(cand["excerpt"][-1]) == 240
+
+
+def test_inconclusive_verdicts_still_carry_evidence():
+    verdict = diff_logs(SIGNATURE, _result("FAILED", "clean"), _result("SUCCEEDED", "clean"))
+    assert verdict.status == "INCONCLUSIVE"
+    assert verdict.evidence["baseline"]["signature_found"] is False
+
+
 def test_compose_candidate_request_carries_patch_via_env_and_swaps_command():
     baseline_request = SandboxRunRequest(
         incident_id="inc-1",

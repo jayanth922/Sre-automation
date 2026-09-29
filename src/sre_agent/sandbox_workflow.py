@@ -31,7 +31,7 @@ import logging
 import uuid as _uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
@@ -85,12 +85,62 @@ class SandboxRunResult:
 class VerdictResult:
     status: str  # RESOLVED | REGRESSED | INCONCLUSIVE
     detail: str
+    # Bounded, reviewer-facing proof per run ({"baseline": ..., "candidate": ...});
+    # see run_evidence. Never full logs.
+    evidence: Optional[Dict[str, Any]] = None
 
 
 # ── Pure logic (no I/O — unit-testable directly) ──────────────────────────────
 
 
+EVIDENCE_CONTEXT_LINES = 2
+EVIDENCE_TAIL_LINES = 6
+EVIDENCE_MAX_LINE_CHARS = 240
+
+
+def run_evidence(failure_signature: str, result: SandboxRunResult) -> Dict[str, Any]:
+    """Pure: a small excerpt proving what one sandbox run showed.
+
+    Around the first signature hit when present, otherwise the log tail (where a
+    run's exit reason usually is). Bounded so the timeline never carries a log
+    dump.
+    """
+    signature = (failure_signature or "").strip()
+    lines = (result.logs or "").splitlines()
+    hit = next((i for i, line in enumerate(lines) if signature and signature in line), None)
+    if hit is not None:
+        start = max(0, hit - EVIDENCE_CONTEXT_LINES)
+        window = lines[start : hit + EVIDENCE_CONTEXT_LINES + 1]
+        kind = "signature"
+    else:
+        start = max(0, len(lines) - EVIDENCE_TAIL_LINES)
+        window = lines[start:]
+        kind = "tail"
+    return {
+        "job_name": result.job_name,
+        "status": result.status,
+        "signature_found": hit is not None,
+        "signature_line": hit + 1 if hit is not None else None,
+        "excerpt_start_line": start + 1,
+        "excerpt": [line[:EVIDENCE_MAX_LINE_CHARS] for line in window],
+        "excerpt_kind": kind,
+        "total_lines": len(lines),
+    }
+
+
 def diff_logs(
+    failure_signature: str, baseline: SandboxRunResult, candidate: SandboxRunResult
+) -> VerdictResult:
+    evidence = {
+        "baseline": run_evidence(failure_signature, baseline),
+        "candidate": run_evidence(failure_signature, candidate),
+    }
+    verdict = _judge(failure_signature, baseline, candidate)
+    verdict.evidence = evidence
+    return verdict
+
+
+def _judge(
     failure_signature: str, baseline: SandboxRunResult, candidate: SandboxRunResult
 ) -> VerdictResult:
     """The actual recovery oracle: did the candidate's logs stop showing the
@@ -120,6 +170,14 @@ def diff_logs(
     if signature in (candidate.logs or ""):
         return VerdictResult(
             "REGRESSED", "Candidate logs still show the original failure signature after the patch."
+        )
+    if candidate.status != "SUCCEEDED":
+        # Signature gone but the run still failed: the patch traded one failure for
+        # another. Absence of the old error is not recovery.
+        return VerdictResult(
+            "REGRESSED",
+            "Candidate run exited FAILED without the original signature; the patch "
+            "introduced a different failure, so it is not counted as resolved.",
         )
     return VerdictResult(
         "RESOLVED", "Candidate logs no longer show the failure signature the baseline reproduced."
@@ -338,6 +396,7 @@ async def emit_verdict_activity(
                 "detail": verdict.detail,
                 "diff": patch,
                 "workflow_id": workflow_id,
+                "evidence": verdict.evidence,
             },
         },
     )
@@ -405,7 +464,9 @@ class CodeFixVerificationWorkflow:
 
             if baseline.status != "SUCCEEDED" and baseline.status != "FAILED":
                 verdict = VerdictResult(
-                    "INCONCLUSIVE", f"Baseline sandbox run did not complete (status={baseline.status})."
+                    "INCONCLUSIVE",
+                    f"Baseline sandbox run did not complete (status={baseline.status}).",
+                    evidence={"baseline": run_evidence(params.failure_signature, baseline)},
                 )
             else:
                 candidate_request = await workflow.execute_activity(

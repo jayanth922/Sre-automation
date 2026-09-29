@@ -173,6 +173,93 @@ function FormattedText({ text }: { text: string }) {
   )
 }
 
+type RunEvidence = {
+  job_name?: string
+  status?: string
+  signature_found?: boolean
+  signature_line?: number | null
+  excerpt_start_line?: number
+  excerpt?: string[]
+  excerpt_kind?: "signature" | "tail"
+  total_lines?: number
+}
+
+const VERDICT_TONE: Record<string, string> = { RESOLVED: "ok", REGRESSED: "crit", INCONCLUSIVE: "warn" }
+const RUN_TONE: Record<string, string> = { SUCCEEDED: "ok", FAILED: "crit" }
+
+function asRun(v: unknown): RunEvidence | null {
+  return v && typeof v === "object" ? (v as RunEvidence) : null
+}
+
+// One card per sandbox verdict: the claim, the two runs side by side, and the
+// proof behind folds. Excerpts are bounded server-side (run_evidence), never full logs.
+function SandboxVerifyCard({ codeFix }: { codeFix: Record<string, unknown> }) {
+  const status = String(codeFix.status ?? "")
+  const detail = typeof codeFix.detail === "string" ? codeFix.detail : ""
+  const patch = typeof codeFix.diff === "string" ? codeFix.diff : ""
+  const evidence = (codeFix.evidence ?? {}) as Record<string, unknown>
+  const runs: [string, RunEvidence | null][] = [
+    ["Before patch", asRun(evidence.baseline)],
+    ["After patch", asRun(evidence.candidate)],
+  ]
+  const hasRuns = runs.some(([, r]) => r)
+  return (
+    <div className="sx-vx">
+      <div className="sx-vx-head">
+        <span className={`sx-badge ${VERDICT_TONE[status] ?? "warn"}`}>{status || "UNKNOWN"}</span>
+        <span className="sx-vx-detail">{detail}</span>
+      </div>
+      {hasRuns && (
+        <div className="sx-vx-grid" role="table" aria-label="Sandbox runs">
+          <span role="columnheader" />
+          {runs.map(([label]) => <span key={label} role="columnheader" className="h">{label}</span>)}
+          <span role="rowheader" className="k">Run ended</span>
+          {runs.map(([label, r]) => (
+            <span key={label} role="cell">
+              {r?.status
+                ? <span className={`sx-badge ${RUN_TONE[r.status] ?? "warn"}`}>{r.status}</span>
+                : <span className="na">not run</span>}
+            </span>
+          ))}
+          <span role="rowheader" className="k">Failure signature</span>
+          {runs.map(([label, r]) => (
+            <span key={label} role="cell" className={r?.signature_found ? "hit" : undefined}>
+              {!r ? <span className="na">—</span>
+                : r.signature_found ? `present · line ${r.signature_line}` : "absent"}
+            </span>
+          ))}
+        </div>
+      )}
+      {runs.map(([label, r]) =>
+        r?.excerpt && r.excerpt.length > 0 ? (
+          <details key={label}>
+            <summary className="sx-tracesum">
+              {label} log · {r.excerpt_kind === "signature" ? "around the signature" : "last lines"}
+              {" "}({r.excerpt.length} of {r.total_lines ?? r.excerpt.length} lines)
+            </summary>
+            <pre className="sx-logbox">
+              {r.excerpt.map((line, i) => {
+                const n = (r.excerpt_start_line ?? 1) + i
+                return (
+                  <div key={i} className={n === r.signature_line ? "er" : undefined}>
+                    <span className="sx-vx-ln">{n}</span>{line}
+                  </div>
+                )
+              })}
+            </pre>
+          </details>
+        ) : null,
+      )}
+      {patch && (
+        <details>
+          <summary className="sx-tracesum">Patch under test · {patch.split("\n").length} lines</summary>
+          <pre className="sx-logbox">{patch}</pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
 export default function IncidentConsolePage() {
   const { id, incidentId } = useParams<{ id: string; incidentId: string }>()
   const cluster = useCluster()
@@ -462,6 +549,25 @@ export default function IncidentConsolePage() {
                       <div className="src">
                         <span className="sx-t2 tool">trace</span>
                         {String(ev.payload?.source ?? "executor")} · {timeAgo(ev.created_at)}
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
+              const codeFix = ev.payload?.source === "sandbox_workflow" ? ev.payload?.code_fix : null
+              if (codeFix && typeof codeFix === "object") {
+                return (
+                  <div className="sx-ev" key={ev.id ?? ev.sequence ?? idx}>
+                    <div className="rl">
+                      <div className="node" />
+                      {idx < events.length - 1 && <div className="ln" />}
+                    </div>
+                    <div className="c2">
+                      <div className="et">{ev.title || "Sandbox verification"}</div>
+                      <SandboxVerifyCard codeFix={codeFix as Record<string, unknown>} />
+                      <div className="src">
+                        <span className="sx-t2 tool">sandbox</span>
+                        {ev.speaker_role || "executor"} · {timeAgo(ev.created_at)}
                       </div>
                     </div>
                   </div>
