@@ -200,6 +200,7 @@ def format_approval_request(
     when the offer lapses.
     """
     severity = str(report_payload.get("severity") or "UNKNOWN")
+    policy_severity = str(report_payload.get("policy_severity") or severity)
     decision = str(report_payload.get("aggregate_decision") or "requires_approval")
     confidence = str(report_payload.get("confidence_status") or "uncalibrated")
     raw = report_payload.get("raw_action_confidence")
@@ -219,6 +220,14 @@ def format_approval_request(
         f"🔒 Approval required — severity *{severity}*, plan gated `{decision}`.",
         confidence_line,
     ]
+    if policy_severity != severity:
+        # The held actions' reasons name the policy severity; without this the
+        # human reads "SEV3" in the header and "SEV2 (high severity)" below it.
+        lines.insert(
+            1,
+            f"Gated as *{policy_severity}*: the diagnosis is not trusted enough "
+            f"to act on the measured {severity} alone.",
+        )
 
     # When the planner itself died, what follows is a placeholder — one
     # `escalate manual_review` the fallback branch hard-codes — and the per-

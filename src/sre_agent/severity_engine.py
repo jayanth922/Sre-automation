@@ -127,7 +127,16 @@ class IncidentSignals:
 
 @dataclass
 class SeverityAssessment:
-    """The result of a severity classification."""
+    """The result of a severity classification.
+
+    `severity` is what policy acts on and `measured_severity` is what the
+    evidence shows. They differ only when an unsure diagnosis rounded the
+    policy severity up: that round-up is a statement about how far to trust the
+    diagnosis, not about how bad the incident is, so it must gate autonomy
+    without being reported as the incident's severity. Reporting it made every
+    uncalibrated run claim one level worse than it measured — a negative
+    control measured at SEV4 on 2026-09-29 was announced as SEV3.
+    """
 
     severity: Severity
     impact_score: float
@@ -139,10 +148,16 @@ class SeverityAssessment:
     rationale: str = ""
     unknown_telemetry: bool = False
     evidence: List[EvidenceLink] = field(default_factory=list)
+    measured_severity: Optional[Severity] = None
+
+    def __post_init__(self) -> None:
+        if self.measured_severity is None:
+            self.measured_severity = self.severity
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "severity": self.severity.name,
+            "measured_severity": self.measured_severity.name,
             "impact_score": self.impact_score,
             "urgency_score": self.urgency_score,
             "impact_bucket": self.impact_bucket,
@@ -319,14 +334,14 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
     if rounded_up:
         if signals.hypothesis_confidence_calibrated:
             rationale += (
-                f"; escalated to {severity.name} "
+                f"; policy escalated to {severity.name} "
                 f"(calibrated diagnosis probability "
                 f"{signals.hypothesis_confidence:.2f} < "
                 f"{_CONFIDENCE_ROUNDUP_THRESHOLD})"
             )
         else:
             rationale += (
-                f"; escalated to {severity.name} "
+                f"; policy escalated to {severity.name} "
                 "(diagnosis confidence is uncalibrated)"
             )
     if unknown_telemetry:
@@ -345,6 +360,7 @@ def classify_severity(signals: IncidentSignals) -> SeverityAssessment:
         rationale=rationale,
         unknown_telemetry=unknown_telemetry,
         evidence=list(signals.evidence),
+        measured_severity=base,
     )
 
 

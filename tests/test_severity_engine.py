@@ -197,3 +197,40 @@ def test_every_severity_field_can_carry_evidence_links():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_an_unsure_diagnosis_escalates_policy_but_not_the_measured_severity():
+    # 2026-09-29: a negative control measured at SEV4 was announced as SEV3
+    # because the round-up for an uncalibrated diagnosis was reported as the
+    # incident's severity. The round-up gates autonomy; it is not impact.
+    assessment = classify_severity(
+        IncidentSignals(
+            affected_services=1,
+            user_facing=False,
+            error_rate=0.02,
+            slo_breached=False,
+            slo_burn_rate=0.5,
+            saturation=0.1,
+            still_escalating=False,
+            error_rate_slope=0.0,
+            hypothesis_confidence=1.0,
+            hypothesis_confidence_calibrated=False,
+        )
+    )
+
+    assert assessment.measured_severity is Severity.SEV4
+    assert assessment.severity is Severity.SEV3
+    assert "policy escalated to SEV3" in assessment.rationale
+    assert assessment.to_dict()["measured_severity"] == "SEV4"
+
+
+def test_missing_telemetry_is_reported_as_escalated_not_just_gated():
+    # Missing measurements are a gap in what is known about the incident, so
+    # unlike the confidence round-up they stay in the reported severity.
+    unknown = classify_severity(IncidentSignals())
+    assert unknown.measured_severity is Severity.UNKNOWN
+
+    partial = classify_severity(
+        IncidentSignals(error_rate=0.02, slo_burn_rate=0.5)
+    )
+    assert partial.measured_severity is partial.severity

@@ -457,3 +457,22 @@ def test_model_and_migration_include_all_durable_approval_fields():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_approval_request_explains_a_policy_severity_above_the_measured_one():
+    report = {
+        **APPROVAL_REPORT,
+        "severity": "SEV3",
+        "policy_severity": "SEV2",
+    }
+    text = approval_flow.format_approval_request(report, datetime.now(timezone.utc))
+
+    assert "severity *SEV3*" in text
+    assert "Gated as *SEV2*" in text
+
+
+def test_approval_request_says_nothing_extra_when_the_severities_agree():
+    report = {**APPROVAL_REPORT, "severity": "SEV2", "policy_severity": "SEV2"}
+    text = approval_flow.format_approval_request(report, datetime.now(timezone.utc))
+
+    assert "Gated as" not in text

@@ -1576,6 +1576,15 @@ from the recorded rule, rejecting any artifact whose threshold did not come
 from an all-`live_benchmark` corpus — a hand-edited and re-digested artifact
 fails to load. The contract is enforced, not advisory.
 
+**Amendment (2026-09-29).** The escalation gates autonomy only; it is no
+longer reported as the incident's severity. `SeverityAssessment` carries
+`measured_severity` (the matrix result) beside the escalated `severity`,
+`ActReport.severity` reports the measured value and `policy_severity` the
+escalated one, and the mutation gateway's `gate_context` reads
+`policy_severity`. Reporting the escalation made every uncalibrated run
+claim one level worse than measured (the Run 3 negative control measured
+SEV4 and was announced SEV3). Unknown-telemetry escalation still changes
+the reported value, since it is a gap in what is known about impact.
 
 ## The console shows approvals; Slack makes them
 

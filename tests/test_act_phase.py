@@ -1013,3 +1013,32 @@ def test_an_undelivered_page_still_goes_out_after_approval():
         state, report, approved=True, context=LIVE_CONTEXT
     )
     assert [r["action"]["action_type"] for r in requests] == ["restart", "escalate"]
+
+
+def test_the_report_states_measured_severity_but_the_gate_receives_policy_severity():
+    plan = FakePlan([FakeAction("restart", "inventory-service", {"namespace": "demo-app"})])
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    state = _state(alert, plan)
+    report = _build(state)
+
+    assert report.severity == "SEV4"
+    assert report.policy_severity == "SEV3"
+    assert report.summary.startswith("SEV4:")
+    assert report.to_dict()["policy_severity"] == "SEV3"
+
+    requests = build_live_action_requests(state, report, context=LIVE_CONTEXT)
+    assert requests
+    # The mutation gateway re-checks severity at execution time; it must see
+    # the value policy acted on, never the milder measured one.
+    assert {r["gate_context"]["severity"] for r in requests} == {"SEV3"}
+
+
+def test_a_report_without_policy_severity_still_gates_on_its_severity():
+    plan = FakePlan([FakeAction("restart", "inventory-service", {"namespace": "demo-app"})])
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    state = _state(alert, plan)
+    report = _build(state)
+    report.policy_severity = None
+
+    requests = build_live_action_requests(state, report, context=LIVE_CONTEXT)
+    assert {r["gate_context"]["severity"] for r in requests} == {report.severity}

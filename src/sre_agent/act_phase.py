@@ -406,6 +406,10 @@ def _configured_confidence(
 
 @dataclass
 class ActReport:
+    # What the evidence measured. `policy_severity` is what the gates acted on;
+    # it is one level worse when an unsure diagnosis rounded it up (see
+    # severity_engine.SeverityAssessment). Only the policy value may reach a
+    # gate — the mutation gateway re-checks it at execution time.
     severity: str
     severity_rationale: str
     plan_present: bool
@@ -429,6 +433,7 @@ class ActReport:
     # placeholder rather than anything the planner produced. Carried through
     # so the approval message can say so — see RemediationPlan.planning_failed.
     planning_failed: Optional[str] = None
+    policy_severity: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -668,11 +673,12 @@ def build_act_report(
 
     if not plan or not actions:
         return ActReport(
-            severity=assessment.severity.name,
+            severity=assessment.measured_severity.name,
+            policy_severity=assessment.severity.name,
             severity_rationale=assessment.rationale,
             plan_present=False,
             aggregate_decision=None,
-            summary=f"{assessment.severity.name}: no remediation plan in state; ACT skipped.",
+            summary=f"{assessment.measured_severity.name}: no remediation plan in state; ACT skipped.",
             unknown_telemetry=assessment.unknown_telemetry,
             severity_evidence=[item.to_dict() for item in assessment.evidence],
         )
@@ -833,7 +839,7 @@ def build_act_report(
         )
 
     summary = (
-        f"{assessment.severity.name}: plan {aggregate.value}; "
+        f"{assessment.measured_severity.name}: plan {aggregate.value}; "
         f"{len(executed)}/{len(actions)} action(s) dry-run-executed, "
         f"{len(actions) - len(executed)} held for approval/blocked"
         f"{scope_note}{capability_note}{unfit_note}."
@@ -841,7 +847,8 @@ def build_act_report(
     logger.info(f"⚙️  ACT: {summary}")
 
     return ActReport(
-        severity=assessment.severity.name,
+        severity=assessment.measured_severity.name,
+        policy_severity=assessment.severity.name,
         severity_rationale=assessment.rationale,
         plan_present=True,
         aggregate_decision=aggregate.value,
@@ -1102,7 +1109,7 @@ def build_live_action_requests(
                 "idempotency_key": idempotency_key,
                 "gate_context": {
                     "decision": str(arep.get("decision", "")),
-                    "severity": report.severity,
+                    "severity": report.policy_severity or report.severity,
                     "environment": environment,
                     "risk_score": risk_score,
                     "approved": approved,
