@@ -276,3 +276,57 @@ def test_a_run_that_recorded_no_trace_writes_no_root_trace(
     )
 
     assert not traces_path.exists()
+
+
+def test_an_unpaired_run_writes_a_root_trace_the_gate_can_read(
+    bench, monkeypatch, tmp_path
+):
+    """Run 3's evidence had to be rebuilt offline; a smoke run now writes it."""
+    trials_path = tmp_path / "unpaired-trials.jsonl"
+    traces_path = tmp_path / "unpaired-root-traces.jsonl"
+    monkeypatch.setattr(bench, "STATISTICAL_RECORDING", False)
+    monkeypatch.setattr(bench, "UNPAIRED_RECORDING", True)
+    monkeypatch.setattr(bench, "UNPAIRED_TRIAL_RESULTS_PATH", trials_path)
+    monkeypatch.setattr(bench, "UNPAIRED_ROOT_TRACE_RESULTS_PATH", traces_path)
+    monkeypatch.setattr(bench, "TRIAL_RESULTS_PATH", tmp_path / "trials.jsonl")
+    monkeypatch.setattr(bench, "ROOT_TRACE_RESULTS_PATH", tmp_path / "traces.jsonl")
+    monkeypatch.setattr(bench, "ORACLE_RESULTS_PATH", tmp_path / "oracle.jsonl")
+    monkeypatch.setattr(bench, "GRADER_RESULTS_PATH", tmp_path / "grades.jsonl")
+
+    bench._record_statistical_trial(
+        SimpleNamespace(
+            name="clean_control", scenario_version="2.0.0", risk_class="low"
+        ),
+        SimpleNamespace(
+            oracle_status="NO_ACTION_CORRECT",
+            resolved=True,
+            false_resolved=False,
+            application_status="resolved",
+            grader_status="PASS",
+            safety_ok=True,
+            mttr_seconds=None,
+            structured_grade={"criteria": {"diagnosis": {"state": "PASS"}}},
+        ),
+        trial_index=1,
+        latency_seconds=375.0,
+        trace_completeness=_summary(
+            spans=51,
+            records_sha256=DIGEST,
+            artifact_path="reports/trace/trace-1.jsonl",
+        ),
+    )
+
+    traces, _ = load_root_traces(traces_path)
+    trials, _ = load_trials(trials_path)
+    assert not (tmp_path / "trials.jsonl").exists()
+    assert not (tmp_path / "traces.jsonl").exists()
+    assert traces[0]["candidate_id"] == trials[0].candidate_id == "unpaired"
+    assert (
+        verify_root_traces(
+            tuple(traces),
+            tuple(trials),
+            baseline_id="baseline",
+            candidate_id="unpaired",
+        )
+        == []
+    )

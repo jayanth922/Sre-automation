@@ -50,6 +50,13 @@ def _load_runner(monkeypatch, tmp_path: Path, **env):
     monkeypatch.setenv(
         "BENCH_CONFIDENCE_RESULTS_PATH", str(tmp_path / "confidence.jsonl")
     )
+    monkeypatch.setenv(
+        "BENCH_UNPAIRED_TRIAL_RESULTS_PATH", str(tmp_path / "unpaired-trials.jsonl")
+    )
+    monkeypatch.setenv(
+        "BENCH_UNPAIRED_ROOT_TRACE_RESULTS_PATH",
+        str(tmp_path / "unpaired-root-traces.jsonl"),
+    )
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 

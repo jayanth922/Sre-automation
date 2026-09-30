@@ -56,6 +56,9 @@ _BENCH_ENV = (
     "BENCH_PAIR_SEED",
     "BENCH_TRIAL_RESULTS_PATH",
     "BENCH_CONFIDENCE_RESULTS_PATH",
+    "BENCH_RECORD_UNPAIRED",
+    "BENCH_UNPAIRED_TRIAL_RESULTS_PATH",
+    "BENCH_UNPAIRED_ROOT_TRACE_RESULTS_PATH",
 )
 
 
@@ -66,6 +69,13 @@ def _load_runner(monkeypatch, tmp_path: Path, **env):
     monkeypatch.setenv("BENCH_TRIAL_RESULTS_PATH", str(tmp_path / "trials.jsonl"))
     monkeypatch.setenv(
         "BENCH_CONFIDENCE_RESULTS_PATH", str(tmp_path / "confidence.jsonl")
+    )
+    monkeypatch.setenv(
+        "BENCH_UNPAIRED_TRIAL_RESULTS_PATH", str(tmp_path / "unpaired-trials.jsonl")
+    )
+    monkeypatch.setenv(
+        "BENCH_UNPAIRED_ROOT_TRACE_RESULTS_PATH",
+        str(tmp_path / "unpaired-root-traces.jsonl"),
     )
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -347,6 +357,69 @@ def test_no_trial_row_is_written_without_the_experiment_env(monkeypatch, tmp_pat
     )
 
     assert not (tmp_path / "trials.jsonl").exists()
+
+
+def test_an_unpaired_run_writes_its_trial_to_the_unpaired_file(monkeypatch, tmp_path):
+    """A smoke run's result is real; only its pairing is missing (E2E Run 3)."""
+    from statistical_eval import load_trials
+
+    from sre_agent.confidence_calibration import load_confidence_records
+
+    module = _load_runner(monkeypatch, tmp_path)
+    spec = module.SCENARIOS[0]
+    assert module.UNPAIRED_RECORDING is True
+
+    module._record_statistical_trial(
+        spec,
+        _resolved_score(spec.name),
+        trial_index=1,
+        latency_seconds=1.0,
+        trace_completeness=dict(_COMPLETE_TRACE),
+    )
+    module._record_confidence_observations(
+        spec, _resolved_score(spec.name), trial_index=1
+    )
+
+    trials, _ = load_trials(tmp_path / "unpaired-trials.jsonl")
+    assert len(trials) == 1
+    assert trials[0].experiment_id == module.UNPAIRED_EXPERIMENT_ID
+    assert trials[0].candidate_id == "unpaired"
+    assert trials[0].config_fingerprint == module._confidence_fingerprint()
+    # Joinable with the confidence observations the same trial produced.
+    records, _ = load_confidence_records(tmp_path / "confidence.jsonl")
+    assert {record.pair_id for record in records} == {trials[0].pair_id}
+
+
+def test_unpaired_recording_can_be_turned_off(monkeypatch, tmp_path):
+    module = _load_runner(monkeypatch, tmp_path, BENCH_RECORD_UNPAIRED="0")
+    spec = module.SCENARIOS[0]
+
+    module._record_statistical_trial(
+        spec,
+        _resolved_score(spec.name),
+        trial_index=1,
+        latency_seconds=1.0,
+        trace_completeness=dict(_COMPLETE_TRACE),
+    )
+
+    assert not (tmp_path / "unpaired-trials.jsonl").exists()
+
+
+def test_a_paired_run_never_writes_to_the_unpaired_file(monkeypatch, tmp_path):
+    module = _recording(monkeypatch, tmp_path)
+    spec = module.SCENARIOS[0]
+    assert module.UNPAIRED_RECORDING is False
+
+    module._record_statistical_trial(
+        spec,
+        _resolved_score(spec.name),
+        trial_index=1,
+        latency_seconds=1.0,
+        trace_completeness=dict(_COMPLETE_TRACE),
+    )
+
+    assert (tmp_path / "trials.jsonl").exists()
+    assert not (tmp_path / "unpaired-trials.jsonl").exists()
 
 
 def test_a_confidence_observation_does_not_need_a_paired_experiment(

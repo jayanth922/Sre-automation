@@ -192,6 +192,38 @@ CONFIDENCE_RECORDING = STATISTICAL_RECORDING or os.getenv(
 # unpaired observations mix in a per-process id to stay unique.
 RUN_ID = uuid.uuid4().hex
 
+# ── Unpaired runs still leave evidence ─────────────────────────────────────
+#
+# A trial row and its root-trace record used to hang off STATISTICAL_RECORDING
+# alone, so a smoke run (BENCH_SCENARIOS, which refuses the statistical env)
+# wrote neither. E2E Run 3's negative control on 2026-09-29 measured a correct
+# NO_ACTION, a complete 51-span trace and $0.85 of spend, and none of it could
+# be checked against the release-gate validators until it was rebuilt by hand.
+# What a smoke run lacks is a pairing, not a result.
+#
+# The records go to their own files under a per-process identity. Pooled into
+# the paired trial file they would sit beside real pairs under an experiment
+# id nobody declared, and every reader of that file assumes a row has a
+# partner in another arm. The pair id matches the one the confidence
+# observations from the same trial carry, so the two can be joined.
+UNPAIRED_RECORDING = not STATISTICAL_RECORDING and os.getenv(
+    "BENCH_RECORD_UNPAIRED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+UNPAIRED_TRIAL_RESULTS_PATH = Path(
+    os.getenv(
+        "BENCH_UNPAIRED_TRIAL_RESULTS_PATH",
+        "reports/sre-bench-unpaired-trials.jsonl",
+    )
+)
+UNPAIRED_ROOT_TRACE_RESULTS_PATH = Path(
+    os.getenv(
+        "BENCH_UNPAIRED_ROOT_TRACE_RESULTS_PATH",
+        "reports/sre-bench-unpaired-root-traces.jsonl",
+    )
+)
+UNPAIRED_EXPERIMENT_ID = f"unpaired-{RUN_ID}"
+UNPAIRED_CANDIDATE_ID = "unpaired"
+
 DATASET_ROOT = Path(
     os.getenv(
         "BENCH_DATASET_ROOT",
@@ -1012,15 +1044,24 @@ def _record_statistical_trial(
     harness_approvals: int = 0,
     extra_categories: tuple[str, ...] = (),
 ) -> None:
-    if not STATISTICAL_RECORDING:
+    if STATISTICAL_RECORDING:
+        experiment_id, candidate_id = EXPERIMENT_ID, CANDIDATE_ID
+        config_fingerprint, pair_seed = CONFIG_FINGERPRINT, PAIR_SEED
+        trial_path, root_trace_path = TRIAL_RESULTS_PATH, ROOT_TRACE_RESULTS_PATH
+    elif UNPAIRED_RECORDING:
+        experiment_id, candidate_id = UNPAIRED_EXPERIMENT_ID, UNPAIRED_CANDIDATE_ID
+        config_fingerprint, pair_seed = _confidence_fingerprint(), RUN_ID
+        trial_path = UNPAIRED_TRIAL_RESULTS_PATH
+        root_trace_path = UNPAIRED_ROOT_TRACE_RESULTS_PATH
+    else:
         return
     pair_id = make_pair_id(
-        experiment_id=EXPERIMENT_ID,
+        experiment_id=experiment_id,
         dataset_sha256=DATASET.sha256,
         scenario=spec.name,
         scenario_version=spec.scenario_version,
         trial_index=trial_index,
-        pair_seed=PAIR_SEED,
+        pair_seed=pair_seed,
     )
     trace_complete = bool(
         isinstance(trace_completeness, dict)
@@ -1047,10 +1088,10 @@ def _record_statistical_trial(
         # that being visible in the artifact people actually diff.
         failure_categories.add("harness_approved")
     trial = build_trial_record(
-        experiment_id=EXPERIMENT_ID,
+        experiment_id=experiment_id,
         pair_id=pair_id,
-        candidate_id=CANDIDATE_ID,
-        config_fingerprint=CONFIG_FINGERPRINT,
+        candidate_id=candidate_id,
+        config_fingerprint=config_fingerprint,
         scenario=spec.name,
         scenario_version=spec.scenario_version,
         dataset_sha256=DATASET.sha256,
@@ -1084,7 +1125,7 @@ def _record_statistical_trial(
         oracle_artifact=str(ORACLE_RESULTS_PATH),
         grader_artifact=str(GRADER_RESULTS_PATH),
     )
-    append_trial(TRIAL_RESULTS_PATH, trial)
+    append_trial(trial_path, trial)
 
     # The root-trace evidence the release gate requires and nothing produced.
     # Same moment, same numbers as the trial that cites them: an artifact
@@ -1094,13 +1135,13 @@ def _record_statistical_trial(
         root_trace_id = trace_completeness.get("root_trace_id")
         if root_trace_id:
             append_root_trace(
-                ROOT_TRACE_RESULTS_PATH,
+                root_trace_path,
                 build_root_trace_record(
                     root_trace_id=str(root_trace_id),
-                    experiment_id=EXPERIMENT_ID,
+                    experiment_id=experiment_id,
                     pair_id=pair_id,
-                    candidate_id=CANDIDATE_ID,
-                    config_fingerprint=CONFIG_FINGERPRINT,
+                    candidate_id=candidate_id,
+                    config_fingerprint=config_fingerprint,
                     spans=int(trace_completeness.get("spans", 0)),
                     complete=trace_complete,
                     records_sha256=trace_completeness.get("records_sha256"),
@@ -1614,6 +1655,12 @@ async def run() -> None:
             f"trials={TRIAL_RESULTS_PATH}"
         )
         print(f"  confidence evidence: {CONFIDENCE_RESULTS_PATH}")
+    elif UNPAIRED_RECORDING:
+        print(
+            f"  unpaired evidence ({UNPAIRED_EXPERIMENT_ID}): "
+            f"trials={UNPAIRED_TRIAL_RESULTS_PATH} "
+            f"root-traces={UNPAIRED_ROOT_TRACE_RESULTS_PATH}"
+        )
     print("=" * 74)
 
     all_scores = []
