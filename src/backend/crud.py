@@ -536,6 +536,40 @@ async def find_active_incident_by_title(
     return result.scalars().first()
 
 
+async def find_active_incident_with_folded_alert(
+    db: AsyncSession,
+    cluster_id: uuid.UUID,
+    title: str,
+) -> Optional[models.Incident]:
+    """The newest non-resolved incident that `title` was folded into, if any.
+
+    A folded alert has no incident of its own, so title dedup cannot see it;
+    the fold's timeline event is the only record that it already belongs
+    somewhere. Matched on the serialized payload, which
+    `create_incident_timeline_event` writes with `json.dumps` defaults — the
+    same encoding used for the needle here.
+    """
+    needle = f'"folded_title": {json.dumps(title)}'
+    result = await db.execute(
+        select(models.Incident)
+        .join(
+            models.IncidentTimelineEvent,
+            models.IncidentTimelineEvent.incident_id == models.Incident.id,
+        )
+        .filter(
+            models.Incident.cluster_id == cluster_id,
+            models.Incident.status.in_(_ACTIVE_INCIDENT_STATUSES),
+            models.IncidentTimelineEvent.event_type == "correlated_alert_folded",
+            models.IncidentTimelineEvent.payload_json.contains(
+                needle, autoescape=True
+            ),
+        )
+        .order_by(models.IncidentTimelineEvent.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 async def list_active_incidents_for_cluster(
     db: AsyncSession,
     cluster_id: uuid.UUID,

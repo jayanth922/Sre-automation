@@ -232,13 +232,26 @@ def test_mixed_plan_executes_autonomous_holds_the_rest():
     alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
     plan = FakePlan([
         FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
-        FakeAction("config_change", "inventory-service", {"namespace": "demo-app"}),  # no rollback
+        FakeAction("rollback", "inventory-service", {"namespace": "demo-app"}),
     ])
     report = _build(_state(alert, plan))
-    # One autonomous (restart), one held (config_change w/o rollback) → plan needs approval.
+    # One autonomous (restart), one held (a production rollback) → plan needs approval.
     assert report.aggregate_decision == "requires_approval"
     assert len(report.executed) == 1
     assert len(report.action_reports) == 2
+
+
+def test_a_plan_whose_held_actions_are_all_blocked_does_not_wait_for_approval():
+    # An approval releases held actions only; a blocked one stays blocked. The
+    # config_change here has no tool behind it, so nothing is left to approve.
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    plan = FakePlan([
+        FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
+        FakeAction("config_change", "inventory-service", {"namespace": "demo-app"}),
+    ])
+    report = _build(_state(alert, plan))
+    assert [r["decision"] for r in report.action_reports] == ["autonomous", "blocked"]
+    assert report.aggregate_decision == "autonomous"
 
 
 def test_config_change_with_no_capability_is_blocked_in_the_plan_a_human_reads():
@@ -262,6 +275,45 @@ def test_config_change_with_no_capability_is_blocked_in_the_plan_a_human_reads()
     assert "command" not in blocked[0]
     assert all(r["action_type"] != "config_change" for r in report.executed)
     assert "no automation capability" in report.summary
+
+
+def test_a_diagnosed_leak_blocks_scale_and_limit_raise_but_keeps_the_restart():
+    # E2E Run 1 (2026-09-29): scale + limit raise offered for a memory leak.
+    alert = FakeAlert(
+        "warning",
+        {"service": "inventory-service", "namespace": "demo-app"},
+        alert_name="CheckoutMemoryApproachingLimit",
+    )
+    plan = FakePlan([
+        FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
+        FakeAction("scale", "inventory-service", {"namespace": "demo-app", "replicas": 4}),
+        FakeAction("config_change", "inventory-service", {
+            "namespace": "demo-app",
+            "memory": "1Gi",
+        }),
+    ])
+    state = _state(alert, plan)
+    state["reflector_analysis"] = {
+        "confidence": 0.9,
+        "hypothesis": "A memory leak in the request handler grows the heap to the limit.",
+    }
+    report = _build(state)
+    by_type = {r["action_type"]: r for r in report.action_reports}
+    assert by_type["scale"]["decision"] == "blocked"
+    assert by_type["config_change"]["decision"] == "blocked"
+    assert "memory leak" in by_type["scale"]["reason"]
+    assert by_type["restart"]["decision"] != "blocked"
+    assert all(r["action_type"] == "restart" for r in report.executed)
+    assert "2 blocked (cannot fix the diagnosed fault)" in report.summary
+
+
+def test_scale_is_planned_normally_without_a_leak_diagnosis():
+    alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
+    plan = FakePlan([
+        FakeAction("scale", "inventory-service", {"namespace": "demo-app", "replicas": 4}),
+    ])
+    report = _build(_state(alert, plan))
+    assert report.action_reports[0]["decision"] != "blocked"
 
 
 def test_config_change_carrying_a_resource_limit_is_still_planned_normally():
@@ -773,6 +825,28 @@ def test_live_outcome_summary_surfaces_failures_and_live_errors():
     assert "Live error: executor lost the cluster connection" in text
 
 
+def test_an_autonomous_plan_is_not_called_approved_and_refusals_are_not_delivered():
+    """2026-09-29, PaymentFailureSpike: "approved plan executed live — 0/0
+    mutating action(s) EXECUTED [REFUSED], 3 notification/read-only action(s)
+    delivered" — nobody approved, nothing mutating existed, and one of the
+    three was refused."""
+    payload = _live_payload(
+        aggregate_decision="autonomous",
+        live_results=[
+            {"action_type": "inspect", "status": "EXECUTED"},
+            {"action_type": "inspect", "status": "REFUSED"},
+            {"action_type": "escalate", "status": "EXECUTED"},
+        ],
+        verification={},
+    )
+    text = live_outcome_summary(payload)
+    assert "autonomous plan executed live" in text
+    assert "approved" not in text
+    assert "no mutating actions" in text
+    assert "0/0" not in text
+    assert "2/3 notification/read-only action(s) delivered [REFUSED]" in text
+
+
 def test_live_outcome_summary_falls_back_when_nothing_ran_live():
     payload = _live_payload(live_results=[])
     assert live_outcome_summary(payload) == payload["summary"]
@@ -849,3 +923,93 @@ def test_the_same_action_type_with_different_parameters_is_not_a_duplicate():
 
     assert len(requests) == 2
     assert requests[0]["idempotency_key"] != requests[1]["idempotency_key"]
+
+
+def test_a_diagnosed_provider_outage_blocks_restart_and_rollback_but_keeps_the_page():
+    # E2E Run 2 (2026-09-29): a payment provider outage drew a payment restart.
+    alert = FakeAlert(
+        "critical",
+        {"service": "payment-service", "namespace": "demo-app"},
+        alert_name="PaymentProviderDown",
+    )
+    plan = FakePlan([
+        FakeAction("restart", "payment-service", {"namespace": "demo-app"}),
+        FakeAction("rollback", "payment-service", {"namespace": "demo-app"}),
+        FakeAction("escalate", "payment-service", {"namespace": "demo-app"}),
+    ])
+    state = _state(alert, plan)
+    state["reflector_analysis"] = {
+        "confidence": 0.9,
+        "hypothesis": "A genuine external dependency outage: the payment provider is down.",
+    }
+    report = _build(state)
+    by_type = {r["action_type"]: r for r in report.action_reports}
+    assert by_type["restart"]["decision"] == "blocked"
+    assert by_type["rollback"]["decision"] == "blocked"
+    assert "external provider outage" in by_type["restart"]["reason"]
+    assert by_type["escalate"]["decision"] == "autonomous"
+    assert report.aggregate_decision == "autonomous"
+
+
+def _gated_plan_with_a_page():
+    alert = FakeAlert("critical", {"service": "payment-service", "namespace": "demo-app"})
+    plan = FakePlan([
+        FakeAction("restart", "payment-service", {"namespace": "demo-app"}),
+        FakeAction("escalate", "payment-service", {"reason": "provider down"}),
+    ])
+    state = _state(
+        alert,
+        plan,
+        results=_measured_results(
+            error_rate=0.9,
+            slo_burn_rate=20.0,
+            slo_breached=True,
+            saturation=0.9,
+            still_escalating=True,
+        ),
+    )
+    state["incident_id"] = "44444444-4444-4444-4444-444444444444"
+    report = _build(state)
+    by_type = {r["action_type"]: r for r in report.action_reports}
+    assert by_type["restart"]["decision"] == "requires_approval"
+    assert by_type["escalate"]["decision"] == "autonomous"
+    return state, report
+
+
+def test_a_gated_plan_pages_on_call_before_the_approval(monkeypatch):
+    # E2E Run 2 (2026-09-29): the SEV1 page waited on the restart's approval.
+    import sre_agent.incident_timeline as incident_timeline
+    from sre_agent.act_phase import deliver_notifications_ahead_of_approval
+
+    state, report = _gated_plan_with_a_page()
+    emitted = []
+
+    async def fake_emit(incident_id, **kwargs):
+        emitted.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(incident_timeline, "emit_timeline_event", fake_emit)
+    results = asyncio.run(
+        deliver_notifications_ahead_of_approval(state, report, context=LIVE_CONTEXT)
+    )
+    assert [(r["action_type"], r["status"], r["action_index"]) for r in results] == [
+        ("escalate", "EXECUTED", 1)
+    ]
+    assert [e["title"] for e in emitted] == ["🚨 Escalation to on-call"]
+
+
+def test_the_approved_run_does_not_page_twice():
+    state, report = _gated_plan_with_a_page()
+    state["metadata"]["pre_approval_notifications"] = [1]
+    requests = build_live_action_requests(
+        state, report, approved=True, context=LIVE_CONTEXT
+    )
+    assert [r["action"]["action_type"] for r in requests] == ["restart"]
+
+
+def test_an_undelivered_page_still_goes_out_after_approval():
+    state, report = _gated_plan_with_a_page()
+    requests = build_live_action_requests(
+        state, report, approved=True, context=LIVE_CONTEXT
+    )
+    assert [r["action"]["action_type"] for r in requests] == ["restart", "escalate"]

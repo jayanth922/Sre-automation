@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -16,6 +17,30 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+# A tool-call array the model wrote out in the XML parameter form instead of
+# JSON: `<parameter name="0">first</parameter><parameter name="1">{...}` — the
+# closing tags are sometimes missing. Seen on 2026-09-29 (PaymentProviderDown,
+# incident 3fec162e): `discrepancies`, `causal_chain` and `evidence` all came
+# back this way, the reflector's correct diagnosis was discarded as a
+# ValidationError, and the planner and the resolution message worked from
+# "Unable to analyze findings automatically" instead.
+_LEAKED_PARAMETER = re.compile(r'\s*<parameter name="\d+">')
+_LEAKED_PARAMETER_SPLIT = re.compile(r'<parameter name="\d+">')
+
+
+def _decode_leaked_parameter_list(value: str) -> List[Any]:
+    items: List[Any] = []
+    for chunk in _LEAKED_PARAMETER_SPLIT.split(value)[1:]:
+        item = chunk.replace("</parameter>", "").strip()
+        if item[:1] in ("{", "["):
+            try:
+                item = json.loads(item, strict=False)
+            except (ValueError, TypeError):
+                pass
+        items.append(item)
+    return items
 
 
 def _decode_json_container(value: Any) -> Any:
@@ -63,6 +88,8 @@ def _decode_json_container(value: Any) -> Any:
         # Only worth a second attempt — and a warning — if this was meant to
         # be a container at all. A plain string field that happens to reach
         # here is not a failed decode.
+        if _LEAKED_PARAMETER.match(value):
+            return _decode_leaked_parameter_list(value)
         if value.lstrip()[:1] not in ("[", "{"):
             return value
         try:

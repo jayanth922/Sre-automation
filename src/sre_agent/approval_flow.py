@@ -883,6 +883,14 @@ async def fire_external_alert_clear_side_effects(
             )
 
     notified = False
+    # An incident that cleared while its investigation was still queued never
+    # opened a war room, so there is no thread to tell and nobody who was told
+    # it had started. That is not a lost notice; logging it as one at ERROR
+    # (2026-09-29, the queued sibling payment incidents) buried the real ones.
+    has_thread = bool(
+        getattr(incident, "slack_channel", None)
+        and getattr(incident, "slack_thread_ts", None)
+    )
     try:
         from .war_room_service import post_to_incident_thread
 
@@ -906,7 +914,13 @@ async def fire_external_alert_clear_side_effects(
             incident_id,
             notify_err,
         )
-    if not notified:
+    if not notified and not has_thread:
+        logger.info(
+            "Incident %s cleared externally before its war room opened; no "
+            "Slack thread to notify",
+            incident_id,
+        )
+    elif not notified:
         logger.error(
             "Incident %s cleared externally, but NO Slack notice was delivered",
             incident_id,

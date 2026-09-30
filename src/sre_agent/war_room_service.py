@@ -144,6 +144,53 @@ def _opening_text(summary: str) -> str:
     return f":rotating_light: *Incident opened*\n{summary}{mention}"
 
 
+async def post_deferred_fold_notices(incident_id: str, post) -> int:
+    """Post the fold notices that were waiting for this incident's thread.
+
+    A sibling alert folded while this incident's investigation was still queued
+    had no thread to announce itself in (`api/v1/alerts.py::_fold_ahead_of_war_room`),
+    so its notice rides in the fold's timeline payload until now. Called only
+    after the thread mapping is persisted: a fold committed after this read sees
+    the thread and posts its own notice. Returns how many were posted; never
+    raises, since the thread itself is already open.
+    """
+    import json
+
+    posted = 0
+    try:
+        from sqlalchemy import select
+
+        from backend import database, models
+
+        async with database.AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(models.IncidentTimelineEvent)
+                .filter(
+                    models.IncidentTimelineEvent.incident_id == uuid.UUID(str(incident_id)),
+                    models.IncidentTimelineEvent.event_type == "correlated_alert_folded",
+                )
+                .order_by(models.IncidentTimelineEvent.sequence)
+            )
+            events = list(result.scalars().all())
+    except Exception as e:
+        logger.warning(f"war-room: deferred fold notice lookup failed for {incident_id}: {e}")
+        return 0
+    for event in events:
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        text = payload.get("notice_text")
+        if payload.get("notice") != "deferred_until_war_room" or not text:
+            continue
+        try:
+            await post(text)
+            posted += 1
+        except Exception as e:
+            logger.warning(f"war-room: deferred fold notice for {incident_id} not posted: {e}")
+    return posted
+
+
 async def maybe_open_war_room(incident_id: str, cluster_id: str, summary: str) -> None:
     """Open a Slack war-room thread for this incident and stream its events.
 
@@ -202,6 +249,10 @@ async def maybe_open_war_room(incident_id: str, cluster_id: str, summary: str) -
             await app.client.chat_postMessage(
                 channel=resolved_channel, thread_ts=thread_ts, text=text
             )
+
+        await post_deferred_fold_notices(
+            incident_id, lambda text: poster(None, text)
+        )
 
         # Stream this incident's surfaced events into the thread (long-running).
         asyncio.create_task(forward_events(incident_id, poster, registry=registry))

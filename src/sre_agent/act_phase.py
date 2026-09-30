@@ -55,7 +55,13 @@ from .executor import (
     missing_capability_reason,
 )
 from .mutation_gateway import MutationGateContext, MutationRejected, authorize_and_execute
-from .policy_gate import AutonomyDecision, decide_plan
+from .policy_gate import (
+    AutonomyDecision,
+    decide_plan,
+    diagnosed_dependency_outage,
+    diagnosed_memory_leak,
+    unfit_remedy_reason,
+)
 from .severity_engine import (
     EvidenceLink,
     IncidentSignals,
@@ -712,6 +718,13 @@ def build_act_report(
     executed: List[Dict[str, Any]] = []
     blocked_out_of_scope = 0
     blocked_no_capability = 0
+    blocked_unfit = 0
+    diagnoses = (
+        _get(_get(state, "reflector_analysis"), "hypothesis"),
+        _get(plan, "hypothesis"),
+    )
+    memory_leak = diagnosed_memory_leak(*diagnoses)
+    dependency_outage = diagnosed_dependency_outage(*diagnoses)
 
     for action, gd in zip(actions, per_action):
         params = getattr(action, "parameters", None)
@@ -765,6 +778,19 @@ def build_act_report(
             action_reports.append(rep)
             continue
 
+        # Safe is not the same as useful. An action that cannot fix the
+        # diagnosed fault is blocked where the human reads the plan, so an
+        # approval of "the fix" can never apply a remedy that does nothing for
+        # it. Per-action, like the capability gap above, so the rest of the
+        # plan — the restart that does fix it — stays approvable.
+        unfit = unfit_remedy_reason(action, memory_leak, dependency_outage)
+        if unfit:
+            blocked_unfit += 1
+            rep["decision"] = AutonomyDecision.BLOCKED.value
+            rep["reason"] = f"blocked: {rep['action_type']} {unfit}"
+            action_reports.append(rep)
+            continue
+
         if gd.decision is AutonomyDecision.AUTONOMOUS:
             result = executor.execute(action, gd.decision.value, dry_run=dry_run)
             rep["command"] = result.command
@@ -786,11 +812,31 @@ def build_act_report(
         if blocked_no_capability
         else ""
     )
+    unfit_note = (
+        f", {blocked_unfit} blocked (cannot fix the diagnosed fault)"
+        if blocked_unfit
+        else ""
+    )
+    # An approval only ever releases *held* actions — a blocked one stays
+    # blocked after approval too. When the blocks above leave nothing held, an
+    # approval ask would have the human authorize nothing while the plan's
+    # autonomous steps (the escalation, above all) sat behind it.
+    decisions_left = {r.get("decision") for r in action_reports}
+    if (
+        aggregate is AutonomyDecision.REQUIRES_APPROVAL
+        and AutonomyDecision.REQUIRES_APPROVAL.value not in decisions_left
+    ):
+        aggregate = (
+            AutonomyDecision.AUTONOMOUS
+            if AutonomyDecision.AUTONOMOUS.value in decisions_left
+            else AutonomyDecision.BLOCKED
+        )
+
     summary = (
         f"{assessment.severity.name}: plan {aggregate.value}; "
         f"{len(executed)}/{len(actions)} action(s) dry-run-executed, "
         f"{len(actions) - len(executed)} held for approval/blocked"
-        f"{scope_note}{capability_note}."
+        f"{scope_note}{capability_note}{unfit_note}."
     )
     logger.info(f"⚙️  ACT: {summary}")
 
@@ -959,6 +1005,12 @@ def build_live_action_requests(
         alert_labels.get("service") or alert_labels.get("app") or ""
     ).strip()
 
+    # Notifications `deliver_notifications_ahead_of_approval` already sent
+    # while the plan waited on a human: resuming must not page on-call twice.
+    already_notified = {
+        int(i) for i in (_get(metadata, "pre_approval_notifications", []) or [])
+    }
+
     requests: List[Dict[str, Any]] = []
     seen_mutations: Dict[str, int] = {}
     for index, (action, arep) in enumerate(zip(actions, report.action_reports)):
@@ -966,6 +1018,11 @@ def build_live_action_requests(
         if approved:
             allowed_decisions.add(AutonomyDecision.REQUIRES_APPROVAL.value)
         if arep.get("decision") not in allowed_decisions:
+            continue
+        if (
+            index in already_notified
+            and str(_get(action, "action_type", "")).lower() in NOTIFY_ONLY_ACTIONS
+        ):
             continue
 
         action_payload = {
@@ -1056,6 +1113,36 @@ def build_live_action_requests(
             }
         )
     return requests
+
+
+async def deliver_notifications_ahead_of_approval(
+    state: Any,
+    report: ActReport,
+    *,
+    context: Optional[ExecutionContext] = None,
+) -> List[Dict[str, Any]]:
+    """Send a gated plan's autonomous notify-only actions now.
+
+    A plan with one held action waits on a human before anything runs, and an
+    escalation in that plan waited too — so the page that should bring
+    on-call in was held until on-call approved something. Notifications mutate
+    nothing, so they go out while the mutations wait. Each result carries its
+    ``action_index`` so the post-approval run can skip what was already sent.
+    """
+    results: List[Dict[str, Any]] = []
+    for request in build_live_action_requests(
+        state, report, approved=False, context=context
+    ):
+        payload = dict(request.get("action_payload") or {})
+        if str(payload.get("action_type") or "").lower() not in NOTIFY_ONLY_ACTIONS:
+            continue
+        result = await _execute_notify_only(
+            SimpleNamespace(**dict(request.get("action") or {})),
+            payload,
+            payload.get("incident_id"),
+        )
+        results.append({**result, "action_index": request.get("action_index")})
+    return results
 
 
 async def execute_live_action_request(
@@ -1269,24 +1356,46 @@ def live_outcome_summary(report_payload: Dict[str, Any]) -> str:
         for item in live_results
         if str(item.get("action_type", "")).lower() not in NON_MUTATING_ACTIONS
     ]
-    other = len(live_results) - len(mutating)
+    others = [item for item in live_results if item not in mutating]
     executed = sum(1 for item in mutating if str(item.get("status")) == "EXECUTED")
+    delivered = sum(1 for item in others if str(item.get("status")) == "EXECUTED")
 
-    parts = [
-        f"{severity}: approved plan executed live — "
-        f"{executed}/{len(mutating)} mutating action(s) EXECUTED"
-    ]
-    failures = sorted(
-        {
-            str(item.get("status"))
-            for item in live_results
-            if str(item.get("status")) not in {"EXECUTED", "None"}
-        }
+    def _failures(items: List[Dict[str, Any]]) -> str:
+        statuses = sorted(
+            {
+                str(item.get("status"))
+                for item in items
+                if str(item.get("status")) not in {"EXECUTED", "None"}
+            }
+        )
+        return f" [{', '.join(statuses)}]" if statuses else ""
+
+    # An autonomous plan ran because the gate allowed it, not because anyone
+    # said yes; calling it "approved" told the thread a human had signed off
+    # on a plan nobody saw (2026-09-29, PaymentFailureSpike).
+    how = (
+        "autonomous plan"
+        if str(report_payload.get("aggregate_decision") or "").lower() == "autonomous"
+        else "approved plan"
     )
-    if failures:
-        parts.append(f" [{', '.join(failures)}]")
-    if other:
-        parts.append(f", {other} notification/read-only action(s) delivered")
+    parts = [f"{severity}: {how} executed live — "]
+    if mutating:
+        parts.append(
+            f"{executed}/{len(mutating)} mutating action(s) EXECUTED"
+            f"{_failures(mutating)}"
+        )
+    else:
+        parts.append("no mutating actions")
+    if others:
+        # Counted per status: "3 delivered" when one of the three was refused
+        # overstated what reached anyone.
+        count = (
+            f"{delivered}" if delivered == len(others) else f"{delivered}/{len(others)}"
+        )
+        parts.append(
+            f", {count} notification/read-only action(s) delivered"
+            f"{_failures(others)}"
+        )
     verification = report_payload.get("verification") or {}
     if verification:
         parts.append(

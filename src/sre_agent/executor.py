@@ -514,9 +514,12 @@ def _live_args(action: Any) -> Dict[str, Any]:
     if action_type in READ_ONLY_ACTIONS:
         # A read takes no dry_run: there is nothing to not-do.
         args.pop("dry_run", None)
-        container = params.get("container")
-        if container:
-            args["container"] = str(container)
+        # Nor a container filter. The server refuses a filter that matches no
+        # container, and the whole deployment is a superset of any one of its
+        # containers — so the filter can only lose the read, never sharpen it.
+        # 2026-09-29, PaymentFailureSpike: the planner asked for container
+        # `payment-service` in deployment `checkout-service`, and the inspect
+        # came back REFUSED instead of showing what checkout actually runs.
     return args
 
 

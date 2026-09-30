@@ -145,3 +145,68 @@ async def test_maybe_open_war_room_noops_without_org_token(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+class _EventsSession:
+    def __init__(self, events):
+        self._events = events
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, _statement):
+        events = self._events
+        return SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: list(events))
+        )
+
+
+@pytest.mark.asyncio
+async def test_deferred_fold_notices_are_posted_when_the_thread_opens(monkeypatch):
+    """A sibling folded while this incident's investigation was queued had no
+    thread to announce itself in; its notice waits in the timeline payload."""
+    import json
+
+    events = [
+        SimpleNamespace(payload_json=json.dumps({
+            "notice": "deferred_until_war_room",
+            "notice_text": "folded: [payment-service] PaymentProviderDown",
+        })),
+        SimpleNamespace(payload_json=json.dumps({
+            "notice": "delivered",
+            "notice_text": "already said in the thread",
+        })),
+        SimpleNamespace(payload_json="not json"),
+    ]
+    monkeypatch.setattr(
+        "backend.database.AsyncSessionLocal", lambda: _EventsSession(events)
+    )
+    posted = []
+
+    async def post(text):
+        posted.append(text)
+
+    count = await war_room_service.post_deferred_fold_notices(
+        "00000000-0000-0000-0000-000000000001", post
+    )
+
+    assert count == 1
+    assert posted == ["folded: [payment-service] PaymentProviderDown"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_deferred_notice_lookup_never_breaks_the_war_room(monkeypatch):
+    def explode():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr("backend.database.AsyncSessionLocal", explode)
+
+    async def post(_text):
+        raise AssertionError("nothing to post")
+
+    assert await war_room_service.post_deferred_fold_notices(
+        "00000000-0000-0000-0000-000000000001", post
+    ) == 0
