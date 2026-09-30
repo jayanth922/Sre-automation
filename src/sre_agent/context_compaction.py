@@ -64,10 +64,12 @@ _CHARS_PER_TOKEN = 4
 # rather than trusting a number this file guessed.
 DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
 
-# Mirrors `llm_utils._create_anthropic_llm`'s `max_tokens=4096`. If that moves,
-# or a caller passes its own max_tokens, set CONTEXT_RESERVED_OUTPUT_TOKENS to
-# match — under-reserving is what produces a 400 on the longest, most valuable
-# investigations, which are exactly the ones you do not want to lose.
+# Mirrors `llm_utils._create_anthropic_llm`'s `max_tokens=4096`. It is only the
+# floor: the reservation defaults to the largest output ceiling in
+# `investigation_limits`, because the specialist, reflection and planning
+# calls each pass their own max_tokens — under-reserving is what produces a
+# 400 on the longest, most valuable investigations, which are exactly the ones
+# you do not want to lose.
 DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
 
 # Absorbs tokenizer mismatch on the *structural* side (message framing, tool
@@ -165,9 +167,25 @@ def context_window_tokens() -> int:
     return _int_env("CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS)
 
 
+def default_reserved_output_tokens() -> int:
+    """The largest reply any investigation call is allowed to ask for."""
+    try:
+        from .investigation_limits import investigation_limits
+    except ImportError:  # loaded standalone by file path, as its tests do
+        from sre_agent.investigation_limits import investigation_limits
+
+    limits = investigation_limits()
+    return max(
+        DEFAULT_RESERVED_OUTPUT_TOKENS,
+        limits.specialist_max_output_tokens,
+        limits.reflection_max_output_tokens,
+        limits.planning_max_output_tokens,
+    )
+
+
 def reserved_output_tokens() -> int:
     """Tokens held back for the model's reply. Never spend these on input."""
-    return _int_env("CONTEXT_RESERVED_OUTPUT_TOKENS", DEFAULT_RESERVED_OUTPUT_TOKENS)
+    return _int_env("CONTEXT_RESERVED_OUTPUT_TOKENS", default_reserved_output_tokens())
 
 
 def safety_margin_ratio() -> float:

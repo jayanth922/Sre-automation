@@ -145,6 +145,15 @@ _TRUNCATED_LANE_NOTE = (
     "a budget boundary, not a finding that this lane's subject is healthy: "
     "do not report this lane's subject as checked."
 )
+# A lane that did call tools and was then cut off while writing its report
+# is not missing, it is unfinished: the tool results are real, the prose ends
+# mid-sentence. Say so, and hand over the tool results the prose never got to.
+_TRUNCATED_REPORT_NOTE = (
+    "This lane's final report was cut off at its output-token ceiling, so the "
+    "text above ends mid-report. The tool results it collected are listed "
+    "below; treat anything the report did not reach as unchecked, not as "
+    "healthy."
+)
 # Telling a model that was cut off mid-sentence "do not answer from the brief
 # alone" wastes the retry: it never got as far as an answer. Ask for brevity
 # instead, which is the one thing that makes the second attempt fit.
@@ -738,6 +747,11 @@ class BaseAgentNode:
             # whether anything is worth salvaging means pattern-matching our
             # own notes back out of the response.
             response_truncated = False
+            # Whether the lane's LAST model turn stopped at the ceiling.
+            # response_truncated is sticky across turns; this one is not, so a
+            # lane cut off once mid-way and then finishing cleanly is not
+            # reported as cut off.
+            final_turn_truncated = False
             model_text_captured = False
             # Genuine tool-call failures for this specialist, keyed off
             # ToolMessage.status == "error" (set by langgraph's ToolNode when
@@ -788,6 +802,7 @@ class BaseAgentNode:
                     nonlocal cut_short_reason
                     nonlocal tool_calls_made
                     nonlocal response_truncated
+                    nonlocal final_turn_truncated
                     nonlocal model_text_captured
                     chunk_count = 0
                     # Isolated chat history: only this specialist's system
@@ -886,7 +901,10 @@ class BaseAgentNode:
                                                 f"{self.name} - Agent response captured: {agent_response[:100]}... (total: {len(str(agent_response))} chars)"
                                             )
                                         finish_reason = _finish_reason(msg)
-                                        if finish_reason in _TRUNCATION_FINISH_REASONS:
+                                        final_turn_truncated = (
+                                            finish_reason in _TRUNCATION_FINISH_REASONS
+                                        )
+                                        if final_turn_truncated:
                                             response_truncated = True
                                             logger.warning(
                                                 "%s - model turn stopped on '%s': the "
@@ -1009,6 +1027,7 @@ class BaseAgentNode:
                             first_attempt_truncated = response_truncated
                             agent_response = ""
                             response_truncated = False
+                            final_turn_truncated = False
                             model_text_captured = False
                             # execute_agent reads soft_deadline from this
                             # scope at call time; the original one is already
@@ -1133,6 +1152,26 @@ class BaseAgentNode:
                             if response_truncated
                             else _NO_TOOL_LANE_NOTE
                         ),
+                    )
+                    if part
+                )
+
+            # Tools ran and the closing report was cut off: keep the partial
+            # prose, mark it unfinished, and carry the tool results it did not
+            # reach. Bounded by _partial_evidence_digest; no model call.
+            if tool_calls_made and final_turn_truncated and not cut_short_reason:
+                cut_short_reason = "output_truncated"
+                logger.warning(
+                    "%s - final report cut off at the output ceiling after "
+                    "tool calls; carrying the tool results with it",
+                    self.name,
+                )
+                agent_response = "\n\n".join(
+                    part
+                    for part in (
+                        agent_response,
+                        _TRUNCATED_REPORT_NOTE,
+                        _partial_evidence_digest(all_messages),
                     )
                     if part
                 )

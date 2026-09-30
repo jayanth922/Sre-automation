@@ -39,13 +39,14 @@ from sre_agent.agent_nodes import (
     _PROBE_NOTE_HEADER,
     _SALVAGE_MAX_CHARS,
     _TRUNCATED_LANE_NOTE,
+    _TRUNCATED_REPORT_NOTE,
     _TRUNCATED_RETRY_DIRECTIVE,
     _TRUNCATION_FINISH_REASONS,
     _finish_reason,
     _probe_measurement_note,
     _salvaged_evidence,
 )
-from sre_agent.context_compaction import DEFAULT_RESERVED_OUTPUT_TOKENS
+from sre_agent.context_compaction import reserved_output_tokens
 from sre_agent.investigation_limits import investigation_limits
 from sre_agent.narrative import _truncate
 from sre_agent.prompt_guard import wrap_untrusted
@@ -155,18 +156,28 @@ def test_only_a_ceiling_stop_counts_as_truncation():
 # --- fix 3: the ceiling itself ------------------------------------------------
 
 
-def test_the_specialist_output_ceiling_meets_the_reservation_already_made_for_it():
-    """The compactor subtracts 4096 from every input budget on this path.
+def test_the_reservation_covers_every_output_ceiling(monkeypatch):
+    """The compactor must hold back at least as much as any call may write.
 
-    Capping output below that reserved nothing extra and merely made the
-    reservation unusable -- while extended thinking spent the smaller
-    allowance before any text was written.
+    Specialist, reflection and planning calls each pass their own
+    max_tokens; an input budget that reserves less than the largest of
+    them is a 400 on the longest investigations.
     """
-    assert (
-        investigation_limits().specialist_max_output_tokens
-        == DEFAULT_RESERVED_OUTPUT_TOKENS
+    monkeypatch.delenv("CONTEXT_RESERVED_OUTPUT_TOKENS", raising=False)
+    limits = investigation_limits()
+    assert limits.specialist_max_output_tokens == 8192
+    assert reserved_output_tokens() >= max(
+        limits.specialist_max_output_tokens,
+        limits.reflection_max_output_tokens,
+        limits.planning_max_output_tokens,
     )
-    assert investigation_limits().specialist_max_output_tokens == 4096
+
+    monkeypatch.setenv("PLANNING_MAX_OUTPUT_TOKENS", "20000")
+    assert reserved_output_tokens() == 20000
+
+    # An explicit operator value still wins.
+    monkeypatch.setenv("CONTEXT_RESERVED_OUTPUT_TOKENS", "5000")
+    assert reserved_output_tokens() == 5000
 
 
 def test_the_ceiling_is_still_operator_settable_and_still_bounded(monkeypatch):
@@ -177,7 +188,7 @@ def test_the_ceiling_is_still_operator_settable_and_still_bounded(monkeypatch):
     assert investigation_limits().specialist_max_output_tokens == 16000
 
     monkeypatch.setenv("SPECIALIST_MAX_OUTPUT_TOKENS", "not-a-number")
-    assert investigation_limits().specialist_max_output_tokens == 4096
+    assert investigation_limits().specialist_max_output_tokens == 8192
 
 
 # --- the whole lane ------------------------------------------------------------
@@ -532,3 +543,85 @@ def test_a_probe_already_carried_in_cut_form_is_not_said_again():
 
     assert _PROBE_NOTE_HEADER in cut
     assert _salvaged_evidence([], block, cut) == ""
+
+
+# --- a report cut off after the lane's tool rounds --------------------------
+
+
+def _tool_round_then(final_finish_reason):
+    from langchain_core.messages import ToolMessage
+
+    async def fake_astream(payload, config=None):
+        yield {
+            "agent": {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "get_pods", "args": {}, "id": "call-1"}
+                        ],
+                    )
+                ]
+            }
+        }
+        yield {
+            "tools": {
+                "messages": [
+                    ToolMessage(
+                        content="checkout-7f9 Running restarts=0",
+                        name="get_pods",
+                        tool_call_id="call-1",
+                    )
+                ]
+            }
+        }
+        yield {
+            "agent": {
+                "messages": [
+                    AIMessage(
+                        content="## Findings\nPods are running; the deploy",
+                        response_metadata={"finish_reason": final_finish_reason},
+                    )
+                ]
+            }
+        }
+
+    return fake_astream
+
+
+def test_a_report_cut_off_after_its_tool_rounds_says_so_and_keeps_the_results(
+    monkeypatch,
+):
+    """Run 8: the Kubernetes and Runbooks lanes stopped at 4096 mid-report."""
+    node = _lane(
+        monkeypatch,
+        _tool_round_then("max_tokens"),
+        name="Kubernetes Agent",
+        agent_type="kubernetes",
+    )
+
+    result = _run(node)
+    report = _only_report(result)
+    budget = next(iter(result["metadata"]["specialist_turn_budgets"].values()))
+
+    assert report.startswith("## Findings\nPods are running; the deploy")
+    assert _TRUNCATED_REPORT_NOTE in report
+    assert "checkout-7f9 Running restarts=0" in report
+    assert _TRUNCATED_LANE_NOTE not in report
+    assert budget["cut_short"] == "output_truncated"
+
+
+def test_a_report_that_finished_is_left_alone(monkeypatch):
+    node = _lane(
+        monkeypatch,
+        _tool_round_then("end_turn"),
+        name="Kubernetes Agent",
+        agent_type="kubernetes",
+    )
+
+    result = _run(node)
+    report = _only_report(result)
+    budget = next(iter(result["metadata"]["specialist_turn_budgets"].values()))
+
+    assert _TRUNCATED_REPORT_NOTE not in report
+    assert not budget["cut_short"]

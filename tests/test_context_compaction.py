@@ -209,7 +209,7 @@ def test_junk_env_values_fall_back_to_defaults(monkeypatch):
     monkeypatch.setenv("CONTEXT_WINDOW_TOKENS", "not-a-number")
     assert cc.context_window_tokens() == cc.DEFAULT_CONTEXT_WINDOW_TOKENS
     monkeypatch.setenv("CONTEXT_RESERVED_OUTPUT_TOKENS", "-5")
-    assert cc.reserved_output_tokens() == cc.DEFAULT_RESERVED_OUTPUT_TOKENS
+    assert cc.reserved_output_tokens() == cc.default_reserved_output_tokens()
 
 
 # ── Turn groups ─────────────────────────────────────────────────────────────

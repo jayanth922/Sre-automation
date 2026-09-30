@@ -548,13 +548,16 @@ User's query: {current_query}
         # follow tool-call schemas). Tool-capable Llama/Qwen/Groq/NVIDIA models
         # support this path as well.
         # Structured investigation planning is high-stakes → strong tier.
+        from .investigation_limits import investigation_limits
         from .model_router import TaskType, route_llm
+
         planning_llm = route_llm(
             TaskType.PLANNING,
             provider=self.llm_provider,
             use_fallback=False,
             router_enabled=self.llm_router_enabled,
             anchor_model=self.llm_model,
+            max_tokens=investigation_limits().planning_max_output_tokens,
         )
         structured_llm = planning_llm.with_structured_output(
             InvestigationPlan, method="function_calling"

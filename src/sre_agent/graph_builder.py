@@ -2168,6 +2168,7 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
     llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "anthropic")
     llm_router_enabled = metadata.get("llm_router_enabled")
     llm_model = (metadata.get("llm") or {}).get("model")
+    from .investigation_limits import investigation_limits
     from .model_router import TaskType, route_llm
     llm = route_llm(
         TaskType.PLANNING,
@@ -2175,6 +2176,7 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
         use_fallback=False,
         router_enabled=llm_router_enabled,
         anchor_model=llm_model,
+        max_tokens=investigation_limits().planning_max_output_tokens,
     )
 
     namespace_scope = planner_namespace_scope((metadata or {}).get("cluster_namespace"))

@@ -18,6 +18,7 @@ def test_defaults_bound_the_expensive_loops(monkeypatch):
         "SPECIALIST_TIMEOUT_SECONDS",
         "SPECIALIST_MAX_OUTPUT_TOKENS",
         "REFLECTION_MAX_OUTPUT_TOKENS",
+        "PLANNING_MAX_OUTPUT_TOKENS",
         "MAX_INVESTIGATION_DEPTH",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -26,12 +27,12 @@ def test_defaults_bound_the_expensive_loops(monkeypatch):
 
     assert limits.specialist_model_turns == 6
     assert limits.specialist_timeout_seconds == 120
-    # 4096, not a round 3000: context_compaction already reserves exactly
-    # this many output tokens out of every input budget on this path, and
-    # a ceiling below the reservation only makes the reservation unusable.
-    assert limits.specialist_max_output_tokens == 4096
+    # Some lane hit 4096 in each of the five traced runs of 2026-09-30.
+    assert limits.specialist_max_output_tokens == 8192
     # Every reflection of E2E Runs 4-6 was cut off at 4096.
     assert limits.reflection_max_output_tokens == 12000
+    # Remediation plans used 2865-3300 of 4096 in the same five runs.
+    assert limits.planning_max_output_tokens == 8192
     assert limits.reinvestigation_rounds == 1
 
 
