@@ -589,13 +589,17 @@ def _tool_round_then(final_finish_reason):
     return fake_astream
 
 
+@pytest.mark.parametrize("finish_reason", ["max_tokens", "length"])
 def test_a_report_cut_off_after_its_tool_rounds_says_so_and_keeps_the_results(
-    monkeypatch,
+    monkeypatch, finish_reason
 ):
-    """Run 8: the Kubernetes and Runbooks lanes stopped at 4096 mid-report."""
+    """Run 8: the Kubernetes and Runbooks lanes stopped at 4096 mid-report.
+
+    The live model is reached through LiteLLM, which reports that stop as
+    "length"; Anthropic's own spelling is "max_tokens". Both must mark it."""
     node = _lane(
         monkeypatch,
-        _tool_round_then("max_tokens"),
+        _tool_round_then(finish_reason),
         name="Kubernetes Agent",
         agent_type="kubernetes",
     )
