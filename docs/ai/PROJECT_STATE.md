@@ -54,18 +54,13 @@ every open fix, verify offline, and only then spend.
   safety PASS; unpaired trial + 61-span root trace pass `verify_root_traces`.
 
 ## Active problem
-Run 5 (2026-09-30, $1.21, negative control): Reflector fix `a66a643`
-confirmed live (it cited the metrics lane), but `fault_mode` came out
-`charge_failure` and ACT planned a restart (suppressed only because the alert
-cleared). Two causes, fixed in the working tree (uncommitted), containers
-rebuilt:
-- The runbook probe measured the first 2 runbook queries in document order
-  (provider_up + *checkout's* ratio), never payment's. It now puts queries
-  selecting the alert's service first (`runbook_probe._alert_service_first`).
-- The harness read the transcript before the summary/ACT events landed
-  (alert self-cleared → `resolved` mid-investigation). It now waits for the
-  root span to finalize first (`_collect_final_evidence`,
-  `BENCH_INVESTIGATION_SETTLE_SEC`, default 600).
+Run 6 (2026-09-30, $1.05, negative control) confirmed `a66a643` and
+`1e3a7cb` live: diagnosis PASS (`sub_threshold`), severity, remediation,
+safety, uncertainty PASS; ACT planned only inspect + escalate; the grade row
+now holds summary and ACT although the alert cleared mid-run. Still
+INSUFFICIENT_EVIDENCE: `evidence_support` (benchmark_evaluation.evidence is
+an empty list) and `temporal_reasoning` (timeline has <2 timestamped
+observations); causal_chain awaits a calibrated judge.
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -77,7 +72,7 @@ rebuilt:
 
 ## Verification commands and latest results
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; local Mac
-  `master` is stale. Sre-automation is 7 commits ahead of origin, meridian 3
+  `master` is stale. Sre-automation is 8 commits ahead of origin, meridian 3
   (not pushed).
 - `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2600 passed, 6 skipped.
 - `.venv/bin/ruff check <files>` — compare against the pre-change count.
@@ -95,7 +90,7 @@ rebuilt:
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
-  Measured ≈$0.85–$1.00 per trial; ≈$6.60 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
+  Measured ≈$0.85–$1.00 per trial; ≈$7.65 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
   ~$40+) is not authorized.
 - Structured grading cannot return PASS until `causal_chain` has a calibrated
   judge; no calibration artifact exists, so every run rounds policy severity up.
@@ -110,7 +105,6 @@ rebuilt:
   restart — cause not investigated.
 
 ## Next bounded task
-Commit the probe and harness fixes. Then, only with explicit approval
-(≈$1.20), re-run the negative control (`/home/vscode/run5.sh` pattern, new
-log name) and check: diagnosis `sub_threshold`, no restart planned, and a
-grade row that contains summary and ACT events.
+Offline, no spend: find why `benchmark_evaluation.evidence` is empty and the
+timeline has <2 timestamped observations in Runs 5–6 (producer in
+`supervisor.py` near the summary event), and fix the producer.
