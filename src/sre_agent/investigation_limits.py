@@ -29,6 +29,7 @@ class InvestigationLimits:
     specialist_model_turns: int
     specialist_timeout_seconds: int
     specialist_max_output_tokens: int
+    reflection_max_output_tokens: int
     reinvestigation_rounds: int
 
     def manifest_entry(self) -> dict[str, int]:
@@ -67,6 +68,17 @@ def investigation_limits() -> InvestigationLimits:
         # turns in ten still finish under 3000.
         specialist_max_output_tokens=_bounded_int(
             "SPECIALIST_MAX_OUTPUT_TOKENS", 4096, minimum=256, maximum=16000
+        ),
+        # The reflection is the one call that writes the whole structured
+        # diagnosis -- hypothesis, causal chain, evidence, unknowns and
+        # reasoning in a single tool call -- and it inherited the 4096
+        # default meant for a chat turn. Every reflection of E2E Runs 4-6
+        # (five of five) stopped at exactly 4096 output tokens, cut off after
+        # causal_chain: evidence and unknowns parsed as their empty defaults,
+        # which failed evidence_support and emptied the derived timeline.
+        # A ceiling is not a spend; output is billed as generated.
+        reflection_max_output_tokens=_bounded_int(
+            "REFLECTION_MAX_OUTPUT_TOKENS", 12000, minimum=1024, maximum=32000
         ),
         reinvestigation_rounds=_bounded_int(
             "MAX_INVESTIGATION_DEPTH", 1, minimum=0, maximum=3

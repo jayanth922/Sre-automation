@@ -65,7 +65,7 @@ def reflector(monkeypatch):
             return answer
 
     class FakeLLM:
-        def with_structured_output(self, schema, method=None):
+        def with_structured_output(self, schema, method=None, **kwargs):
             return FakeStructured()
 
     monkeypatch.setattr(model_router, "route_llm", lambda *a, **k: FakeLLM())
@@ -220,3 +220,73 @@ def test_a_failed_cluster_read_keeps_the_metrics(reflector):
     assert "Infrastructure" in prompt and "Metrics" not in prompt.split(
         "are unavailable:"
     )[1].splitlines()[0]
+
+
+def _cut_off(analysis):
+    """The shape include_raw returns for a tool call stopped at max_tokens."""
+    from langchain_core.messages import AIMessage
+
+    return {
+        "raw": AIMessage(content="", response_metadata={"stop_reason": "max_tokens"}),
+        "parsed": analysis,
+        "parsing_error": None,
+    }
+
+
+def test_a_cut_off_reflection_is_asked_again_to_be_brief(reflector):
+    """E2E Runs 4-6: every reflection stopped at 4096 tokens after causal_chain."""
+    answers, prompts = reflector
+    answers.extend([_cut_off(_analysis()), _analysis(evidence=SOURCED)])
+
+    result = _run()
+
+    assert len(prompts) == 2
+    assert any("output-token ceiling" in message for message in prompts[1])
+    analysis = result["reflector_analysis"]
+    assert len(analysis.evidence) == 2
+    assert not any("ceiling" in unknown for unknown in analysis.unknowns)
+
+
+def test_a_reflection_still_cut_off_says_so_in_its_unknowns(reflector):
+    answers, _ = reflector
+    answers.extend([_cut_off(_analysis()), _cut_off(_analysis())])
+
+    result = _run()
+
+    assert any("ceiling" in unknown for unknown in result["reflector_analysis"].unknowns)
+
+
+def test_a_cut_off_answer_with_some_evidence_yields_only_to_a_complete_one(reflector):
+    answers, _ = reflector
+    partial = _analysis(evidence=SOURCED[:1], hypothesis="partial")
+    answers.extend([_cut_off(partial), _cut_off(_analysis(evidence=SOURCED))])
+
+    result = _run()
+
+    assert result["reflector_analysis"].hypothesis == "partial"
+
+
+def test_the_reflector_gets_its_own_output_ceiling(monkeypatch):
+    from sre_agent.investigation_limits import investigation_limits
+
+    seen = {}
+
+    class Structured:
+        async def ainvoke(self, messages):
+            return _analysis(evidence=SOURCED)
+
+    class LLM:
+        def with_structured_output(self, schema, method=None, **kwargs):
+            seen["include_raw"] = kwargs.get("include_raw")
+            return Structured()
+
+    def route(*args, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        return LLM()
+
+    monkeypatch.setattr(model_router, "route_llm", route)
+    _run()
+
+    assert seen["max_tokens"] == investigation_limits().reflection_max_output_tokens
+    assert seen["max_tokens"] > 4096
+    assert seen["include_raw"] is True

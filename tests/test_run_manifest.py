@@ -90,6 +90,7 @@ def test_manifest_is_deterministic_tamper_evident_and_secret_free(tmp_path):
         "specialist_model_turns": 6,
         "specialist_timeout_seconds": 120,
         "specialist_max_output_tokens": 4096,
+        "reflection_max_output_tokens": 12000,
         "reinvestigation_rounds": 1,
     }
     assert first.data["input"]["sanitized"]["labels"]["api_token"] == "[REDACTED]"

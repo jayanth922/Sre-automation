@@ -14,6 +14,8 @@ from langgraph.types import interrupt
 
 from .ablation import current_ablation
 from .agent_nodes import (
+    _TRUNCATION_FINISH_REASONS,
+    _finish_reason,
     create_github_agent,
     create_kubernetes_agent,
     create_logs_agent,
@@ -1510,6 +1512,39 @@ _MISSING_EVIDENCE_DIRECTIVE = (
     "timestamp whenever the finding carries one. Do not invent a locator or a "
     "timestamp -- omit `observed_at` for a finding that has none."
 )
+# A cut-off answer needs the opposite of the directive above: it did not skip
+# the evidence, it ran out of room before reaching it. Asking for more of
+# everything would be cut off at the same place.
+_TRUNCATED_REFLECTION_DIRECTIVE = (
+    "Your previous analysis hit the output-token ceiling and was cut off "
+    "before it finished, so every field after the cut came back empty. "
+    "Produce it again, shorter: keep `reasoning` to a few sentences and "
+    "`causal_chain` to the links the diagnosis needs, and give `evidence` -- "
+    "one entry per claim relied on, with its source, exact locator, claim and "
+    "`observed_at` when the finding is timestamped -- and `unknowns` their "
+    "full share. Do not invent a locator or a timestamp."
+)
+
+
+async def _ask_reflector(structured_llm: Any, messages: List[Any]) -> tuple:
+    """One reflection call, and whether the provider cut it off.
+
+    A tool call cut off at the output ceiling still parses: the fields the
+    model never reached take their schema defaults, so a truncated analysis is
+    indistinguishable from one that chose to cite nothing. Only the stop
+    reason on the raw message tells them apart.
+    """
+    result = await structured_llm.ainvoke(messages)
+    if not isinstance(result, dict) or "parsed" not in result:
+        return result, False
+    parsed = result.get("parsed")
+    if parsed is None:
+        error = result.get("parsing_error")
+        if isinstance(error, Exception):
+            raise error
+        raise ValueError("reflection returned no parseable analysis")
+    truncated = _finish_reason(result.get("raw")) in _TRUNCATION_FINISH_REASONS
+    return parsed, truncated
 
 
 async def _reflector_node(state: AgentState) -> Dict[str, Any]:
@@ -1600,13 +1635,17 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     llm_provider = metadata.get("llm_provider") or os.getenv("LLM_PROVIDER", "anthropic")
     llm_router_enabled = metadata.get("llm_router_enabled")
     llm_model = (metadata.get("llm") or {}).get("model")
+    from .investigation_limits import investigation_limits
     from .model_router import TaskType, route_llm
+
+    reflection_ceiling = investigation_limits().reflection_max_output_tokens
     llm = route_llm(
         TaskType.REFLECTION,
         provider=llm_provider,
         use_fallback=False,
         router_enabled=llm_router_enabled,
         anchor_model=llm_model,
+        max_tokens=reflection_ceiling,
     )
 
     # Wrap attacker-influenceable telemetry so it's treated as data, not instructions.
@@ -1696,7 +1735,7 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         from pydantic import BaseModel
 
         structured_llm = llm.with_structured_output(
-            ReflectorAnalysis, method="function_calling"
+            ReflectorAnalysis, method="function_calling", include_raw=True
         )
         reflector_system_prompt = (
             "You are an expert SRE analyst. Analyze investigation "
@@ -1709,12 +1748,19 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
             reflector_system_message = cached_system_message(reflector_system_prompt)
         else:
             reflector_system_message = SystemMessage(content=reflector_system_prompt)
-        analysis = await structured_llm.ainvoke(
+        analysis, truncated = await _ask_reflector(
+            structured_llm,
             [
                 reflector_system_message,
                 HumanMessage(content=reflection_prompt),
-            ]
+            ],
         )
+        if truncated:
+            logger.warning(
+                "ReflectorNode: analysis hit its %d-token output ceiling; "
+                "fields after the cut arrived as empty defaults",
+                reflection_ceiling,
+            )
 
         # A hypothesis with an empty evidence list is unusable downstream: the
         # structured grade reads `evidence` directly and derives `timeline`
@@ -1722,18 +1768,24 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         # criteria at once. The model fills causal_chain and skips this list
         # often enough to be worth one more call -- the 2026-09-22 trial
         # returned five causal links and zero references.
-        if analysis.hypothesis and not analysis.evidence:
+        if analysis.hypothesis and (truncated or not analysis.evidence):
             logger.warning(
                 "ReflectorNode: hypothesis carries no evidence references; "
                 "asking once more for the sources behind it"
             )
+            directive = (
+                _TRUNCATED_REFLECTION_DIRECTIVE
+                if truncated
+                else _MISSING_EVIDENCE_DIRECTIVE
+            )
             try:
-                resourced = await structured_llm.ainvoke(
+                resourced, resourced_truncated = await _ask_reflector(
+                    structured_llm,
                     [
                         reflector_system_message,
                         HumanMessage(content=reflection_prompt),
-                        HumanMessage(content=_MISSING_EVIDENCE_DIRECTIVE),
-                    ]
+                        HumanMessage(content=directive),
+                    ],
                 )
             except Exception as retry_error:
                 logger.warning(
@@ -1744,9 +1796,25 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
             else:
                 # Keep the re-ask only if it actually supplied what was
                 # missing; a second empty answer is not an improvement worth
-                # discarding the first analysis for.
-                if resourced.evidence:
-                    analysis = resourced
+                # discarding the first analysis for. A cut-off first answer
+                # that did reach some evidence yields only to a complete one.
+                if resourced.evidence and (
+                    not analysis.evidence or not resourced_truncated
+                ):
+                    analysis, truncated = resourced, resourced_truncated
+        if truncated:
+            # Still cut off: say so where the grade and the on-call read
+            # uncertainty, rather than let empty fields pass as a finding.
+            analysis = analysis.model_copy(
+                update={
+                    "unknowns": [
+                        *analysis.unknowns,
+                        f"The analysis reached its {reflection_ceiling}-token "
+                        "output ceiling and was cut off; fields after the cut "
+                        "are incomplete.",
+                    ]
+                }
+            )
 
         logger.info(f"✅ ReflectorNode: Hypothesis formulated - {analysis.hypothesis}")
         logger.info(f"   Confidence: {analysis.confidence:.2f}")
@@ -1755,8 +1823,6 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         # Determine the next step through a fixed allowlist and bounded counter.
         # A model can recommend evidence sources; it cannot choose arbitrary
         # graph nodes or executable callables.
-        from .investigation_limits import investigation_limits
-
         max_depth = investigation_limits().reinvestigation_rounds
         current_investigation_count = int(
             state.get("investigation_count", 0) or 0
