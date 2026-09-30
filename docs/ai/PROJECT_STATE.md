@@ -62,9 +62,12 @@ timeline entries, same criterion states.
 Every criterion that can pass does: diagnosis, severity, remediation,
 safety, uncertainty and temporal_reasoning PASS. causal_chain and
 evidence_support are REQUIRES_CALIBRATION (no calibrated judge; paid work,
-not authorized). Near-misses: planner output peaks at 2865-3300 of 4096;
-specialist turns hit their 4096 ceiling in both runs (metrics in Run 7;
-kubernetes and runbooks in Run 8).
+not authorized). The near-misses (planner 2865-3300 of 4096; specialist
+turns at 4096 in every run) are fixed offline in `196eb31`, rebuilt, not
+yet run live: `PLANNING_MAX_OUTPUT_TOKENS` 8192 for both planning calls,
+specialist default 8192, compaction reservation = largest ceiling, and a
+report cut off after tool calls is marked unfinished and keeps its tool
+results.
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -76,9 +79,9 @@ kubernetes and runbooks in Run 8).
 
 ## Verification commands and latest results
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; local Mac
-  `master` is stale. Sre-automation is 8 commits ahead of origin, meridian 3
-  (not pushed).
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2600 passed, 6 skipped.
+  `master` is stale. Sre-automation is pushed through `196eb31`; meridian
+  is 3 commits ahead (not pushed).
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2609 passed, 6 skipped.
 - `.venv/bin/ruff check <files>` — compare against the pre-change count.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
@@ -109,7 +112,8 @@ kubernetes and runbooks in Run 8).
   restart — cause not investigated.
 
 ## Next bounded task
-Offline, no spend: give the planner its own output ceiling (it peaks at
-3080-3300 of 4096) the way `db85a32` did for the Reflector, and read its
-stop reason. A calibrated judge for causal_chain/evidence_support needs
-budget approval first.
+With approval (~$1.30): one negative-control run to confirm `196eb31`
+live — planning and specialist output tokens may exceed 4096 and no lane
+report is cut off (read `gen_ai.usage.output_tokens` in the run trace).
+After a Codespace restart run `codespace_boot.sh`, wait ≥5 min. A
+calibrated judge for causal_chain/evidence_support needs budget approval.
