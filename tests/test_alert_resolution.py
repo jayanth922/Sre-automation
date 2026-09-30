@@ -55,3 +55,28 @@ def test_active_status_helper():
     assert is_active_incident_status("remediation_failed")
     assert not is_active_incident_status("resolved")
     assert not is_active_incident_status("not-a-status")
+
+
+@pytest.mark.parametrize(
+    "status", ["open", "investigating", "awaiting_approval", "verification_unknown"]
+)
+def test_a_clear_caused_by_a_workload_crash_keeps_the_incident_open(status):
+    decision = reconcile_resolved_alert(status, workload_crashed=True)
+    assert decision.matched is True
+    assert decision.mark_resolved is False
+    assert decision.new_status == status
+    assert decision.cleared_by_workload_crash is True
+    assert decision.reason == "alert_cleared_by_workload_crash"
+
+
+def test_a_failed_remediation_stays_failed_even_when_the_workload_crashed():
+    decision = reconcile_resolved_alert("remediation_failed", workload_crashed=True)
+    assert decision.new_status == "remediation_failed"
+    assert decision.masked_failed_remediation is True
+    assert decision.cleared_by_workload_crash is False
+
+
+def test_a_crash_flag_on_a_closed_incident_is_still_a_no_op():
+    decision = reconcile_resolved_alert("resolved", workload_crashed=True)
+    assert decision.matched is False
+    assert decision.cleared_by_workload_crash is False

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, List, Optional, Tuple
@@ -133,6 +134,103 @@ def classify_reversibility(action: Any) -> Reversibility:
     return base
 
 
+# Only the diagnosis can say a fault is a leak: an OOM alert alone does not
+# distinguish a leak from load-driven memory pressure, where scaling out is the
+# right call. Reading the reflector's prose is safe here even though it is
+# shaped by untrusted evidence, because this only ever *removes* options — an
+# injected "memory leak" can at worst withhold a scale-out, never authorize one.
+_LEAK_PATTERN = re.compile(
+    r"\bmemory[- ]leak|\bleak(?:s|ing|ed)?\s+(?:memory|heap)|\bheap\s+leak"
+    r"|\bunbounded\s+(?:memory|heap)\s+growth",
+    re.IGNORECASE,
+)
+
+
+def diagnosed_memory_leak(*diagnoses: Optional[str]) -> bool:
+    """True when any diagnosis text names a memory leak."""
+    return any(_LEAK_PATTERN.search(str(text or "")) for text in diagnoses)
+
+
+# An outage at a provider this service calls out to — the payment processor, a
+# SaaS API — is fixed on the provider's side. Internal dependencies are
+# deliberately not matched: when checkout fails because inventory-service is
+# crash-looping, restarting inventory-service is the fix. Like the leak rule this
+# only removes options, so a false match can at worst withhold a restart.
+_DEPENDENCY_OUTAGE_PATTERN = re.compile(
+    r"\b(?:external|third[- ]party|upstream\s+(?:payment\s+)?provider)\b"
+    r"[^.;\n]{0,40}?\b(?:outage|failure|down|unavailable|unreachable)\b"
+    r"|\bprovider\b[^.;\n]{0,25}?\b(?:outage|down|unavailable|unreachable)\b"
+    r"|provider_down\b|provider_up\b[^.;\n]{0,20}?(?:=|to|at)\s*0\b",
+    re.IGNORECASE,
+)
+# "not a provider outage", "rules out an external failure", "the provider is
+# not down": a diagnosis that names the outage only to dismiss it.
+_NEGATION = re.compile(
+    r"\b(?:not|no|isn't|wasn't|never|without|unlikely|rather\s+than|instead\s+of"
+    r"|rule[sd]?\s+out|ruling\s+out)\b",
+    re.IGNORECASE,
+)
+
+
+def diagnosed_dependency_outage(*diagnoses: Optional[str]) -> bool:
+    """True when any diagnosis text affirms an external provider outage."""
+    for text in diagnoses:
+        text = str(text or "")
+        for match in _DEPENDENCY_OUTAGE_PATTERN.finditer(text):
+            window = text[max(0, match.start() - 30) : match.end()]
+            if not _NEGATION.search(window):
+                return True
+    return False
+
+
+def unfit_remedy_reason(
+    action: Any, memory_leak: bool, dependency_outage: bool = False
+) -> Optional[str]:
+    """Why an action cannot remediate the diagnosed fault, or None.
+
+    This is a different question from reversibility or severity: a scale-out is
+    perfectly safe and still does nothing for the pods that are leaking. Live on
+    2026-09-29 (E2E Run 1, checkout memory leak) the planner proposed scale + a
+    limit raise, omitted the restart its own OOM runbook recommends, and the
+    gate offered both for approval — so a human approving "the fix" would have
+    multiplied the leaking processes and postponed the OOM.
+
+    Run 2 (payment provider outage) proposed restarting payment-service: the
+    restart changed nothing at the provider, and only looked like a fix because
+    the simulated outage lived in the restarted process.
+    """
+    action_type = str(getattr(action, "action_type", "")).lower()
+    if dependency_outage and action_type in (
+        "restart", "rollback", "revert_commit", "scale"
+    ):
+        # config_change stays open: failing over to a secondary provider is
+        # a legitimate response to a provider outage.
+        return (
+            "cannot remediate an external provider outage: the fault is on the "
+            "provider's side, and restarting, rolling back or scaling this "
+            "service leaves the provider down"
+        )
+    if not memory_leak:
+        return None
+    if action_type == "scale":
+        return (
+            "does not remediate a memory leak: every replica leaks on its own, "
+            "and adding replicas leaves the existing pods' memory where it is "
+            "— a restart reclaims it"
+        )
+    params = getattr(action, "parameters", None) or {}
+    if (
+        action_type in ("config_change", "patch")
+        and isinstance(params, dict)
+        and params.get("memory")
+    ):
+        return (
+            "does not remediate a memory leak: the working set grows past any "
+            "limit, so raising it only postpones the next OOM"
+        )
+    return None
+
+
 def _default_policy_eval(
     action: Any, environment: str, risk_score: float
 ) -> Tuple[bool, str]:
@@ -189,6 +287,21 @@ def decide(
             reversibility=reversibility,
             allowed_by_policy=True,
             reason=f"{severity.name}: read-only action mutates nothing → autonomous",
+        )
+
+    # 1c. Escalation pages a human and changes nothing else, so it is exactly
+    # the action a high-severity or poorly-understood incident needs *sooner*.
+    # Gating it behind the severity rule below inverted that: live on
+    # 2026-09-29 (E2E Run 2, SEV1 payment provider outage) the page to on-call
+    # waited on the same approval as the restart, so the human was asked to
+    # authorize being told about the incident. Hard policy above still applies.
+    if action_type == "escalate":
+        return GateDecision(
+            decision=AutonomyDecision.AUTONOMOUS,
+            severity=severity,
+            reversibility=reversibility,
+            allowed_by_policy=True,
+            reason=f"{severity.name}: notify-only escalation mutates nothing → autonomous",
         )
 
     # Unknown telemetry never grants autonomy — escalate to human approval.

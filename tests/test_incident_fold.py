@@ -254,10 +254,26 @@ def test_a_parked_sibling_is_never_folded_into(monkeypatch, status):
     assert _find(monkeypatch, [_incident(status)]) is None
 
 
-def test_a_sibling_with_no_slack_thread_is_never_folded_into(monkeypatch):
+def test_a_threadless_sibling_with_nothing_queued_is_never_folded_into(monkeypatch):
     """Slack is the only channel this platform has. A fold with nowhere to
-    announce itself is an alert that silently disappears."""
+    announce itself, and no run coming that would open somewhere, is an alert
+    that silently disappears."""
     assert _find(monkeypatch, [_incident(thread=False)]) is None
+
+
+def test_a_threadless_sibling_whose_investigation_is_queued_is_folded_into(
+    monkeypatch,
+):
+    """2026-09-29: the provider outage opened PaymentFailureSpike, and while
+    its investigation waited for a slot the sibling payment alerts found no
+    thread and each opened its own paid incident. A queued run will open the
+    thread, so the fold can wait for it."""
+    async def queued(_db, _incident_id):
+        return True
+
+    monkeypatch.setattr(job_store, "has_live_investigation_job", queued)
+    parent = _incident(models.IncidentStatus.OPEN, thread=False, created_at=NOW)
+    assert _find(monkeypatch, [parent]) is parent
 
 
 def test_a_sibling_older_than_the_scoring_window_still_folds(monkeypatch):
@@ -365,6 +381,52 @@ def test_a_failed_audit_row_does_not_unfold_an_announced_fold(monkeypatch):
     assert db.rollbacks == 1
 
 
+def test_a_fold_ahead_of_the_war_room_carries_its_notice_for_later(monkeypatch):
+    """No thread to post to yet: the notice is stored on the fold's timeline
+    row, and `maybe_open_war_room` delivers it when the thread opens."""
+    events = []
+    posts = []
+
+    async def fake_event(_db, incident_id, **kwargs):
+        events.append(kwargs)
+
+    async def no_thread_yet(incident_id, message):
+        posts.append(message)
+        return False
+
+    monkeypatch.setattr(crud, "create_incident_timeline_event", fake_event)
+    monkeypatch.setattr(war_room_service, "post_to_incident_thread", no_thread_yet)
+
+    db = FakeSession()
+    assert _fold(db, _incident(thread=False)) is True
+    assert db.commits == 1
+    payload = events[0]["payload"]
+    assert payload["notice"] == alerts_module.FOLD_NOTICE_DEFERRED
+    assert FOLDED_TITLE in payload["notice_text"]
+    assert payload["folded_title"] == FOLDED_TITLE
+    # The late-thread attempt ran after the commit; it found no thread.
+    assert posts == [payload["notice_text"]]
+
+
+def test_a_fold_ahead_of_the_war_room_that_cannot_be_recorded_is_not_a_fold(
+    monkeypatch,
+):
+    """With no thread, the row is the only trace of the fold. Without it the
+    alert would vanish, so it opens its own incident instead."""
+    async def explode(*_args, **_kwargs):
+        raise RuntimeError("timeline write failed")
+
+    monkeypatch.setattr(crud, "create_incident_timeline_event", explode)
+    db = FakeSession()
+    assert _fold(db, _incident(thread=False)) is False
+    assert db.rollbacks == 1
+
+
+def test_a_delivered_fold_is_marked_delivered(spies):
+    _fold(FakeSession(), _incident())
+    assert spies.events[0]["payload"]["notice"] == "delivered"
+
+
 # ---------------------------------------------------------------------------
 # Wired into the endpoint
 # ---------------------------------------------------------------------------
@@ -428,6 +490,7 @@ def endpoint(monkeypatch):
     monkeypatch.setattr(crud, "update_cluster_heartbeat", noop)
     monkeypatch.setattr(crud, "lock_incident_dedup", noop)
     monkeypatch.setattr(crud, "find_duplicate_incident", no_duplicate)
+    monkeypatch.setattr(crud, "find_active_incident_with_folded_alert", no_duplicate)
     monkeypatch.setattr(crud, "create_incident", create_incident)
     monkeypatch.setattr(alerts_module, "_record_correlation_shadow", noop)
     monkeypatch.setattr(job_worker, "enqueue_and_kick", enqueue)
@@ -527,6 +590,57 @@ def test_the_dedup_lock_is_retaken_before_creating_after_a_failed_fold(
     _webhook(FakeSession())
 
     assert locks == [FOLDED_TITLE, FOLDED_TITLE]
+
+
+def test_a_repeat_of_a_folded_alert_stays_with_its_parent(endpoint, monkeypatch):
+    """b9c1b208, 2026-09-29: an already-folded alert's repeat notification
+    arrived after the parent parked, the fold gate declined the parked parent,
+    and the repeat opened its own paid investigation. It belongs to the parent
+    for as long as the parent is open, and a parked parent's thread is told."""
+    parent = _live_incident(status=models.IncidentStatus.INVESTIGATED)
+    announced = []
+
+    async def folded_into(_db, _cluster_id, title):
+        return parent if title == FOLDED_TITLE else None
+
+    async def announce(_db, incident, _alert, *, now=None, fired_title=None):
+        announced.append((incident, fired_title))
+        return True
+
+    monkeypatch.setattr(crud, "find_active_incident_with_folded_alert", folded_into)
+    monkeypatch.setattr(alerts_module, "_announce_refire_on_parked_incident", announce)
+    _open_pool(monkeypatch, [])
+
+    result = _webhook(FakeSession())
+
+    assert result["incidents_created"] == 0
+    assert endpoint.created == []
+    assert announced == [(parent, FOLDED_TITLE)]
+
+
+def test_a_refire_notice_for_a_folded_alert_names_both_titles():
+    message = alerts_module.refire_message(
+        status=models.IncidentStatus.INVESTIGATED,
+        title=PARENT_TITLE,
+        meaning="the investigation finished",
+        fired_title=FOLDED_TITLE,
+    )
+    assert f"*{FOLDED_TITLE}* is firing again" in message
+    assert f"folded into *{PARENT_TITLE}*" in message
+
+
+def test_a_broken_folded_alert_lookup_never_reaches_the_webhook(
+    endpoint, monkeypatch
+):
+    async def explode(*_args, **_kwargs):
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(crud, "find_active_incident_with_folded_alert", explode)
+    _open_pool(monkeypatch, [])
+
+    result = _webhook(FakeSession())
+
+    assert result["incidents_created"] == 1
 
 
 if __name__ == "__main__":

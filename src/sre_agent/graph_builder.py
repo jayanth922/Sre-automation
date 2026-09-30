@@ -129,10 +129,11 @@ async def _prepare_approval_node(
     )
     from .checkpointer import durable_checkpointer_configured, thread_id_from_state
 
-    report_payload = build_act_report(
+    act_report = build_act_report(
         state,
         environment=str(getattr(execution_context, "environment", "production")),
-    ).to_dict()
+    )
+    report_payload = act_report.to_dict()
     from .trace_evidence import record_span_from_state
 
     record_span_from_state(
@@ -273,6 +274,28 @@ async def _prepare_approval_node(
     # the war room by `war_room.forward_events`.
     if pending.created:
         from .incident_timeline import emit_timeline_event
+
+        # Page on-call before asking for approval, not after it: the
+        # escalation is notify-only and autonomous, and holding it behind the
+        # held actions meant the human learned of a SEV1 only by being asked
+        # to approve its fix. Recorded so the approved run does not page twice.
+        if os.getenv("EXECUTOR_LIVE", "false").lower() in ("true", "1", "yes"):
+            from .act_phase import deliver_notifications_ahead_of_approval
+
+            try:
+                notified = await deliver_notifications_ahead_of_approval(
+                    state,
+                    act_report,
+                    context=execution_context,
+                )
+            except Exception as exc:
+                logger.warning("Pre-approval escalation for %s failed: %s", incident_id, exc)
+                notified = []
+            metadata["pre_approval_notifications"] = [
+                item["action_index"]
+                for item in notified
+                if item.get("status") == "EXECUTED"
+            ]
 
         await emit_timeline_event(
             str(incident_id),
@@ -2167,6 +2190,28 @@ async def _planner_node(state: AgentState, tools: List[BaseTool]) -> Dict[str, A
        cannot fix a configuration. And it is not a remedy for an undiagnosed
        problem: without evidence of that specific divergence, restarting is
        guesswork and you should not propose it.
+    10. If the diagnosis is a MEMORY LEAK — the working set grows without bound
+       until the container is OOMKilled — the mitigation is action_type=
+       'restart' on the deployment: it is the only action that reclaims the
+       leaked memory, and it is reversible via rollout undo. Do NOT propose
+       'scale' (every replica leaks on its own; adding replicas leaves the
+       existing pods' memory where it is) or a 'config_change' raising
+       parameters.memory (the leak grows past any limit, so it only postpones
+       the next OOM). Both are blocked at the execution boundary for a
+       diagnosed leak, so proposing them wastes the human's approval. If the
+       leak is in source code, add a 'code_fix' after the restart (instruction
+       6); if a literal env var switches the leaking path off, a
+       'config_change' with parameters.env is also legitimate (instruction 7).
+    11. If the diagnosis is an EXTERNAL PROVIDER OUTAGE — a third-party
+       dependency this service calls (payment processor, SaaS API) is down,
+       and nothing in this service or its deploys changed — nothing inside the
+       cluster fixes it. Propose 'escalate' so on-call engages the provider.
+       Do NOT propose 'restart', 'rollback', 'revert_commit' or 'scale' of
+       this service or of the services failing because of it: they leave the
+       provider down, and they are blocked at the execution boundary for a
+       diagnosed provider outage. A 'config_change' with parameters.env that
+       fails over to a secondary provider or opens a circuit breaker is
+       legitimate only if the evidence shows such a switch exists.
 
     Return plan in JSON format matching RemediationPlan schema.
     """

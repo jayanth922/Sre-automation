@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import crud, database, models, schemas
 from sre_agent import job_store
 from sre_agent.alert_resolution import reconcile_resolved_alert
+from sre_agent.workload_crash_probe import CrashProbe, probe_workload_crash
 from sre_agent.incident_correlation import (
     CorrelationCandidate,
     actionable_bundle,
@@ -252,7 +253,9 @@ async def _parked_meaning(
     return _DEAD_INVESTIGATION_MEANING[status]
 
 
-def refire_message(*, status: Any, title: str, meaning: str) -> str:
+def refire_message(
+    *, status: Any, title: str, meaning: str, fired_title: Optional[str] = None
+) -> str:
     """The Slack notice for an alert that re-fired onto a parked incident.
 
     `title` is `[service] AlertName`, so it already contains the alert name —
@@ -262,11 +265,24 @@ def refire_message(*, status: Any, title: str, meaning: str) -> str:
 
     `meaning` comes from `_parked_meaning` rather than from `status`, because
     for `open` and `investigating` the status name and the truth disagree.
+
+    `fired_title` is set when the alert that re-fired was folded into this
+    incident under a different title; naming only the parent would tell the
+    on-call that an alert is firing that is not.
     """
+    if fired_title and fired_title != title:
+        opener = (
+            f"*{fired_title}* is firing again. It was folded into *{title}*, "
+            f"which is sitting at `{_status_str(status)}` — {meaning}.\n"
+        )
+    else:
+        opener = (
+            f"*{title}* is firing again, and its incident is sitting at "
+            f"`{_status_str(status)}` — {meaning}.\n"
+        )
     return (
         ":rotating_light: *Still firing, and nothing is working on it*\n"
-        f"*{title}* is firing again, and its incident is sitting at "
-        f"`{_status_str(status)}` — {meaning}.\n"
+        + opener +
         "Sentinel will not open a second incident while this one is here, and "
         "it will not re-investigate on its own — there is no \"investigate "
         "again\" command. This alert has nowhere else to go. Reply "
@@ -304,6 +320,7 @@ async def _announce_refire_on_parked_incident(
     alert: Dict[str, Any],
     *,
     now: Optional[datetime] = None,
+    fired_title: Optional[str] = None,
 ) -> bool:
     """Tell the incident's thread that its alert is firing again.
 
@@ -328,6 +345,7 @@ async def _announce_refire_on_parked_incident(
         status=incident.status,
         title=incident.title,
         meaning=meaning,
+        fired_title=fired_title,
     )
 
     # Written before the post so the cooldown holds even if Slack is down —
@@ -456,6 +474,9 @@ async def _record_correlation_shadow(
 
 
 _FOLD_EVENT_TYPE = "correlated_alert_folded"
+# A fold into an incident whose war room has not opened yet carries its Slack
+# notice in the timeline payload; the war room posts it when the thread exists.
+FOLD_NOTICE_DEFERRED = "deferred_until_war_room"
 
 # `correlate` wants an incident id to exclude itself from its own pool. The
 # fold decision is made *before* the row exists — that is the whole point, so
@@ -520,9 +541,15 @@ async def _find_fold_target(
        mean nothing works the *folded* alert either — we would have suppressed
        the one mechanism that investigates it. A different title is a real
        choice, unlike exact-title dedup, so it gets made the safe way.
-    3. The parent has a Slack thread. Slack is the only channel this platform
+    3. The fold can be announced. Slack is the only channel this platform
        talks over; a fold with nowhere to announce itself is an alert that
-       silently disappears.
+       silently disappears. A parent with a thread is told now. A parent whose
+       investigation is still queued has no thread *yet* — the war room opens
+       when its run starts — so it is a target only while that job is live,
+       and the notice waits for the thread (`_fold_alert_into_incident`).
+       Declining those opened one paid investigation per sibling alert: live
+       on 2026-09-29 one provider outage became three payment-service
+       incidents because the first was queued behind another run.
     """
     open_incidents = await crud.list_active_incidents_for_cluster(db, cluster.id)
     if not open_incidents:
@@ -563,13 +590,17 @@ async def _find_fold_target(
         return None
 
     if not (parent.slack_channel and parent.slack_thread_ts):
-        logger.info(
-            "Fold declined: '%s' matches incident %s but it has no Slack thread "
-            "to fold into; opening its own",
-            title,
-            parent.id,
-        )
-        return None
+        # `_parked_meaning` trusts a young `open` incident without asking the
+        # job table; a deferred notice cannot, because only a run that
+        # actually starts opens the thread it is waiting for.
+        if not await job_store.has_live_investigation_job(db, parent.id):
+            logger.info(
+                "Fold declined: '%s' matches incident %s but it has no Slack "
+                "thread and no queued investigation to open one; opening its own",
+                title,
+                parent.id,
+            )
+            return None
 
     return parent
 
@@ -591,11 +622,20 @@ async def _fold_alert_into_incident(
     way. If the notice does not land, the caller opens the incident normally
     and the duplicate thread is the acceptable outcome.
 
+    A parent still waiting for its investigation has no thread to post to, so
+    there the order flips back: the fold is recorded with the notice attached,
+    and `war_room_service.maybe_open_war_room` posts it when the run opens the
+    thread. The record is the condition then — if it cannot be written, nothing
+    would ever say the alert was folded, and the alert opens its own incident.
+
     Never raises: a webhook that 500s makes Alertmanager retry the whole group.
     """
     message = fold_message(
         folded_title=title, parent_title=parent.title, service=service
     )
+    if not (parent.slack_channel and parent.slack_thread_ts):
+        return await _fold_ahead_of_war_room(db, parent, alert, title, message)
+
     delivered = False
     try:
         from sre_agent.war_room_service import post_to_incident_thread
@@ -631,6 +671,7 @@ async def _fold_alert_into_incident(
                 "folded_title": title,
                 "alertname": alert["alertname"],
                 "labels": alert.get("labels") or {},
+                "notice": "delivered",
             },
         )
     except Exception as exc:  # pragma: no cover - never block the webhook
@@ -640,6 +681,156 @@ async def _fold_alert_into_incident(
         logger.warning("fold: timeline write failed for %s: %s", parent.id, exc)
         await db.rollback()
     return True
+
+
+async def _fold_ahead_of_war_room(
+    db: AsyncSession,
+    parent: models.Incident,
+    alert: Dict[str, Any],
+    title: str,
+    message: str,
+) -> bool:
+    """Fold into a parent whose war room has not opened yet."""
+    try:
+        await crud.create_incident_timeline_event(
+            db,
+            parent.id,
+            event_type=_FOLD_EVENT_TYPE,
+            speaker_role="system",
+            title="Correlated alert folded into this incident",
+            content=(
+                f"{title} started firing on the same service while this "
+                f"incident's investigation was queued, and was folded into it. "
+                f"No separate incident, war room, or investigation was created "
+                f"for it."
+            ),
+            payload={
+                "source": "incident_correlation",
+                "mode": "acting",
+                "folded_title": title,
+                "alertname": alert["alertname"],
+                "labels": alert.get("labels") or {},
+                "notice": FOLD_NOTICE_DEFERRED,
+                "notice_text": message,
+            },
+        )
+        await db.commit()
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning(
+            "fold: '%s' correlates with queued incident %s but the fold could "
+            "not be recorded (%s) — opening its own incident instead",
+            title,
+            parent.id,
+            exc,
+        )
+        await db.rollback()
+        return False
+
+    # The war room may have opened between the lookup and the commit above, in
+    # which case its opener read the timeline before this row existed. Whichever
+    # side comes second sees the other, so at least one of them posts.
+    try:
+        from sre_agent.war_room_service import post_to_incident_thread
+
+        await post_to_incident_thread(str(parent.id), message)
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.debug("fold: late-thread post skipped for %s: %s", parent.id, exc)
+    return True
+
+
+async def _probe_crash_behind_clear(
+    cluster: models.Cluster, alert: Dict[str, Any], incident: Any
+) -> CrashProbe:
+    """Ask kube-state-metrics whether the service crashed while this was open.
+
+    Never raises: a probe that cannot run leaves the clear to the rules that
+    applied before it existed, and says so in the timeline payload.
+    """
+    labels = alert.get("labels") or {}
+    try:
+        return await probe_workload_crash(
+            cluster.prometheus_url,
+            alert.get("service") or labels.get("service"),
+            getattr(incident, "created_at", None),
+            namespace=labels.get("namespace") or getattr(cluster, "namespace", None),
+        )
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning("crash probe failed for incident %s: %s", incident.id, exc)
+        return CrashProbe("unavailable", detail=type(exc).__name__)
+
+
+async def _record_crash_induced_clear(
+    db: AsyncSession,
+    incident: Any,
+    alert: Dict[str, Any],
+    decision: Any,
+    crash_probe: CrashProbe,
+    reconciliation_source: str,
+) -> Dict[str, Any]:
+    """Keep the incident open, and tell the thread why the alert went quiet.
+
+    The status is untouched, so any pending approval stays live: the on-call
+    can still approve the restart that actually reclaims the fault.
+    """
+    crash = crash_probe.crash
+    what = (
+        f"container `{crash.container}` in pod `{crash.pod}` terminated "
+        f"({crash.reason}) at {crash.terminated_at:%H:%M:%S} UTC"
+        if crash
+        else "the service's container terminated"
+    )
+    content = (
+        f"Alert `{alert['alertname']}` cleared, but {what}, after this incident "
+        "opened. A crash resets the signal the alert watches without fixing the "
+        "cause, so this is not recovery: the incident stays open."
+    )
+    await crud.create_incident_timeline_event(
+        db,
+        incident.id,
+        event_type="alert_resolved",
+        speaker_role="system",
+        title="Alert cleared by a workload crash",
+        content=content,
+        payload={
+            "alertname": alert["alertname"],
+            "previous_status": decision.previous_status,
+            "new_status": decision.new_status,
+            "mark_resolved": False,
+            "masked_failed_remediation": False,
+            "cleared_by_workload_crash": True,
+            "workload_crash": crash.to_dict() if crash else None,
+            "ends_at": alert.get("ends_at") or None,
+            "labels": alert.get("labels") or {},
+            "reconciliation_source": reconciliation_source,
+            "remediation_verified": False,
+        },
+    )
+    try:
+        from sre_agent.war_room_service import post_to_incident_thread
+
+        await post_to_incident_thread(
+            str(incident.id),
+            f"⚠️ {content} Any pending approval is still live.",
+        )
+    except Exception as exc:  # pragma: no cover - never block the webhook
+        logger.warning("crash-clear Slack notice failed for %s: %s", incident.id, exc)
+    logger.info(
+        "Resolved alert '%s' on incident %s was a workload crash; kept %s",
+        alert["alertname"],
+        incident.id,
+        decision.previous_status,
+    )
+    return {
+        "alertname": alert["alertname"],
+        "incident_id": str(incident.id),
+        "matched": True,
+        "previous_status": decision.previous_status,
+        "new_status": decision.new_status,
+        "mark_resolved": False,
+        "masked_failed_remediation": False,
+        "cleared_by_workload_crash": True,
+        "reason": decision.reason,
+    }
 
 
 async def _reconcile_resolved_alert(
@@ -660,7 +851,10 @@ async def _reconcile_resolved_alert(
             "reason": "no_active_incident",
         }
 
-    decision = reconcile_resolved_alert(incident.status)
+    crash_probe = await _probe_crash_behind_clear(cluster, alert, incident)
+    decision = reconcile_resolved_alert(
+        incident.status, workload_crashed=crash_probe.state == "crashed"
+    )
     values: Dict[str, Any] = {}
     if decision.mark_resolved and decision.new_status is not None:
         values["status"] = models.IncidentStatus(decision.new_status)
@@ -720,6 +914,11 @@ async def _reconcile_resolved_alert(
                 side_effect_err,
             )
 
+    if decision.cleared_by_workload_crash:
+        return await _record_crash_induced_clear(
+            db, incident, alert, decision, crash_probe, reconciliation_source
+        )
+
     await crud.create_incident_timeline_event(
         db,
         incident.id,
@@ -757,6 +956,7 @@ async def _reconcile_resolved_alert(
             "labels": alert.get("labels") or {},
             "reconciliation_source": reconciliation_source,
             "remediation_verified": False,
+            "crash_check": crash_probe.state,
         },
     )
     logger.info(
@@ -907,6 +1107,30 @@ async def receive_alertmanager_webhook(
             # worked and say nothing; see `_parked_meaning` for the ones that
             # do, including the `open`/`investigating` ones whose status lies.
             await _announce_refire_on_parked_incident(db, existing, alert)
+            continue
+
+        # Alertmanager re-sends a firing alert every repeat interval. One that
+        # was folded has no incident of its own to dedup against, so each
+        # repeat used to be judged afresh — and once the parent parked, the fold
+        # target check (rightly) declined it and the repeat opened its own
+        # incident: b9c1b208 on 2026-09-29, a paid investigation of an alert
+        # that was already part of 20953674. A folded alert stays folded for as
+        # long as its parent is open.
+        try:
+            fold_parent = await crud.find_active_incident_with_folded_alert(
+                db, cluster.id, title
+            )
+        except Exception as fold_err:
+            logger.warning(f"Folded-alert lookup failed (non-fatal): {fold_err}")
+            fold_parent = None
+        if fold_parent is not None:
+            logger.info(
+                f"Dedup: '{title}' was folded into open incident {fold_parent.id}"
+            )
+            await db.commit()
+            await _announce_refire_on_parked_incident(
+                db, fold_parent, alert, fired_title=title
+            )
             continue
 
         # Exact-title dedup missed, which does not mean this is a new problem.

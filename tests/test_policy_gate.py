@@ -238,3 +238,151 @@ def test_read_only_action_types_match_the_executor():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------- #
+# Remedy fit — safe is not the same as useful
+# --------------------------------------------------------------------------- #
+
+from sre_agent.policy_gate import (  # noqa: E402
+    diagnosed_memory_leak,
+    unfit_remedy_reason,
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "checkout-service has a memory leak in the request path",
+        "Memory-leak: the cache leaks memory on every request",
+        "unbounded heap growth until OOMKilled",
+    ],
+)
+def test_leak_diagnoses_are_recognised(text):
+    assert diagnosed_memory_leak(None, text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "connection pool leak exhausts database connections",
+        "load spike drove memory usage up; working set is stable per request",
+        None,
+    ],
+)
+def test_other_diagnoses_are_not_a_memory_leak(text):
+    assert not diagnosed_memory_leak(text)
+
+
+def test_scale_and_a_memory_limit_raise_cannot_fix_a_leak():
+    assert "memory leak" in unfit_remedy_reason(
+        FakeAction("scale", parameters={"replicas": 4}), True
+    )
+    assert "postpones" in unfit_remedy_reason(
+        FakeAction("config_change", parameters={"memory": "1Gi"}), True
+    )
+
+
+def test_restart_and_env_changes_remain_fit_for_a_leak():
+    assert unfit_remedy_reason(FakeAction("restart"), True) is None
+    assert (
+        unfit_remedy_reason(
+            FakeAction("config_change", parameters={"env": {"CACHE_ENABLED": "false"}}),
+            True,
+        )
+        is None
+    )
+
+
+def test_scale_is_fit_when_no_leak_was_diagnosed():
+    assert unfit_remedy_reason(FakeAction("scale", parameters={"replicas": 4}), False) is None
+
+
+# --------------------------------------------------------------------------- #
+# External provider outage — nothing in this service fixes it
+# --------------------------------------------------------------------------- #
+
+from sre_agent.policy_gate import diagnosed_dependency_outage  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Phrasings from the E2E Run 2 (2026-09-29) investigation.
+        "This is a genuine external dependency outage, not a Meridian regression.",
+        "The external payment provider went down at 22:14:20Z.",
+        "Confirmed — this is a real provider outage, not noise.",
+        "the payment provider is genuinely down",
+        "payment_provider_up flipped to 0 at 22:14:20Z",
+        "every charge fails with provider_down",
+        "a third-party API is unavailable",
+    ],
+)
+def test_provider_outage_diagnoses_are_recognised(text):
+    assert diagnosed_dependency_outage(None, text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "This is not a provider outage; checkout regressed in revision 13.",
+        "We ruled out an external dependency failure.",
+        "the provider is not down",
+        "Rules out provider_down: payment_provider_up stayed at 1.",
+        # Internal dependencies are fixed inside the cluster.
+        "checkout fails because upstream inventory-service is crash-looping",
+        "downstream dependency failure: payment-service crashed",
+        "A memory leak in checkout grows the heap to the limit.",
+    ],
+)
+def test_other_diagnoses_are_not_a_provider_outage(text):
+    assert not diagnosed_dependency_outage(text)
+
+
+@pytest.mark.parametrize("action_type", ["restart", "rollback", "revert_commit", "scale"])
+def test_changing_this_service_cannot_fix_a_provider_outage(action_type):
+    reason = unfit_remedy_reason(
+        FakeAction(action_type, "payment-service"), False, dependency_outage=True
+    )
+    assert reason and "external provider outage" in reason
+
+
+@pytest.mark.parametrize("action_type", ["escalate", "inspect", "config_change"])
+def test_escalation_and_failover_stay_fit_for_a_provider_outage(action_type):
+    # config_change stays open: failing over to a secondary provider is a real
+    # response to a provider outage.
+    assert (
+        unfit_remedy_reason(
+            FakeAction(action_type, "payment-service", {"env": {"PROVIDER": "backup"}}),
+            False,
+            dependency_outage=True,
+        )
+        is None
+    )
+
+
+def test_restart_is_fit_when_no_outage_was_diagnosed():
+    assert unfit_remedy_reason(FakeAction("restart"), False) is None
+
+
+# --------------------------------------------------------------------------- #
+# Escalation is never held — it is how the human finds out
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("level", [Severity.SEV1, Severity.SEV2, Severity.SEV4])
+def test_escalate_is_autonomous_at_every_severity(level):
+    # E2E Run 2 (2026-09-29): the SEV1 page waited on the restart's approval.
+    d = decide(FakeAction("escalate"), sev(level), evaluate_fn=ALLOW)
+    assert d.decision is AutonomyDecision.AUTONOMOUS
+    assert "notify-only" in d.reason
+
+
+def test_escalate_is_autonomous_with_unknown_telemetry():
+    d = decide(FakeAction("escalate"), sev(Severity.UNKNOWN), evaluate_fn=ALLOW)
+    assert d.decision is AutonomyDecision.AUTONOMOUS
+
+
+def test_a_hard_policy_block_still_wins_over_escalation():
+    d = decide(FakeAction("escalate"), sev(Severity.SEV1), evaluate_fn=BLOCK)
+    assert d.decision is AutonomyDecision.BLOCKED

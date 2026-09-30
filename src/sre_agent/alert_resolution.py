@@ -4,7 +4,10 @@
 Firing alerts create incidents; resolved alerts must not be ignored. External
 clear closes the alert-driven incident lifecycle, but is not evidence that a
 Sentinel remediation succeeded and never masks a failed remediation
-(`REMEDIATION_FAILED` stays failed with a timeline note).
+(`REMEDIATION_FAILED` stays failed with a timeline note). Nor is a clear caused
+by the workload crashing: an OOMKilled or crashed container drops the very
+signal the alert watches while the fault is still there, so the incident stays
+open with a note instead of closing as resolved.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ class ResolvedAlertDecision:
     mark_resolved: bool
     masked_failed_remediation: bool
     reason: str
+    cleared_by_workload_crash: bool = False
 
 
 def is_active_incident_status(status: Any) -> bool:
@@ -54,12 +58,19 @@ def is_active_incident_status(status: Any) -> bool:
     return value in _ACTIVE_VALUES if value else False
 
 
-def reconcile_resolved_alert(current_status: Any) -> ResolvedAlertDecision:
+def reconcile_resolved_alert(
+    current_status: Any, *, workload_crashed: bool = False
+) -> ResolvedAlertDecision:
     """Decide how an external alert-clear updates an incident.
 
     Rules:
     - No active incident → no-op (caller may have nothing to update).
     - ``remediation_failed`` → keep failed; do **not** set resolved.
+    - The service's container terminated after the incident opened → keep the
+      current status; do **not** set resolved. Live on 2026-09-29 (E2E Run 1)
+      a checkout memory leak "resolved" 56 seconds after the pod was
+      OOMKilled: the restart reset the leaking gauge, the alert cleared, and
+      the incident closed while the leak was still running.
     - Any other active status → resolved (the source-alert lifecycle ended).
     """
     value = _status_value(current_status)
@@ -81,6 +92,17 @@ def reconcile_resolved_alert(current_status: Any) -> ResolvedAlertDecision:
             mark_resolved=False,
             masked_failed_remediation=True,
             reason="alert_cleared_but_remediation_failed",
+        )
+
+    if workload_crashed:
+        return ResolvedAlertDecision(
+            matched=True,
+            previous_status=value,
+            new_status=value,
+            mark_resolved=False,
+            masked_failed_remediation=False,
+            reason="alert_cleared_by_workload_crash",
+            cleared_by_workload_crash=True,
         )
 
     return ResolvedAlertDecision(
