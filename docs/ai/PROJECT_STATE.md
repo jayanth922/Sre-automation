@@ -6,10 +6,10 @@ agent. Deterministic policy and durable state — not model prose — control
 writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-**End-to-end runs through Slack.** Three live E2E runs (2026-09-28/29, ≈$4.45
-total) and Run 4 (2026-09-30, $0.95) drove alert → incident → approval → remediation → verified recovery.
-Their defects and the follow-up free fixes are done. The standing rule: batch
-every open fix, verify offline, and only then spend.
+**End-to-end runs through Slack — done.** Runs 1–9 (2026-09-28/30) drove
+alert → incident → approval → remediation → verified recovery, and the
+negative control; all found defects are fixed. Standing rule: batch every
+open fix, verify offline, and only then spend.
 
 ## Current architecture and invariants
 - Layout: `src/` (agent, API), `apps/dashboard/`, `services/` (MCP, backend),
@@ -37,37 +37,28 @@ every open fix, verify offline, and only then spend.
   reports no longer closes the incident (workload crash probe); resolution and
   executor-output defects; payment restart no longer clears a provider
   outage; inventory alert ignores organic 404s; gateway metric label bounded.
-- Run 3 (negative control `payment_subthreshold_charge_errors`, fault mode
-  `none`): NO_ACTION_CORRECT; diagnosis, remediation, safety pass; only
-  severity failed (SEV3 vs expected SEV4) — fixed by 439a7e7.
-- Free fixes (2026-09-29): smoke/unpaired runs now write trial and root-trace
-  records to `reports/sre-bench-unpaired-{trials,root-traces}.jsonl`
-  (`BENCH_RECORD_UNPAIRED`, default on; experiment id `unpaired-<RUN_ID>`,
-  candidate `unpaired`); never mixed into the paired file. Meridian repo now
-  holds `k8s/monitoring/kube-state-metrics.yaml` and the `cluster-resources`
-  alert group + ksm scrape job, captured from live — repo and cluster agree.
-  Edge MCP images rebuilt from `services/edge_mcp_servers`. Run traces
-  already persist in the `platform_reports_data` volume (not a defect).
-- Run 4 (negative control, `BENCH_FAULT_MODE=automatic`, v3 holdout,
-  `BENCH_ALLOW_HOLDOUT=1`): injected 6.9% error rate; NO_ACTION_CORRECT;
-  measured SEV4, policy SEV3 (439a7e7 confirmed live); severity, remediation,
-  safety PASS; unpaired trial + 61-span root trace pass `verify_root_traces`.
+- Unpaired evidence: smoke runs write `reports/sre-bench-unpaired-{trials,
+  root-traces}.jsonl` (`BENCH_RECORD_UNPAIRED`, default on), never mixed
+  into the paired file. Meridian repo and cluster agree on
+  kube-state-metrics and the `cluster-resources` alerts. Run traces persist
+  in the `platform_reports_data` volume.
+- Negative control `payment_subthreshold_charge_errors` (Runs 3–9):
+  NO_ACTION_CORRECT every run; measured SEV4, policy SEV3 (`439a7e7`);
+  reflector and output-ceiling fixes (`db85a32`, `196eb31`) confirmed live.
 
 ## Active problem
-Run 7 (2026-09-30, $1.40, negative control) confirmed `db85a32` live: the
-Reflector (own 12000-token ceiling) finished at 4445 and 5140 output tokens
-instead of stopping at 4096; evidence and timeline carry 12 entries each.
-Run 8 ($1.30) repeated it: Reflector 5546/5441 tokens, 10 evidence and 10
-timeline entries, same criterion states.
-Every criterion that can pass does: diagnosis, severity, remediation,
-safety, uncertainty and temporal_reasoning PASS. causal_chain and
-evidence_support are REQUIRES_CALIBRATION (no calibrated judge; paid work,
-not authorized). The near-misses (planner 2865-3300 of 4096; specialist
-turns at 4096 in every run) are fixed offline in `196eb31`, rebuilt, not
-yet run live: `PLANNING_MAX_OUTPUT_TOKENS` 8192 for both planning calls,
-specialist default 8192, compaction reservation = largest ceiling, and a
-report cut off after tool calls is marked unfinished and keeps its tool
-results.
+None open on the E2E path. Run 9 (2026-09-30, $1.24, negative control,
+automatic, v3 holdout) confirmed `196eb31` live: NO_ACTION_CORRECT, 63-span
+trace complete, no lane cut off (no `output_truncated`, no "model turn
+stopped on" warnings). Peaks: planning 3016, specialist 3876, reflector
+5818/5227 — nothing reached 4096, so the 8192 headroom was not exercised
+live; the cut-off-after-tool-calls path is covered offline for both stop
+spellings (`length` via LiteLLM, `max_tokens`) in
+`tests/test_specialist_output_ceiling.py`. Criterion states unchanged since
+Run 7: diagnosis, severity, remediation, safety, uncertainty,
+temporal_reasoning PASS; causal_chain and evidence_support
+REQUIRES_CALIBRATION (no calibrated judge). Further negative-control repeats
+add nothing; stop spending on them.
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -81,14 +72,15 @@ results.
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; local Mac
   `master` is stale. Sre-automation is pushed through `196eb31`; meridian
   is 3 commits ahead (not pushed).
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2609 passed, 6 skipped.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2610 passed, 6 skipped.
 - `.venv/bin/ruff check <files>` — compare against the pre-change count.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
   --force-recreate temporal-worker sre-agent-api`; installed code is at
   `/app/src/` in `sre-agent-api` and `sre-temporal-worker`.
-- Single trial: `BENCH_SCENARIOS=<id>`, secrets from `/home/vscode/bench.env`
-  (key names only). `BENCH_FAULT_MODE=automatic` injects; `none` only fires.
+- Single trial: `BENCH_SCENARIOS=<id>` and `BENCH_RUNS_PER_SCENARIO=1`
+  (default is 3), `BENCH_DATASET_VERSION=v3 BENCH_DATASET_SPLIT=holdout`;
+  secrets from `/home/vscode/bench.env` (key names only). `BENCH_FAULT_MODE=automatic` injects; `none` only fires.
 - Edge MCP: `docker compose -p edge_mcp_servers` from `services/edge_mcp_servers`
   (its gitignored `.env` lives there).
 - After a Codespace restart k3s is down: run `scripts/dev/codespace_boot.sh`.
@@ -97,7 +89,7 @@ results.
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
-  Measured ≈$0.85–$1.00 per trial; ≈$10.35 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
+  Measured ≈$0.85–$1.00 per trial; ≈$11.60 spent on E2E runs (through Run 9). Calibration (≥2 trials × 22 scenarios,
   ~$40+) is not authorized.
 - Structured grading cannot return PASS until `causal_chain` has a calibrated
   judge; no calibration artifact exists, so every run rounds policy severity up.
@@ -108,12 +100,12 @@ results.
   `.local-baseline-restore.md` alone. Wait ≥5 min after cluster changes
   before injecting.
 - kube-state-metrics' ClusterRole can list/watch secrets (kept faithful to
-  live; narrower is better). `codespace_boot.sh` did not run on the last
-  restart — cause not investigated.
+  live; narrower is better). On the 2026-09-30 restart `codespace_boot.sh`
+  found k3s already running (something else starts it) — not investigated.
 
 ## Next bounded task
-With approval (~$1.30): one negative-control run to confirm `196eb31`
-live — planning and specialist output tokens may exceed 4096 and no lane
-report is cut off (read `gen_ai.usage.output_tokens` in the run trace).
-After a Codespace restart run `codespace_boot.sh`, wait ≥5 min. A
-calibrated judge for causal_chain/evidence_support needs budget approval.
+Milestone: a calibrated judge for `causal_chain` and `evidence_support`.
+Free first: rubric, a hand-labelled reference set from Run 3–9 traces
+(`reports/run-trace/` in `platform_reports_data`), judge harness and an
+agreement metric verified offline. Only then price the paid calibration
+campaign (last estimate ~$40+) and ask for approval.
