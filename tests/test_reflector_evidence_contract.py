@@ -168,3 +168,55 @@ def test_the_schema_offers_the_agent_the_whole_vocabulary():
 def test_the_vocabulary_is_a_closed_deduplicated_list():
     assert len(set(FAULT_MODES)) == len(FAULT_MODES)
     assert all(mode == mode.strip().lower() for mode in FAULT_MODES)
+
+
+def _run_with(agent_results):
+    return asyncio.run(
+        graph_builder._reflector_node(
+            {
+                "agent_results": agent_results,
+                "alert_context": None,
+                "metadata": {"llm_provider": "openai"},
+                "thought_traces": {},
+                "investigation_count": 0,
+            }
+        )
+    )
+
+
+def test_metrics_findings_survive_the_infra_prescan(reflector):
+    """E2E Run 4: the prescan's cluster read hid every Prometheus measurement."""
+    answers, prompts = reflector
+    answers.append(_analysis(evidence=SOURCED))
+
+    _run_with(
+        {
+            "kubernetes_agent": "all payment-service pods Running, 0 restarts",
+            "metrics_agent": "payment error ratio 0.017 against a 0.10 threshold",
+            "runbooks_agent": "Branch A: below threshold, record and close",
+        }
+    )
+
+    prompt = "\n".join(prompts[0])
+    assert "all payment-service pods Running" in prompt
+    assert "payment error ratio 0.017" in prompt
+    assert "Branch A: below threshold" in prompt
+
+
+def test_a_failed_cluster_read_keeps_the_metrics(reflector):
+    answers, prompts = reflector
+    answers.append(_analysis(evidence=SOURCED))
+
+    _run_with(
+        {
+            "kubernetes_agent": "TOOL UNAVAILABLE: list_pods timed out",
+            "metrics_agent": "payment error ratio 0.017 against a 0.10 threshold",
+        }
+    )
+
+    prompt = "\n".join(prompts[0])
+    assert "payment error ratio 0.017" in prompt
+    assert "list_pods timed out" not in prompt
+    assert "Infrastructure" in prompt and "Metrics" not in prompt.split(
+        "are unavailable:"
+    )[1].splitlines()[0]

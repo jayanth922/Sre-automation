@@ -54,10 +54,13 @@ every open fix, verify offline, and only then spend.
   safety PASS; unpaired trial + 61-span root trace pass `verify_root_traces`.
 
 ## Active problem
-Run 4's structured grade marks diagnosis INSUFFICIENT_EVIDENCE ("diagnosis
-requires service and fault_mode strings"); Run 3 passed it. The agent's
-output lacked those fields — cause unknown (variance or a producer gap).
-Diagnosis confidence 0.42.
+Run 4's diagnosis INSUFFICIENT_EVIDENCE (null `fault_mode`) was a producer
+gap, now fixed in the working tree (uncommitted): `_reflector_node` took
+`kubernetes_agent or metrics_agent`, and the infra prescan always yields a
+kubernetes result, so Prometheus findings never reached the Reflector;
+runbook findings had no slot. The Reflector repeated the alert's false 11.8%.
+Now every specialist gets its own labelled slot, and TOOL UNAVAILABLE is
+dropped per specialist. Containers rebuilt with the fix. Unconfirmed live.
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -69,9 +72,9 @@ Diagnosis confidence 0.42.
 
 ## Verification commands and latest results
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; local Mac
-  `master` is stale. Sre-automation is 4 commits ahead of origin, meridian 2
+  `master` is stale. Sre-automation is 6 commits ahead of origin, meridian 3
   (not pushed).
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2594 passed, 6 skipped.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2596 passed, 6 skipped.
 - `.venv/bin/ruff check <files>` — compare against the pre-change count.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
@@ -102,8 +105,6 @@ Diagnosis confidence 0.42.
   restart — cause not investigated.
 
 ## Next bounded task
-Offline, no spend: from Run 4's trace
-(`reports/run-trace/880bf634733d4153ad8eec95dd59ab74.jsonl`, incident
-`c986154e`) and grades row, find why `benchmark_evaluation` lacked the
-diagnosis `service`/`fault_mode` strings, compare with Run 3, and fix the
-producer if it is a gap rather than model variance.
+Commit the Reflector fix. Then, only with explicit approval (≈$0.95), re-run
+the negative control (`/home/vscode/run4.sh`) and confirm the diagnosis
+grade passes with `fault_mode` = `sub_threshold`.

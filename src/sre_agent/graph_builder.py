@@ -1530,29 +1530,54 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
             "ooda_phase": "DECIDE",
         }
 
-    # Extract findings from agent results
-    infra_findings = agent_results.get("kubernetes_agent") or agent_results.get(
-        "metrics_agent"
-    )
+    # Extract findings from agent results. Every specialist that reported gets
+    # a slot. Infrastructure used to be `kubernetes_agent or metrics_agent`,
+    # and the infra prescan runs kubernetes_agent before routing on every
+    # incident, so the Prometheus specialist's measurements never reached
+    # this prompt. E2E Run 4 (2026-09-30, incident c986154e): three
+    # specialists measured the payment error ratio at 0.5-1.7% against a 0.10
+    # threshold, yet the hypothesis repeated the alert's claimed 11.8% and
+    # called payment_provider_up "never executed" -- the Prometheus
+    # specialist had reported it as 1. Run 3 got it right only because its
+    # logs finding happened to restate the measured ratio. Runbook findings
+    # had no slot at all.
+    kubernetes_findings = agent_results.get("kubernetes_agent")
+    metrics_findings = agent_results.get("metrics_agent")
     logs_findings = agent_results.get("logs_agent")
     code_findings = agent_results.get("github_agent")  # Code change intelligence
+    runbooks_findings = agent_results.get("runbooks_agent")
     # The single_agent ablation arm files one combined report instead of four
     # per-domain ones. Without a slot of its own that evidence would be
     # invisible here and the arm would lose on an empty investigation — a
     # difference with nothing to do with the architecture under measurement.
     single_findings = agent_results.get("single_agent")
 
-    # Detect tool failures (ToolError responses)
+    # Detect tool failures (ToolError responses). Judged per specialist, so a
+    # cluster read that failed does not also discard the metrics that worked.
     tool_failures = []
     if logs_findings and "TOOL UNAVAILABLE" in str(logs_findings):
         tool_failures.append("Logs")
         logs_findings = None  # Treat as no data
-    if infra_findings and "TOOL UNAVAILABLE" in str(infra_findings):
-        tool_failures.append("Infrastructure/Metrics")
-        infra_findings = None
+    if kubernetes_findings and "TOOL UNAVAILABLE" in str(kubernetes_findings):
+        tool_failures.append("Infrastructure")
+        kubernetes_findings = None
+    if metrics_findings and "TOOL UNAVAILABLE" in str(metrics_findings):
+        tool_failures.append("Metrics")
+        metrics_findings = None
     if code_findings and "TOOL UNAVAILABLE" in str(code_findings):
         tool_failures.append("GitHub/Code")
         code_findings = None
+    if runbooks_findings and "TOOL UNAVAILABLE" in str(runbooks_findings):
+        tool_failures.append("Runbooks")
+        runbooks_findings = None
+    infra_findings = "\n\n".join(
+        f"[{source}]\n{body}"
+        for source, body in (
+            ("kubernetes_agent", kubernetes_findings),
+            ("metrics_agent", metrics_findings),
+        )
+        if body
+    )
 
     # Build tool status message for prompt
     tool_status = ""
@@ -1591,6 +1616,11 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
     infra_block = wrap_untrusted("infra_metrics", infra_findings) if infra_findings else "No infrastructure findings available"
     code_block = wrap_untrusted("github", code_findings) if code_findings else "No code change findings available"
     logs_block = wrap_untrusted("logs", logs_findings) if logs_findings else "No logs findings available"
+    runbooks_block = (
+        wrap_untrusted("runbooks", runbooks_findings)
+        if runbooks_findings
+        else "No runbook findings available"
+    )
     single_block = (
         "\n    Combined Investigation Findings (single investigator):\n"
         f"    {wrap_untrusted('single_investigator', single_findings)}\n"
@@ -1617,6 +1647,9 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
 
     Logs Findings:
     {logs_block}
+
+    Runbook Findings:
+    {runbooks_block}
 {single_block}
     Analyze these findings and:
     1. Identify any discrepancies between infrastructure and code findings
