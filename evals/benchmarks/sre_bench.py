@@ -294,6 +294,11 @@ def timeout_warning(fault_mode: str, timeout_sec: int) -> str | None:
 COOLDOWN_SEC = 30
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
+# How long a trial waits for an investigation that has started to finish after
+# the incident reached a terminal status. The alert clearing on its own moves
+# the incident to `resolved` while the graph is still reflecting and planning,
+# and the summary and ACT events land only when the graph finishes.
+INVESTIGATION_SETTLE_SEC = int(os.getenv("BENCH_INVESTIGATION_SETTLE_SEC", "600"))
 
 # Statuses the graph stops at, used only to stop polling early — recovery
 # itself is decided by the Prometheus probe, never by these.
@@ -918,7 +923,14 @@ async def _fetch_transcript(client, jwt, incident_id, creds) -> dict:
 
 
 async def _fetch_trace_completeness(client, jwt, incident_id, creds) -> dict:
-    deadline = time.monotonic() + ACCOUNTING_WAIT_SEC
+    """Wait for the investigation's root span, then for it to be finalized.
+
+    Two bounds: a root that never appears is given ACCOUNTING_WAIT_SEC, a root
+    that is still running is given INVESTIGATION_SETTLE_SEC. The graph finishes
+    the root only after the summary and ACT events are written, so a finalized
+    root is the signal that the transcript is complete.
+    """
+    started = time.monotonic()
     while True:
         response = await client.get(
             f"{creds.base_url}/api/v1/incidents/{incident_id}/agent-metrics",
@@ -928,12 +940,32 @@ async def _fetch_trace_completeness(client, jwt, incident_id, creds) -> dict:
         payload = response.json().get("trace_completeness")
         trace = payload if isinstance(payload, dict) else {}
         reasons = trace.get("completeness_reasons") or []
-        still_running = trace.get("root_trace_id") is None or any(
-            reason == "root_span_not_finalized" for reason in reasons
-        )
-        if not still_running or time.monotonic() >= deadline:
+        waited = time.monotonic() - started
+        if trace.get("root_trace_id") is None:
+            keep_waiting = waited < ACCOUNTING_WAIT_SEC
+        else:
+            keep_waiting = waited < INVESTIGATION_SETTLE_SEC and any(
+                reason == "root_span_not_finalized" for reason in reasons
+            )
+        if not keep_waiting:
             return trace
         await asyncio.sleep(min(POLL_INTERVAL_SEC, 1))
+
+
+async def _collect_final_evidence(client, jwt, incident_id, creds) -> tuple[dict, dict]:
+    """Return (trace_completeness, transcript), the transcript read last.
+
+    E2E Run 5 (2026-09-30): the alert cleared on its own, the incident went to
+    `resolved` at 06:20:27 mid-investigation, and the harness read the
+    transcript before the summary (06:21:16) and ACT (06:21:19) events existed.
+    Every structured criterion was graded "missing" although the agent had
+    produced all of them. Waiting for the root span first closes that race.
+    """
+    trace_completeness = await _fetch_trace_completeness(
+        client, jwt, incident_id, creds
+    )
+    transcript = await _fetch_transcript(client, jwt, incident_id, creds)
+    return trace_completeness, transcript
 
 
 # The corpus marks negative controls with this taxonomy category: a signal held
@@ -1544,8 +1576,7 @@ async def _run_trial(
         latest_incident, harness_approvals = await _wait_for_recovery(
             client, jwt, incident, oracle_client, tracker, creds
         )
-        transcript = await _fetch_transcript(client, jwt, incident["id"], creds)
-        trace_completeness = await _fetch_trace_completeness(
+        trace_completeness, transcript = await _collect_final_evidence(
             client, jwt, incident["id"], creds
         )
         if isinstance(trace_completeness, dict) and not trace_completeness.get(

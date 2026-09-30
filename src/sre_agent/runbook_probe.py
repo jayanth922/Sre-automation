@@ -264,11 +264,29 @@ def metrics_probe_caller(
     return _call
 
 
+def _alert_service_first(queries: Sequence[str], service: Optional[str]) -> List[str]:
+    """Queries that select the alerting service first, otherwise in runbook order.
+
+    A runbook shared by several services lists them in whatever order reads
+    well. The payment alert's runbook puts checkout's error ratio before
+    payment's, so the two-query budget measured `payment_provider_up` and
+    checkout, never the ratio the alert is about. E2E Run 5 (2026-09-30):
+    with no measured payment ratio in front of it, every lane took the
+    alert's claimed 11.8% at face value on a negative control that measured
+    under 2%.
+    """
+    if not service:
+        return list(queries)
+    selector = f'"{service}"'
+    return sorted(queries, key=lambda query: selector not in query)
+
+
 async def probe_runbook_queries(
     runbook_text: str,
     *,
     tool_caller: Optional[Callable[[str, Dict[str, Any]], Awaitable[Any]]],
     alert_started_at: Optional[datetime] = None,
+    alert_service: Optional[str] = None,
     now: Optional[datetime] = None,
     limit: int = MAX_PROBED_QUERIES,
     timeout_seconds: float = PROBE_TIMEOUT_SECONDS,
@@ -280,7 +298,9 @@ async def probe_runbook_queries(
     """
     if tool_caller is None:
         return ""
-    queries = extract_promql(runbook_text)[: max(0, int(limit))]
+    queries = _alert_service_first(extract_promql(runbook_text), alert_service)[
+        : max(0, int(limit))
+    ]
     if not queries:
         return ""
     start, end = probe_window(alert_started_at, now=now or datetime.now(timezone.utc))

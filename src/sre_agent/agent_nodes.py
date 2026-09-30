@@ -34,6 +34,7 @@ from .incident_timeline import (
 from .investigation_limits import investigation_limits
 from .narrative import (
     SPECIALIST_LABELS,
+    alert_service,
     alert_start_time,
     build_specialist_task_brief,
     narrate_specialist_finding,
@@ -620,6 +621,7 @@ class BaseAgentNode:
                 runbook_text,
                 tool_caller=caller,
                 alert_started_at=alert_start_time(state.get("alert_context")),
+                alert_service=alert_service(state.get("alert_context")),
             )
         except Exception as probe_error:
             logger.warning(

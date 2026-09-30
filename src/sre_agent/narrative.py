@@ -223,6 +223,14 @@ def runbook_text_for_alert(
     ).strip()
 
 
+def alert_service(alert_context: Any) -> Optional[str]:
+    """The service the alert names, from its field or its labels, or None."""
+    data = _alert_to_dict(alert_context)
+    labels = data.get("labels") if isinstance(data.get("labels"), dict) else {}
+    service = _safe_text(data.get("service") or labels.get("service")).strip()
+    return service or None
+
+
 def alert_start_time(alert_context: Any) -> Optional[datetime]:
     """When the alert says it started, as a UTC datetime, or None.
 

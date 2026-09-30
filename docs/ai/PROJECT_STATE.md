@@ -54,13 +54,18 @@ every open fix, verify offline, and only then spend.
   safety PASS; unpaired trial + 61-span root trace pass `verify_root_traces`.
 
 ## Active problem
-Run 4's diagnosis INSUFFICIENT_EVIDENCE (null `fault_mode`) was a producer
-gap, now fixed in the working tree (uncommitted): `_reflector_node` took
-`kubernetes_agent or metrics_agent`, and the infra prescan always yields a
-kubernetes result, so Prometheus findings never reached the Reflector;
-runbook findings had no slot. The Reflector repeated the alert's false 11.8%.
-Now every specialist gets its own labelled slot, and TOOL UNAVAILABLE is
-dropped per specialist. Containers rebuilt with the fix. Unconfirmed live.
+Run 5 (2026-09-30, $1.21, negative control): Reflector fix `a66a643`
+confirmed live (it cited the metrics lane), but `fault_mode` came out
+`charge_failure` and ACT planned a restart (suppressed only because the alert
+cleared). Two causes, fixed in the working tree (uncommitted), containers
+rebuilt:
+- The runbook probe measured the first 2 runbook queries in document order
+  (provider_up + *checkout's* ratio), never payment's. It now puts queries
+  selecting the alert's service first (`runbook_probe._alert_service_first`).
+- The harness read the transcript before the summary/ACT events landed
+  (alert self-cleared → `resolved` mid-investigation). It now waits for the
+  root span to finalize first (`_collect_final_evidence`,
+  `BENCH_INVESTIGATION_SETTLE_SEC`, default 600).
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -72,9 +77,9 @@ dropped per specialist. Containers rebuilt with the fix. Unconfirmed live.
 
 ## Verification commands and latest results
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; local Mac
-  `master` is stale. Sre-automation is 6 commits ahead of origin, meridian 3
+  `master` is stale. Sre-automation is 7 commits ahead of origin, meridian 3
   (not pushed).
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2596 passed, 6 skipped.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2600 passed, 6 skipped.
 - `.venv/bin/ruff check <files>` — compare against the pre-change count.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
@@ -90,7 +95,7 @@ dropped per specialist. Containers rebuilt with the fix. Unconfirmed live.
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
-  Measured ≈$0.85–$1.00 per trial; ≈$5.40 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
+  Measured ≈$0.85–$1.00 per trial; ≈$6.60 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
   ~$40+) is not authorized.
 - Structured grading cannot return PASS until `causal_chain` has a calibrated
   judge; no calibration artifact exists, so every run rounds policy severity up.
@@ -105,6 +110,7 @@ dropped per specialist. Containers rebuilt with the fix. Unconfirmed live.
   restart — cause not investigated.
 
 ## Next bounded task
-Commit the Reflector fix. Then, only with explicit approval (≈$0.95), re-run
-the negative control (`/home/vscode/run4.sh`) and confirm the diagnosis
-grade passes with `fault_mode` = `sub_threshold`.
+Commit the probe and harness fixes. Then, only with explicit approval
+(≈$1.20), re-run the negative control (`/home/vscode/run5.sh` pattern, new
+log name) and check: diagnosis `sub_threshold`, no restart planned, and a
+grade row that contains summary and ACT events.

@@ -581,3 +581,50 @@ def test_the_widest_probe_window_still_fits_under_the_runtime_cap():
     from sre_agent.namespace_scope import MAX_INVESTIGATION_WINDOW
 
     assert MAX_PROBE_WINDOW < MAX_INVESTIGATION_WINDOW
+
+
+# --- the alerting service's own queries are measured first ------------------
+
+SHARED_RUNBOOK = """
+```promql
+min(payment_provider_up{service="payment-service"})
+```
+
+```promql
+sum(rate(http_errors_total{service="checkout-service"}[5m])) / clamp_min(sum(rate(http_requests_total{service="checkout-service"}[5m])), 1)
+```
+
+```promql
+sum(rate(http_errors_total{service="payment-service"}[5m])) / clamp_min(sum(rate(http_requests_total{service="payment-service"}[5m])), 1)
+```
+"""
+
+
+def test_the_alerting_service_is_measured_before_a_neighbour():
+    """E2E Run 5: the payment ratio sat third and was never measured."""
+    caller = _Recorder(result="[]")
+
+    asyncio.run(
+        probe_runbook_queries(
+            SHARED_RUNBOOK,
+            tool_caller=caller,
+            alert_started_at=None,
+            alert_service="payment-service",
+        )
+    )
+
+    queried = [args["query"] for _, args in caller.calls]
+    assert len(queried) == 2
+    assert all('"payment-service"' in query for query in queried)
+    assert any("http_errors_total" in query for query in queried)
+
+
+def test_without_a_service_the_runbook_order_stands():
+    caller = _Recorder(result="[]")
+
+    asyncio.run(
+        probe_runbook_queries(SHARED_RUNBOOK, tool_caller=caller, alert_started_at=None)
+    )
+
+    queried = [args["query"] for _, args in caller.calls]
+    assert '"checkout-service"' in queried[1]
