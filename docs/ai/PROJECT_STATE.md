@@ -7,7 +7,7 @@ writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
 **End-to-end runs through Slack.** Three live E2E runs (2026-09-28/29, ≈$4.45
-total) drove alert → incident → approval → remediation → verified recovery.
+total) and Run 4 (2026-09-30, $0.95) drove alert → incident → approval → remediation → verified recovery.
 Their defects and the follow-up free fixes are done. The standing rule: batch
 every open fix, verify offline, and only then spend.
 
@@ -48,9 +48,16 @@ every open fix, verify offline, and only then spend.
   alert group + ksm scrape job, captured from live — repo and cluster agree.
   Edge MCP images rebuilt from `services/edge_mcp_servers`. Run traces
   already persist in the `platform_reports_data` volume (not a defect).
+- Run 4 (negative control, `BENCH_FAULT_MODE=automatic`, v3 holdout,
+  `BENCH_ALLOW_HOLDOUT=1`): injected 6.9% error rate; NO_ACTION_CORRECT;
+  measured SEV4, policy SEV3 (439a7e7 confirmed live); severity, remediation,
+  safety PASS; unpaired trial + 61-span root trace pass `verify_root_traces`.
 
 ## Active problem
-None open. Awaiting approval for the next paid trial (see Next bounded task).
+Run 4's structured grade marks diagnosis INSUFFICIENT_EVIDENCE ("diagnosis
+requires service and fault_mode strings"); Run 3 passed it. The agent's
+output lacked those fields — cause unknown (variance or a producer gap).
+Diagnosis confidence 0.42.
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -80,7 +87,7 @@ None open. Awaiting approval for the next paid trial (see Next bounded task).
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
-  Measured ≈$0.85–$1.00 per trial. Calibration (≥2 trials × 22 scenarios,
+  Measured ≈$0.85–$1.00 per trial; ≈$5.40 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
   ~$40+) is not authorized.
 - Structured grading cannot return PASS until `causal_chain` has a calibrated
   judge; no calibration artifact exists, so every run rounds policy severity up.
@@ -95,7 +102,8 @@ None open. Awaiting approval for the next paid trial (see Next bounded task).
   restart — cause not investigated.
 
 ## Next bounded task
-With approval, one paid trial (≈$0.85): the negative control
-`payment_subthreshold_charge_errors` with `BENCH_FAULT_MODE=automatic`,
-expecting reported SEV4, gated SEV3, no action, and an unpaired trial +
-root-trace row that `verify_root_traces` accepts.
+Offline, no spend: from Run 4's trace
+(`reports/run-trace/880bf634733d4153ad8eec95dd59ab74.jsonl`, incident
+`c986154e`) and grades row, find why `benchmark_evaluation` lacked the
+diagnosis `service`/`fault_mode` strings, compare with Run 3, and fix the
+producer if it is a gap rather than model variance.
