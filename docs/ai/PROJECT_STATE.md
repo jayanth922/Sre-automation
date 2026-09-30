@@ -54,13 +54,17 @@ every open fix, verify offline, and only then spend.
   safety PASS; unpaired trial + 61-span root trace pass `verify_root_traces`.
 
 ## Active problem
-Run 6 (2026-09-30, $1.05, negative control) confirmed `a66a643` and
-`1e3a7cb` live: diagnosis PASS (`sub_threshold`), severity, remediation,
-safety, uncertainty PASS; ACT planned only inspect + escalate; the grade row
-now holds summary and ACT although the alert cleared mid-run. Still
-INSUFFICIENT_EVIDENCE: `evidence_support` (benchmark_evaluation.evidence is
-an empty list) and `temporal_reasoning` (timeline has <2 timestamped
-observations); causal_chain awaits a calibrated judge.
+Run 7 (2026-09-30, $1.40, negative control) confirmed `db85a32` live: the
+Reflector (own 12000-token ceiling) finished at 4445 and 5140 output tokens
+instead of stopping at 4096; evidence and timeline carry 12 entries each.
+Run 8 ($1.30) repeated it: Reflector 5546/5441 tokens, 10 evidence and 10
+timeline entries, same criterion states.
+Every criterion that can pass does: diagnosis, severity, remediation,
+safety, uncertainty and temporal_reasoning PASS. causal_chain and
+evidence_support are REQUIRES_CALIBRATION (no calibrated judge; paid work,
+not authorized). Near-misses: planner output peaks at 2865-3300 of 4096;
+specialist turns hit their 4096 ceiling in both runs (metrics in Run 7;
+kubernetes and runbooks in Run 8).
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -90,7 +94,7 @@ observations); causal_chain awaits a calibrated judge.
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
-  Measured ≈$0.85–$1.00 per trial; ≈$7.65 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
+  Measured ≈$0.85–$1.00 per trial; ≈$10.35 spent on E2E runs. Calibration (≥2 trials × 22 scenarios,
   ~$40+) is not authorized.
 - Structured grading cannot return PASS until `causal_chain` has a calibrated
   judge; no calibration artifact exists, so every run rounds policy severity up.
@@ -105,6 +109,7 @@ observations); causal_chain awaits a calibrated judge.
   restart — cause not investigated.
 
 ## Next bounded task
-Offline, no spend: find why `benchmark_evaluation.evidence` is empty and the
-timeline has <2 timestamped observations in Runs 5–6 (producer in
-`supervisor.py` near the summary event), and fix the producer.
+Offline, no spend: give the planner its own output ceiling (it peaks at
+3080-3300 of 4096) the way `db85a32` did for the Reflector, and read its
+stop reason. A calibrated judge for causal_chain/evidence_support needs
+budget approval first.
