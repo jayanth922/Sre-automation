@@ -15,15 +15,30 @@ Build the blinded review set from raw grader evidence without exposing scenario
 IDs or ground truth to either labeler:
 
 ```bash
-umask 077
-openssl rand 32 > reports/calibration-blind.key
-uv run python -m benchmarks.calibration_cases reports/sre-bench-grades.jsonl \
-  --blind-key-file reports/calibration-blind.key \
-  --review-output reports/calibration-review.jsonl \
-  --private-mapping-output reports/calibration-private-map.jsonl \
-  --manifest-output reports/calibration-manifest.json \
-  --limit 20
+OUT=reports/judge-calibration; mkdir -p "$OUT"
+# Tool returns, so evidence claims can be checked: verified, content-addressed.
+docker exec -i sre-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -F "|"' <<'SQL' \
+  | PYTHONPATH=evals:src .venv/bin/python -m benchmarks.transcript_store "$OUT/transcripts"
+select content_sha256, replace(encode(payload, 'base64'), chr(10), '')
+from evidence_artifacts where kind = 'specialist_tool_trace';
+SQL
+openssl rand 32 > "$OUT/blind.key"
+PYTHONPATH=evals .venv/bin/python -m benchmarks.calibration_cases \
+  $(find reports -name '*grades*.jsonl' -not -path "$OUT/*" | sort) \
+  --blind-key-file "$OUT/blind.key" \
+  --transcript-dir "$OUT/transcripts" \
+  --review-output "$OUT/review.jsonl" \
+  --private-mapping-output "$OUT/private-map.jsonl" \
+  --manifest-output "$OUT/manifest.json"
+# The Codespace's default ACL overrides umask; set the modes explicitly.
+chmod 600 "$OUT/blind.key" "$OUT/private-map.jsonl"
 ```
+
+Several grader files may be given; a run copied into more than one report
+directory becomes one case. With `--transcript-dir`, each case carries the
+specialist tool calls and returns its findings reference (thinking blocks
+dropped), and the manifest counts attached, missing, and cases that reference
+none. See `CALIBRATION_DESIGN.md` for the rubric and agreement plan.
 
 The HMAC key makes selection reproducible without putting scenario identity in
 the review artifact. The private map and key stay with the evaluation owner;

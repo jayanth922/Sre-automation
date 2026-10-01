@@ -6,10 +6,9 @@ agent. Deterministic policy and durable state — not model prose — control
 writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-**End-to-end runs through Slack — done.** Runs 1–9 (2026-09-28/30) drove
-alert → incident → approval → remediation → verified recovery, and the
-negative control; all found defects are fixed. Standing rule: batch every
-open fix, verify offline, and only then spend.
+**Calibrated judge for `causal_chain` / `evidence_support` — free phase.**
+E2E runs through Slack are done (Runs 1–9, 2026-09-28/30; all found defects
+fixed). Standing rule: batch every open fix, verify offline, then spend.
 
 ## Current architecture and invariants
 - Layout: `src/` (agent, API), `apps/dashboard/`, `services/` (MCP, backend),
@@ -32,33 +31,32 @@ open fix, verify offline, and only then spend.
 - v2 benchmark (22 scenarios, oracles, structured grading, paired stats,
   ablations, content-addressed release gate); two paid campaigns, both
   NOT_DEMONSTRATED (2 valid pairs each). Do not quote #70's MTTR.
-- E2E Run 1–3 fixes (Sre-automation `757bdc2`, `6adaf3c`, `bfa7043`,
-  `439a7e7`; meridian `7aa8d68`, `a23e9b4`): alert cleared by the crash it
-  reports no longer closes the incident (workload crash probe); resolution and
-  executor-output defects; payment restart no longer clears a provider
-  outage; inventory alert ignores organic 404s; gateway metric label bounded.
+- E2E Runs 1–9 fixes (Sre-automation through `196eb31`, incl. `439a7e7`
+  severity split, `db85a32` reflector, `196eb31` output ceiling; meridian
+  `7aa8d68`, `a23e9b4`) — details in git history. Negative control
+  `payment_subthreshold_charge_errors`: NO_ACTION_CORRECT every run (3–9);
+  other six deterministic criteria PASS since Run 7.
 - Unpaired evidence: smoke runs write `reports/sre-bench-unpaired-{trials,
   root-traces}.jsonl` (`BENCH_RECORD_UNPAIRED`, default on), never mixed
-  into the paired file. Meridian repo and cluster agree on
-  kube-state-metrics and the `cluster-resources` alerts. Run traces persist
-  in the `platform_reports_data` volume.
-- Negative control `payment_subthreshold_charge_errors` (Runs 3–9):
-  NO_ACTION_CORRECT every run; measured SEV4, policy SEV3 (`439a7e7`);
-  reflector and output-ceiling fixes (`db85a32`, `196eb31`) confirmed live.
+  into the paired file. Run traces persist in `platform_reports_data`.
 
 ## Active problem
-None open on the E2E path. Run 9 (2026-09-30, $1.24, negative control,
-automatic, v3 holdout) confirmed `196eb31` live: NO_ACTION_CORRECT, 63-span
-trace complete, no lane cut off (no `output_truncated`, no "model turn
-stopped on" warnings). Peaks: planning 3016, specialist 3876, reflector
-5818/5227 — nothing reached 4096, so the 8192 headroom was not exercised
-live; the cut-off-after-tool-calls path is covered offline for both stop
-spellings (`length` via LiteLLM, `max_tokens`) in
-`tests/test_specialist_output_ceiling.py`. Criterion states unchanged since
-Run 7: diagnosis, severity, remediation, safety, uncertainty,
-temporal_reasoning PASS; causal_chain and evidence_support
-REQUIRES_CALIBRATION (no calibrated judge). Further negative-control repeats
-add nothing; stop spending on them.
+Both criteria are `REQUIRES_CALIBRATION` because
+`structured_grading._semantic_criterion` is a shape check with no judge, so
+no run can be better than `INCOMPLETE`. Design:
+`evals/benchmarks/graders/CALIBRATION_DESIGN.md` (rubric judged against the
+agent's own tool transcripts, never scenario ground truth — `diagnosis` owns
+that; labels in the existing `grader_calibration` contract).
+- `run-trace/*.jsonl` holds no payloads — only a `root_trace_id` join key.
+  Claims live in grader records; tool returns in Postgres `evidence_artifacts`.
+- Branch `judge-calibration` (worktree `/workspaces/sre-judge-calibration`):
+  `calibration_cases` no longer aborts a file on identical *empty* outputs
+  (that rejected all of `reports/sre-bench-grades.jsonl`), takes several
+  grader files with cross-file dedupe, and attaches sha-verified transcripts;
+  new `benchmarks.transcript_store` builds the store from a `psql` export.
+- Built set (2026-10-01): `reports/judge-calibration/` — 25 blinded cases
+  (6 negative-control), 114 transcripts attached, 0 missing; 9 cases have an
+  empty evidence list (causal_chain only). Key and private map are 0600.
 
 ## Relevant files
 - `src/sre_agent/{severity_engine,act_phase,approval_flow,policy_gate,
@@ -72,7 +70,7 @@ add nothing; stop spending on them.
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; local Mac
   `master` is stale. Sre-automation is pushed through `196eb31`; meridian
   is 3 commits ahead (not pushed).
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2610 passed, 6 skipped.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2621 passed, 6 skipped (2026-10-01, `judge-calibration`).
 - `.venv/bin/ruff check <files>` — compare against the pre-change count.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
@@ -104,8 +102,8 @@ add nothing; stop spending on them.
   found k3s already running (something else starts it) — not investigated.
 
 ## Next bounded task
-Milestone: a calibrated judge for `causal_chain` and `evidence_support`.
-Free first: rubric, a hand-labelled reference set from Run 3–9 traces
-(`reports/run-trace/` in `platform_reports_data`), judge harness and an
-agreement metric verified offline. Only then price the paid calibration
-campaign (last estimate ~$40+) and ask for approval.
+Hand-label the 25 cases in `reports/judge-calibration/review.jsonl` (two
+blind passes ≥48h apart, distinct `labeler_id`s), adjudicate, freeze. Then,
+still free: perturbation generator, deterministic `locatable` pre-check, judge
+harness verified against a stub judge. Only then price one judge pass and the
+paid calibration campaign (last estimate ~$40+) and ask for approval.
