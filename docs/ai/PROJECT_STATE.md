@@ -21,6 +21,10 @@ fixed). Standing rule: batch every open fix, verify offline, then spend.
   `policy_severity`, which is what `gate_context` and the policy gate read.
   Unknown telemetry still raises the reported value. See DECISIONS.md.
 - Recovery is the scenario's Prometheus probe, never incident status.
+- **Runbooks are the only fixes (b5f774d).** `runbook_authority` passes a plan
+  only if one branch of a reviewed runbook listing the alert names every
+  mutating action's executor tool; otherwise the plan becomes an escalation
+  carrying `runbook_gap`. `RB-AUTO`/Auto-generated pages are drafts.
 - Slack is the action surface; the console observes and configures. No
   env setup for users — everything configurable in Settings.
 - Span completeness ≠ outcome completeness: a correct no-action run has no
@@ -102,6 +106,9 @@ that; labels in the existing `grader_calibration` contract).
   found k3s already running (something else starts it) — not investigated.
 
 ## Next bounded task
+Before the rehearsal: dump the live Notion corpus (`dump_notion_runbook_corpus.py`)
+and confirm the four Meridian pages match `examples/meridian/runbooks/` — the
+live High Latency page is stale and the PaymentProviderDown page is unverified.
 Hand-label the 25 cases in `reports/judge-calibration/review.jsonl` (two
 blind passes ≥48h apart, distinct `labeler_id`s), adjudicate, freeze. Then,
 still free: perturbation generator, deterministic `locatable` pre-check, judge
