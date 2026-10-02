@@ -420,11 +420,15 @@ def _create_llm(provider: str = "anthropic", router_enabled: Optional[bool] = No
     kwargs.setdefault(
         "max_tokens", investigation_limits().specialist_max_output_tokens
     )
+    # The cluster's Settings model arrives as ``model_id``. It must anchor the
+    # tier: without it the router resolved BALANCED to its fixed default, which
+    # then overwrote ``model_id``, so specialists ignored the operator's choice.
     return route_llm(
         TaskType.SPECIALIST,
         provider=provider,
         use_fallback=False,
         router_enabled=router_enabled,
+        anchor_model=kwargs.get("model_id"),
         **kwargs,
     )
 
