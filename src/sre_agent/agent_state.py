@@ -333,6 +333,15 @@ class RemediationPlan(BaseModel):
             "recommendation"
         ),
     )
+    runbook_gap: Optional[str] = Field(
+        None,
+        description=(
+            "Set only by the planner's runbook check; leave null. Carries why "
+            "no runbook prescribes a fix for this incident, so the operator is "
+            "told automated remediation is not possible instead of being shown "
+            "the escalation as a considered fix"
+        ),
+    )
 
     _decode_containers = field_validator(
         "actions", "verification_metrics", mode="before"

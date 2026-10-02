@@ -249,6 +249,17 @@ def format_approval_request(
             f"```{detail}```",
         ]
 
+    # No runbook prescribes a fix, so the plan was reduced to an escalation.
+    # Lead with that: the escalation is not the agent's remedy, it is the
+    # absence of one.
+    runbook_gap = report_payload.get("runbook_gap")
+    if runbook_gap:
+        lines += [
+            "",
+            ":closed_book: *Automated remediation is not possible.* "
+            + " ".join(str(runbook_gap).split()),
+        ]
+
     lines += [
         "",
         f"Proposed plan ({len(reports)} action{plural}):",

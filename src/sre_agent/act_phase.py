@@ -433,6 +433,8 @@ class ActReport:
     # placeholder rather than anything the planner produced. Carried through
     # so the approval message can say so — see RemediationPlan.planning_failed.
     planning_failed: Optional[str] = None
+    # Why no runbook prescribes a fix — see RemediationPlan.runbook_gap.
+    runbook_gap: Optional[str] = None
     policy_severity: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -865,6 +867,7 @@ def build_act_report(
         calibration_artifact_sha256=artifact_sha256,
         autonomy_blocked_reason=autonomy_blocked_reason,
         planning_failed=(_get(plan, "planning_failed") or None),
+        runbook_gap=(_get(plan, "runbook_gap") or None),
     )
 
 
