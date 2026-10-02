@@ -24,6 +24,7 @@ pre-recorded.
 
 ```bash
 BENCH_SCENARIOS=payment_provider_outage BENCH_RUNS_PER_SCENARIO=1 \
+BENCH_ALLOW_HOLDOUT=1 BENCH_INCIDENT_TIMEOUT_SEC=2700 \
 BENCH_DATASET_VERSION=v3 BENCH_DATASET_SPLIT=holdout BENCH_FAULT_MODE=automatic \
   .venv/bin/python evals/benchmarks/sre_bench.py
 ```
