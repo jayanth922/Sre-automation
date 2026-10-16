@@ -24,19 +24,34 @@ are required, and `overall_status` is `PASS` only when every criterion is
 
 Build the set with `benchmarks.transcript_store` and
 `benchmarks.calibration_cases --transcript-dir` (commands in `README.md`).
-2026-10-01: 25 reviewable cases from 18 files (20 skipped: 17 without a
-structured block, 3 on an older rubric digest), 549 transcripts stored, 114
-attached, none missing. Six cases are the Runs 3-9 negative control.
-Nine cases have an empty `evidence` list; the grader already returns
-`INSUFFICIENT_EVIDENCE` for them, so they count for `causal_chain` only.
+The Kubernetes prescan posts no finding, so its transcripts are attached by the
+`root_trace_id` they share with the findings (the export's run index).
+
+2026-10-16: 25 reviewable cases from 18 files (21 skipped: 18 without a
+structured block, 3 on an older rubric digest), 550 transcripts stored, 143
+attached -- 29 of them prescan transcripts found by run -- none missing, no case
+with an unattached source. Six cases are the Runs 3-9 negative control. Nine
+cases have an empty `evidence` list; the grader already returns
+`INSUFFICIENT_EVIDENCE` for them, so they count for `causal_chain` only. The
+2026-10-01 build lacked the prescan transcripts, so a labeller could not have
+found the `list_events`/`list_pods` calls ten cases cite; it is kept under
+`superseded-2026-10-01/` and must not be labelled. The rebuild used the same
+key: the private map is byte-identical, so case ids did not change.
 
 ## 3. Rubric
 
-The judge, like the labellers, sees only the review case: the agent's chain,
-evidence, findings and the tool transcripts. No scenario id, fault, expected
-evidence, oracle result or other criterion's grade. Whether the agent found the
-*right* fault is `diagnosis`'s job; these two criteria ask whether the
-reasoning it gave is honest and holds together.
+The judge sees less than the labellers. `benchmarks.judge_view` keeps the alert,
+the claim (`diagnosis`, `causal_chain`, `evidence`), each specialist's final
+response and every tool call and return -- never the narrator's prose, the
+block's `timeline`/`uncertainty`, a scenario id, fault, expected evidence,
+oracle result or other criterion's grade (section 4, item 5, says why). Whether
+the agent found the *right* fault is `diagnosis`'s job; these two criteria ask
+whether the reasoning it gave is honest and holds together.
+
+Views are not truncated: dropping the return an entry cites would manufacture an
+unfaithful verdict. Real views run 49k-654k characters (median 116k); the
+largest is a 14-transcript run. A view over the judge's context budget is an
+abstention (`INSUFFICIENT_EVIDENCE`), counted with the others.
 
 **causal_chain** -- each link, then the chain:
 
@@ -66,7 +81,17 @@ deterministic pre-check before any model sees the case:
 It fails an entry only when a catalogued MCP tool it names was never called, or
 every call to it disagrees on a named argument; prose references, unknown names
 and cases with missing transcripts are `UNCHECKABLE` and stay with the judge.
-Its results are kept out of `review.jsonl` so they cannot bias labellers.
+Query text (`logql`, `query`, `pattern`) never decides a verdict -- the agent
+abbreviates the LogQL it ran -- and a timestamp without a zone is UTC, as the
+MCP servers read it. Its results are kept out of `review.jsonl` so they cannot
+bias labellers.
+
+2026-10-16, rebuilt set: 11 `PASS`, 0 `FAIL`, 14 `UNCHECKABLE`; 48 entries
+located, 103 left to the judge (91 references are not in `tool (key=value)`
+form). Before the prescan transcripts and those two rules, 10 of 25 cases failed,
+every one falsely. On the 96 perturbed copies, all 16 `invent_reference` copies
+fail and nothing else does; `lift_evidence` draws only donor entries the check
+cannot read, so those 16 test the judge alone.
 
 ## 4. Hand-labelling
 
@@ -90,7 +115,10 @@ Its results are kept out of `review.jsonl` so they cannot bias labellers.
    prose (`summary_text`, the summary event's `content`, `narrative`,
    `hypothesis`) still states the original. The judge therefore sees both
    strata without that prose, or it can find perturbations by diffing prose
-   against the block -- which real failures never allow.
+   against the block -- which real failures never allow. `judge_view --sources`
+   fails closed if a copy's view differs from its source's outside the claim.
+   2026-10-16: 96 copies (25 swap, 25 drop, 14 number, 16 invented reference,
+   16 lifted evidence), each differing from its source only in the claim.
 
 ## 5. Agreement and the gate
 
@@ -113,8 +141,8 @@ Its results are kept out of `review.jsonl` so they cannot bias labellers.
 
 ## 6. Next steps
 
-1. Label the 25 cases (two blind passes), adjudicate, freeze. Free.
-2. Perturbation generator and the deterministic `locatable` pre-check. Built
-   and offline-tested; not yet run on the real set. Free.
+1. Label the 25 rebuilt cases (two blind passes), adjudicate, freeze. Free.
+2. Done 2026-10-16: perturbation generator, `locatable` pre-check and judge
+   view, run on the real set (sections 2-4).
 3. Judge harness and metrics, verified against a stub judge. Free.
 4. Price one judge pass over the frozen set and ask before spending.
