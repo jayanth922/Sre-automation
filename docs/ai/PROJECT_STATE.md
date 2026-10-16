@@ -7,7 +7,7 @@ writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
 1. **Demo rehearsal** (`docs/DEMO.md`, Act 1 `payment_provider_outage`) —
-   blocked on credentials, see below.
+   key fixed; waiting on the Slack invite and spend approval.
 2. **Calibrated judge for `causal_chain` / `evidence_support`** — free phase.
 Standing rule: batch every open fix, verify offline, then spend.
 
@@ -39,27 +39,28 @@ Standing rule: batch every open fix, verify offline, then spend.
   #70's MTTR.
 - E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`;
   negative control NO_ACTION_CORRECT in Runs 3–9.
-- Branch `judge-calibration` (pushed to `ccb7956`, later commits local; no PR):
+- Branch `judge-calibration` (origin at `f01cb70`, later commits local; no PR):
   calibration review-set builder and transcript store, judge design
   (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
   specialist model anchor (a7ec4ca), runbook-only remediation.
-- 2026-10-02: Codespace image rebuilt from this branch (runbook-only live;
-  rollback tag `sentinel/api:pre-runbook-only`). Live Notion corpus checked:
-  the four Meridian pages match `examples/meridian/runbooks/`; 17 RB-AUTO
-  drafts; 5 generic pages authorize nothing. OOM and High Latency `Alert Name`
-  properties corrected and read back.
-- Review set (2026-10-01): `reports/judge-calibration/`, 25 blinded cases
-  (6 negative-control), 114 transcripts attached. Key and map are 0600.
+- 2026-10-02: Codespace image rebuilt from this branch (rollback tag
+  `sentinel/api:pre-runbook-only`); live Notion runbooks match
+  `examples/meridian/runbooks/`, `Alert Name` properties corrected.
+- Review set rebuilt 2026-10-16 (`reports/judge-calibration/`, same key, same
+  25 case ids): 143 transcripts attached, 29 of them K8s prescan transcripts
+  found by `root_trace_id` (ba73dce). The 2026-10-01 copy lacked them and is
+  in `superseded-2026-10-01/` — never label it.
 - `test_runbook_scenario_coverage.py`: each v3 scenario needing a fix has a
   prescribing runbook.
-- `benchmarks.evidence_locator` (`locatable` pre-check) and
-  `benchmarks.perturbations` (FAIL-by-construction copies, 5 kinds):
-  offline-tested, not yet run on the real set. Commands: `graders/README.md`.
+- On the real set: locator 11 PASS / 0 FAIL / 14 UNCHECKABLE; 96 perturbed
+  copies; `judge_view` (6dbd932) checked leak-free. Details:
+  `CALIBRATION_DESIGN.md` §2–4; commands: `graders/README.md`.
 
 ## Active problem
-- **Rehearsal blocked** (2026-10-02, ≈$0): the API rejected the `.env` key
-  (`sk-ant-usr-…`, sent as `x-api-key`) with 401 on every call; the
-  cluster's stored key was cleared. Slack posts fail `not_in_channel`.
+- **Rehearsal**: the `.env` key works again (2026-10-16, two 1-token probes
+  returned 200; the earlier 401's cause is unknown). `ANTHROPIC_MODEL` in `.env`
+  is retired (404) but unused: the cluster passes `claude-sonnet-5`. Slack
+  posts failed `not_in_channel` (bot not in `#all-meridian`).
 - **No run can grade better than `INCOMPLETE`**:
   `structured_grading._semantic_criterion` is a shape check with no judge.
 
@@ -67,16 +68,18 @@ Standing rule: batch every open fix, verify offline, then spend.
 - `src/sre_agent/{runbook_authority,graph_builder,approval_flow,policy_gate,
   mutation_gateway}.py`, `docs/DEMO.md`.
 - `evals/benchmarks/{sre_bench,calibration_cases,transcript_store,
-  evidence_locator,perturbations}.py`.
+  evidence_locator,perturbations,judge_view}.py`.
 - `infra/local/docker-compose.yaml` (project `platform`).
 - Meridian repo `/workspaces/meridian-shop-deploy` (3 commits ahead, unpushed).
 
 ## Verification commands and latest results
-- Work happens on Codespace `cuddly-winner-659v67gv695hrxjw` (shut down
-  since 2026-10-02); after a restart run `scripts/dev/codespace_boot.sh`.
-  It has no git credentials: push via a git bundle from the Mac.
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2642 passed,
-  6 skipped (2026-10-02, `judge-calibration`).
+- Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; after a restart
+  run `scripts/dev/codespace_boot.sh`. It has no git credentials: push via a
+  git bundle from the Mac. Its `/workspaces/Sre-automation` checkout is on
+  `master`; the new eval modules run from `/home/vscode/judge-run/evals`
+  first on `PYTHONPATH` (copied file by file, sha256-checked).
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2714 passed,
+  6 skipped (2026-10-16, `judge-calibration` at 564f243).
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
   --force-recreate temporal-worker sre-agent-api`. API health: `/ping` on 8080.
@@ -99,14 +102,13 @@ Standing rule: batch every open fix, verify offline, then spend.
 - kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
 
 ## Next bounded task
-1. User: put a valid Console key in Settings (or `.env` + container
-   restart) and `/invite` the bot to `#all-meridian`.
+1. User: `/invite` the bot to `#all-meridian`.
 2. On approval, rehearse Act 1 (~$1.00–1.50, stop at $2); leave
    `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
-3. With sign-off, open a PR merging `judge-calibration` into `master`.
-4. Free judge work: hand-label the 25 cases (two blind passes ≥48h apart),
-   adjudicate, freeze. On the Codespace, run the locator and perturbations on
-   the real set and read one case's timeline to fix the judge view (where the
-   alert is; no narrator prose). Then the judge harness and §5 metrics of
-   `CALIBRATION_DESIGN.md`, verified against a stub judge. Only then price a
-   judge pass.
+3. On "push", push `judge-calibration`; with sign-off, open a PR into `master`.
+4. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
+   adjudicate, freeze.
+5. Free: judge harness and §5 metrics of `CALIBRATION_DESIGN.md` on the
+   judge views, combined with the locator (a locator FAIL decides
+   evidence_support), verified against a stub judge; an over-budget view
+   abstains. Only then price a judge pass.
