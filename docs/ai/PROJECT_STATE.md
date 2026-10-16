@@ -39,7 +39,7 @@ Standing rule: batch every open fix, verify offline, then spend.
   #70's MTTR.
 - E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`;
   negative control NO_ACTION_CORRECT in Runs 3–9.
-- Branch `judge-calibration` (pushed through `2455f69`; no PR):
+- Branch `judge-calibration` (PR #57 into `master`, open):
   calibration review-set builder and transcript store, judge design
   (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
   specialist model anchor (a7ec4ca), runbook-only remediation.
@@ -105,7 +105,7 @@ Standing rule: batch every open fix, verify offline, then spend.
 1. User: `/invite` the bot to `#all-meridian`.
 2. On approval, rehearse Act 1 (~$1.00–1.50, stop at $2); leave
    `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
-3. On "push", push `judge-calibration`; with sign-off, open a PR into `master`.
+3. Review and merge PR #57 (master lacks runbook-only remediation until then).
 4. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
    adjudicate, freeze.
 5. Free: judge harness and §5 metrics of `CALIBRATION_DESIGN.md` on the
