@@ -57,9 +57,9 @@ Standing rule: batch every open fix, verify offline, then spend.
   offline-tested, not yet run on the real set. Commands: `graders/README.md`.
 
 ## Active problem
-- **Rehearsal blocked** (2026-10-02, ≈$0): every model call got 401; the
-  `.env` key is `sk-ant-usr-`, not a Console key, and the cluster's stored
-  key was cleared. Slack posts fail `not_in_channel` in `#all-meridian`.
+- **Rehearsal blocked** (2026-10-02, ≈$0): the API rejected the `.env` key
+  (`sk-ant-usr-…`, sent as `x-api-key`) with 401 on every call; the
+  cluster's stored key was cleared. Slack posts fail `not_in_channel`.
 - **No run can grade better than `INCOMPLETE`**:
   `structured_grading._semantic_criterion` is a shape check with no judge.
 
