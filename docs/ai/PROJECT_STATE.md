@@ -39,10 +39,10 @@ Standing rule: batch every open fix, verify offline, then spend.
   #70's MTTR.
 - E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`;
   negative control NO_ACTION_CORRECT in Runs 3–9.
-- Branch `judge-calibration` (PR #57 into `master`, open):
-  calibration review-set builder and transcript store, judge design
+- Branch `judge-calibration`, merged into `master` by PR #57: calibration
+  review-set builder and transcript store, judge design
   (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
-  specialist model anchor (a7ec4ca), runbook-only remediation.
+  runbook-only remediation.
 - 2026-10-02: Codespace image rebuilt from this branch (rollback tag
   `sentinel/api:pre-runbook-only`); live Notion runbooks match
   `examples/meridian/runbooks/`, `Alert Name` properties corrected.
@@ -91,8 +91,10 @@ Standing rule: batch every open fix, verify offline, then spend.
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
   ≈$11.60 spent through Run 9. Calibration campaign (~$40+) not authorized.
-- `master` (`b09933c`) lacks `judge-calibration`: an image built from it
-  drops runbook-only remediation.
+- The specialist model anchor (a7ec4ca) was reverted before PR #57 merged:
+  `agent_nodes.py` is a protected tool file and the release gate blocks it
+  without a release-evidence bundle. No effect while the cluster uses
+  `claude-sonnet-5`; the Codespace image (2026-10-02) still contains it.
 - Rotate the Anthropic key and Slack token exposed in terminal output.
 - 3 of 22 scenarios need deploy/rollback evidence no injection creates.
 - Never stage `.agents/`, `.env.*` backups or `dashboard/`; never `git add -A`.
@@ -105,7 +107,8 @@ Standing rule: batch every open fix, verify offline, then spend.
 1. User: `/invite` the bot to `#all-meridian`.
 2. On approval, rehearse Act 1 (~$1.00–1.50, stop at $2); leave
    `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
-3. Review and merge PR #57 (master lacks runbook-only remediation until then).
+3. Re-land the model anchor in its own PR (revert its revert) once release
+   evidence exists; that evidence is a paid run, so price it first.
 4. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
    adjudicate, freeze.
 5. Free: judge harness and §5 metrics of `CALIBRATION_DESIGN.md` on the
