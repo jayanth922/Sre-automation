@@ -16,6 +16,7 @@ from benchmarks.structured_grading import (
     extract_structured_output,
     load_rubric,
 )
+from benchmarks.transcript_store import TraceOrigin, TranscriptStoreError, read_index
 
 SCHEMA_VERSION = 1
 EXPECTED_RUBRIC_SHA256 = load_rubric().sha256
@@ -94,6 +95,11 @@ class CalibrationCaseSet:
     transcripts_attached: Optional[int] = None
     transcripts_missing: Optional[int] = None
     cases_without_transcripts: Optional[int] = None
+    # Attached because they share a finding's root trace, not because a
+    # finding references them (the Kubernetes prescan).
+    transcripts_by_run: Optional[int] = None
+    # Cases whose summary names an internal source with no transcript attached.
+    cases_with_unattached_sources: Optional[int] = None
 
 
 def _sha256(data: bytes) -> str:
@@ -259,6 +265,7 @@ def build_case_set(
     blind_key: bytes,
     limit: Optional[int] = None,
     transcripts: Optional[Mapping[str, bytes]] = None,
+    trace_index: Sequence[TraceOrigin] = (),
 ) -> CalibrationCaseSet:
     """Build the blinded set from one grader file or several.
 
@@ -267,6 +274,8 @@ def build_case_set(
     than one is reviewed once. `transcripts` maps a specialist transcript's
     content digest to its canonical bytes (see `load_transcripts`); when given,
     each case carries the tool calls and returns its evidence cites.
+    `trace_index` (the store's `index.jsonl`) adds the transcripts no finding
+    references but the run produced.
     """
     if len(blind_key) < 32:
         raise CalibrationCaseError("blind key must contain at least 32 bytes")
@@ -349,7 +358,7 @@ def build_case_set(
     )
     if transcripts is None:
         return case_set
-    return attach_transcripts(case_set, transcripts)
+    return attach_transcripts(case_set, transcripts, trace_index)
 
 
 def _message_text(content: Any) -> str:
@@ -417,8 +426,38 @@ def transcript_digests(events: Sequence[Any]) -> list[str]:
     return digests
 
 
+def _root_trace_ids(events: Sequence[Any]) -> list[str]:
+    """The runs a case's findings came from, by their transcripts' root trace."""
+    roots: list[str] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("event_type") != "finding":
+            continue
+        payload = event.get("payload")
+        ref = payload.get("evidence_artifact_ref") if isinstance(payload, dict) else None
+        root = ref.get("root_trace_id") if isinstance(ref, dict) else None
+        if isinstance(root, str) and root and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _internal_sources(events: Sequence[Any]) -> list[str]:
+    """Specialists the summary says informed it without posting a finding."""
+    sources: list[str] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("event_type") != "summary":
+            continue
+        payload = event.get("payload")
+        named = payload.get("internal_evidence_sources") if isinstance(payload, dict) else None
+        for source in named if isinstance(named, list) else ():
+            if isinstance(source, str) and source not in sources:
+                sources.append(source)
+    return sources
+
+
 def attach_transcripts(
-    case_set: CalibrationCaseSet, transcripts: Mapping[str, bytes]
+    case_set: CalibrationCaseSet,
+    transcripts: Mapping[str, bytes],
+    trace_index: Sequence[TraceOrigin] = (),
 ) -> CalibrationCaseSet:
     """Give each case the tool returns its evidence claims can be checked against.
 
@@ -428,14 +467,31 @@ def attach_transcripts(
     still reviewable for causal_chain, and the manifest says how many evidence
     judgments rest on missing returns. Runs that predate durable transcripts
     reference none at all and are counted separately.
+
+    Findings reference only the visible specialists' transcripts. The
+    Kubernetes prescan posts no finding, yet the summary cites its calls, so
+    every indexed transcript sharing a finding's root trace is attached too,
+    in the order the run stored them. A source the summary names
+    (`internal_evidence_sources`) that still has no transcript is listed in
+    `unattached_sources`: the case's transcripts are then known to be
+    incomplete, and nothing may conclude a cited call never happened.
     """
-    attached = missing = without = 0
+    by_run: dict[str, list[str]] = {}
+    for origin in sorted(trace_index):
+        by_run.setdefault(origin.root_trace_id, []).append(origin.sha256)
+    attached = missing = without = from_runs = unattached_cases = 0
     cases = []
     for case in case_set.review_cases:
         review_input = case["review_input"]
-        digests = transcript_digests(review_input["timeline_events"])
+        events = review_input["timeline_events"]
+        digests = transcript_digests(events)
+        referenced = len(digests)
+        for root in _root_trace_ids(events):
+            for digest in by_run.get(root, ()):
+                if digest not in digests:
+                    digests.append(digest)
         rendered = []
-        for digest in digests:
+        for position, digest in enumerate(digests):
             canonical = transcripts.get(digest)
             if canonical is None:
                 missing += 1
@@ -446,7 +502,11 @@ def attach_transcripts(
                 )
             rendered.append(render_transcript(canonical))
             attached += 1
+            from_runs += int(position >= referenced)
         without += int(not digests)
+        present = {transcript.get("source") for transcript in rendered}
+        unattached = [s for s in _internal_sources(events) if s not in present]
+        unattached_cases += int(bool(unattached))
         cases.append(
             {
                 **case,
@@ -454,6 +514,7 @@ def attach_transcripts(
                     **review_input,
                     "specialist_transcripts": rendered,
                     "missing_transcripts": len(digests) - len(rendered),
+                    "unattached_sources": unattached,
                 },
             }
         )
@@ -463,6 +524,8 @@ def attach_transcripts(
         transcripts_attached=attached,
         transcripts_missing=missing,
         cases_without_transcripts=without,
+        transcripts_by_run=from_runs,
+        cases_with_unattached_sources=unattached_cases,
     )
 
 
@@ -510,6 +573,8 @@ def write_case_set(
         "transcripts_attached": case_set.transcripts_attached,
         "transcripts_missing": case_set.transcripts_missing,
         "cases_without_transcripts": case_set.cases_without_transcripts,
+        "transcripts_by_run": case_set.transcripts_by_run,
+        "cases_with_unattached_sources": case_set.cases_with_unattached_sources,
         "blind_key_fingerprint": case_set.key_fingerprint,
         "review_sha256": _sha256(review),
         "private_mapping_sha256": _sha256(mapping),
@@ -548,6 +613,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if args.transcript_dir is not None
                 else None
             ),
+            trace_index=(
+                read_index(args.transcript_dir) if args.transcript_dir is not None else ()
+            ),
         )
         write_case_set(
             case_set,
@@ -566,9 +634,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(
                 f"transcripts: {case_set.transcripts_attached} attached, "
                 f"{case_set.transcripts_missing} missing, "
-                f"{case_set.cases_without_transcripts} cases reference none"
+                f"{case_set.cases_without_transcripts} cases reference none, "
+                f"{case_set.transcripts_by_run} found by run, "
+                f"{case_set.cases_with_unattached_sources} cases with unattached sources"
             )
-    except (OSError, CalibrationCaseError) as exc:
+    except (OSError, CalibrationCaseError, TranscriptStoreError) as exc:
         parser.error(str(exc))
     return 0
 

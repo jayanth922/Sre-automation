@@ -33,7 +33,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
 from benchmarks.calibration_cases import CalibrationCaseError, _load_key
-from benchmarks.evidence_locator import check_entry, tool_calls, tool_catalog
+from benchmarks.evidence_locator import (
+    check_entry,
+    tool_calls,
+    tool_catalog,
+    transcripts_complete,
+)
 
 SCHEMA_VERSION = 1
 
@@ -98,8 +103,7 @@ def _transcripts(case: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _complete(case: Mapping[str, Any]) -> bool:
-    review_input = case.get("review_input") or {}
-    return bool(_transcripts(case)) and not review_input.get("missing_transcripts")
+    return bool(_transcripts(case)) and transcripts_complete(case.get("review_input") or {})
 
 
 def _with(evaluation: Mapping[str, Any], **changes: Any) -> dict[str, Any]:

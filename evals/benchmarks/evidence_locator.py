@@ -10,10 +10,17 @@ The check only ever fails an entry it can prove unlocatable: a tool from the MCP
 catalog that was never called, or every call to the named tool disagrees on an
 argument the reference names. A reference in prose, a name outside the catalog
 (`payment_provider_up (service=…)` is a metric, not a call), a case without
-transcripts, or one with transcripts missing from the store is UNCHECKABLE and
-left to the judge. A renamed or omitted argument is tolerated, since the agent
-may name a default it never passed; whether the claim is faithful to the return
-is the judge's question.
+transcripts, or one whose transcripts are incomplete (missing from the store,
+or a source the summary names with none attached) is UNCHECKABLE and left to
+the judge. A renamed or omitted argument is tolerated, since the agent may name
+a default it never passed; whether the claim is faithful to the return is the
+judge's question.
+
+Query text (`logql`, `query`, `pattern`) is not compared for a verdict: the
+agent cites `{service="x"} |= "y"` for a call that also matched
+`namespace="meridian"`, and whether that is the same query is a reading, not a
+string comparison. A call that differs only there leaves the entry
+UNCHECKABLE. A timestamp without a zone is read as UTC, as the MCP servers do.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ import argparse
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Sequence
 
@@ -35,6 +42,15 @@ _OPEN = {"(": ")", "[": "]", "{": "}"}
 _CLOSE = set(_OPEN.values())
 _MCP_SERVERS = Path(__file__).resolve().parents[2] / "services" / "edge_mcp_servers" / "mcp_servers"
 _REGISTERED = re.compile(r"@mcp\.tool\([^)]*\)\s*\n\s*(?:async\s+)?def\s+(\w+)")
+# Free-text query arguments of the catalogued tools (Loki, Prometheus, Notion).
+QUERY_TEXT_ARGS = frozenset({"logql", "query", "pattern"})
+
+
+def transcripts_complete(review_input: Mapping[str, Any]) -> bool:
+    """Whether every transcript the run produced is attached to the case."""
+    return not review_input.get("missing_transcripts") and not review_input.get(
+        "unattached_sources"
+    )
 
 
 def tool_catalog(servers: Path = _MCP_SERVERS) -> frozenset[str]:
@@ -154,7 +170,7 @@ def _instant(text: str) -> Optional[datetime]:
         parsed = datetime.fromisoformat(text.replace("z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _same(claimed: str, actual: Any) -> bool:
@@ -208,13 +224,26 @@ def check_entry(
             return EntryCheck(index, "UNCHECKABLE", f"{ref.tool} is not a known tool")
         verdict = f"no recorded call to {ref.tool}"
     else:
+        conflicts = []
         for args in same_tool:
-            if all(_same(v, args[k]) for k, v in ref.args.items() if k in args):
+            differing = sorted(
+                k for k, v in ref.args.items() if k in args and not _same(v, args[k])
+            )
+            if not differing:
                 return EntryCheck(index, "LOCATED", f"matches a {ref.tool} call")
-        shared = sorted({k for args in same_tool for k in args} & set(ref.args))
+            conflicts.append(differing)
+        closest = min(conflicts, key=lambda keys: (len(keys), keys))
+        textual = [keys for keys in conflicts if set(keys) <= QUERY_TEXT_ARGS]
+        if textual:
+            return EntryCheck(
+                index,
+                "UNCHECKABLE",
+                f"a {ref.tool} call differs only in {', '.join(min(textual))}; "
+                "whether it is the cited query is the judge's reading",
+            )
         verdict = (
             f"every {ref.tool} call ({len(same_tool)}) disagrees on "
-            + ", ".join(f"{k}={ref.args[k]}" for k in shared)
+            + ", ".join(f"{k}={ref.args[k]}" for k in closest)
         )
     if not transcripts_complete:
         return EntryCheck(index, "UNCHECKABLE", verdict + "; some transcripts are missing")
@@ -239,7 +268,7 @@ def check_case(
             for i in range(len(evidence))
         )
         return CaseCheck("UNCHECKABLE", entries, "no transcripts attached")
-    complete = not review_input.get("missing_transcripts")
+    complete = transcripts_complete(review_input)
     calls = tool_calls(transcripts)
     entries = tuple(
         check_entry(i, entry, calls, transcripts_complete=complete, catalog=catalog)

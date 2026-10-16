@@ -194,6 +194,62 @@ def test_missing_transcripts_downgrade_a_failure_to_uncheckable():
     assert result.entries[0].detail.endswith("some transcripts are missing")
 
 
+def test_an_internal_source_without_a_transcript_downgrades_a_failure():
+    # 2026-10-16: the Kubernetes prescan's transcripts were not attached, and 10
+    # of 25 real cases failed on list_events/list_pods calls the run did make.
+    case = _case(
+        ["list_events (namespace=meridian) — BackOff", "get_metric (query=up) — 1"],
+        [_transcript(("get_metric", {"query": "up"}), source="metrics_agent")],
+    )
+    case["review_input"]["unattached_sources"] = ["kubernetes_agent"]
+
+    result = check_case(case, CATALOG)
+
+    assert result.state == "PASS"
+    assert result.entries[0].state == "UNCHECKABLE"
+    assert result.entries[0].detail == (
+        "no recorded call to list_events; some transcripts are missing"
+    )
+
+
+def test_a_naive_timestamp_is_the_utc_instant_it_was_cited_as():
+    # The real case: the call passed `since` without a zone, the agent cited it with Z.
+    case = _case(
+        ["list_commits(since=2026-09-30T13:59:44Z, until=2026-09-30T16:14:44Z, limit=20) → {}"],
+        [
+            _transcript(
+                ("list_commits", {"limit": 20, "since": "2026-09-30T13:59:44", "until": "2026-09-30T16:14:44"})
+            )
+        ],
+    )
+    later = _case(
+        ["list_commits(since=2026-09-30T14:59:44Z) → {}"],
+        [_transcript(("list_commits", {"since": "2026-09-30T13:59:44"}))],
+    )
+
+    assert check_case(case, CATALOG).state == "PASS"
+    assert check_case(later, CATALOG).state == "FAIL"
+
+
+def test_query_text_alone_never_fails_an_entry():
+    # The real case: the cited LogQL dropped the namespace matcher the call had.
+    cited = "query_logs(logql='{service=\"payment-service\"} |= \"db_pool_exhausted\"', limit=5) — 0 lines"
+    ran = '{service="payment-service", namespace="meridian"} |= "db_pool_exhausted"'
+    catalog = CATALOG | {"query_logs"}
+    textual = _case([cited], [_transcript(("query_logs", {"logql": ran, "limit": 5}))])
+    scalar_too = _case([cited], [_transcript(("query_logs", {"logql": ran, "limit": 50}))])
+
+    text_result = check_case(textual, catalog)
+    scalar_result = check_case(scalar_too, catalog)
+
+    assert text_result.state == "UNCHECKABLE"
+    assert text_result.entries[0].detail.startswith("a query_logs call differs only in logql")
+    assert scalar_result.state == "FAIL"
+    assert scalar_result.entries[0].detail.startswith(
+        "every query_logs call (1) disagrees on limit=5, logql="
+    )
+
+
 def test_a_case_without_transcripts_or_evidence_is_uncheckable():
     no_transcripts = _case(["list_pods (namespace=meridian) — ok"], [])
     no_evidence = _case([], [_transcript(("list_pods", {}))])
