@@ -30,17 +30,16 @@ Standing rule: batch every open fix, verify offline, then spend.
   property must list every alert its body covers.
 - Slack is the action surface; the console observes and configures. A
   cluster's Settings LLM key overrides `ANTHROPIC_API_KEY` in `.env`.
-- Span completeness ≠ outcome completeness. Any new artifact field needs a
-  round-trip test through the real producer and consumer.
+- Any new artifact field needs a round-trip test through the real producer
+  and consumer.
 
 ## Completed or verified work
 - v2 benchmark (22 scenarios, oracles, structured grading, paired stats,
   release gate); two paid campaigns, both NOT_DEMONSTRATED. Do not quote
   #70's MTTR.
-- E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`.
-  Negative control `payment_subthreshold_charge_errors` NO_ACTION_CORRECT in
-  Runs 3–9.
-- Branch `judge-calibration` (pushed, `e1551a0`; not merged, no PR):
+- E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`;
+  negative control NO_ACTION_CORRECT in Runs 3–9.
+- Branch `judge-calibration` (pushed to `ccb7956`; not merged, no PR):
   calibration review-set builder and transcript store, judge design
   (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
   specialist model anchor (a7ec4ca), runbook-only remediation.
@@ -51,6 +50,9 @@ Standing rule: batch every open fix, verify offline, then spend.
   properties corrected and read back.
 - Review set (2026-10-01): `reports/judge-calibration/`, 25 blinded cases
   (6 negative-control), 114 transcripts attached. Key and map are 0600.
+- `test_runbook_scenario_coverage.py`: each v3 scenario needing a fix has a
+  prescribing runbook.
+- `locatable` pre-check (`benchmarks/evidence_locator.py`), offline-tested.
 
 ## Active problem
 - **Rehearsal blocked** (attempt 2026-10-02, ≈$0): every model call got 401
@@ -102,5 +104,6 @@ Standing rule: batch every open fix, verify offline, then spend.
    `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
 3. With sign-off, open a PR merging `judge-calibration` into `master`.
 4. Free judge work: hand-label the 25 cases (two blind passes ≥48h apart),
-   adjudicate, freeze; then perturbation generator, `locatable` pre-check and
-   a judge harness verified against a stub judge. Only then price a judge pass.
+   adjudicate, freeze. Run `python -m benchmarks.evidence_locator` on the real
+   review set; then perturbation generator and a judge harness verified
+   against a stub judge. Only then price a judge pass.
