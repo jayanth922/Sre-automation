@@ -39,7 +39,7 @@ Standing rule: batch every open fix, verify offline, then spend.
   #70's MTTR.
 - E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`;
   negative control NO_ACTION_CORRECT in Runs 3–9.
-- Branch `judge-calibration` (origin at `f01cb70`, later commits local; no PR):
+- Branch `judge-calibration` (pushed through `2455f69`; no PR):
   calibration review-set builder and transcript store, judge design
   (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
   specialist model anchor (a7ec4ca), runbook-only remediation.
