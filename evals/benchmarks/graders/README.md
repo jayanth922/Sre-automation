@@ -53,6 +53,25 @@ happens to grade. A file with nothing reviewable in it still fails closed. Sourc
 private map, so a labeler cannot join an opaque case back to the raw corpus. It
 never calls a model or Langfuse, so creating the review set has no API cost.
 
+Two more free steps run on the review set, never handed to labellers:
+
+```bash
+PYTHONPATH=evals .venv/bin/python -m benchmarks.evidence_locator \
+  "$OUT/review.jsonl" --output "$OUT/locatable.jsonl"
+PYTHONPATH=evals .venv/bin/python -m benchmarks.perturbations "$OUT/review.jsonl" \
+  --private-mapping "$OUT/private-map.jsonl" \
+  --blind-key-file "$OUT/blind.key" \
+  --review-output "$OUT/perturbed/review.jsonl" \
+  --private-mapping-output "$OUT/perturbed/private-map.jsonl" \
+  --manifest-output "$OUT/perturbed/manifest.json"
+```
+
+`evidence_locator` fails an evidence entry only when the tool call it cites
+provably never happened. `perturbations` writes copies of real cases that are
+FAIL by construction (swapped or dropped chain link, a changed number, a
+reference no call made, evidence lifted from another scenario); its private map
+records each copy's source, kind and failed criterion, and is written 0600.
+
 When labels exist, measure and gate agreement with:
 
 ```bash

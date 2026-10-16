@@ -85,6 +85,12 @@ Its results are kept out of `review.jsonl` so they cannot bias labellers.
    labelled `FAIL` by construction -- swapped cause/effect, dropped link, one
    number changed against its transcript, a reference no tool call made,
    evidence lifted from another case -- and report them as their own stratum.
+   `benchmarks.perturbations` builds them (commands in `README.md`). Only the
+   structured block changes, everywhere the run copied it; the narrator's
+   prose (`summary_text`, the summary event's `content`, `narrative`,
+   `hypothesis`) still states the original. The judge therefore sees both
+   strata without that prose, or it can find perturbations by diffing prose
+   against the block -- which real failures never allow.
 
 ## 5. Agreement and the gate
 
@@ -108,6 +114,7 @@ Its results are kept out of `review.jsonl` so they cannot bias labellers.
 ## 6. Next steps
 
 1. Label the 25 cases (two blind passes), adjudicate, freeze. Free.
-2. Perturbation generator and the deterministic `locatable` pre-check. Free.
+2. Perturbation generator and the deterministic `locatable` pre-check. Built
+   and offline-tested; not yet run on the real set. Free.
 3. Judge harness and metrics, verified against a stub judge. Free.
 4. Price one judge pass over the frozen set and ask before spending.
