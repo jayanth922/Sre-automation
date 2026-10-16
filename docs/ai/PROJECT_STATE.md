@@ -39,7 +39,7 @@ Standing rule: batch every open fix, verify offline, then spend.
   #70's MTTR.
 - E2E Runs 1–9 (2026-09-28/30): all defects fixed through `196eb31`;
   negative control NO_ACTION_CORRECT in Runs 3–9.
-- Branch `judge-calibration` (pushed to `ccb7956`; not merged, no PR):
+- Branch `judge-calibration` (pushed to `ccb7956`, later commits local; no PR):
   calibration review-set builder and transcript store, judge design
   (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
   specialist model anchor (a7ec4ca), runbook-only remediation.
@@ -52,20 +52,22 @@ Standing rule: batch every open fix, verify offline, then spend.
   (6 negative-control), 114 transcripts attached. Key and map are 0600.
 - `test_runbook_scenario_coverage.py`: each v3 scenario needing a fix has a
   prescribing runbook.
-- `locatable` pre-check (`benchmarks/evidence_locator.py`), offline-tested.
+- `benchmarks.evidence_locator` (`locatable` pre-check) and
+  `benchmarks.perturbations` (FAIL-by-construction copies, 5 kinds):
+  offline-tested, not yet run on the real set. Commands: `graders/README.md`.
 
 ## Active problem
-- **Rehearsal blocked** (attempt 2026-10-02, ≈$0): every model call got 401
-  `API key is invalid` — the `.env` key has an `sk-ant-usr-` prefix, not a
-  Console key. The cluster's stored key was cleared that day, so `.env` is
-  the only source. Slack posts fail `not_in_channel` in `#all-meridian`.
+- **Rehearsal blocked** (2026-10-02, ≈$0): every model call got 401; the
+  `.env` key is `sk-ant-usr-`, not a Console key, and the cluster's stored
+  key was cleared. Slack posts fail `not_in_channel` in `#all-meridian`.
 - **No run can grade better than `INCOMPLETE`**:
   `structured_grading._semantic_criterion` is a shape check with no judge.
 
 ## Relevant files
 - `src/sre_agent/{runbook_authority,graph_builder,approval_flow,policy_gate,
   mutation_gateway}.py`, `docs/DEMO.md`.
-- `evals/benchmarks/{sre_bench,calibration_cases,transcript_store}.py`.
+- `evals/benchmarks/{sre_bench,calibration_cases,transcript_store,
+  evidence_locator,perturbations}.py`.
 - `infra/local/docker-compose.yaml` (project `platform`).
 - Meridian repo `/workspaces/meridian-shop-deploy` (3 commits ahead, unpushed).
 
@@ -78,17 +80,16 @@ Standing rule: batch every open fix, verify offline, then spend.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api`, then `up -d --no-build --no-deps
   --force-recreate temporal-worker sre-agent-api`. API health: `/ping` on 8080.
-- Single trial: the `docs/DEMO.md` command. It needs `BENCH_ALLOW_HOLDOUT=1`
-  and `BENCH_INCIDENT_TIMEOUT_SEC=2700` (default 300s is below the 1260s
-  recovery floor); secrets from `/home/vscode/bench.env` (key names only).
-  SIGINT does not stop a trial early — it runs to its timeout and cleans up.
+- Single trial: the `docs/DEMO.md` command (`BENCH_ALLOW_HOLDOUT=1`,
+  `BENCH_INCIDENT_TIMEOUT_SEC=2700`; 300s is below the recovery floor);
+  secrets from `/home/vscode/bench.env`. SIGINT does not stop a trial early.
 - Edge MCP: `docker compose -p edge_mcp_servers` from `services/edge_mcp_servers`.
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
   ≈$11.60 spent through Run 9. Calibration campaign (~$40+) not authorized.
-- `master` (`b09933c`) lacks `judge-calibration`: rebuilding the image from
-  the main checkout drops runbook-only remediation until merged.
+- `master` (`b09933c`) lacks `judge-calibration`: an image built from it
+  drops runbook-only remediation.
 - Rotate the Anthropic key and Slack token exposed in terminal output.
 - 3 of 22 scenarios need deploy/rollback evidence no injection creates.
 - Never stage `.agents/`, `.env.*` backups or `dashboard/`; never `git add -A`.
@@ -104,6 +105,8 @@ Standing rule: batch every open fix, verify offline, then spend.
    `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
 3. With sign-off, open a PR merging `judge-calibration` into `master`.
 4. Free judge work: hand-label the 25 cases (two blind passes ≥48h apart),
-   adjudicate, freeze. Run `python -m benchmarks.evidence_locator` on the real
-   review set; then perturbation generator and a judge harness verified
-   against a stub judge. Only then price a judge pass.
+   adjudicate, freeze. On the Codespace, run the locator and perturbations on
+   the real set and read one case's timeline to fix the judge view (where the
+   alert is; no narrator prose). Then the judge harness and §5 metrics of
+   `CALIBRATION_DESIGN.md`, verified against a stub judge. Only then price a
+   judge pass.
