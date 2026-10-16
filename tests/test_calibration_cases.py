@@ -2,7 +2,6 @@ import hashlib
 import json
 
 import pytest
-
 from benchmarks import calibration_cases
 
 
@@ -210,3 +209,143 @@ def test_written_manifest_content_addresses_both_outputs(tmp_path):
         payload["private_mapping_sha256"]
         == hashlib.sha256(mapping.read_bytes()).hexdigest()
     )
+
+
+def _empty_output(scenario: str) -> dict:
+    """What `_score_without_output` writes for a run that produced nothing."""
+    record = _record(scenario, "")
+    record["raw_output"] = {"summary_text": "", "events": []}
+    encoded = json.dumps(
+        record["raw_output"], sort_keys=True, separators=(",", ":")
+    ).encode()
+    record["raw_output_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return record
+
+
+def test_identical_empty_outputs_do_not_abort_the_file():
+    # 2026-09-19: four INVALID_SCENARIO rows with no output shared one digest,
+    # and the duplicate check rejected reports/sre-bench-grades.jsonl outright.
+    cases = calibration_cases.build_case_set(
+        _raw(_empty_output("x"), _empty_output("y"), _record("ok", "out")),
+        blind_key=b"k" * 32,
+    )
+
+    assert len(cases.review_cases) == 1
+    assert calibration_cases.skip_reason_counts(cases.skipped) == {
+        "no structured benchmark evaluation": 2
+    }
+
+
+def test_a_run_copied_into_two_files_is_reviewed_once():
+    shared = _record("shared", "out")
+    first, second = _raw(shared), _raw(_record("other", "else"), shared)
+
+    cases = calibration_cases.build_case_set([first, second], blind_key=b"k" * 32)
+
+    assert len(cases.review_cases) == 2
+    [skip] = cases.skipped
+    assert (skip.source_index, skip.line_number) == (1, 2)
+    assert skip.reason == "already taken from an earlier input file"
+    assert cases.input_sha256s == (
+        hashlib.sha256(first).hexdigest(),
+        hashlib.sha256(second).hexdigest(),
+    )
+
+
+def test_a_single_file_keeps_its_input_digest():
+    raw = _raw(_record("a", "out"))
+
+    cases = calibration_cases.build_case_set(raw, blind_key=b"k" * 32)
+
+    assert cases.input_sha256 == hashlib.sha256(raw).hexdigest()
+    assert cases.transcripts_attached is None
+
+
+def _with_finding(record: dict, digest: str) -> dict:
+    record["raw_output"]["events"].insert(
+        0,
+        {
+            "event_type": "finding",
+            "payload": {"evidence_artifact_ref": {"sha256": digest}},
+        },
+    )
+    encoded = json.dumps(
+        record["raw_output"], sort_keys=True, separators=(",", ":")
+    ).encode()
+    record["raw_output_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return record
+
+
+def _canonical(text: str) -> bytes:
+    return json.dumps(
+        {
+            "messages": [{"type": "ToolMessage", "data": {"name": "q", "content": text}}],
+            "source": "metrics_agent",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
+def test_missing_transcripts_are_counted_not_fatal():
+    present, absent = _canonical("0.0319"), _canonical("never exported")
+    present_sha = hashlib.sha256(present).hexdigest()
+    absent_sha = hashlib.sha256(absent).hexdigest()
+    raw = _raw(
+        _with_finding(_record("a", "one"), present_sha),
+        _with_finding(_record("b", "two"), absent_sha),
+        _record("c", "legacy run without durable transcripts"),
+    )
+
+    cases = calibration_cases.build_case_set(
+        raw, blind_key=b"k" * 32, transcripts={present_sha: present}
+    )
+
+    assert (
+        cases.transcripts_attached,
+        cases.transcripts_missing,
+        cases.cases_without_transcripts,
+    ) == (1, 1, 1)
+    attached = [
+        case["review_input"]
+        for case in cases.review_cases
+        if case["review_input"]["specialist_transcripts"]
+    ]
+    assert attached[0]["specialist_transcripts"][0]["turns"][0]["content"] == "0.0319"
+
+
+def test_a_transcript_that_is_not_its_digest_stops_the_build():
+    digest = hashlib.sha256(_canonical("real")).hexdigest()
+
+    with pytest.raises(calibration_cases.CalibrationCaseError, match="digest"):
+        calibration_cases.build_case_set(
+            _raw(_with_finding(_record("a", "out"), digest)),
+            blind_key=b"k" * 32,
+            transcripts={digest: _canonical("swapped")},
+        )
+
+
+def test_transcript_store_rejects_a_misnamed_file(tmp_path):
+    (tmp_path / f"{'0' * 64}.json").write_bytes(_canonical("x"))
+
+    with pytest.raises(calibration_cases.CalibrationCaseError, match="digest"):
+        calibration_cases.load_transcripts(tmp_path)
+
+
+def test_manifest_records_transcript_coverage(tmp_path):
+    cases = calibration_cases.build_case_set(
+        _raw(_record("a", "out")), blind_key=b"k" * 32, transcripts={}
+    )
+    manifest = tmp_path / "manifest.json"
+
+    calibration_cases.write_case_set(
+        cases,
+        review_path=tmp_path / "review.jsonl",
+        mapping_path=tmp_path / "mapping.jsonl",
+        manifest_path=manifest,
+    )
+
+    payload = json.loads(manifest.read_text())
+    assert payload["cases_without_transcripts"] == 1
+    assert payload["transcripts_attached"] == 0
+    assert payload["input_sha256s"] == [payload["input_sha256"]]

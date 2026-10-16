@@ -7,15 +7,16 @@ import argparse
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence, Union
 
 from benchmarks.structured_grading import (
     EXPECTED_RUBRIC_VERSION,
     extract_structured_output,
     load_rubric,
 )
+from benchmarks.transcript_store import TraceOrigin, TranscriptStoreError, read_index
 
 SCHEMA_VERSION = 1
 EXPECTED_RUBRIC_SHA256 = load_rubric().sha256
@@ -66,6 +67,8 @@ class SkippedRecord:
     line_number: int
     scenario: Optional[str]
     reason: str
+    # Which input file, in argument order, when several are combined.
+    source_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,17 @@ class CalibrationCaseSet:
     skipped: tuple[SkippedRecord, ...] = ()
     # Reviewable records found, before `limit` narrows them.
     eligible_count: int = 0
+    # One digest per input file, in argument order.
+    input_sha256s: tuple[str, ...] = ()
+    # None when no transcript store was given; see `attach_transcripts`.
+    transcripts_attached: Optional[int] = None
+    transcripts_missing: Optional[int] = None
+    cases_without_transcripts: Optional[int] = None
+    # Attached because they share a finding's root trace, not because a
+    # finding references them (the Kubernetes prescan).
+    transcripts_by_run: Optional[int] = None
+    # Cases whose summary names an internal source with no transcript attached.
+    cases_with_unattached_sources: Optional[int] = None
 
 
 def _sha256(data: bytes) -> str:
@@ -108,13 +122,19 @@ def _load_key(path: Path) -> bytes:
     return key
 
 
-def _parse_records(raw: bytes) -> ParsedEvidence:
+def _parse_records(
+    raw: bytes, earlier_outputs: frozenset[str] = frozenset()
+) -> ParsedEvidence:
     """Split grader evidence into what can be reviewed and what cannot.
 
     Integrity failures still raise -- they mean the file is not the evidence it
     claims to be. Eligibility failures are collected instead: a corpus of 38
     records where 16 predate the current rubric should yield 22 cases, not an
     exception naming line 3.
+
+    `earlier_outputs` are digests already taken from earlier input files. The
+    same run copied into two report directories is one case, not a corrupt
+    file, so it is skipped here; a repeat inside one file still raises.
     """
     lines = raw.decode("utf-8").splitlines()
     if not lines:
@@ -150,9 +170,6 @@ def _parse_records(raw: bytes) -> ParsedEvidence:
             raise CalibrationCaseError(
                 f"line {line_number}.raw_output_sha256 must be lowercase SHA-256"
             )
-        if output_sha in seen_outputs:
-            raise CalibrationCaseError("duplicate raw output cannot be labeled twice")
-        seen_outputs.add(output_sha)
         raw_output = record["raw_output"]
         if not isinstance(raw_output, dict) or set(raw_output) != {
             "summary_text",
@@ -201,6 +218,24 @@ def _parse_records(raw: bytes) -> ParsedEvidence:
                 )
             )
             continue
+        # Checked only once a record is reviewable. `_score_without_output`
+        # records every run that produced nothing as `{"summary_text": "",
+        # "events": []}`, so any two of them share a digest by construction.
+        # Checking first made two harmless empty records abort the whole file:
+        # four 2026-09-19 INVALID_SCENARIO rows kept every negative-control run
+        # in reports/sre-bench-grades.jsonl out of the review set.
+        if output_sha in earlier_outputs:
+            skipped.append(
+                SkippedRecord(
+                    line_number=line_number,
+                    scenario=scenario,
+                    reason="already taken from an earlier input file",
+                )
+            )
+            continue
+        if output_sha in seen_outputs:
+            raise CalibrationCaseError("duplicate raw output cannot be labeled twice")
+        seen_outputs.add(output_sha)
         records.append(record)
     return ParsedEvidence(records=tuple(records), skipped=tuple(skipped))
 
@@ -212,17 +247,44 @@ def skip_reason_counts(skipped: Sequence[SkippedRecord]) -> dict[str, int]:
     return counts
 
 
+def _parse_sources(sources: Sequence[bytes]) -> ParsedEvidence:
+    records: list[dict[str, Any]] = []
+    skipped: list[SkippedRecord] = []
+    taken: set[str] = set()
+    for index, source in enumerate(sources):
+        parsed = _parse_records(source, frozenset(taken))
+        records.extend(parsed.records)
+        taken.update(record["raw_output_sha256"] for record in parsed.records)
+        skipped.extend(replace(entry, source_index=index) for entry in parsed.skipped)
+    return ParsedEvidence(records=tuple(records), skipped=tuple(skipped))
+
+
 def build_case_set(
-    raw: bytes,
+    raw: Union[bytes, Sequence[bytes]],
     *,
     blind_key: bytes,
     limit: Optional[int] = None,
+    transcripts: Optional[Mapping[str, bytes]] = None,
+    trace_index: Sequence[TraceOrigin] = (),
 ) -> CalibrationCaseSet:
+    """Build the blinded set from one grader file or several.
+
+    Run evidence is scattered across report directories -- 18 grades files on
+    2026-10-01 -- so several files may be combined; a run copied into more
+    than one is reviewed once. `transcripts` maps a specialist transcript's
+    content digest to its canonical bytes (see `load_transcripts`); when given,
+    each case carries the tool calls and returns its evidence cites.
+    `trace_index` (the store's `index.jsonl`) adds the transcripts no finding
+    references but the run produced.
+    """
     if len(blind_key) < 32:
         raise CalibrationCaseError("blind key must contain at least 32 bytes")
     if limit is not None and limit < 1:
         raise CalibrationCaseError("limit must be positive")
-    parsed = _parse_records(raw)
+    sources = [raw] if isinstance(raw, (bytes, bytearray)) else list(raw)
+    if not sources:
+        raise CalibrationCaseError("no grader evidence was given")
+    parsed = _parse_sources(sources)
     records = list(parsed.records)
     if not records:
         # Still fails closed on a file with nothing to review -- an empty case
@@ -278,14 +340,206 @@ def build_case_set(
                 "harness_approvals": record.get("harness_approvals"),
             }
         )
-    return CalibrationCaseSet(
+    input_sha256s = tuple(_sha256(source) for source in sources)
+    case_set = CalibrationCaseSet(
         review_cases=tuple(review_cases),
         private_mapping=tuple(mapping),
-        input_sha256=_sha256(raw),
+        # A single file keeps the digest it always had; several are addressed
+        # by their ordered per-file digests.
+        input_sha256=(
+            input_sha256s[0]
+            if len(sources) == 1
+            else _sha256("\n".join(input_sha256s).encode("utf-8"))
+        ),
         key_fingerprint=_sha256(blind_key),
         skipped=parsed.skipped,
         eligible_count=len(records),
+        input_sha256s=input_sha256s,
     )
+    if transcripts is None:
+        return case_set
+    return attach_transcripts(case_set, transcripts, trace_index)
+
+
+def _message_text(content: Any) -> str:
+    """Visible text of a message; thinking blocks and signatures are dropped."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text"))
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type", "text") == "text"
+            and part.get("text") is not None
+        )
+    return ""
+
+
+def render_transcript(canonical: bytes) -> dict[str, Any]:
+    """The tool calls and returns of one specialist transcript, for a reviewer."""
+    envelope = json.loads(canonical)
+    turns: list[dict[str, Any]] = []
+    for message in envelope.get("messages") or []:
+        data = message.get("data") if isinstance(message, dict) else None
+        if not isinstance(data, dict):
+            continue
+        if message.get("type") == "ToolMessage":
+            turns.append(
+                {
+                    "role": "tool",
+                    "name": data.get("name"),
+                    "status": data.get("status"),
+                    "content": _message_text(data.get("content")),
+                }
+            )
+            continue
+        turns.append(
+            {
+                "role": "assistant",
+                "text": _message_text(data.get("content")),
+                "tool_calls": [
+                    {"name": call.get("name"), "args": call.get("args")}
+                    for call in data.get("tool_calls") or []
+                    if isinstance(call, dict)
+                ],
+            }
+        )
+    return {
+        "source": envelope.get("source"),
+        "turns": turns,
+        "tool_failures": envelope.get("tool_failures") or [],
+    }
+
+
+def transcript_digests(events: Sequence[Any]) -> list[str]:
+    """Digests of the specialist transcripts a run's findings reference."""
+    digests: list[str] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("event_type") != "finding":
+            continue
+        payload = event.get("payload")
+        ref = payload.get("evidence_artifact_ref") if isinstance(payload, dict) else None
+        digest = ref.get("sha256") if isinstance(ref, dict) else None
+        if isinstance(digest, str) and digest not in digests:
+            digests.append(digest)
+    return digests
+
+
+def _root_trace_ids(events: Sequence[Any]) -> list[str]:
+    """The runs a case's findings came from, by their transcripts' root trace."""
+    roots: list[str] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("event_type") != "finding":
+            continue
+        payload = event.get("payload")
+        ref = payload.get("evidence_artifact_ref") if isinstance(payload, dict) else None
+        root = ref.get("root_trace_id") if isinstance(ref, dict) else None
+        if isinstance(root, str) and root and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _internal_sources(events: Sequence[Any]) -> list[str]:
+    """Specialists the summary says informed it without posting a finding."""
+    sources: list[str] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("event_type") != "summary":
+            continue
+        payload = event.get("payload")
+        named = payload.get("internal_evidence_sources") if isinstance(payload, dict) else None
+        for source in named if isinstance(named, list) else ():
+            if isinstance(source, str) and source not in sources:
+                sources.append(source)
+    return sources
+
+
+def attach_transcripts(
+    case_set: CalibrationCaseSet,
+    transcripts: Mapping[str, bytes],
+    trace_index: Sequence[TraceOrigin] = (),
+) -> CalibrationCaseSet:
+    """Give each case the tool returns its evidence claims can be checked against.
+
+    Without them a reviewer can judge whether a chain hangs together but not
+    whether "peaked at 3.19%" is what Prometheus returned. A referenced
+    transcript that is not in the store is counted, not fatal: the case is
+    still reviewable for causal_chain, and the manifest says how many evidence
+    judgments rest on missing returns. Runs that predate durable transcripts
+    reference none at all and are counted separately.
+
+    Findings reference only the visible specialists' transcripts. The
+    Kubernetes prescan posts no finding, yet the summary cites its calls, so
+    every indexed transcript sharing a finding's root trace is attached too,
+    in the order the run stored them. A source the summary names
+    (`internal_evidence_sources`) that still has no transcript is listed in
+    `unattached_sources`: the case's transcripts are then known to be
+    incomplete, and nothing may conclude a cited call never happened.
+    """
+    by_run: dict[str, list[str]] = {}
+    for origin in sorted(trace_index):
+        by_run.setdefault(origin.root_trace_id, []).append(origin.sha256)
+    attached = missing = without = from_runs = unattached_cases = 0
+    cases = []
+    for case in case_set.review_cases:
+        review_input = case["review_input"]
+        events = review_input["timeline_events"]
+        digests = transcript_digests(events)
+        referenced = len(digests)
+        for root in _root_trace_ids(events):
+            for digest in by_run.get(root, ()):
+                if digest not in digests:
+                    digests.append(digest)
+        rendered = []
+        for position, digest in enumerate(digests):
+            canonical = transcripts.get(digest)
+            if canonical is None:
+                missing += 1
+                continue
+            if not hmac.compare_digest(_sha256(canonical), digest):
+                raise CalibrationCaseError(
+                    f"transcript {digest[:12]} does not match its digest"
+                )
+            rendered.append(render_transcript(canonical))
+            attached += 1
+            from_runs += int(position >= referenced)
+        without += int(not digests)
+        present = {transcript.get("source") for transcript in rendered}
+        unattached = [s for s in _internal_sources(events) if s not in present]
+        unattached_cases += int(bool(unattached))
+        cases.append(
+            {
+                **case,
+                "review_input": {
+                    **review_input,
+                    "specialist_transcripts": rendered,
+                    "missing_transcripts": len(digests) - len(rendered),
+                    "unattached_sources": unattached,
+                },
+            }
+        )
+    return replace(
+        case_set,
+        review_cases=tuple(cases),
+        transcripts_attached=attached,
+        transcripts_missing=missing,
+        cases_without_transcripts=without,
+        transcripts_by_run=from_runs,
+        cases_with_unattached_sources=unattached_cases,
+    )
+
+
+def load_transcripts(directory: Path) -> dict[str, bytes]:
+    """Read `<sha256>.json` canonical transcripts; a name that lies is fatal."""
+    if not directory.is_dir():
+        raise CalibrationCaseError(f"transcript store does not exist: {directory}")
+    store: dict[str, bytes] = {}
+    for path in sorted(directory.glob("*.json")):
+        canonical = path.read_bytes()
+        if not hmac.compare_digest(_sha256(canonical), path.stem):
+            raise CalibrationCaseError(f"{path.name} does not match its digest")
+        store[path.stem] = canonical
+    return store
 
 
 def _jsonl(rows: Sequence[dict[str, Any]]) -> bytes:
@@ -315,6 +569,12 @@ def write_case_set(
         "skipped_records": len(case_set.skipped),
         "skipped_reasons": skip_reason_counts(case_set.skipped),
         "input_sha256": case_set.input_sha256,
+        "input_sha256s": list(case_set.input_sha256s),
+        "transcripts_attached": case_set.transcripts_attached,
+        "transcripts_missing": case_set.transcripts_missing,
+        "cases_without_transcripts": case_set.cases_without_transcripts,
+        "transcripts_by_run": case_set.transcripts_by_run,
+        "cases_with_unattached_sources": case_set.cases_with_unattached_sources,
         "blind_key_fingerprint": case_set.key_fingerprint,
         "review_sha256": _sha256(review),
         "private_mapping_sha256": _sha256(mapping),
@@ -330,19 +590,32 @@ def write_case_set(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("grader_records", type=Path)
+    parser.add_argument("grader_records", type=Path, nargs="+")
     parser.add_argument("--blind-key-file", type=Path, required=True)
     parser.add_argument("--review-output", type=Path, required=True)
     parser.add_argument("--private-mapping-output", type=Path, required=True)
     parser.add_argument("--manifest-output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--transcript-dir",
+        type=Path,
+        help="store written by benchmarks.transcript_store; attaches tool returns",
+    )
     args = parser.parse_args(argv)
     try:
-        raw = args.grader_records.read_bytes()
+        sources = [path.read_bytes() for path in args.grader_records]
         case_set = build_case_set(
-            raw,
+            sources,
             blind_key=_load_key(args.blind_key_file),
             limit=args.limit,
+            transcripts=(
+                load_transcripts(args.transcript_dir)
+                if args.transcript_dir is not None
+                else None
+            ),
+            trace_index=(
+                read_index(args.transcript_dir) if args.transcript_dir is not None else ()
+            ),
         )
         write_case_set(
             case_set,
@@ -357,7 +630,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         for reason, count in sorted(skip_reason_counts(case_set.skipped).items()):
             print(f"  skipped {count}: {reason}")
-    except (OSError, CalibrationCaseError) as exc:
+        if case_set.transcripts_attached is not None:
+            print(
+                f"transcripts: {case_set.transcripts_attached} attached, "
+                f"{case_set.transcripts_missing} missing, "
+                f"{case_set.cases_without_transcripts} cases reference none, "
+                f"{case_set.transcripts_by_run} found by run, "
+                f"{case_set.cases_with_unattached_sources} cases with unattached sources"
+            )
+    except (OSError, CalibrationCaseError, TranscriptStoreError) as exc:
         parser.error(str(exc))
     return 0
 

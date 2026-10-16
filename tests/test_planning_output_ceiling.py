@@ -42,6 +42,8 @@ def test_the_remediation_planner_asks_for_the_planning_ceiling(monkeypatch):
         return LLM()
 
     monkeypatch.setattr(model_router, "route_llm", route)
+    # With no alert, runbook-only mode escalates before any model is routed.
+    monkeypatch.setenv("RUNBOOK_ONLY_REMEDIATION", "false")
     asyncio.run(graph_builder._planner_node({"metadata": {}}, []))
 
     assert seen["task_type"] == model_router.TaskType.PLANNING
