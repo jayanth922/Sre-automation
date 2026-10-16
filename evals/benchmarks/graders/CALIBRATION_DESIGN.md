@@ -60,8 +60,13 @@ or missing between origin and symptom.
 | relevant | the entry supports no link in the chain |
 
 List `PASS`: no unlocatable or unfaithful entry, and every chain link has at
-least one supporting entry. `locatable` is mechanical and should become a
-deterministic pre-check before any model sees the case.
+least one supporting entry. `locatable` is mechanical and runs as a
+deterministic pre-check before any model sees the case:
+`python -m benchmarks.evidence_locator review.jsonl --output locatable.jsonl`.
+It fails an entry only when a catalogued MCP tool it names was never called, or
+every call to it disagrees on a named argument; prose references, unknown names
+and cases with missing transcripts are `UNCHECKABLE` and stay with the judge.
+Its results are kept out of `review.jsonl` so they cannot bias labellers.
 
 ## 4. Hand-labelling
 
