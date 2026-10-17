@@ -54,6 +54,9 @@ Standing rule: batch every open fix, verify offline, then spend.
   construction in the router modules. `.env` has no `ANTHROPIC_MODEL`.
 - meridian-shop master `7bcfb45`: the Codespace's 3 commits, rebased onto
   `cefa745` and pushed 2026-10-17.
+- PR #60 (merged, 5e86bd8): watcher opt-in. Codespace guard test
+  2026-10-17: unset → disabled, exit 0; flag set → clone fails, exit 1; no
+  watcher running; checkout `app.py` `a81888c51b1ee731`, deployed `7a6e223`.
 
 ## Active problem
 - **Rehearsal**: `.env` key works (user keeps it); Slack bot `meridian` is
@@ -99,15 +102,17 @@ Standing rule: batch every open fix, verify offline, then spend.
   Leave meridian's staged `checkout-service/app.py`, `.last_deployed_sha` and
   `.local-baseline-restore.md` alone. Wait ≥5 min after cluster changes
   before injecting.
-- `watch_meridian_deploy.sh` is opt-in (`MERIDIAN_WATCHER_ENABLED=1`): it
-  `reset --hard`s to GitHub master, which still has `4ed89b2`/`7a6e223`
-  (checkout ~84% 5xx), wiping the healthy-checkout restore.
+- `watch_meridian_deploy.sh` is opt-in (`MERIDIAN_WATCHER_ENABLED=1`); if
+  enabled it `reset --hard`s to GitHub master (`4ed89b2`/`7a6e223`, checkout
+  ~84% 5xx), wiping the healthy-checkout restore.
 - kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
 
 ## Next bounded task
 1. User launches Act 1 (~$1.00–1.50, stop at $2). Leave
    `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
-2. On the user's "push", commit the watcher opt-in change and open its PR.
+2. Codespace: move `meridian-shop-deploy`'s local master to origin
+   `7bcfb45` without touching the staged restore; re-check the `app.py`
+   hash and last deployed SHA.
 3. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
    adjudicate, freeze.
 4. Free, in a fresh session: judge harness + `CALIBRATION_DESIGN.md` §5
