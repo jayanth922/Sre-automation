@@ -41,7 +41,6 @@ Standing rule: batch every open fix, verify offline, then spend.
 - v2 benchmark (22 scenarios, oracles, structured grading, paired stats,
   release gate); two paid campaigns, both NOT_DEMONSTRATED. Do not quote
   #70's MTTR.
-- E2E Runs 1–9 (2026-09-28/30): defects fixed through `196eb31`.
 - PR #57 (merged): calibration review-set builder, transcript store, judge
   design (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
   runbook-only remediation. Live Notion runbooks match
@@ -50,13 +49,13 @@ Standing rule: batch every open fix, verify offline, then spend.
   transcripts incl. 29 K8s prescans). Never label `superseded-2026-10-01/`.
 - Locator 11 PASS / 0 FAIL / 14 UNCHECKABLE; 96 perturbed copies;
   `judge_view` leak-free (`CALIBRATION_DESIGN.md` §2–4).
-- `routing-no-static-model` (e75cb39, unpushed): migration `b8c9d0e1f2a3`
-  cleared `kind-meridian`'s model; deployed to the Codespace 2026-10-17
-  17:57Z, live per-task picks checked.
+- PR #58 (merged, 7483411): no static model when routed; migration
+  `b8c9d0e1f2a3` cleared `kind-meridian`'s model; live picks checked.
 
 ## Active problem
 - **Rehearsal**: the `.env` key works; the user keeps it. Its retired
-  `ANTHROPIC_MODEL` is unused (routed calls get tier models). Slack
+  `ANTHROPIC_MODEL` (3.5 Sonnet) was hit by `nl_query`'s unrouted LLMs;
+  removed from both `.env` files 2026-10-17, `nl_query` now routes. Slack
   (2026-10-17): token and posting scopes valid (bot `meridian`); after the
   user's invite it is a member of `C0C0KA474LC` (`#all-meridian`).
 - **No run can grade better than `INCOMPLETE`**:
@@ -74,11 +73,13 @@ Standing rule: batch every open fix, verify offline, then spend.
 - Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; after a restart
   run `scripts/dev/codespace_boot.sh`. It has no git credentials: push via a
   git bundle from the Mac. Its `/workspaces/Sre-automation` checkout is on
-  `master` plus e75cb39's 7 files (copied, sha256-checked). Eval modules run
+  `master` plus e75cb39's 7 files and `retired-model-routing`'s
+  `nl_query.py` (copied, sha256-checked). Eval modules run
   from `/home/vscode/judge-run/evals`. Container Python is `uv run python`.
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2718 passed,
-  6 skipped (2026-10-17, `routing-no-static-model` at e75cb39); release gate
-  `NOT_REQUIRED`; dashboard `tsc --noEmit` 0 errors.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2721 passed,
+  6 skipped (2026-10-17, `retired-model-routing`); release gate
+  `NOT_REQUIRED`; dashboard `tsc --noEmit` 0 errors. API and worker rebuilt
+  ≈20:00Z; default model in-container is sonnet-5.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api dashboard`, then `up -d --no-build
   --no-deps --force-recreate` the same three. The API runs `alembic upgrade
@@ -91,8 +92,10 @@ Standing rule: batch every open fix, verify offline, then spend.
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
   ≈$11.60 spent through Run 9. Calibration campaign (~$40+) not authorized.
-- The reverted model anchor (a7ec4ca) is moot and gone from the image.
-  FAST tasks now run on haiku-4-5 (was sonnet-4-5), untested in a paid run.
+- FAST tasks now run on haiku-4-5 (was sonnet-4-5), untested in a paid run.
+  Per Anthropic's deprecations page, `sonnet-4-5` (ladder only) retires
+  2026-11-30 and haiku-4-5 may be deprecated any time (successor
+  `haiku-5-5`); tier defaults are in protected `model_router.py`.
 - 3 of 22 scenarios need deploy/rollback evidence no injection creates.
 - Never stage `.agents/`, `.env.*` backups or `dashboard/`; never `git add -A`.
   Leave meridian's staged `checkout-service/app.py`, `.last_deployed_sha` and
@@ -101,13 +104,12 @@ Standing rule: batch every open fix, verify offline, then spend.
 - kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
 
 ## Next bounded task
-1. Done 2026-10-17: bot invited to `#all-meridian`, membership verified.
-2. User launches Act 1 (~$1.00–1.50, stop at $2); the 5-minute wait after
-   the 17:57Z rebuild has passed. Leave `BENCH_AUTO_APPROVE` unset to
-   rehearse the Slack approval click.
-3. On the user's "push", push `routing-no-static-model` and open its PR.
-4. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
+1. User launches Act 1 (~$1.00–1.50, stop at $2) ≥5 min after the ≈20:00Z
+   rebuild. Leave `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval
+   click.
+2. On the user's "push", push `retired-model-routing` and open its PR.
+3. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
    adjudicate, freeze.
-5. Free, in a fresh session: judge harness + `CALIBRATION_DESIGN.md` §5
+4. Free, in a fresh session: judge harness + `CALIBRATION_DESIGN.md` §5
    metrics on the judge views (locator FAIL decides evidence_support;
    over-budget views abstain), verified on a stub judge. Then price a pass.

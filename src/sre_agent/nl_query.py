@@ -552,9 +552,12 @@ async def _handle_ad_hoc_chat(
     resolved_llm = llm
     if resolved_llm is None:
         try:
-            from .llm_utils import create_llm_with_fallback
+            # Through the router, like the console's chat: a bare
+            # create_llm_with_fallback() reads ANTHROPIC_MODEL, which once
+            # named a retired model and failed every Slack chat reply.
+            from .model_router import TaskType, route_llm
 
-            resolved_llm = create_llm_with_fallback()
+            resolved_llm = route_llm(TaskType.NARRATION, use_fallback=True)
         except Exception as e:
             logger.warning(f"NLQuery: no LLM available for chat reply ({e})")
 
@@ -578,7 +581,7 @@ async def answer_metric_question(question: str, metrics_uri: Optional[str] = Non
 
     Opts into the full production pipeline (live metric catalog, real-parser
     validation, LLM fallback for unmapped questions). The LLM is constructed
-    best-effort via create_llm_with_fallback; if that fails (no provider
+    best-effort through the model router; if that fails (no provider
     creds configured, etc.) this still runs the deterministic-only path —
     same as calling run_nl_query with no extra kwargs.
     """
@@ -588,9 +591,9 @@ async def answer_metric_question(question: str, metrics_uri: Optional[str] = Non
 
     llm = None
     try:
-        from .llm_utils import create_llm_with_fallback
+        from .model_router import TaskType, route_llm
 
-        llm = create_llm_with_fallback()
+        llm = route_llm(TaskType.SPECIALIST, use_fallback=True)
     except Exception as e:
         logger.warning(f"NLQuery: no LLM available for fallback generation, template-only ({e})")
 

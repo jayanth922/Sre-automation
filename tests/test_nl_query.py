@@ -541,3 +541,67 @@ def test_or_vector_zero_is_allowed_but_a_bare_or_is_not():
     )
     assert not ok
     assert "or" in reason and "secret_admin_metric" in reason
+
+
+# ── model choice: the router, never the ANTHROPIC_MODEL default ─────────────
+# Both paths used to call create_llm_with_fallback() bare, which takes the
+# model from ANTHROPIC_MODEL. A deployment that still set it to a retired
+# model (claude-3-5-sonnet-latest) failed every Slack chat reply and every
+# LLM-written PromQL fallback, silently, behind the canned replies.
+def _packaged_nl_query(monkeypatch):
+    from sre_agent import llm_utils, model_router
+    from sre_agent import nl_query as packaged
+
+    def _unrouted(*args, **kwargs):
+        raise AssertionError("nl_query built an LLM outside the model router")
+
+    monkeypatch.setattr(llm_utils, "create_llm_with_fallback", _unrouted)
+    monkeypatch.setattr(llm_utils, "create_llm_with_error_handling", _unrouted)
+    return packaged, model_router
+
+
+def test_ad_hoc_chat_takes_its_model_from_the_router(monkeypatch):
+    packaged, model_router = _packaged_nl_query(monkeypatch)
+    picked = []
+
+    def fake_route_llm(task_type, **kwargs):
+        picked.append((task_type, kwargs))
+        return _CapturingChatLLM("routed reply")
+
+    monkeypatch.setattr(model_router, "route_llm", fake_route_llm)
+
+    out = asyncio.run(packaged.handle_chat_message("tell me a joke"))
+
+    assert out == {"mode": "chat", "reply": "routed reply", "llm_used": True}
+    assert picked == [(model_router.TaskType.NARRATION, {"use_fallback": True})]
+
+
+def test_metric_question_fallback_takes_its_model_from_the_router(monkeypatch):
+    import types
+
+    packaged, model_router = _packaged_nl_query(monkeypatch)
+    routed = _FakeLLM("unused")
+    picked = []
+
+    def fake_route_llm(task_type, **kwargs):
+        picked.append((task_type, kwargs))
+        return routed
+
+    async def fake_caller_builder(uri=None):
+        return "caller"
+
+    seen = {}
+
+    async def fake_run_nl_query(question, **kwargs):
+        seen.update(kwargs)
+        return "result"
+
+    executor = types.ModuleType("sre_agent.executor")
+    executor.build_metrics_tool_caller = fake_caller_builder
+    monkeypatch.setitem(sys.modules, "sre_agent.executor", executor)
+    monkeypatch.setattr(model_router, "route_llm", fake_route_llm)
+    monkeypatch.setattr(packaged, "run_nl_query", fake_run_nl_query)
+
+    assert asyncio.run(packaged.answer_metric_question("checkout error rate")) == "result"
+    assert picked == [(model_router.TaskType.SPECIALIST, {"use_fallback": True})]
+    assert seen["llm"] is routed
