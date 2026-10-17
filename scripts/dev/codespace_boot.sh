@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs on every Codespace start/resume (wired into .devcontainer/devcontainer.json's
-# postStartCommand, before watch_meridian_deploy.sh). Docker-in-Docker's ephemeral
+# postStartCommand). Docker-in-Docker's ephemeral
 # storage does not survive a Codespace stop/resume, so k3s's *process* dies even
 # though its on-disk state (etcd, pod specs) persists — this script brings it back
 # and re-wires the one thing that silently breaks along with it: Alertmanager's
