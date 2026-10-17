@@ -249,7 +249,8 @@ async def create_cluster(
         ),
         namespace=cluster.namespace or None,
         llm_provider=cluster.llm_provider or None,
-        llm_model=cluster.llm_model or None,
+        # The router picks every model when it is on; see update_cluster.
+        llm_model=None if cluster.llm_router_enabled else (cluster.llm_model or None),
         llm_base_url=cluster.llm_base_url or None,
         llm_api_key=cluster.llm_api_key or None,
         llm_router_enabled=bool(cluster.llm_router_enabled),
@@ -320,6 +321,12 @@ async def update_cluster(
     ):
         if field in data:
             setattr(cluster, field, data[field] or None)
+    # Dynamic routing owns model choice, so a cluster with the router on keeps
+    # no static model, whatever the request sent. Switching the router back
+    # off leaves the model empty until one is picked again.
+    model_dropped = bool(cluster.llm_router_enabled and cluster.llm_model)
+    if model_dropped:
+        cluster.llm_model = None
     # Refuse configs the runtime would reject at investigation start — but
     # only when an override is actually being set; clearing back to
     # "unconfigured" is allowed without validating a provider that isn't there.
@@ -341,7 +348,7 @@ async def update_cluster(
     }
     if credential_fields.intersection(data):
         cluster.key_version = crypto.current_key_version()
-    if context_fields.intersection(data):
+    if model_dropped or context_fields.intersection(data):
         cluster.execution_context_version = (cluster.execution_context_version or 0) + 1
     if "metrics_config" in data:
         cluster.metrics_config = (

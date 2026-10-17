@@ -11,6 +11,7 @@ This folder contains the ordered schema revisions for the backend database. The 
 - [c4d5e6f7a8b9_add_pending_supervisor_to_incident_timeline_events.py](c4d5e6f7a8b9_add_pending_supervisor_to_incident_timeline_events.py) adds supervisor follow-up state to timeline events.
 - [e5f6a7b8c9d0_add_evidence_artifacts.py](e5f6a7b8c9d0_add_evidence_artifacts.py) stores compressed specialist evidence outside LangGraph checkpoints.
 - [a7b8c9d0e1f2_add_cluster_policy_settings.py](a7b8c9d0e1f2_add_cluster_policy_settings.py) adds the per-cluster environment label and approval window; both nullable, because null means "follow the deployment default".
+- [b8c9d0e1f2a3_clear_static_model_when_routed.py](b8c9d0e1f2a3_clear_static_model_when_routed.py) clears the stored model on clusters with dynamic routing on, since the router took it as the anchor for every tier; irreversible on purpose.
 - [d6d22479d2ee_add_jobs_table.py](d6d22479d2ee_add_jobs_table.py) captures the jobs-table evolution that the runtime uses for cluster work items.
 
 ## What To Preserve

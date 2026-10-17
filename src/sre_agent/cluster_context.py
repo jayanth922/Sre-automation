@@ -70,15 +70,25 @@ def resolve_llm(cluster: Any) -> Dict[str, Optional[str]]:
     local development / self-hosted single-tenant mode). A real cluster that
     hasn't set ``llm_provider`` gets ``provider=None`` here, not a silently
     substituted default — callers must fail closed on that instead.
+
+    A cluster with dynamic routing on has no static model: the router picks
+    one per task. A model left in the row (saved before routing was switched
+    on) is ignored rather than passed on, because the router would otherwise
+    take it as the anchor for every tier.
     """
     use_env_fallbacks = cluster is None
+    routed = getattr(cluster, "llm_router_enabled", False) is True
     provider = _attr(cluster, "llm_provider") or (
         os.getenv("LLM_PROVIDER", "anthropic") if use_env_fallbacks else None
     )
     return {
         "provider": provider.strip().lower() if provider else None,
-        "model": _attr(cluster, "llm_model")
-        or (os.getenv("LLM_MODEL") if use_env_fallbacks else None),
+        "model": None
+        if routed
+        else (
+            _attr(cluster, "llm_model")
+            or (os.getenv("LLM_MODEL") if use_env_fallbacks else None)
+        ),
         "base_url": _attr(cluster, "llm_base_url")
         or (os.getenv("LLM_BASE_URL") if use_env_fallbacks else None),
         "api_key": _attr(cluster, "llm_api_key")
