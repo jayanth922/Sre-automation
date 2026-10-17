@@ -6,8 +6,8 @@ agent. Deterministic policy and durable state — not model prose — control
 writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-1. **Demo rehearsal** (`docs/DEMO.md`, Act 1 `payment_provider_outage`) —
-   key, routing and Slack ready; waiting on the user's launch.
+1. **Demo rehearsal**: run 2026-10-17 showed Act 1 cannot work as written
+   (Active problem); it needs a new scenario.
 2. **Calibrated judge for `causal_chain` / `evidence_support`** — free phase.
 Standing rule: batch every open fix, verify offline, then spend.
 
@@ -59,8 +59,17 @@ Standing rule: batch every open fix, verify offline, then spend.
   watcher running; checkout `app.py` `a81888c51b1ee731`, deployed `7a6e223`.
 
 ## Active problem
-- **Rehearsal**: `.env` key works (user keeps it); Slack bot `meridian` is
-  valid and in `C0C0KA474LC` (`#all-meridian`).
+- **Rehearsal 2026-10-17** (incident `eed52188`, log
+  `/home/vscode/act1-rehearsal-20261017.log`): UNRESOLVED, $1.44. Diagnosis
+  right; the agent escalated per the runbook's dependency-outage branch, so
+  no Slack approval was asked. Since meridian `a23e9b4` (2026-09-30)
+  `provider_down` lives in ConfigMap `payment-provider-state`; no allowed
+  action restores the probe. `docs/DEMO.md` Act 1 is stale.
+- **Cascade alerts outlive a trial**: `PaymentFailureSpike` (checkout) became
+  its own incident `e89a63ac` and spent $1.00 after the trial, running on in
+  the API process past its own resolution (23:50Z) to 23:51:37Z. Two more
+  (`70dc915c`, `5f409d2f`) opened at 23:47Z; all four are resolved.
+  `sre-temporal-worker` and `sre-agent-api` are stopped (≈23:49Z/23:56Z).
 - **No run can grade better than `INCOMPLETE`**:
   `structured_grading._semantic_criterion` is a shape check with no judge.
 
@@ -94,7 +103,8 @@ Standing rule: batch every open fix, verify offline, then spend.
 
 ## Known blockers or risks
 - Budget: no paid run without explicit approval; price every run first.
-  ≈$11.60 spent through Run 9. Calibration campaign (~$40+) not authorized.
+  ≈$14.04 spent through the 2026-10-17 rehearsal ($2.44, over its $2 cap).
+  Calibration campaign (~$40+) not authorized.
 - FAST (haiku-4-5) is untested in a paid run. `sonnet-4-5` (ladder only)
   retires 2026-11-30; haiku-4-5 may be deprecated any time (`haiku-5-5`).
 - 3 of 22 scenarios need deploy/rollback evidence no injection creates.
@@ -108,8 +118,11 @@ Standing rule: batch every open fix, verify offline, then spend.
 - kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
 
 ## Next bounded task
-1. User launches Act 1 (~$1.00–1.50, stop at $2). Leave
-   `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
+1. Free, fresh session: pick an Act 1 scenario whose runbook fix is a
+   restart/rollback that restores its probe; rewrite `docs/DEMO.md`; make
+   resolving an incident cancel its investigation and make the bench close
+   cascade incidents at teardown. Restart the API and worker, then price a
+   rehearsal.
 2. Codespace: move `meridian-shop-deploy`'s local master to origin
    `7bcfb45` without touching the staged restore; re-check the `app.py`
    hash and last deployed SHA.
