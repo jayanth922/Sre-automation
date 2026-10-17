@@ -222,7 +222,9 @@ export default function SettingsPage() {
           endpoints.llm_model || endpoints.llm_api_key || endpoints.llm_router_enabled
             ? "anthropic"
             : endpoints.llm_provider,
-        llm_model: endpoints.llm_model,
+        // Dynamic routing picks the model per task, so a routed cluster keeps
+        // no static model: send it blank to clear any saved before routing.
+        llm_model: endpoints.llm_router_enabled ? "" : endpoints.llm_model,
         llm_base_url: endpoints.llm_base_url,
         llm_api_key: endpoints.llm_api_key || undefined,
         llm_router_enabled: endpoints.llm_router_enabled,
@@ -505,50 +507,52 @@ export default function SettingsPage() {
                   <span>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>Auto-route to the best model per task (recommended)</div>
                     <div style={{ color: "var(--ink2)", fontSize: 11.5, marginTop: 2, lineHeight: 1.5 }}>
-                      Dynamically picks a faster/cheaper Claude model for routing and narration, and a stronger model for high-stakes reflection and planning steps. When on, the model picked below is only used as the ultimate fallback.
+                      Dynamically picks a faster/cheaper Claude model for routing and narration, and a stronger model for high-stakes reflection and planning steps. When on, there is no fixed model: every step gets the model its task calls for.
                     </div>
                   </span>
                 </label>
               </div>
 
-              <div>
-                <label className="sx-label" htmlFor="set-llm-model">Model{endpoints.llm_router_enabled ? " (fallback)" : ""}</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {models.length > 0 ? (
-                    <select
-                      id="set-llm-model"
-                      className="sx-input"
-                      style={{ flex: 1 }}
-                      value={endpoints.llm_model}
-                      onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })}
+              {!endpoints.llm_router_enabled && (
+                <div>
+                  <label className="sx-label" htmlFor="set-llm-model">Model</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {models.length > 0 ? (
+                      <select
+                        id="set-llm-model"
+                        className="sx-input"
+                        style={{ flex: 1 }}
+                        value={endpoints.llm_model}
+                        onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })}
+                      >
+                        <option value="">Not configured</option>
+                        {models.map((m) => (
+                          <option key={m.id} value={m.id}>{m.display_name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        id="set-llm-model"
+                        className="sx-input sx-mono"
+                        style={{ fontSize: 12, flex: 1 }}
+                        placeholder="e.g. claude-sonnet-5"
+                        value={endpoints.llm_model}
+                        onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="sx-btn"
+                      style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
+                      onClick={loadModels}
+                      disabled={modelsLoading}
                     >
-                      <option value="">Not configured</option>
-                      {models.map((m) => (
-                        <option key={m.id} value={m.id}>{m.display_name}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      id="set-llm-model"
-                      className="sx-input sx-mono"
-                      style={{ fontSize: 12, flex: 1 }}
-                      placeholder="e.g. claude-sonnet-5"
-                      value={endpoints.llm_model}
-                      onChange={(e) => setEndpoints({ ...endpoints, llm_model: e.target.value })}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    className="sx-btn"
-                    style={{ flex: "none", padding: "5px 10px", fontSize: 11.5 }}
-                    onClick={loadModels}
-                    disabled={modelsLoading}
-                  >
-                    {modelsLoading ? "Loading…" : "Load available models"}
-                  </button>
+                      {modelsLoading ? "Loading…" : "Load available models"}
+                    </button>
+                  </div>
+                  {modelsError && <div style={{ color: "var(--crit)", fontSize: 11, marginTop: 4 }}>{modelsError}</div>}
                 </div>
-                {modelsError && <div style={{ color: "var(--crit)", fontSize: 11, marginTop: 4 }}>{modelsError}</div>}
-              </div>
+              )}
             </div>
 
             <SectionTitle

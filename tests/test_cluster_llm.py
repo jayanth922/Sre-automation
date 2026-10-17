@@ -211,3 +211,138 @@ async def test_runtime_accepts_cluster_scoped_provider_key(monkeypatch):
 
     assert bundle.context is context
     assert bundle.graph is graph
+
+
+# ── Dynamic routing: a routed cluster has no static model ─────────────────────
+
+
+def _clear_tier_overrides(monkeypatch):
+    for tier in ("FAST", "BALANCED", "STRONG"):
+        for suffix in ("MODEL", "PROVIDER", "LITELLM_MODEL"):
+            monkeypatch.delenv(f"MODEL_ROUTER_{tier}_{suffix}", raising=False)
+
+
+def test_routed_cluster_resolves_no_static_model():
+    """A model saved before routing was switched on must not reach the runtime."""
+    cluster = _cluster(
+        llm_provider="anthropic", llm_model="claude-opus-5", llm_router_enabled=True
+    )
+    assert resolve_llm(cluster)["model"] is None
+    assert resolve_authorized_llm(cluster)["model"] is None
+
+
+def test_unrouted_cluster_keeps_its_static_model():
+    cluster = _cluster(
+        llm_provider="anthropic", llm_model="claude-opus-5", llm_router_enabled=False
+    )
+    assert resolve_llm(cluster)["model"] == "claude-opus-5"
+
+
+def test_routed_cluster_picks_per_task_not_the_stale_model(monkeypatch):
+    """From the cluster row through ExecutionContext to the router's pick.
+
+    The stale model used to become the router's anchor, and BALANCED returns
+    the anchor verbatim: every specialist ran on the saved model.
+    """
+    from sre_agent.model_router import TaskType, select_model
+
+    _clear_tier_overrides(monkeypatch)
+    cluster = _cluster(
+        llm_provider="anthropic", llm_model="claude-opus-5", llm_router_enabled=True
+    )
+    context = ExecutionContext.from_cluster(cluster)
+    assert context.llm_router_enabled is True
+    assert context.llm_kwargs().get("model_id") is None
+    assert context.llm_manifest()["model"] is None
+
+    def pick(task_type):
+        return select_model(
+            task_type,
+            provider=context.llm_provider,
+            router_enabled=context.llm_router_enabled,
+            anchor_model=context.llm_model,
+        ).model_id
+
+    assert pick(TaskType.SPECIALIST) == "claude-sonnet-5"
+    assert pick(TaskType.ROUTING) == "claude-haiku-4-5-20251001"
+    assert pick(TaskType.REFLECTION) == "claude-opus-5"
+
+
+class _Session:
+    def __init__(self):
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def commit(self):
+        pass
+
+    async def refresh(self, _obj):
+        pass
+
+
+def _update(monkeypatch, cluster, **fields):
+    from backend import crud, schemas
+
+    async def owned(_db, _cluster_id):
+        return cluster
+
+    monkeypatch.setattr(crud, "get_cluster_by_id", owned)
+    return asyncio.run(
+        crud.update_cluster(
+            _Session(), cluster.id, cluster.org_id, schemas.ClusterUpdate(**fields)
+        )
+    )
+
+
+def test_update_turning_routing_on_drops_the_model_sent_with_it(monkeypatch):
+    cluster = _cluster(llm_router_enabled=False)
+    updated = _update(
+        monkeypatch,
+        cluster,
+        llm_provider="anthropic",
+        llm_model="claude-opus-5",
+        llm_router_enabled=True,
+    )
+    assert updated.llm_router_enabled is True
+    assert updated.llm_model is None
+    assert updated.execution_context_version == 2
+
+
+def test_update_clears_a_model_left_from_before_routing(monkeypatch):
+    """A save that does not touch the LLM fields still clears the stale row."""
+    cluster = _cluster(
+        llm_provider="anthropic", llm_model="claude-opus-5", llm_router_enabled=True
+    )
+    updated = _update(monkeypatch, cluster, name="renamed")
+    assert updated.llm_model is None
+    assert updated.execution_context_version == 2
+
+
+def test_update_with_routing_off_keeps_the_chosen_model(monkeypatch):
+    cluster = _cluster(llm_router_enabled=False)
+    updated = _update(
+        monkeypatch, cluster, llm_provider="anthropic", llm_model="claude-opus-5"
+    )
+    assert updated.llm_model == "claude-opus-5"
+
+
+def test_create_with_routing_on_stores_no_model():
+    from backend import crud, schemas
+
+    db = _Session()
+    created, _token = asyncio.run(
+        crud.create_cluster(
+            db,
+            schemas.ClusterCreate(
+                name="routed",
+                llm_provider="anthropic",
+                llm_model="claude-opus-5",
+                llm_router_enabled=True,
+            ),
+            uuid.uuid4(),
+        )
+    )
+    assert created.llm_router_enabled is True
+    assert created.llm_model is None
