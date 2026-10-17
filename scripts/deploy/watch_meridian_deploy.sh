@@ -37,6 +37,16 @@ declare -A IMAGE_MAP=(
 
 log() { echo "$LOG_PREFIX $(date -Is) $*"; }
 
+# Opt-in only. Its first poll `git reset --hard`s $REPO_DIR to origin/master,
+# discarding working-tree changes there, such as the restore that keeps
+# checkout healthy (.local-baseline-restore.md). It used to start from
+# postStartCommand, and an existing Codespace keeps that cached command until
+# it is rebuilt, so the guard lives here rather than only in devcontainer.json.
+if [ "${MERIDIAN_WATCHER_ENABLED:-0}" != "1" ]; then
+  log "disabled; run with MERIDIAN_WATCHER_ENABLED=1 to enable"
+  exit 0
+fi
+
 if [ ! -d "$REPO_DIR/.git" ]; then
   log "cloning $REPO_URL into $REPO_DIR"
   git clone --quiet "$REPO_URL" "$REPO_DIR"
