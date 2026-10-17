@@ -7,7 +7,7 @@ writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
 1. **Demo rehearsal** (`docs/DEMO.md`, Act 1 `payment_provider_outage`) —
-   key and routing fixed; waiting on the Slack invite and spend approval.
+   key, routing and Slack ready; waiting on the user's launch.
 2. **Calibrated judge for `causal_chain` / `evidence_support`** — free phase.
 Standing rule: batch every open fix, verify offline, then spend.
 
@@ -57,8 +57,8 @@ Standing rule: batch every open fix, verify offline, then spend.
 ## Active problem
 - **Rehearsal**: the `.env` key works; the user keeps it. Its retired
   `ANTHROPIC_MODEL` is unused (routed calls get tier models). Slack
-  (2026-10-17): token and posting scopes valid (bot `meridian`), but
-  `not_in_channel` for `C0C0KA474LC`, the channel past incidents posted to.
+  (2026-10-17): token and posting scopes valid (bot `meridian`); after the
+  user's invite it is a member of `C0C0KA474LC` (`#all-meridian`).
 - **No run can grade better than `INCOMPLETE`**:
   `structured_grading._semantic_criterion` is a shape check with no judge.
 
@@ -101,11 +101,10 @@ Standing rule: batch every open fix, verify offline, then spend.
 - kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
 
 ## Next bounded task
-1. User: `/invite @meridian` in `#all-meridian`; then re-run the read-only
-   Slack check (`auth.test` + one `conversations.history` on `C0C0KA474LC`).
-2. On approval, rehearse Act 1 (~$1.00–1.50, stop at $2), no earlier than
-   18:02Z on 2026-10-17 (5 min after the rebuild); leave `BENCH_AUTO_APPROVE`
-   unset to rehearse the Slack approval click.
+1. Done 2026-10-17: bot invited to `#all-meridian`, membership verified.
+2. User launches Act 1 (~$1.00–1.50, stop at $2); the 5-minute wait after
+   the 17:57Z rebuild has passed. Leave `BENCH_AUTO_APPROVE` unset to
+   rehearse the Slack approval click.
 3. On the user's "push", push `routing-no-static-model` and open its PR.
 4. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
    adjudicate, freeze.
