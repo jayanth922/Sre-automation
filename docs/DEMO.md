@@ -42,10 +42,16 @@ Slack. Before you start, `kubectl -n meridian rollout history
 deploy/checkout-service` must show the healthy revision as the newest one and
 the env must read `ERROR_RATE=0`; the bench refuses to inject otherwise.
 
+The bench holds the alert until its probe reads above 0.45, as the real rule
+would: about 3–4 minutes after the rollout, while the five-minute rate fills
+(`BENCH_FAULT_VISIBLE_SEC`, default 360). Posting it earlier lets the agent's
+first probe read the fault as sub-threshold and close the incident with no
+action, which is what the first rehearsal did.
+
 | Beat | Show | Say |
 |---|---|---|
 | Fault | `kubectl -n meridian rollout history deploy/checkout-service`: a new revision; then the graph climbing past 0.45 | "Someone just shipped a config change to checkout. Six in ten checkouts now fail." |
-| Alert | the incident appears in the console; a Slack thread opens | "Alertmanager's webhook opened the incident. No human paged the agent." |
+| Alert | the incident appears in the console; a Slack thread opens | "The error ratio crossed 0.45 and the alert landed on the platform's Alertmanager webhook. No human paged the agent." |
 | Investigation | the console timeline: specialists' tool calls (metrics, logs, k8s) | "It rules things out in the runbook's order: the provider is up, the database is fine, and checkout rolled out a new revision at the moment errors started." |
 | Policy gate | the proposed rollback and its risk class | "The runbook says roll back, never scale. This is a critical-risk service, so the agent must stop and ask." |
 | Approval | approve in the Slack thread | "Slack resolves my profile email to a platform user and checks my role. It is the same gate the API uses, with no second path." |
@@ -109,9 +115,10 @@ labelled "this run".
 
 ## Cost
 
-Act 1 has not been priced on its own yet. Expect it to be close to the
-2026-10-17 rehearsal's trial ($1.44): the same alert, a similar investigation,
-plus one approval. That rehearsal's total reached $2.44 only because a cascade
-incident kept investigating after the trial ended; the quiesce step above now
-closes those. Act 2 costs about the same as Act 1. Rehearsal plus live demo with
+The 2026-10-18 Act 1 rehearsal cost $1.19 for a full investigation that
+stopped short of a remediation plan (the early alert above), with no aftermath
+spend: the quiesce step closed its one incident. A run that reaches the
+rollback adds planning, one approval and verification; expect about $1.50–2.00.
+The 2026-10-17 rehearsal's total reached $2.44 only because a cascade incident
+kept investigating after the trial ended. Act 2 costs about the same as Act 1. Rehearsal plus live demo with
 both acts: about $4–6. Act 3 is free.

@@ -305,6 +305,14 @@ COOLDOWN_SEC = 30
 # so an alert the last fault caused has had its chance to fire. 0 disables.
 QUIESCE_SEC = int(os.getenv("BENCH_QUIESCE_SEC", "420"))
 QUIESCE_POLL_SEC = 15
+# How long a trial holds its alert after injection, waiting for the scenario's
+# probe to read failing. A rule fires only once its condition holds, and a
+# five-minute rate() needs minutes of the fault inside its window to get there.
+# Posting at injection handed the 2026-10-18 rehearsal an incident whose Step 1
+# probe read 0.146 against a 0.45 threshold, and the runbook then correctly
+# closed it as sub-threshold. 0 restores posting at injection.
+FAULT_VISIBLE_SEC = int(os.getenv("BENCH_FAULT_VISIBLE_SEC", "360"))
+FAULT_VISIBLE_POLL_SEC = 15
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
 # How long a trial waits for an investigation that has started to finish after
@@ -764,6 +772,46 @@ async def _observe_oracle(
             tracker.establish_baseline(value)
         else:
             tracker.observe(value)
+
+
+async def _await_fault_visible(
+    client: httpx.AsyncClient,
+    oracle_client: PrometheusOracleClient,
+    tracker: RecoveryOracleTracker,
+    spec: ScenarioSpec,
+    started_at: datetime,
+    *,
+    budget_seconds: Optional[float] = None,
+    poll_seconds: Optional[float] = None,
+) -> datetime:
+    """Hold the alert until the scenario's probe reads failing, as a rule would.
+
+    Returns the alert's `startsAt`: the first failing reading, so the alert
+    follows the deploy that caused it instead of preceding it. The trial clock
+    stays at injection. A negative control never crosses its boundary by
+    design, and an unarmed probe or unhealthy baseline has no failure to wait
+    for, so those post at `started_at` as before.
+    """
+    budget = FAULT_VISIBLE_SEC if budget_seconds is None else budget_seconds
+    poll = FAULT_VISIBLE_POLL_SEC if poll_seconds is None else poll_seconds
+    if (
+        budget <= 0
+        or _is_negative_control(spec)
+        or not tracker.probe.require_failure_observation
+        or tracker.baseline_healthy is not True
+    ):
+        return started_at
+    deadline = time.monotonic() + budget
+    while True:
+        await _observe_oracle(client, oracle_client, tracker)
+        if tracker.failure_observed:
+            return tracker.observations[-1].observed_at
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"the fault never showed on probe {tracker.probe.name} within "
+                f"{budget:g}s, so no rule would have fired; alert not posted"
+            )
+        await asyncio.sleep(poll)
 
 
 async def _await_manual_fault(
@@ -1686,7 +1734,10 @@ async def _run_trial(
 
         receipt: Optional[AlertReceipt] = None
         try:
-            receipt = await _fire_alert(client, spec, started_at, creds)
+            alert_at = await _await_fault_visible(
+                client, oracle_client, tracker, spec, started_at
+            )
+            receipt = await _fire_alert(client, spec, alert_at, creds)
             await _observe_oracle(client, oracle_client, tracker)
         except Exception as exc:
             result = _oracle_result(

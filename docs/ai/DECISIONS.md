@@ -2135,3 +2135,29 @@ requires all three splits.
 **Rejected alternative.** Cancelling investigations when Alertmanager clears an
 alert. It would reverse the earlier decision for a benchmark-only problem; the
 bench owns its aftermath instead.
+
+## The bench posts a scenario's alert only once its probe reads failing
+
+**Decision.** After injecting, a trial polls the scenario's recovery probe and
+posts the alert at the first failing reading (`_await_fault_visible`,
+`BENCH_FAULT_VISIBLE_SEC`=360), with that reading's time as `startsAt`. The
+trial clock still starts at injection. Negative controls, unarmed probes and
+unhealthy baselines post at injection as before. A fault that never reads
+failing within the budget fails the stimulus and no alert is posted.
+
+**Reason.** The 2026-10-18 Act 1 rehearsal posted at injection. The agent's
+Step 1 probe, a five-minute rate, read 0.146 against 0.45 with only 90 seconds
+of fault in its window, and the runbook's Branch A correctly closed the
+incident with no action (UNRESOLVED, $1.19). Prometheus fired the real alert
+about four minutes later. No real rule can fire on a sub-threshold reading,
+so the early post tested a situation production never produces. The `startsAt`
+also preceded the rollout it was caused by, which inverted the causal order.
+
+**Consequences.** Trials take 3–4 minutes longer before the incident opens.
+Past campaigns posted at injection, so their sub-threshold closures are not
+comparable with runs after this change.
+
+**Rejected alternative.** Telling the runbook to re-measure when the onset is
+under five minutes old. It changes the agent's procedure to compensate for a
+harness artifact, and production alerts already arrive after their window
+fills.
