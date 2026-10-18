@@ -137,6 +137,19 @@ AUTO_APPROVE = os.getenv("BENCH_AUTO_APPROVE", "").strip().lower() in {
 # A plan can legitimately pause more than once; a runaway loop should still
 # not be able to spend the whole timeout POSTing approvals.
 AUTO_APPROVE_LIMIT = int(os.getenv("BENCH_AUTO_APPROVE_LIMIT", "3"))
+# The third mode: a person decides in Slack, which is what the demo runs.
+# Without it `awaiting_approval` is terminal, so on 2026-10-18 the trial tore
+# down 30 seconds after the approval request posted, restored the fault and
+# closed the incident before anyone could click. With it the trial polls
+# through the approval up to the incident timeout. A human-approved run is
+# neither "unaided" nor "harness-approved", so it is tagged and fingerprinted
+# as its own arm.
+AWAIT_HUMAN_APPROVAL = os.getenv("BENCH_AWAIT_HUMAN_APPROVAL", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 STATISTICAL_CONFIG = {
     "experiment_id": EXPERIMENT_ID,
@@ -963,7 +976,10 @@ async def _wait_for_recovery(
                 # terminal status, so the grace countdown has to start over.
                 terminal_seen_at = None
                 continue
-        if application_status in TERMINAL_APPLICATION_STATUSES:
+        waiting_on_human = (
+            AWAIT_HUMAN_APPROVAL and application_status == "awaiting_approval"
+        )
+        if application_status in TERMINAL_APPLICATION_STATUSES and not waiting_on_human:
             if terminal_seen_at is None:
                 terminal_seen_at = elapsed
             elif elapsed - terminal_seen_at >= ORACLE_COMPLETION_GRACE_SEC:
@@ -1180,6 +1196,8 @@ def _record_statistical_trial(
         # harness must never be compared against one that ran unaided without
         # that being visible in the artifact people actually diff.
         failure_categories.add("harness_approved")
+    if AWAIT_HUMAN_APPROVAL:
+        failure_categories.add("human_approval_mode")
     trial = build_trial_record(
         experiment_id=experiment_id,
         pair_id=pair_id,
@@ -1255,18 +1273,19 @@ def _confidence_fingerprint() -> str:
     """
     if CONFIG_FINGERPRINT:
         return CONFIG_FINGERPRINT
-    material = json.dumps(
-        {
-            "dataset_version": DATASET.dataset_version,
-            "dataset_split": DATASET.split,
-            "dataset_sha256": DATASET.sha256,
-            "fault_mode": FAULT_MODE,
-            "incident_timeout_sec": TIMEOUT_SEC,
-            "auto_approve": AUTO_APPROVE,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    config = {
+        "dataset_version": DATASET.dataset_version,
+        "dataset_split": DATASET.split,
+        "dataset_sha256": DATASET.sha256,
+        "fault_mode": FAULT_MODE,
+        "incident_timeout_sec": TIMEOUT_SEC,
+        "auto_approve": AUTO_APPROVE,
+    }
+    # Only when set, so every fingerprint recorded before the mode existed
+    # still matches its configuration.
+    if AWAIT_HUMAN_APPROVAL:
+        config["await_human_approval"] = True
+    material = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(material.encode()).hexdigest()
 
 
@@ -1869,6 +1888,8 @@ async def run() -> None:
             f"(BENCH_SCENARIOS); not a measurement of this split"
         )
     print(f"  fault mode: {FAULT_MODE}")
+    if AWAIT_HUMAN_APPROVAL:
+        print("  approvals: a human decides in Slack (BENCH_AWAIT_HUMAN_APPROVAL)")
     print(f"  incident timeout: {TIMEOUT_SEC}s (BENCH_INCIDENT_TIMEOUT_SEC)")
     unmeasurable = timeout_warning(FAULT_MODE, TIMEOUT_SEC)
     if unmeasurable:

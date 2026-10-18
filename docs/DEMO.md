@@ -32,15 +32,22 @@ do (`examples/meridian/runbooks/high-error-rate.md`, Branch E).
 
 ```bash
 BENCH_SCENARIOS=checkout_bad_config_deploy BENCH_RUNS_PER_SCENARIO=1 \
-BENCH_INCIDENT_TIMEOUT_SEC=2700 \
+BENCH_INCIDENT_TIMEOUT_SEC=2700 BENCH_AWAIT_HUMAN_APPROVAL=1 \
 BENCH_DATASET_VERSION=v3 BENCH_DATASET_SPLIT=dev BENCH_FAULT_MODE=automatic \
   .venv/bin/python evals/benchmarks/sre_bench.py
 ```
 
 Leave `BENCH_AUTO_APPROVE` unset. The approval must be a human clicking in
-Slack. Before you start, `kubectl -n meridian rollout history
-deploy/checkout-service` must show the healthy revision as the newest one and
-the env must read `ERROR_RATE=0`; the bench refuses to inject otherwise.
+Slack, and `BENCH_AWAIT_HUMAN_APPROVAL=1` keeps the trial running while the
+request waits; without it the bench ends the trial 30 seconds after the request
+posts, restores the fault itself and closes the incident (rehearsal 2). Once
+that has happened, do not approve the stale request: `rollout undo` from the
+restored revision lands on the faulty one. Approve within 30 minutes; the
+request expires after that (`APPROVAL_TTL_MINUTES`).
+
+Before you start, `kubectl -n meridian rollout history deploy/checkout-service`
+must show the healthy revision as the newest one and the env must read
+`ERROR_RATE=0`; the bench refuses to inject otherwise.
 
 The bench holds the alert until its probe reads above 0.45, as the real rule
 would: about 3–4 minutes after the rollout, while the five-minute rate fills
@@ -115,10 +122,11 @@ labelled "this run".
 
 ## Cost
 
-The 2026-10-18 Act 1 rehearsal cost $1.19 for a full investigation that
-stopped short of a remediation plan (the early alert above), with no aftermath
-spend: the quiesce step closed its one incident. A run that reaches the
-rollback adds planning, one approval and verification; expect about $1.50–2.00.
-The 2026-10-17 rehearsal's total reached $2.44 only because a cascade incident
-kept investigating after the trial ended. Act 2 costs about the same as Act 1. Rehearsal plus live demo with
-both acts: about $4–6. Act 3 is free.
+The 2026-10-18 Act 1 rehearsals cost $1.19 (stopped before a plan: the early
+alert above) and $1.37 (a correct rollback plan, then the bench ended the trial
+at the approval request; $0.03 of that was an aftermath incident the quiesce
+step closed). A run that also executes and verifies the rollback should land at
+about $1.50–2.00. Waiting for the approval click costs nothing: the agent is
+paused. The 2026-10-17 rehearsal's total reached $2.44 only because a cascade
+incident kept investigating after the trial ended. Act 2 costs about the same
+as Act 1. Rehearsal plus live demo with both acts: about $4–6. Act 3 is free.

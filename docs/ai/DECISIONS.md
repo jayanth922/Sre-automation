@@ -2161,3 +2161,24 @@ comparable with runs after this change.
 under five minutes old. It changes the agent's procedure to compensate for a
 harness artifact, and production alerts already arrive after their window
 fills.
+
+## A human-approved trial is its own mode, and waits for the human
+
+**Decision.** `BENCH_AWAIT_HUMAN_APPROVAL=1` stops `awaiting_approval` from
+counting as terminal, so the trial polls through a Slack decision up to the
+incident timeout. Such trials carry the `human_approval_mode` category and a
+distinct confidence fingerprint. Default off; the demo command sets it.
+
+**Reason.** Act 1 rehearsal 2 (2026-10-18, $1.37) reached a correct Branch E
+rollback proposal, then the bench treated `awaiting_approval` as the end of
+the trial, restored the fault after 30 seconds and closed the incident before
+anyone could approve. Treating it as terminal is right for unattended runs,
+which measure whether the agent stops to ask.
+
+**Consequences.** Unaided, harness-approved and human-approved runs are three
+arms that must not be pooled. A human-mode trial nobody answers runs the full
+incident timeout. Approving a request after teardown is unsafe: `rollout undo`
+from the restored revision returns to the faulty one.
+
+**Rejected alternative.** Making `BENCH_AUTO_APPROVE` the demo mode. It would
+skip the Slack approval the demo exists to show.
