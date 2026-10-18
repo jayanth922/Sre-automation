@@ -44,12 +44,17 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
-from fault_adapter import MeridianAdminConfigAdapter  # noqa: E402
+from fault_adapter import (  # noqa: E402
+    FaultAdapterRouter,
+    KubernetesDeploymentEnvAdapter,
+    MeridianAdminConfigAdapter,
+)
 from fixtures import resolve_credentials  # noqa: E402
 from recovery_oracle import (  # noqa: E402
     PrometheusOracleClient,
     RecoveryOracleTracker,
     append_oracle_result,
+    parse_prometheus_value,
 )
 from release_evidence import (  # noqa: E402
     append_root_trace,
@@ -248,6 +253,9 @@ FAULT_SERVICE_URLS = {
     # services that are scraped.
     "load-generator": os.getenv("BENCH_LOADGEN_URL", "http://localhost:8003"),
 }
+# Deployment-env faults roll out through kubectl on the machine running the
+# bench, against whatever cluster its kubeconfig selects.
+FAULT_KUBECTL = os.getenv("BENCH_KUBECTL", "kubectl")
 POLL_INTERVAL_SEC = 5
 # How long one trial may wait for the oracle to see recovery. 300s was chosen
 # when a run was one investigation pass; it is below the floor of what this
@@ -292,6 +300,11 @@ def timeout_warning(fault_mode: str, timeout_sec: int) -> str | None:
 
 
 COOLDOWN_SEC = 30
+# How long the harness keeps closing aftermath incidents once the last trial
+# ends. Five minutes of rate window plus the two-minute `for:` most rules carry,
+# so an alert the last fault caused has had its chance to fire. 0 disables.
+QUIESCE_SEC = int(os.getenv("BENCH_QUIESCE_SEC", "420"))
+QUIESCE_POLL_SEC = 15
 ORACLE_COMPLETION_GRACE_SEC = int(os.getenv("BENCH_ORACLE_COMPLETION_GRACE_SEC", "30"))
 ACCOUNTING_WAIT_SEC = int(os.getenv("BENCH_ACCOUNTING_WAIT_SECONDS", "30"))
 # How long a trial waits for an investigation that has started to finish after
@@ -1372,6 +1385,139 @@ async def _settle_open_incidents(
         await _release_incident(client, jwt, incident.get("id"), creds, notes)
 
 
+_LIVE_JOB_STATUSES = {"pending", "running"}
+_ACTIVE_ALERTS_QUERY = 'count(ALERTS{alertstate=~"firing|pending"}) or vector(0)'
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _active_alert_count(client: httpx.AsyncClient) -> Optional[float]:
+    try:
+        response = await client.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": _ACTIVE_ALERTS_QUERY},
+            headers=(
+                {"Authorization": f"Bearer {PROMETHEUS_TOKEN}"}
+                if PROMETHEUS_TOKEN
+                else {}
+            ),
+            timeout=6.0,
+        )
+        response.raise_for_status()
+        return parse_prometheus_value(response.json())
+    except Exception:
+        return None
+
+
+async def _quiesce_campaign(
+    client: httpx.AsyncClient,
+    jwt: _Token,
+    creds,
+    *,
+    started_at: datetime,
+    known_before: set[str],
+    budget_seconds: float = QUIESCE_SEC,
+    poll_seconds: float = QUIESCE_POLL_SEC,
+) -> list[str]:
+    """Stop paying for the campaign's aftermath before the harness exits.
+
+    Teardown closes the incident each trial opened. It cannot close the ones
+    the trial *caused*: a fault on one service raises alerts on its callers,
+    each of those opens its own incident with its own paid investigation, and
+    because rules evaluate five-minute rate windows some fire minutes after the
+    fault is gone. On 2026-10-17 one of them spent $1.00 after the trial
+    exited — 70% on top of the trial — and two more opened after that.
+
+    An Alertmanager clear does not stop those investigations, by design (see
+    DECISIONS.md, "External alert recovery closes remediation authority, not
+    investigation"), so closing them is the harness's job as the operator
+    ending the exercise. Same sanctioned calls as teardown: `mark-resolved`,
+    which cancels the incident's jobs, and a direct job cancel for an
+    investigation still running under an incident that is already resolved.
+
+    Returns once no alert is firing or pending and no job the campaign started
+    is still live, or when the budget runs out — saying which.
+    """
+    notes: list[str] = []
+    if budget_seconds <= 0:
+        return notes
+    deadline = time.monotonic() + budget_seconds
+    cancel_requested: set[str] = set()
+    while True:
+        try:
+            response = await client.get(
+                f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/incidents",
+                headers=await jwt.headers(),
+            )
+            response.raise_for_status()
+            incidents = response.json()
+        except Exception as exc:
+            notes.append(f"quiesce: could not list incidents: {exc}")
+            incidents = []
+        for incident in incidents:
+            incident_id = incident.get("id")
+            status = str(incident.get("status") or "").lower()
+            if incident_id in known_before or status in _CLOSED_APPLICATION_STATUSES:
+                continue
+            await _release_incident(client, jwt, incident_id, creds, notes)
+
+        live: list[dict] = []
+        try:
+            response = await client.get(
+                f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}/jobs",
+                headers=await jwt.headers(),
+            )
+            response.raise_for_status()
+            jobs = response.json()
+        except Exception as exc:
+            notes.append(f"quiesce: could not list jobs: {exc}")
+            jobs = []
+        for job in jobs:
+            created = _parse_timestamp(job.get("created_at"))
+            if (
+                str(job.get("status") or "").lower() in _LIVE_JOB_STATUSES
+                and created is not None
+                and created >= started_at
+            ):
+                live.append(job)
+        for job in live:
+            job_id = str(job.get("id"))
+            if job_id in cancel_requested:
+                continue
+            cancel_requested.add(job_id)
+            try:
+                response = await client.post(
+                    f"{creds.base_url}/api/v1/clusters/{creds.cluster_id}"
+                    f"/jobs/{job_id}/cancel",
+                    headers=await jwt.headers(),
+                )
+                response.raise_for_status()
+                notes.append(
+                    f"quiesce: cancelled job {job_id[:8]} "
+                    f"(incident {str(job.get('incident_id') or '?')[:8]})"
+                )
+            except Exception as exc:
+                notes.append(f"quiesce: could not cancel job {job_id[:8]}: {exc}")
+
+        active = await _active_alert_count(client)
+        if not live and active == 0:
+            return notes
+        if time.monotonic() >= deadline:
+            alerts = "unknown" if active is None else f"{active:.0f}"
+            notes.append(
+                f"quiesce: stopped after {budget_seconds:.0f}s with {alerts} "
+                f"alert(s) active and {len(live)} job(s) live — check spend"
+            )
+            return notes
+        await asyncio.sleep(poll_seconds)
+
+
 def _folded_alert_count(events) -> int:
     """Foreign alerts absorbed into this trial's incident while it ran.
 
@@ -1504,7 +1650,7 @@ async def _run_trial(
     client: httpx.AsyncClient,
     jwt: _Token,
     oracle_client: PrometheusOracleClient,
-    fault_adapter: Optional[MeridianAdminConfigAdapter],
+    fault_adapter: Optional[FaultAdapterRouter],
     spec: ScenarioSpec,
     creds,
     trial_meta: Optional[dict[str, Any]] = None,
@@ -1699,7 +1845,12 @@ async def run() -> None:
         PROMETHEUS_URL, bearer_token=PROMETHEUS_TOKEN
     )
     fault_adapter = (
-        MeridianAdminConfigAdapter(FAULT_SERVICE_URLS)
+        FaultAdapterRouter(
+            [
+                MeridianAdminConfigAdapter(FAULT_SERVICE_URLS),
+                KubernetesDeploymentEnvAdapter(kubectl=FAULT_KUBECTL),
+            ]
+        )
         if FAULT_MODE == "automatic"
         else None
     )
@@ -1716,55 +1867,76 @@ async def run() -> None:
             dataset_sha256=DATASET.sha256,
             randomize=STATISTICAL_RECORDING,
         )
-        # `BENCH_CONFIG_FINGERPRINT` is a declaration until something checks
-        # it against a manifest. Do that once, after the first trial.
-        fingerprint_verified = False
-        for position, (scenario_name, trial_index) in enumerate(schedule, 1):
-            spec = by_name[scenario_name]
-            print(
-                f"── {spec.name} run {trial_index}/{RUNS_PER_SCENARIO}  ",
-                end="",
-                flush=True,
+        campaign_started_at = datetime.now(timezone.utc)
+        known_before = await _incident_ids(client, jwt, creds)
+        try:
+            await _run_schedule(
+                client, jwt, creds, oracle_client, fault_adapter,
+                schedule, by_name, all_scores,
             )
-            trial_started = time.perf_counter()
-            trial_meta: dict[str, Any] = {}
-            score, line, trace_completeness, harness_approvals = await _run_trial(
+        finally:
+            for note in await _quiesce_campaign(
                 client,
                 jwt,
-                oracle_client,
-                fault_adapter,
-                spec,
                 creds,
-                trial_meta,
-            )
-            _record_statistical_trial(
-                spec,
-                score,
-                trial_index=trial_index,
-                latency_seconds=time.perf_counter() - trial_started,
-                trace_completeness=trace_completeness,
-                harness_approvals=harness_approvals,
-                extra_categories=tuple(trial_meta.get("extra_categories", ())),
-            )
-            _record_confidence_observations(
-                spec,
-                score,
-                trial_index=trial_index,
-            )
-            all_scores.append(score)
-            print(line)
-            for note in trial_meta.get("notes", ()):
+                started_at=campaign_started_at,
+                known_before=known_before,
+            ):
                 print(f"   {note}")
-            if not fingerprint_verified:
-                fingerprint_verified = True
-                await _verify_declared_fingerprint(
-                    client, jwt, trial_meta.get("incident_id"), creds
-                )
-            if position < len(schedule):
-                await asyncio.sleep(COOLDOWN_SEC)
         print()
 
     _report(all_scores)
+
+
+async def _run_schedule(
+    client, jwt, creds, oracle_client, fault_adapter, schedule, by_name, all_scores
+) -> None:
+    # `BENCH_CONFIG_FINGERPRINT` is a declaration until something checks
+    # it against a manifest. Do that once, after the first trial.
+    fingerprint_verified = False
+    for position, (scenario_name, trial_index) in enumerate(schedule, 1):
+        spec = by_name[scenario_name]
+        print(
+            f"── {spec.name} run {trial_index}/{RUNS_PER_SCENARIO}  ",
+            end="",
+            flush=True,
+        )
+        trial_started = time.perf_counter()
+        trial_meta: dict[str, Any] = {}
+        score, line, trace_completeness, harness_approvals = await _run_trial(
+            client,
+            jwt,
+            oracle_client,
+            fault_adapter,
+            spec,
+            creds,
+            trial_meta,
+        )
+        _record_statistical_trial(
+            spec,
+            score,
+            trial_index=trial_index,
+            latency_seconds=time.perf_counter() - trial_started,
+            trace_completeness=trace_completeness,
+            harness_approvals=harness_approvals,
+            extra_categories=tuple(trial_meta.get("extra_categories", ())),
+        )
+        _record_confidence_observations(
+            spec,
+            score,
+            trial_index=trial_index,
+        )
+        all_scores.append(score)
+        print(line)
+        for note in trial_meta.get("notes", ()):
+            print(f"   {note}")
+        if not fingerprint_verified:
+            fingerprint_verified = True
+            await _verify_declared_fingerprint(
+                client, jwt, trial_meta.get("incident_id"), creds
+            )
+        if position < len(schedule):
+            await asyncio.sleep(COOLDOWN_SEC)
 
 
 def _mark(v) -> str:

@@ -3,14 +3,14 @@
   "description": "Content-addressed Meridian reference-workload scenarios spanning single-fault, multi-fault, cross-service cascade, concurrent benign signal, capacity, no-action and missing-data cases. Every fault knob, alert rule and probe metric is declared in fixtures.json and checked at load time.",
   "fixtures": {
     "file": "fixtures.json",
-    "sha256": "8d8b1c86a13787eab1222c9728e83f924e5fc80727d8f425866382481c5edf44"
+    "sha256": "65a448bbb91de16b5753383683fdc975feaf9a350a279fea6889e8906b4f0d93"
   },
   "schema_version": 2,
   "splits": {
     "dev": {
       "file": "dev.json",
       "frozen": false,
-      "sha256": "3b967e2da887f256d7ed63dc5c3dd7d8cf6454e52c2c5129a32552d7289c547e"
+      "sha256": "aa6cb9806079f2c3e5775b29063d542708a68fd007e4b0ac75cb387c88ea3cee"
     },
     "holdout": {
       "file": "holdout.json",

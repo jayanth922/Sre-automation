@@ -2106,3 +2106,32 @@ candidate sets are identical and the semantic path would collapse into a no-op
 — deleting the feature rather than calibrating it. Its purpose is to reach a
 skill whose wording matches when the failure-class keywords miss, and that
 requires cosine to admit something `match_score` rejects.
+
+## A deploy fault is a real rollout, and the bench quiesces its own aftermath
+
+**Decision.** `checkout_bad_config_deploy` (v3 dev) injects through a new
+adapter, `k8s_deployment_env_v1`: `kubectl set env` rolls out a new
+checkout-service revision with `ERROR_RATE=0.6`, and only `rollback` is
+allowed. After every campaign, `sre_bench._quiesce_campaign` resolves the
+incidents the campaign opened and cancels their live jobs until Prometheus
+shows no pending or firing alerts, bounded by `BENCH_QUIESCE_SEC` (420).
+
+**Reason.** Every `/admin/config` fault lives in process memory, so a restart
+clears it and no scenario could tell rollback from restart, or need a deploy
+to be found at all. The 2026-10-17 rehearsal also showed that cascade incidents
+keep spending after a trial exits ($1.00 of $2.44), and the earlier decision
+"External alert recovery closes remediation authority, not investigation"
+deliberately leaves those investigations running.
+
+**Consequences.** The adapter refuses to inject unless the env reads exactly
+the declared baseline, restores the original strings (a no-op after the
+agent's rollback, verified live 2026-10-18 with no new revision), and only
+touches allowed namespaces. A restart before the rollback makes `rollout undo`
+return to the faulty revision; that is the agent's failure and the trial
+should fail. A campaign now takes up to 7 minutes longer to exit. The
+scenario lives in v3 dev rather than its own dataset because the loader
+requires all three splits.
+
+**Rejected alternative.** Cancelling investigations when Alertmanager clears an
+alert. It would reverse the earlier decision for a benchmark-only problem; the
+bench owns its aftermath instead.

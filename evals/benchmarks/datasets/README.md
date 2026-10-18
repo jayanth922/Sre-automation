@@ -178,8 +178,9 @@ Two notes on why the split is real rather than administrative:
 
 ## v3: measuring missing data
 
-v3 is v2's 22 scenarios plus three, one per split, in a new
-`taxonomy.category = missing_data`:
+v3 is v2's 22 scenarios plus four: three, one per split, in a new
+`taxonomy.category = missing_data`, and one deploy scenario in dev
+([below](#v3-dev-a-deploy-that-only-a-rollback-fixes)):
 
 | Split | Scenario | Shape |
 | --- | --- | --- |
@@ -200,10 +201,28 @@ at 1 and hides the gap behind a target that still looks healthy — a different
 and rarer fault — whereas 503 is what a broken exporter really does and leaves
 the honest signal an investigator is supposed to find.
 
-**v3 cannot be run yet.** `metrics_enabled` is a change to the *meridian-shop*
+**v3's three missing-data scenarios cannot be run yet.** `metrics_enabled` is a change to the *meridian-shop*
 reference workload, and until that change is pushed and the checkout-service
 image rebuilt and redeployed, injecting the knob is a no-op against a running
 cluster and the scenarios would silently measure nothing. The dataset validates
 and is asserted by the test suite; only the live arm is blocked. `v2` remains
 the `BENCH_DATASET_VERSION` default precisely so nothing picks v3 up by
 accident in the meantime.
+
+### v3 dev: a deploy that only a rollback fixes
+
+v3's dev split also carries `checkout_bad_config_deploy`, the one scenario in
+any corpus whose fault is a real Deployment revision. Every other fault is an
+`/admin/config` write held in process memory, so a restart clears it and
+restart is always a passing answer — including on `bad_deploy_checkout`, whose
+name promises a bad deploy its injection never creates (there is no new
+revision to find, and nothing to roll back to).
+
+This one uses the `k8s_deployment_env_v1` adapter (`fault_adapter.py`):
+`kubectl set env` changes checkout-service's `ERROR_RATE` from 0 to 0.6 and
+waits for the rollout, producing a new revision. A restart keeps the env, so
+only `rollback` is allowed; `scale` is forbidden, as the runbook's Branch E
+says. Cleanup writes the original env strings back, which is a no-op when the
+agent already rolled back. The adapter refuses to inject unless the env is set
+to exactly the declared baseline, and only touches namespaces it is configured
+for (default `meridian`).

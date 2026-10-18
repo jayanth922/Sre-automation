@@ -6,8 +6,8 @@ agent. Deterministic policy and durable state — not model prose — control
 writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-1. **Demo rehearsal**: run 2026-10-17 showed Act 1 cannot work as written
-   (Active problem); it needs a new scenario.
+1. **Demo rehearsal** of the new Act 1 (`checkout_bad_config_deploy`): code,
+   docs and Notion ready; one paid trial awaiting approval.
 2. **Calibrated judge for `causal_chain` / `evidence_support`** — free phase.
 Standing rule: batch every open fix, verify offline, then spend.
 
@@ -17,117 +17,93 @@ Standing rule: batch every open fix, verify offline, then spend.
 - `mutation_gateway.authorize_and_execute()` is the sole tenant, policy,
   idempotency and audit boundary. `policy_gate.decide` verdicts cannot be
   appealed; bans are judged from measured state, never the planner's risk.
-- Severity has two values (439a7e7): reported `measured_severity` vs
-  `policy_severity` (uncalibrated round-up) read by the gate. See DECISIONS.md.
+- Severity: reported `measured_severity` vs gate-read `policy_severity`.
 - Recovery is the scenario's Prometheus probe, never incident status.
-- **Runbooks are the only fixes (b5f774d, `RUNBOOK_ONLY_REMEDIATION`,
-  default on).** `runbook_authority` passes a plan only if one branch of a
-  reviewed runbook listing the alert names every mutating action's executor
-  tool; otherwise it escalates with `runbook_gap`. No applicable runbook
-  means the model is never asked. `RB-AUTO` pages are drafts.
-- Each Notion runbook's `Alert Name` property must list every alert its body
-  covers (search ranks on properties only).
-- Slack is the action surface; the console observes and configures. A
-  cluster's Settings LLM key overrides `ANTHROPIC_API_KEY` in `.env`.
-- A cluster with dynamic routing on has no static model (e75cb39):
-  `resolve_llm` ignores a stored one, create/update clear it, the console
-  hides the picker. Tiers: protected `model_router._ANTHROPIC_TIER_DEFAULTS`
-  (haiku-4-5 / sonnet-5 / opus-5).
+- **Runbooks are the only fixes** (`RUNBOOK_ONLY_REMEDIATION`, default on):
+  a plan passes only if one reviewed runbook branch names every mutating
+  action's executor tool; otherwise `runbook_gap` escalation. Each Notion
+  runbook's `Alert Name` property must list every alert its body covers.
+- Slack is the action surface; the console observes and configures.
+- Routed clusters have no static model; tiers in
+  `model_router._ANTHROPIC_TIER_DEFAULTS`.
+- Fault adapters (`evals/benchmarks/fault_adapter.py`): `/admin/config`
+  faults are in-memory (a restart clears them); `k8s_deployment_env_v1` rolls
+  out a real revision that only a rollback clears. `FaultAdapterRouter`
+  dispatches by `fault.adapter`. See DECISIONS.md.
+- The bench quiesces after every campaign (`_quiesce_campaign`,
+  `BENCH_QUIESCE_SEC`=420): resolves incidents it opened, cancels their jobs,
+  waits for zero pending/firing alerts.
 - Any new artifact field needs a round-trip test through the real producer
   and consumer.
 
 ## Completed or verified work
-- v2 benchmark (22 scenarios, oracles, structured grading, paired stats,
-  release gate); two paid campaigns, both NOT_DEMONSTRATED. Do not quote
-  #70's MTTR.
-- PR #57 (merged): calibration review-set builder, transcript store, judge
-  design (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
-  runbook-only remediation. Live Notion runbooks match
-  `examples/meridian/runbooks/`.
-- Review set rebuilt 2026-10-16 (`reports/judge-calibration/`, 25 cases, 143
-  transcripts incl. 29 K8s prescans). Never label `superseded-2026-10-01/`.
-- Locator 11 PASS / 0 FAIL / 14 UNCHECKABLE; 96 perturbed copies;
-  `judge_view` leak-free (`CALIBRATION_DESIGN.md` §2–4).
-- PR #58 (merged, 7483411): no static model when routed; migration
-  `b8c9d0e1f2a3` cleared `kind-meridian`'s model; live picks checked.
-- PR #59 (merged, 8c997ed): `nl_query` routes; an AST test keeps LLM
-  construction in the router modules. `.env` has no `ANTHROPIC_MODEL`.
-- meridian-shop master `7bcfb45`: the Codespace's 3 commits, rebased onto
-  `cefa745` and pushed 2026-10-17.
-- PR #60 (merged, 5e86bd8): watcher opt-in. Codespace guard test
-  2026-10-17: unset → disabled, exit 0; flag set → clone fails, exit 1; no
-  watcher running; checkout `app.py` `a81888c51b1ee731`, deployed `7a6e223`.
+- v2 benchmark (22 scenarios) and two paid campaigns, both NOT_DEMONSTRATED.
+  Do not quote #70's MTTR.
+- PRs #57–#60 merged (runbook-only remediation, routing, watcher opt-in).
+- Review set: 25 cases in `reports/judge-calibration/`; never label
+  `superseded-2026-10-01/`.
+- 2026-10-17 rehearsal (`payment_provider_outage`): UNRESOLVED, $2.44 — its
+  fault lives in a ConfigMap no allowed action restores, and a cascade
+  incident spent $1.00 after exit. Replaced as Act 1.
+- **2026-10-18, uncommitted:** deploy adapter + `checkout_bad_config_deploy`
+  (v3 dev, rollback only, `taxonomy.fault_mode = bad_deploy`), quiesce guard,
+  `docs/DEMO.md` Act 1, datasets README, runbook baseline (healthy checkout
+  ~0.00, up to 0.35 from inventory holds; was "standing 0.35").
+- **Free live mechanics test (2026-10-18, Codespace):** inject 04:19:20Z →
+  `CheckoutHighErrorRate` firing 04:23:00Z (ratio 0.53+; no
+  `PaymentFailureSpike`, max per-reason rate ≈0.40 projected) → `rollout undo`
+  04:24:08Z → probe < 0.45 twice by 04:25:48Z → alert cleared 04:29:11Z.
+  Adapter cleanup verified, no new revision. Healthy revision is now 15.
+- Notion `High Error Rate` page republished; live body equals the draft;
+  audit 22/22.
 
 ## Active problem
-- **Rehearsal 2026-10-17** (incident `eed52188`, log
-  `/home/vscode/act1-rehearsal-20261017.log`): UNRESOLVED, $1.44. Diagnosis
-  right; the agent escalated per the runbook's dependency-outage branch, so
-  no Slack approval was asked. Since meridian `a23e9b4` (2026-09-30)
-  `provider_down` lives in ConfigMap `payment-provider-state`; no allowed
-  action restores the probe. `docs/DEMO.md` Act 1 is stale.
-- **Cascade alerts outlive a trial**: `PaymentFailureSpike` (checkout) became
-  its own incident `e89a63ac` and spent $1.00 after the trial, running on in
-  the API process past its own resolution (23:50Z) to 23:51:37Z. Two more
-  (`70dc915c`, `5f409d2f`) opened at 23:47Z; all four are resolved.
-  `sre-temporal-worker` and `sre-agent-api` are stopped (≈23:49Z/23:56Z).
-- **No run can grade better than `INCOMPLETE`**:
-  `structured_grading._semantic_criterion` is a shape check with no judge.
+- Act 1 rehearsal not yet run. The agent must find the onset revision
+  (`get_deployment_spec` revision/env/last rollout, `list_events`) or Branch E
+  step 3 restarts instead — graded "not allowed", and a restart before undo
+  makes `rollout undo` land on the faulty revision.
+- **No run can grade better than `INCOMPLETE`**: `_semantic_criterion` is a
+  shape check with no judge.
 
 ## Relevant files
-- `src/sre_agent/{runbook_authority,graph_builder,approval_flow,policy_gate,
-  mutation_gateway}.py`, `docs/DEMO.md`.
-- `evals/benchmarks/{sre_bench,calibration_cases,transcript_store,
-  evidence_locator,perturbations,judge_view}.py`.
-- `infra/local/docker-compose.yaml` (project `platform`).
-- Meridian repo `/workspaces/meridian-shop-deploy` (local master keeps the
-  3 commits' pre-rebase SHAs).
+- `evals/benchmarks/{sre_bench,fault_adapter,scenario_dataset}.py`,
+  `evals/benchmarks/datasets/v3/`, `tests/test_{fault_adapter,bench_quiesce}.py`.
+- `examples/meridian/runbooks/high-error-rate.md`, `docs/DEMO.md`.
+- `src/sre_agent/{runbook_authority,approval_flow,job_store}.py`.
 
 ## Verification commands and latest results
-- Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; after a restart
-  run `scripts/dev/codespace_boot.sh`. It has no git credentials: push via a
-  git bundle from the Mac. Its `/workspaces/Sre-automation` checkout has
-  files copied in (sha256-checked) from e75cb39, PR #59 and the watcher
-  change. Eval modules run
-  from `/home/vscode/judge-run/evals`. Container Python is `uv run python`.
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2721 passed,
-  6 skipped (2026-10-17, PR #59); release gate `NOT_REQUIRED`; dashboard
-  `tsc --noEmit` 0 errors. API and worker rebuilt ≈20:00Z.
+- Codespace `cuddly-winner-659v67gv695hrxjw`; after a restart run
+  `scripts/dev/codespace_boot.sh` (k3s; it does not start the API/worker).
+  No git credentials there: push via a git bundle from the Mac. Its checkout
+  has the 2026-10-18 files copied in, sha256-verified.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2735 passed,
+  6 skipped (2026-10-18).
+- Notion publish/verify from the Codespace host: `publish_meridian_runbooks.py
+  --cluster-id "$BENCH_CLUSTER_ID"` with `DATABASE_URL` pointed at
+  `sre-postgres`'s bridge IP (`.env` + `bench.env` sourced); dry run unless
+  `--confirm`; `--drafts <dir>` limits pages.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api dashboard`, then `up -d --no-build
-  --no-deps --force-recreate` the same three. The API runs `alembic upgrade
-  head` on start. API health: `/ping` on 8080.
-- Single trial: the `docs/DEMO.md` command (timeout 2700s; 300s is below
-  the recovery floor), secrets from `/home/vscode/bench.env`. SIGINT does not
-  stop a trial early.
-- Edge MCP: `docker compose -p edge_mcp_servers` from `services/edge_mcp_servers`.
+  --no-deps --force-recreate`. API health: `/ping` on 8080.
+- Act 1 trial: the `docs/DEMO.md` command, secrets from
+  `/home/vscode/bench.env`. SIGINT does not stop a trial early.
 
 ## Known blockers or risks
-- Budget: no paid run without explicit approval; price every run first.
-  ≈$14.04 spent through the 2026-10-17 rehearsal ($2.44, over its $2 cap).
-  Calibration campaign (~$40+) not authorized.
-- FAST (haiku-4-5) is untested in a paid run. `sonnet-4-5` (ladder only)
-  retires 2026-11-30; haiku-4-5 may be deprecated any time (`haiku-5-5`).
-- 3 of 22 scenarios need deploy/rollback evidence no injection creates.
+- Budget: no paid run without explicit approval; price first. ≈$14.04 spent
+  through 2026-10-17. Calibration campaign (~$40+) not authorized.
+- `sre-agent-api` and `sre-temporal-worker` are stopped; with the API up, any
+  alert opens a paid investigation. Only stopping the API halts one.
+- FAST (haiku-4-5) untested in a paid run; `sonnet-4-5` retires 2026-11-30.
 - Never stage `.agents/`, `.env.*` backups or `dashboard/`; never `git add -A`.
-  Leave meridian's staged `checkout-service/app.py`, `.last_deployed_sha` and
-  `.local-baseline-restore.md` alone. Wait ≥5 min after cluster changes
-  before injecting.
-- `watch_meridian_deploy.sh` is opt-in (`MERIDIAN_WATCHER_ENABLED=1`); if
-  enabled it `reset --hard`s to GitHub master (`4ed89b2`/`7a6e223`, checkout
-  ~84% 5xx), wiping the healthy-checkout restore.
-- kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
+  Leave meridian's staged restore files alone. Wait ≥5 min after cluster
+  changes before injecting.
+- `watch_meridian_deploy.sh` is opt-in; if enabled it `reset --hard`s to
+  GitHub master (checkout ~84% 5xx).
 
 ## Next bounded task
-1. Free, fresh session: pick an Act 1 scenario whose runbook fix is a
-   restart/rollback that restores its probe; rewrite `docs/DEMO.md`; make
-   resolving an incident cancel its investigation and make the bench close
-   cascade incidents at teardown. Restart the API and worker, then price a
-   rehearsal.
-2. Codespace: move `meridian-shop-deploy`'s local master to origin
-   `7bcfb45` without touching the staged restore; re-check the `app.py`
-   hash and last deployed SHA.
-3. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
-   adjudicate, freeze.
-4. Free, in a fresh session: judge harness + `CALIBRATION_DESIGN.md` §5
-   metrics on the judge views (locator FAIL decides evidence_support;
-   over-budget views abstain), verified on a stub judge. Then price a pass.
+1. With approval: start the API and worker, re-check the Slack approver
+   mapping, run one Act 1 trial with a human Slack approval, watch spend past
+   exit with a heartbeat monitor.
+2. Commit the 2026-10-18 work; push only on the user's word.
+3. User: hand-label the 25 cases (two blind passes ≥48h apart).
+4. Free: judge harness + `CALIBRATION_DESIGN.md` §5 on a stub judge.

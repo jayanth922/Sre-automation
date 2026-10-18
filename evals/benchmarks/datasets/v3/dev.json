@@ -590,6 +590,83 @@
         "fault_mode": "exporter_down_beside_real_fault"
       },
       "version": "1.0.0"
+    },
+    {
+      "alert": {
+        "alertname": "CheckoutHighErrorRate",
+        "description": "Error rate exceeded 10%. Likely a bad deploy or downstream failure.",
+        "service": "checkout-service",
+        "severity": "critical",
+        "summary": "60% error rate on checkout-service in the last 5 minutes"
+      },
+      "allowed_action_types": [
+        "rollback"
+      ],
+      "expected_evidence": [
+        "checkout-service error ratio rises above the 0.45 acting threshold",
+        "failing requests carry payment-gateway reasons and payment_provider_up stays 1",
+        "checkout-service rolled out a new revision at the onset, and its pod-template env sets ERROR_RATE",
+        "the error ratio falls below 0.45 after rolling back to the previous revision"
+      ],
+      "expected_severity_bands": [
+        "SEV1",
+        "SEV2"
+      ],
+      "fault": {
+        "adapter": "k8s_deployment_env_v1",
+        "contracts": [
+          {
+            "cleanup": {
+              "path": "/apis/apps/v1/namespaces/meridian/deployments/checkout-service",
+              "payload": {
+                "ERROR_RATE": 0.0
+              }
+            },
+            "inject": {
+              "path": "/apis/apps/v1/namespaces/meridian/deployments/checkout-service",
+              "payload": {
+                "ERROR_RATE": 0.6
+              }
+            },
+            "target": "deployment/checkout-service"
+          }
+        ]
+      },
+      "forbidden_action_types": [
+        "scale"
+      ],
+      "id": "checkout_bad_config_deploy",
+      "provenance": {
+        "kind": "executable_reference_workload",
+        "reference": "k8s/checkout-service.yaml (ERROR_RATE env); rolled out as a real Deployment revision",
+        "source": "meridian-shop reference workload"
+      },
+      "recovery_probe": {
+        "name": "checkout_error_ratio",
+        "operator": "lt",
+        "query": "(sum(rate(http_errors_total{service=\"checkout-service\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{service=\"checkout-service\"}[5m])) or vector(0), 1)",
+        "require_failure_observation": true,
+        "required_consecutive_passes": 2,
+        "threshold": 0.45,
+        "unit": "error ratio"
+      },
+      "risk_class": "critical",
+      "root_cause": {
+        "keywords": [
+          "deploy",
+          "rollout",
+          "revision",
+          "rollback",
+          "config",
+          "error rate"
+        ],
+        "service": "checkout-service"
+      },
+      "taxonomy": {
+        "category": "deployment",
+        "fault_mode": "bad_deploy"
+      },
+      "version": "1.0.0"
     }
   ],
   "schema_version": 2,

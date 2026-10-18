@@ -118,6 +118,20 @@
       "path": "/admin/config",
       "reference": "services/checkout-service/app.py (config dict, set_config, process_checkout, metrics)"
     },
+    "deployment/checkout-service": {
+      "adapter": "k8s_deployment_env_v1",
+      "knobs": {
+        "ERROR_RATE": {
+          "baseline": 0.0,
+          "description": "pod-template env read at startup into error_rate: the fraction of post-payment requests that fail 500 with a payment-gateway reason. Changing it rolls out a new revision, so a restart keeps it and only a rollback removes it",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "path": "/apis/apps/v1/namespaces/meridian/deployments/checkout-service",
+      "reference": "k8s/checkout-service.yaml (container env ERROR_RATE); services/checkout-service/app.py reads it at startup"
+    },
     "inventory-service": {
       "adapter": "meridian_admin_config_v1",
       "knobs": {

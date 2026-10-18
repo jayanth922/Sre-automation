@@ -361,3 +361,223 @@ def test_adapter_rejects_credentialed_or_non_http_service_urls():
         fault_adapter.MeridianAdminConfigAdapter(
             {"checkout-service": "http://user:pass@localhost:8001"}
         )
+
+
+# ---------------------------------------------------- deployment env faults
+
+DEPLOY_PATH = "/apis/apps/v1/namespaces/meridian/deployments/checkout-service"
+
+
+class FakeKubectl:
+    """One Deployment's pod-template env, driven through kubectl argv."""
+
+    def __init__(self, env, *, fail_rollout_at=None, drop_env=False):
+        self.env = dict(env)
+        self.revision = 13
+        self.fail_rollout_at = fail_rollout_at
+        self.drop_env = drop_env
+        self.calls = []
+
+    async def __call__(self, argv, timeout):
+        args = list(argv[1:])
+        self.calls.append(args)
+        if args[:2] == ["get", "deployment/checkout-service"]:
+            env = [{"name": key, "value": value} for key, value in self.env.items()]
+            env.append({"name": "PAYMENT_TOKEN", "valueFrom": {"secretKeyRef": {}}})
+            doc = {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [{"name": "checkout-service", "env": env}]
+                        }
+                    }
+                }
+            }
+            import json
+
+            return 0, json.dumps(doc), ""
+        if args[:2] == ["set", "env"]:
+            assert args[2:6] == ["deployment/checkout-service", "-n", "meridian", "-c"]
+            for item in args[7:]:
+                key, value = item.split("=", 1)
+                if not self.drop_env:
+                    self.env[key] = value
+            self.revision += 1
+            return 0, "", ""
+        if args[:2] == ["rollout", "status"]:
+            if self.revision == self.fail_rollout_at:
+                return 1, "", "deadline exceeded"
+            return 0, "successfully rolled out", ""
+        raise AssertionError(f"unexpected kubectl call: {args}")
+
+
+def _deploy_scenario(path=DEPLOY_PATH, target="deployment/checkout-service", inject=0.6):
+    return SimpleNamespace(
+        name="checkout_bad_config_deploy",
+        fault={
+            "adapter": "k8s_deployment_env_v1",
+            "contracts": [
+                {
+                    "target": target,
+                    "path": path,
+                    "inject": {"ERROR_RATE": inject},
+                    "cleanup": {"ERROR_RATE": 0.0},
+                }
+            ],
+        },
+    )
+
+
+def _verbs(kubectl):
+    return [" ".join(call[:2]) for call in kubectl.calls]
+
+
+def test_deployment_fault_rolls_out_a_revision_and_restores_the_original_string():
+    kubectl = FakeKubectl({"ERROR_RATE": "0", "SLOW_RATE": "0"})
+    adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl)
+
+    leases = asyncio.run(adapter.inject(None, _deploy_scenario()))
+    assert kubectl.env["ERROR_RATE"] == "0.6"
+    assert kubectl.revision == 14
+    asyncio.run(adapter.cleanup(None, leases))
+
+    assert leases[0].original_values == {"ERROR_RATE": "0"}
+    assert leases[0].container == "checkout-service"
+    assert kubectl.env == {"ERROR_RATE": "0", "SLOW_RATE": "0"}
+    assert _verbs(kubectl) == [
+        "get deployment/checkout-service",
+        "set env",
+        "rollout status",
+        "get deployment/checkout-service",
+        "set env",
+        "rollout status",
+        "get deployment/checkout-service",
+    ]
+
+
+def test_deployment_cleanup_after_the_agent_rolled_back_still_verifies():
+    kubectl = FakeKubectl({"ERROR_RATE": "0"})
+    adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl)
+    leases = asyncio.run(adapter.inject(None, _deploy_scenario()))
+    kubectl.env["ERROR_RATE"] = "0"  # what `kubectl rollout undo` restores
+
+    asyncio.run(adapter.cleanup(None, leases))
+
+    assert kubectl.env == {"ERROR_RATE": "0"}
+
+
+def test_deployment_fault_refuses_an_unverified_baseline_without_writing():
+    for env in ({"ERROR_RATE": "0.3"}, {"SLOW_RATE": "0"}):
+        kubectl = FakeKubectl(env)
+        adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl)
+        with pytest.raises(fault_adapter.FaultAdapterError, match="baseline"):
+            asyncio.run(adapter.inject(None, _deploy_scenario()))
+        assert _verbs(kubectl) == ["get deployment/checkout-service"]
+        assert kubectl.env == env
+
+
+def test_deployment_fault_restores_when_the_rollout_does_not_finish():
+    kubectl = FakeKubectl({"ERROR_RATE": "0"}, fail_rollout_at=14)
+    adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl)
+
+    with pytest.raises(fault_adapter.FaultAdapterError, match="rollout status"):
+        asyncio.run(adapter.inject(None, _deploy_scenario()))
+
+    assert kubectl.env == {"ERROR_RATE": "0"}
+    assert kubectl.revision == 15
+
+
+def test_deployment_fault_fails_when_the_rollout_did_not_carry_the_env():
+    kubectl = FakeKubectl({"ERROR_RATE": "0"}, drop_env=True)
+    adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl)
+
+    with pytest.raises(fault_adapter.FaultAdapterError, match="did not carry"):
+        asyncio.run(adapter.inject(None, _deploy_scenario()))
+
+
+def test_deployment_fault_rejects_paths_targets_and_namespaces_it_does_not_own():
+    adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=FakeKubectl({}))
+    bad = [
+        (_deploy_scenario(path="/admin/config"), "path must be"),
+        (_deploy_scenario(target="deployment/payment-service"), "does not name"),
+        (
+            _deploy_scenario(
+                path="/apis/apps/v1/namespaces/kube-system/deployments/checkout-service"
+            ),
+            "not allowed",
+        ),
+        (_scenario(), "unsupported fault adapter"),
+    ]
+    for scenario, message in bad:
+        with pytest.raises(fault_adapter.FaultAdapterError, match=message):
+            asyncio.run(adapter.inject(None, scenario))
+
+
+def test_router_dispatches_by_adapter_and_cleans_up_by_lease_type():
+    kubectl = FakeKubectl({"ERROR_RATE": "0"})
+    client = FakeClient({CHECKOUT: {"error_rate": 0.0}})
+    router = fault_adapter.FaultAdapterRouter(
+        [
+            fault_adapter.MeridianAdminConfigAdapter(SERVICE_URLS),
+            fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl),
+        ]
+    )
+
+    config_leases = asyncio.run(router.inject(client, _scenario()))
+    deploy_leases = asyncio.run(router.inject(client, _deploy_scenario()))
+    assert client.configs[CHECKOUT]["error_rate"] == 0.5
+    assert kubectl.env["ERROR_RATE"] == "0.6"
+
+    asyncio.run(router.cleanup(client, deploy_leases))
+    asyncio.run(router.cleanup(client, config_leases))
+    assert client.configs[CHECKOUT]["error_rate"] == 0.0
+    assert kubectl.env["ERROR_RATE"] == "0"
+
+    with pytest.raises(fault_adapter.FaultAdapterError, match="unsupported"):
+        asyncio.run(router.inject(client, _scenario(adapter="ssh_v1")))
+
+
+def test_v3_deployment_scenarios_round_trip_against_the_declared_fixtures():
+    import importlib.util as _il
+    import json
+
+    sys.path.insert(0, str(BENCHMARKS))
+    _ds_spec = _il.spec_from_file_location(
+        "scenario_dataset", BENCHMARKS / "scenario_dataset.py"
+    )
+    scenario_dataset = _il.module_from_spec(_ds_spec)
+    sys.modules[_ds_spec.name] = scenario_dataset
+    _ds_spec.loader.exec_module(scenario_dataset)
+
+    datasets = BENCHMARKS / "datasets"
+    manifest = json.loads((datasets / "v3" / "fixtures.json").read_text())
+    deploy_targets = {
+        name: spec
+        for name, spec in manifest["targets"].items()
+        if spec["adapter"] == "k8s_deployment_env_v1"
+    }
+    assert deploy_targets
+
+    checked = 0
+    for split in ("train", "dev", "holdout"):
+        dataset = scenario_dataset.load_dataset(
+            datasets, "v3", split, allow_holdout=split == "holdout", ci=False
+        )
+        for scenario in dataset.scenarios:
+            if scenario.fault["adapter"] != "k8s_deployment_env_v1":
+                continue
+            (contract,) = scenario.fault["contracts"]
+            spec = deploy_targets[contract["target"]]
+            baseline = {
+                knob: repr(declared["baseline"])
+                for knob, declared in spec["knobs"].items()
+            }
+            kubectl = FakeKubectl(baseline)
+            adapter = fault_adapter.KubernetesDeploymentEnvAdapter(runner=kubectl)
+            leases = asyncio.run(adapter.inject(None, scenario))
+            for knob, value in contract["inject"].items():
+                assert float(kubectl.env[knob]) == value
+            asyncio.run(adapter.cleanup(None, leases))
+            assert kubectl.env == baseline, scenario.name
+            checked += 1
+    assert checked >= 1

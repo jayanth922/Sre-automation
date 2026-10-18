@@ -18,7 +18,7 @@ Act only at or above these thresholds. Below them the service is healthy.
 
 | Service | Signal | Healthy baseline | Act at or above |
 |---|---|---|---|
-| checkout-service | error ratio | 0.35 (inventory holds) | **0.45** |
+| checkout-service | error ratio | ~0.00, up to 0.35 (inventory holds) | **0.45** |
 | payment-service | error ratio | ~0.00 | **0.10** |
 | inventory-service | error rate | 3.3% ratio | **0.3 errors/sec** |
 
@@ -166,9 +166,9 @@ consecutive passes**. Do not declare success on a single reading.
 | InventoryHighErrorRate | `sum(rate(http_errors_total{service="inventory-service"}[5m]))` | `< 0.3` |
 | Branch C (provider) | `min(payment_provider_up{service="payment-service"})` | `>= 1` |
 
-For checkout-service, returning to the **0.35** baseline is success. Waiting
-for zero will never pass — the baseline is inventory-hold rejections, which
-are normal.
+For checkout-service, returning below **0.45** is success. Do not wait for
+zero: inventory-hold rejections, which are normal, can hold a healthy
+checkout at up to 0.35.
 
 ## Background
 
@@ -181,8 +181,9 @@ the metrics alone:
 - **`payment_failures_total{job="checkout-service"}` is a checkout-side
   counter** despite the name. It rising does not imply payment-service is
   unhealthy; check payment-service's own error ratio before blaming it.
-- **checkout-service carries a standing 0.35 error ratio.** Any comparison
-  against zero will misread a healthy service as broken.
+- **checkout-service can carry a standing error ratio of up to 0.35** from
+  inventory-hold rejections. Compare against its ratio before the onset, not
+  against zero.
 - checkout absorbs many payment failures with inline retries, so a real
   payment-service fault can show up as checkout *latency* rather than checkout
   errors. See the High Latency runbook.
