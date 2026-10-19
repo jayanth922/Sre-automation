@@ -124,6 +124,35 @@ async def _severity_telemetry_node(
     return {"metadata": metadata}
 
 
+async def _rollback_binding_node(
+    state: AgentState,
+    execution_context: Any = None,
+) -> Dict[str, Any]:
+    """Bind each planned rollback to the revision it restores and replaces.
+
+    Between `severity_telemetry` and `approval_prepare`, so the approval
+    request — and the approval hash — carry the target template and the one
+    it expects to replace, read from the deployment's history now, not
+    resolved as "the previous revision" whenever the rollback finally runs.
+    The binding lives in the plan, so act_gate's rebuild of the report reads
+    the same one. A rollback that cannot be bound is blocked in the report,
+    with the reason. See `rollback_binding`.
+    """
+    from .rollback_binding import bind_rollbacks
+
+    try:
+        return await bind_rollbacks(state, execution_context)
+    except Exception as exc:
+        # Never fall through with the planner's own parameters: a binding the
+        # model wrote is not evidence. Unbind every rollback instead.
+        logger.exception("Rollback binding failed; every rollback stays unbound")
+
+        async def _unavailable(tool_name: str, args: Dict[str, Any]) -> Any:
+            raise RuntimeError(f"rollback binding failed: {exc}")
+
+        return await bind_rollbacks(state, execution_context, tool_caller=_unavailable)
+
+
 async def _prepare_approval_node(
     state: AgentState,
     execution_context: Any = None,
@@ -2762,9 +2791,16 @@ def build_multi_agent_graph(
         async def context_severity_telemetry(state: AgentState) -> Dict[str, Any]:
             return await _severity_telemetry_node(state, execution_context)
 
+        async def context_rollback_binding(state: AgentState) -> Dict[str, Any]:
+            return await _rollback_binding_node(state, execution_context)
+
         workflow.add_node(
             "severity_telemetry",
             _observed("severity_telemetry", context_severity_telemetry),
+        )
+        workflow.add_node(
+            "rollback_binding",
+            _observed("rollback_binding", context_rollback_binding),
         )
         workflow.add_node(
             "approval_prepare",
@@ -2784,7 +2820,8 @@ def build_multi_agent_graph(
             workflow.add_edge("investigation_swarm", "reflector")
         workflow.add_edge("planner", "aggregate")
         workflow.add_edge("aggregate", "severity_telemetry")
-        workflow.add_edge("severity_telemetry", "approval_prepare")
+        workflow.add_edge("severity_telemetry", "rollback_binding")
+        workflow.add_edge("rollback_binding", "approval_prepare")
         workflow.add_edge("approval_prepare", "approval_gate")
         workflow.add_edge("approval_gate", "act_gate")
         workflow.add_edge("act_gate", END)

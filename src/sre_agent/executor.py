@@ -36,6 +36,7 @@ from .execution_context import (
     require_execution_context,
     require_operator_mcp_endpoint,
 )
+from .rollback_binding import bound_rollback, rollback_command, unbound_reason
 
 logger = logging.getLogger(__name__)
 
@@ -102,16 +103,14 @@ SANDBOX_TOOL_MAP: Dict[str, str] = {
 _CONFIG_INTENT_ACTIONS: frozenset = frozenset({"patch", "config_change"})
 
 
-def live_tool_for_action(action: Any) -> Optional[str]:
-    """The executor-MCP tool that can really carry out this action, or None.
+def executor_tool_for_action(action: Any) -> Optional[str]:
+    """The executor-MCP tool this action names, or None if it names none.
 
-    The canonical answer to "can Sentinel actually execute this?" for infra
-    actions. Membership in ``EXECUTOR_TOOL_MAP`` is necessary but not
-    sufficient: ``patch``/``config_change`` resolve to the resource tool when
-    the action carries a cpu/memory limit, to the env tool when it carries env
-    vars, and to nothing at all otherwise — a ConfigMap rewrite or a change
-    described only in prose still has no tool behind it, and naming that as a
-    capability gap is the honest failure.
+    ``patch``/``config_change`` resolve to the resource tool when the action
+    carries a cpu/memory limit, to the env tool when it carries env vars, and
+    to nothing at all otherwise. This is the fix the action *is* — what a
+    runbook must prescribe — not whether it can run yet; that is
+    `live_tool_for_action`.
     """
     action_type = str(getattr(action, "action_type", "")).lower()
     tool_name = EXECUTOR_TOOL_MAP.get(action_type)
@@ -126,6 +125,26 @@ def live_tool_for_action(action: Any) -> Optional[str]:
         if _find_env_map(params):
             return "patch_deployment_env"
         return None
+    return tool_name
+
+
+def live_tool_for_action(action: Any) -> Optional[str]:
+    """The executor-MCP tool that can really carry out this action, or None.
+
+    The canonical answer to "can Sentinel actually execute this?" for infra
+    actions. Membership in ``EXECUTOR_TOOL_MAP`` is necessary but not
+    sufficient: a ``patch``/``config_change`` with no cpu, memory or env field
+    behind it — a ConfigMap rewrite, a change described only in prose — has no
+    tool, and a rollback has one only once it is bound to the revision it
+    restores. Naming either as a capability gap is the honest failure.
+    """
+    tool_name = executor_tool_for_action(action)
+    if tool_name == "rollback_deployment":
+        # A rollback runs only against the target read from the deployment's
+        # history before approval. Without that binding it would be "undo to
+        # whatever is previous when this runs" — see `rollback_binding`.
+        if bound_rollback(getattr(action, "parameters", None)) is None:
+            return None
     return tool_name
 
 
@@ -190,6 +209,8 @@ def approval_effect(action_type: Any, parameters: Any = None) -> str:
         return EFFECT_REPO_CHANGE
     if name not in EXECUTOR_TOOL_MAP:
         return EFFECT_NO_CAPABILITY
+    if name == "rollback" and bound_rollback(parameters) is None:
+        return EFFECT_NO_CAPABILITY
     if name in _CONFIG_INTENT_ACTIONS:
         params = parameters if isinstance(parameters, dict) else {}
         if _find_resource_field(params, "memory") or _find_resource_field(params, "cpu"):
@@ -238,8 +259,15 @@ def describe_approval_effects(action_reports: Any) -> str:
     return f"Approving runs {total} held action{plural}: " + ", ".join(parts) + "."
 
 
-def missing_capability_reason(action_type: str) -> str:
+def missing_capability_reason(action_type: str, parameters: Any = None) -> str:
     """Why a known-but-unexecutable action cannot run, in the operator's terms."""
+    if str(action_type).lower() == "rollback":
+        return (
+            f"no bound rollback target: {unbound_reason(parameters)}. A rollback "
+            "runs only against the ReplicaSet it restores and the template it "
+            "replaces, both read from the deployment's history before approval; "
+            "Sentinel never runs a relative 'undo to the previous revision'."
+        )
     return (
         f"no automation capability: '{action_type}' names neither a cpu/memory "
         "limit (parameters.memory / parameters.cpu) nor environment variables "
@@ -264,6 +292,9 @@ class ExecutionResult:
     audit: Dict[str, Any] = field(default_factory=dict)
     rollback_command: Optional[str] = None
     detail: str = ""
+    # The executor MCP's own status word (e.g. STATE_DRIFT), for the gateway to
+    # tell "refused because the deployment moved" from any other refusal.
+    remote_status: str = ""
 
 
 def _namespace(action: Any) -> str:
@@ -314,7 +345,11 @@ def build_command(action: Any) -> str:
     if action_type == "scale":
         return f"kubectl scale deployment/{target} --replicas={_replicas(action)} -n {ns}"
     if action_type == "rollback":
-        return f"kubectl rollout undo deployment/{target} -n {ns}"
+        binding = bound_rollback(getattr(action, "parameters", None))
+        if binding is None:
+            # `live_tool_for_action` blocks this upstream; never render an undo.
+            return f"# rollback of deployment/{target} is unbound; nothing will run"
+        return rollback_command(binding)
     if action_type == "patch":
         params = getattr(action, "parameters", None) or {}
         patch = json.dumps(params.get("patch", params)) if isinstance(params, dict) else "{}"
@@ -353,7 +388,21 @@ def build_rollback_command(action: Any) -> Optional[str]:
     action_type = str(getattr(action, "action_type", "")).lower()
     target = str(getattr(action, "target", "")) or "<unknown-target>"
     ns = _namespace(action)
-    if action_type in ("rollback", "restart", "config_change", "patch"):
+    if action_type == "rollback":
+        # The inverse of a bound rollback is the same rollback with the two
+        # templates swapped — and the same precondition, so it too refuses a
+        # deployment that has moved on since.
+        binding = bound_rollback(getattr(action, "parameters", None))
+        if binding is None:
+            return None
+        return rollback_command(
+            {
+                **binding,
+                "to_template_hash": binding["expected_template_hash"],
+                "expected_template_hash": binding["to_template_hash"],
+            }
+        )
+    if action_type in ("restart", "config_change", "patch"):
         # `kubectl set env` and `set resources` both cut a new ReplicaSet
         # revision, so rollout undo is a true inverse for them as well. The
         # executor MCP additionally returns the exact prior values it
@@ -388,6 +437,13 @@ def _github_args(action: Any) -> Dict[str, Any]:
 # the leading run of valid label characters is the real resource name in
 # either case — this subsumes the old colon-only split.
 _K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?")
+
+
+def live_resource_name(target: Any) -> str:
+    """The Kubernetes object name a live action addresses, from its target."""
+    text = str(target or "").strip()
+    match = _K8S_NAME_RE.match(text.lower())
+    return match.group(0) if match else text
 
 
 _RESOURCE_FIELD_ALIASES = {
@@ -484,9 +540,7 @@ def _live_args(action: Any) -> Dict[str, Any]:
     if not isinstance(params, dict):
         params = {}
     action_type = str(getattr(action, "action_type", "")).lower()
-    target = str(getattr(action, "target", "")).strip()
-    match = _K8S_NAME_RE.match(target.lower())
-    resource_name = match.group(0) if match else target
+    resource_name = live_resource_name(getattr(action, "target", ""))
     args: Dict[str, Any] = {
         "name": resource_name,
         "namespace": params.get("namespace", "default"),
@@ -498,6 +552,10 @@ def _live_args(action: Any) -> Dict[str, Any]:
             args["replicas"] = int(raw)
         except (TypeError, ValueError):
             args["replicas"] = 1
+    if action_type == "rollback":
+        binding = bound_rollback(params) or {}
+        args["to_template_hash"] = binding.get("to_template_hash")
+        args["expected_template_hash"] = binding.get("expected_template_hash")
     if action_type in _CONFIG_INTENT_ACTIONS:
         args["container"] = params.get("container", resource_name)
         memory = _find_resource_field(params, "memory")
@@ -593,6 +651,10 @@ def classify_live_response(response: Any) -> tuple[str, str]:
     applied = payload.get("applied")
     if remote_status in _ERROR_STATUSES:
         return "ERROR", detail
+    if remote_status == "ALREADY_AT_TARGET":
+        # A bound rollback whose target was already live: the state it was
+        # approved to reach holds, and nothing was written to reach it.
+        return "EXECUTED", f"no write: already on the approved target; {detail}"
     if remote_status in _REFUSAL_STATUSES or applied is False:
         return "REFUSED", detail
     if applied is True or remote_status in _SUCCESS_STATUSES:
@@ -692,11 +754,12 @@ class Executor:
         target = str(getattr(action, "target", ""))
         audit = self._audit(action, command, gate_decision, ExecutionMode.LIVE)
 
-        def _result(status: str, detail: str) -> "ExecutionResult":
+        def _result(status: str, detail: str, remote_status: str = "") -> "ExecutionResult":
             return ExecutionResult(
                 action_type=atype, target=target, command=command,
                 mode=ExecutionMode.LIVE, status=status, audit=audit,
                 rollback_command=rollback, detail=detail,
+                remote_status=remote_status,
             )
 
         # Route to the right backend by what the action can actually do, not by
@@ -707,7 +770,7 @@ class Executor:
         elif executor_tool is not None:
             caller, tool_name, args, backend = tool_caller, executor_tool, _live_args(action), "executor"
         elif atype in EXECUTOR_TOOL_MAP:
-            detail = missing_capability_reason(atype)
+            detail = missing_capability_reason(atype, getattr(action, "parameters", None))
             _mark_trace("WARNING", f"{atype} → REFUSED: {detail}")
             return _result("REFUSED", detail)
         else:
@@ -719,6 +782,7 @@ class Executor:
         try:
             resp = await caller(tool_name, args)
             status, detail = classify_live_response(resp)
+            remote = str((_structured_payload(resp) or {}).get("status") or "").strip().upper()
             if status == "EXECUTED":
                 logger.info(
                     f"⚙️  Executor[live/{backend}]: {tool_name} → applied ({command})"
@@ -731,7 +795,7 @@ class Executor:
                     "ERROR" if status == "ERROR" else "WARNING",
                     f"{tool_name} → {status}: {detail}",
                 )
-            return _result(status, detail)
+            return _result(status, detail, remote)
         except Exception as e:
             logger.error(f"❌ Executor[live/{backend}]: {tool_name} failed: {e}")
             _mark_trace("ERROR", f"{tool_name} raised: {e}")

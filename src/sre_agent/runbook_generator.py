@@ -43,7 +43,9 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 _KUBECTL = {
     "restart": "kubectl rollout restart deployment/{target} -n {ns}",
     "scale": "kubectl scale deployment/{target} --replicas=<N> -n {ns}",
-    "rollback": "kubectl rollout undo deployment/{target} -n {ns}",
+    # Never a relative undo: the executor rolls back only to the template the
+    # approval bound, and only from the template it expected to replace.
+    "rollback": "sentinel rollback deployment/{target} -n {ns} --to-template=<bound target> --expect-template=<current>",
     "patch": "kubectl set resources deployment/{target} -c {target} --limits=<...> -n {ns}",
     # config_change is executable only when it carries concrete parameters: a
     # memory/cpu limit, or an env map. Anything else has no tool behind it, so

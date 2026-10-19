@@ -2207,3 +2207,41 @@ Every paid run after step 3 confirms the system instead of finding bugs in it.
 
 **Rejected alternative.** Running rehearsal 3 now ($1.50–2.00). It would
 validate the `rollout undo` path that step 1 replaces.
+
+## Rollbacks are bound to template hashes and preconditioned (2026-10-19)
+
+**Decision.** A rollback names the ReplicaSet it restores and the one it
+expects to replace, both by pod-template-hash. A deterministic graph node
+(`rollback_binding.py`, after `severity_telemetry`) reads the executor's
+`get_rollout_state` and writes them into `parameters.rollback_binding`,
+replacing anything the planner wrote. The approval hash covers the binding,
+and the request shows both templates and the exact command
+(`sentinel rollback … --to-template=X --expect-template=Y`). At execution the
+gateway re-reads before the idempotency claim. On the target, it returns
+EXECUTED with a "no write" detail. On the expected template, it lets the edge
+roll back: the edge re-reads and patches the template with a resourceVersion
+precondition. Anything else, including a restart since approval, is refused as
+`state_drift`: the action is marked for manual review and the plan stops. The
+target is the newest revision whose fingerprint differs from the current
+software's and whose ReplicaSet predates the oldest one running it.
+
+**Reason.** `rollout undo` is relative to the last write. A retry, a second
+approval or an earlier restart each moved "previous", and the approver never
+saw the revision that ran. Revision numbers cannot pick the target either: a
+rollback renumbers the template it restores, so "highest other revision"
+rolls forward onto the fault. Creation times are never renumbered.
+
+**Consequences.** An unbound rollback (unreadable history, an earlier template
+write in the same plan, a paused rollout, undated ReplicaSets) is BLOCKED
+with its reason. It is never offered for approval. An executor edge image
+without `get_rollout_state` blocks every rollback until it is rebuilt. That
+image no longer ships kubectl. The edge needs `list` on replicasets. A
+restart counts as drift, which is strict on purpose. The direct
+(non-Temporal) act path now stops on manual review too. Runbook authority
+matches on tool identity (`executor_tool_for_action`), not live capability,
+so an unbound rollback is reported as blocked rather than as a runbook gap.
+
+**Rejected alternatives.** A new `NO_OP` execution status, which every status
+consumer would need to learn. Binding by revision number, which is
+renumbered. Comparing fingerprints at execution, which would let a rollback
+run over a restart nobody approved.

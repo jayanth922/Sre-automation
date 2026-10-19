@@ -42,13 +42,18 @@ Slack, and `BENCH_AWAIT_HUMAN_APPROVAL=1` keeps the trial running while the
 request waits; without it the bench ends the trial 30 seconds after the request
 posts, restores the fault itself and closes the incident (rehearsal 2). Ignore
 a request left over from such a trial: the platform should refuse it because
-its incident is resolved (untested live), and if it ran, `rollout undo` from
-the restored revision would land on the faulty one. Approve within 30 minutes; the
-request expires after that (`APPROVAL_TTL_MINUTES`).
+its incident is resolved (untested live). If it ran anyway, the rollback
+re-reads checkout first: already on the healthy template it writes nothing, and
+on any template other than the faulty one it was approved against it refuses as
+state drift. Approve within 30 minutes; the request expires after that
+(`APPROVAL_TTL_MINUTES`).
 
 Before you start, `kubectl -n meridian rollout history deploy/checkout-service`
 must show the healthy revision as the newest one and the env must read
-`ERROR_RATE=0`; the bench refuses to inject otherwise.
+`ERROR_RATE=0`; the bench refuses to inject otherwise. The executor edge must
+run an image with `get_rollout_state` (rebuilt since safe rollback landed):
+an older one cannot be read for a rollback target, so the rollback is blocked
+before approval and the demo ends in an escalation.
 
 The bench holds the alert until its probe reads above 0.45, as the real rule
 would: about 3–4 minutes after the rollout, while the five-minute rate fills
@@ -116,10 +121,10 @@ labelled "this run".
 - Slack is down: approve through the console/API gate. It is the same gate.
 - The fault doesn't inject: the bench cleans up and exits. Fall back to the
   rehearsal's trace.
-- The trial ends and checkout is still failing: check `rollout history`. If
-  something restarted checkout before the rollback, the restart made a new
-  revision and `rollout undo` went back to the faulty one. Run
-  `kubectl -n meridian set env deploy/checkout-service ERROR_RATE=0`.
+- The trial ends and checkout is still failing: look for a `state_drift`
+  refusal in the timeline. Something changed checkout between the approval and
+  the rollback (a restart counts), and Sentinel refused rather than guess.
+  Run `kubectl -n meridian set env deploy/checkout-service ERROR_RATE=0`.
 
 ## Cost
 

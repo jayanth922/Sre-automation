@@ -13,7 +13,8 @@ allow-listed set of remediation tools over MCP (SSE), published on host port
 | `restart_deployment` | Rolling restart | `kubectl rollout restart deployment/<n>` |
 | `scale_deployment` | Scale to N (≥ floor) | `kubectl scale deployment/<n> --replicas=N` |
 | `patch_resource_limits` | Set container mem/cpu limits | `kubectl set resources ...` |
-| `rollback_deployment` | Undo to previous revision | `kubectl rollout undo deployment/<n>` |
+| `get_rollout_state` | Read-only: revision history by pod-template-hash | `kubectl rollout history deployment/<n>` |
+| `rollback_deployment` | Restore the ReplicaSet named by `to_template_hash`, only if the deployment is still on `expected_template_hash` | none (`rollout undo --to-revision` without its renumbering, plus a precondition) |
 | `recreate_pod` | Delete one pod; controller recreates it | `kubectl delete pod/<n>` |
 
 ## Safety model (defense in depth)
@@ -31,9 +32,14 @@ independent** envelope that the LLM cannot widen:
     (scale-to-0 / outage guard).
   - Action allow-list: `restart`, `scale`, `rollback`, `patch_resource_limits`,
     `recreate_pod`.
+  - A rollback must name both template hashes; a relative "undo to the
+    previous revision" is refused. At write time the server re-reads the
+    deployment: already on the target → no write; on the expected template →
+    JSON patch with a `test` on `resourceVersion`; anything else →
+    `STATE_DRIFT`, nothing written (`rollout.py`).
 - **Least-privilege RBAC.** Grant this server only `patch`/`get` on
-  `deployments` (+ `deployments/scale`), and `delete`/`get` on `pods`, in the
-  demo namespace. Do not give it cluster-admin.
+  `deployments` (+ `deployments/scale`), `list` on `replicasets` (rollout
+  history), and `delete`/`get` on `pods`, in the demo namespace. Do not give it cluster-admin.
 
 ## Configuration
 

@@ -26,6 +26,7 @@ try:
     from backend.models import IncidentStatus
     from sre_agent.agent_state import AlertContext, RemediationAction, RemediationPlan
     from sre_agent.graph_builder import _act_gate_node
+    from sre_agent.rollback_binding import bind_rollbacks
     from sre_agent.incident_status import compute_incident_status
 except Exception as exc:  # pragma: no cover
     pytest.skip(f"runtime stack unavailable: {exc}", allow_module_level=True)
@@ -139,7 +140,21 @@ def test_critical_alert_maps_to_awaiting_approval():
         annotations={},
     )
     plan = _plan("rollback", "checkout-service", risk="high", rollback="redeploy")
-    report = asyncio.run(_act_gate_node(_state(plan, alert)))["metadata"]["act_report"]
+
+    async def rollout_history(tool, args):
+        # checkout-service's history: v1 (good) then the v2 deploy now live.
+        assert (tool, args) == ("get_rollout_state", {"name": "checkout-service", "namespace": "demo-app"})
+        return {"status": "OK", "paused": False, "current_template_hash": "bbb222", "revisions": [
+            {"template_hash": "bbb222", "revision": 2, "fingerprint": "f2", "created_at": "2026-10-19T10:00:02Z",
+             "images": {"checkout": "checkout:v2"}},
+            {"template_hash": "aaa111", "revision": 1, "fingerprint": "f1", "created_at": "2026-10-19T10:00:01Z",
+             "images": {"checkout": "checkout:v1"}},
+        ]}
+
+    # The graph binds the rollback to that history before the approval gate.
+    state = _state(plan, alert)
+    state.update(asyncio.run(bind_rollbacks(state, tool_caller=rollout_history)))
+    report = asyncio.run(_act_gate_node(state))["metadata"]["act_report"]
 
     # Was "blocked", which contradicted this test's own name and its
     # AWAITING_APPROVAL assertion below: `compute_incident_status` mapped the

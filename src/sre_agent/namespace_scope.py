@@ -25,6 +25,7 @@ _NAMESPACE_ARG_TOOLS = frozenset(
         "restart_deployment",
         "scale_deployment",
         "rollback_deployment",
+        "get_rollout_state",
         "patch_resource_limits",
         "query_logs",
         "get_error_logs",

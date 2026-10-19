@@ -65,7 +65,8 @@ def test_body_has_expected_sections_and_command():
     md = generate_runbook_markdown(_inp())
     for section in ("## Summary", "## Symptoms", "## Root cause", "## Remediation", "## Verification", "## Prevention"):
         assert section in md
-    assert "kubectl rollout undo deployment/checkout-service -n demo-app" in md
+    assert "sentinel rollback deployment/checkout-service -n demo-app --to-template=" in md
+    assert "rollout undo" not in md
     assert "skill-high_error_rate-checkout-service" in md
 
 
@@ -135,7 +136,7 @@ def test_generate_runbook_llm_uses_model_body():
 def test_generate_runbook_llm_falls_back_on_failure():
     md = asyncio.run(generate_runbook_llm(_inp(), _FakeLLM("", fail=True)))
     # Deterministic template fallback still produces a valid runbook.
-    assert "## Summary" in md and "kubectl rollout undo" in md
+    assert "## Summary" in md and "sentinel rollback deployment/checkout-service" in md
 
 
 @dataclass

@@ -724,12 +724,21 @@ class LiveRemediationWorkflow:
                 )
             if result.get("manual_review_required") or result.get("status") == "ERROR":
                 self._phase = "MANUAL_REVIEW_REQUIRED"
+                detail = (
+                    "A live action outcome could not be established safely; "
+                    "no later remediation action was scheduled."
+                )
+                if result.get("failure_class") in ("state_drift", "rollout_state_unavailable"):
+                    # Here the outcome is known — nothing was written — but the
+                    # deployment is not where the approved plan assumed it was.
+                    detail = (
+                        "A rollback found the deployment in a state other than "
+                        "the one it was approved against, so nothing was "
+                        "written; no later remediation action was scheduled."
+                    )
                 return LiveRemediationResult(
                     status="MANUAL_REVIEW_REQUIRED",
-                    detail=(
-                        "A live action outcome could not be established safely; "
-                        "no later remediation action was scheduled."
-                    ),
+                    detail=detail,
                     live_results=results,
                 )
             if position < len(params.action_requests) - 1:

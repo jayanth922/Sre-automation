@@ -181,12 +181,12 @@ def _isolate_generated_runbooks(monkeypatch, tmp_path):
     monkeypatch.setenv("RUNBOOKS_DIR", str(tmp_path))
 
 
-def _plan(action_type, target, risk="low", rollback=None):
+def _plan(action_type, target, risk="low", rollback=None, parameters=None):
     return RemediationPlan(
         plan_id="p-int",
         hypothesis="integration test",
         actions=[RemediationAction(action_type=action_type, target=target,
-                                   parameters={"namespace": "demo-app"},
+                                   parameters=parameters or {"namespace": "demo-app"},
                                    safety_check="ok", rollback_plan=rollback)],
         estimated_duration="2m",
         risk_level=risk,
@@ -466,7 +466,12 @@ def test_critical_production_rollback_is_held_for_a_human_not_blocked():
     """
     alert = AlertContext(alert_name="CheckoutHighErrorRate", severity="critical",
                          labels={"service": "checkout-service", "namespace": "demo-app"}, annotations={})
-    plan = _plan("rollback", "checkout-service", risk="high", rollback="redeploy")
+    # Bound, as `rollback_binding` leaves it: an unbound rollback is blocked.
+    bound = {"namespace": "demo-app", "rollback_binding": {
+        "deployment": "checkout-service", "namespace": "demo-app",
+        "to_template_hash": "aaa111", "expected_template_hash": "bbb222"}}
+    plan = _plan("rollback", "checkout-service", risk="high", rollback="redeploy",
+                 parameters=bound)
     report = asyncio.run(_act_gate_node(_state(plan, alert)))["metadata"]["act_report"]
     assert report["aggregate_decision"] == "requires_approval"
     assert len(report["executed"]) == 0

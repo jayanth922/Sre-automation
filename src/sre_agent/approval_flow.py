@@ -10,7 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +185,46 @@ _DECISION_MARK = {
 APPROVAL_COMMAND = "approve fix"
 
 
+def _images_text(images: Any) -> str:
+    if not isinstance(images, dict) or not images:
+        return "images unknown"
+    if len(images) == 1:
+        return str(next(iter(images.values())))
+    return ", ".join(f"{name}={image}" for name, image in sorted(images.items()))
+
+
+def _rollback_binding_lines(rep: Dict[str, Any]) -> List[str]:
+    """What a rollback restores, what it replaces, and the command that runs.
+
+    The approver is authorizing a move between two specific templates, not
+    "undo": these are the states the approval hash binds, and the only two in
+    which the rollback will act.
+    """
+    from sre_agent.rollback_binding import bound_rollback, rollback_command
+
+    if str(rep.get("action_type") or "").lower() != "rollback":
+        return []
+    binding = bound_rollback(rep.get("parameters"))
+    if binding is None:
+        return []
+
+    def revision(prefix: str) -> str:
+        number = binding.get(f"{prefix}_revision")
+        label = f"revision {number}, " if number is not None else ""
+        return (
+            f"`{binding[f'{prefix}_template_hash']}` "
+            f"({label}{_images_text(binding.get(f'{prefix}_images'))})"
+        )
+
+    command = str(rep.get("command") or rollback_command(binding))
+    return [
+        f"    ↳ from template {revision('expected')} to {revision('to')}",
+        f"    ↳ runs only while deployment/{binding['deployment']} is still on "
+        f"`{binding['expected_template_hash']}`; any other state is refused as drift",
+        f"    ↳ `{command}`",
+    ]
+
+
 def format_approval_request(
     report_payload: Dict[str, Any],
     expires_at: datetime,
@@ -280,6 +320,7 @@ def format_approval_request(
             f" — {action_decision} ({rep.get('reversibility') or 'unknown'})"
         )
         lines.append(f"{line}: {reason}" if reason else line)
+        lines += _rollback_binding_lines(rep)
     if len(reports) > max_actions:
         lines.append(f"… and {len(reports) - max_actions} more.")
 

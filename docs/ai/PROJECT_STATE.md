@@ -9,9 +9,10 @@ control writes, approvals, status transitions and operator-facing claims.
 ## Current milestone
 **Production-quality roadmap** (DECISIONS.md, 2026-10-19), in order:
 1. **Safe actions**: explicit, precondition-checked, idempotent remediation;
-   approval bound to the plan and the observed state. ← next
+   approval bound to the plan and the observed state. Rollback done (branch
+   `safe-rollback`, unpushed).
 2. **Spend and noise rails**: per-incident and daily $ caps, kill switch,
-   follow-on alerts grouped into the open incident.
+   follow-on alerts grouped into the open incident. ← next
 3. **$0 full-path dry run** in CI (stubbed/replayed model): inject → alert →
    approval → rollback → verify.
 4. Act 1 rehearsal 3 (paid, ~$1.50–2.00), then the live demo.
@@ -30,6 +31,13 @@ Standing rule: batch every open fix, verify offline, then spend.
 - **Runbooks are the only fixes** (`RUNBOOK_ONLY_REMEDIATION`, default on):
   a plan passes only if one reviewed runbook branch names every mutating
   action's executor tool; otherwise `runbook_gap` escalation.
+- **Rollbacks are bound** (`rollback_binding.py`): a graph node after
+  `severity_telemetry` reads the executor's `get_rollout_state` and writes the
+  target and expected pod-template hashes into the plan, so the approval hash
+  covers them. Unbound → BLOCKED. Before the idempotency claim the gateway
+  re-reads: on target → no-write EXECUTED; off the expected template →
+  `state_drift`, manual review. The edge re-reads and CAS-patches. Target =
+  newest differing revision that predates the current software.
 - Slack is the action surface; the console observes and configures.
 - Fault adapters (`evals/benchmarks/fault_adapter.py`): `/admin/config`
   faults are in-memory; `k8s_deployment_env_v1` rolls out a real revision
@@ -38,47 +46,38 @@ Standing rule: batch every open fix, verify offline, then spend.
   (`BENCH_FAULT_VISIBLE_SEC`); `awaiting_approval` ends a trial unless
   `BENCH_AWAIT_HUMAN_APPROVAL=1` (demo mode, own arm and fingerprint); every
   campaign ends with a quiesce (`BENCH_QUIESCE_SEC`=420).
-- Any new artifact field needs a round-trip test through the real producer
-  and consumer.
+- New artifact fields need a producer→consumer round-trip test.
 
 ## Completed or verified work
 - v2 benchmark (22 scenarios) and two paid campaigns, both NOT_DEMONSTRATED.
   Do not quote #70's MTTR.
 - PRs #57–#60 merged. Review set: 25 cases in `reports/judge-calibration/`;
   never label `superseded-2026-10-01/`.
-- Branch `act1-bad-config-deploy` (unpushed): 11fa8c1 deploy adapter +
-  `checkout_bad_config_deploy` + quiesce; 69997b7 alert-on-visible; a9d3ab5
-  human-approval wait.
-- Act 1 rehearsals 2026-10-18, both UNRESOLVED on harness bugs now fixed:
-  #1 ($1.19) alert before the probe failed → Branch A closed it; #2 ($1.37)
-  correct Branch E rollback proposal, trial ended at `awaiting_approval`.
+- Unpushed: `act1-bad-config-deploy` (deploy adapter, alert-on-visible,
+  human-approval wait), then `safe-rollback` on top of it.
+- Act 1 rehearsals 2026-10-18 ($1.19, $1.37), both UNRESOLVED on harness bugs
+  now fixed; #2 reached a correct Branch E rollback proposal.
 
 ## Active problem
 Gaps found 2026-10-19 (targeted search, not a full audit):
-- `executor.build_command` turns `rollback` into `kubectl rollout undo`
-  (relative). It ignores the plan's `to_revision`, so the approver sees a
-  target that is not what runs, and undo toggles: a retry, a double execution
-  or an earlier restart lands on the faulty revision.
-- No check found that the cluster still matches what the approver saw.
-  Approvals are refused on resolved incidents (`approval_flow.py:171`,
-  untested live) and expire after 30 min.
 - No LLM spend cap found in `src/sre_agent`; only stopping the API halts spend.
+- Other mutations (restart, scale, env/limits patch) have no observed-state
+  precondition yet; their displayed inverse is still a relative undo.
 - No run grades better than `INCOMPLETE`: `_semantic_criterion` has no judge.
 
 ## Relevant files
-- Step 1: `src/sre_agent/{executor,mutation_gateway,approval_flow,policy_gate}.py`,
-  the planner's rollback parameters,
-  `examples/meridian/runbooks/high-error-rate.md` (Branch E).
+- Rollback: `src/sre_agent/{rollback_binding,executor,mutation_gateway}.py`,
+  `services/edge_mcp_servers/mcp_servers/executor_real/{rollout,server}.py`,
+  `tests/test_{safe_rollback,executor_rollout}.py`.
 - Bench: `evals/benchmarks/{sre_bench,fault_adapter}.py`,
   `evals/benchmarks/datasets/v3/`, `docs/DEMO.md`.
 
 ## Verification commands and latest results
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2746 passed,
-  6 skipped (2026-10-18).
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2795 passed,
+  6 skipped (2026-10-19, branch `safe-rollback`).
 - Codespace `cuddly-winner-659v67gv695hrxjw` idle-shuts down; after a restart
-  run `scripts/dev/codespace_boot.sh` and wait
-  ≥5 min before injecting. No git credentials there: push via a git bundle
-  from the Mac. Its checkout has a9d3ab5's bench and DEMO.md, sha256-verified.
+  run `scripts/dev/codespace_boot.sh`, wait ≥5 min before injecting. Push via
+  a git bundle from the Mac. Its checkout has a9d3ab5's bench.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api dashboard`, then `up -d --no-build
   --no-deps --force-recreate`.
@@ -89,19 +88,22 @@ Gaps found 2026-10-19 (targeted search, not a full audit):
 - `sre-agent-api` and `sre-temporal-worker` are stopped; with the API up, any
   alert opens a paid investigation.
 - FAST (haiku-4-5) untested in a paid run; `sonnet-4-5` retires 2026-11-30.
+- The executor edge image must be rebuilt and redeployed (new `rollout.py`,
+  `get_rollout_state`, kubectl removed); until then every rollback is blocked
+  before approval. Untested against a real apiserver.
 - Never stage `.agents/`, `.env.*` backups or `dashboard/`; never `git add -A`.
   Leave meridian's staged restore files alone.
 
 ## Next bounded task
-**Roadmap step 1: safe rollback** (free, offline). Acceptance:
-- A rollback names its target by an identity that survives revision
-  renumbering (the ReplicaSet's pod-template hash), plus the template it
-  expects to replace, both captured from the investigation's evidence.
-- The approval request shows both, and the approval binds to them.
-- At execution the gateway re-reads the Deployment: already on the target →
-  success with no write; on the expected template → roll back to the target
-  explicitly; anything else → refuse and escalate as state drift.
-- Tests: double approval, retry after success, restart before rollback, drift
-  between approval and execution, displayed command equals executed command.
-Then step 2. Push only on the user's word. User: hand-label the 25 judge
-cases (two blind passes ≥48h apart).
+**Roadmap step 2: spend and noise rails** (free, offline). Start by finding
+the LLM call choke point(s). Acceptance:
+- Every model call is metered to its incident and the UTC day; a call that
+  would cross the per-incident or daily cap is refused, and the incident
+  escalates showing the spend.
+- A kill switch stops new investigations and model calls without stopping
+  the API.
+- An alert for a service with an open incident joins it instead of opening a
+  new paid investigation (the cascade-alert spend).
+- Tests: cap hit mid-investigation, daily cap, kill switch, grouped alert.
+Push only on the user's word. User: hand-label the 25 judge cases (two blind
+passes ≥48h apart).

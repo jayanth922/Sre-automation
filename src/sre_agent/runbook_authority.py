@@ -20,7 +20,7 @@ doesn't. Three things must hold:
 - A section whose heading contains "Action" names the executor tool call the
   action resolves to, e.g. ``restart_deployment(name="payment-service",
   namespace="meridian")``. The tool is resolved with the executor's own
-  ``live_tool_for_action``, so an env-var prescription never licenses a
+  ``executor_tool_for_action``, so an env-var prescription never licenses a
   memory-limit patch. Calls are matched in plain text because Notion's
   markdown export drops the inline-code backticks the source runbooks use, and
   a call on a negated line ("do not ``scale_deployment(...)``") prescribes
@@ -43,7 +43,9 @@ from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 # The code-change actions dispatch through github_exec rather than the
-# executor's infra map; everything else resolves through live_tool_for_action.
+# executor's infra map; everything else resolves through
+# executor_tool_for_action — the fix an action names, not whether it can run
+# yet (a rollback is prescribed before it is bound to a revision).
 _CODE_CHANGE_TOOLS = {
     "revert_commit": "create_revert_pr",
     "revert_pr": "create_revert_pr",
@@ -141,9 +143,9 @@ def action_tool(action: Any) -> Optional[str]:
     action_type = str(getattr(action, "action_type", "")).lower()
     if action_type in _CODE_CHANGE_TOOLS:
         return _CODE_CHANGE_TOOLS[action_type]
-    from .executor import live_tool_for_action
+    from .executor import executor_tool_for_action
 
-    return live_tool_for_action(action)
+    return executor_tool_for_action(action)
 
 
 def is_draft(title: str, markdown: str) -> bool:

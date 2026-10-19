@@ -372,7 +372,8 @@ def test_graph_and_api_enforce_verified_synchronous_resume():
     # to decide on. Assert the chain, so adding a node stays legal and
     # removing `approval_prepare` from it does not.
     assert 'workflow.add_edge("aggregate", "severity_telemetry")' in graph_source
-    assert 'workflow.add_edge("severity_telemetry", "approval_prepare")' in graph_source
+    assert 'workflow.add_edge("severity_telemetry", "rollback_binding")' in graph_source
+    assert 'workflow.add_edge("rollback_binding", "approval_prepare")' in graph_source
     assert 'workflow.add_edge("approval_prepare", "approval_gate")' in graph_source
     assert 'workflow.add_edge("approval_gate", "act_gate")' in graph_source
     assert "compute_action_hash(interrupt_report)" in api_source
