@@ -2182,3 +2182,28 @@ from the restored revision returns to the faulty one.
 
 **Rejected alternative.** Making `BENCH_AUTO_APPROVE` the demo mode. It would
 skip the Slack approval the demo exists to show.
+
+## Production quality before more paid rehearsals (2026-10-19)
+
+**Decision.** The project's bar is a small-scale system a senior SRE would let
+act on a live cluster. Work proceeds in this order: (1) safe actions, meaning
+explicit, precondition-checked, idempotent remediation with the approval bound
+to the plan and the observed state; (2) spend and noise limits; (3) a $0
+full-path dry run in CI; (4) Act 1 rehearsal 3; (5) burn-rate paging and the
+agent's own SLOs; (6) CI-built images; (7) judge calibration and replay evals
+as a CI gate.
+
+**Reason.** The decision core (one mutation gateway, an unappealable policy
+gate, runbook-only fixes, probe-verified recovery) already meets that bar. The
+gaps are around it. The executor runs a relative `rollout undo` and ignores
+the planned revision, so what the approver sees is not what runs. No spend cap
+exists. Both paid rehearsals failed on harness bugs a free full-path run would
+have caught.
+
+**Consequences.** Rehearsal 3 waits for steps 1–3 and then exercises the
+rollback code that stays. Remediation contracts change: a rollback carries its
+target and the state it expects to replace, and execution refuses on drift.
+Every paid run after step 3 confirms the system instead of finding bugs in it.
+
+**Rejected alternative.** Running rehearsal 3 now ($1.50–2.00). It would
+validate the `rollout undo` path that step 1 replaces.

@@ -40,9 +40,10 @@ BENCH_DATASET_VERSION=v3 BENCH_DATASET_SPLIT=dev BENCH_FAULT_MODE=automatic \
 Leave `BENCH_AUTO_APPROVE` unset. The approval must be a human clicking in
 Slack, and `BENCH_AWAIT_HUMAN_APPROVAL=1` keeps the trial running while the
 request waits; without it the bench ends the trial 30 seconds after the request
-posts, restores the fault itself and closes the incident (rehearsal 2). Once
-that has happened, do not approve the stale request: `rollout undo` from the
-restored revision lands on the faulty one. Approve within 30 minutes; the
+posts, restores the fault itself and closes the incident (rehearsal 2). Ignore
+a request left over from such a trial: the platform should refuse it because
+its incident is resolved (untested live), and if it ran, `rollout undo` from
+the restored revision would land on the faulty one. Approve within 30 minutes; the
 request expires after that (`APPROVAL_TTL_MINUTES`).
 
 Before you start, `kubectl -n meridian rollout history deploy/checkout-service`
