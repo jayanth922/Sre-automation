@@ -120,6 +120,7 @@ def test_v3_extends_v2_rather_than_replacing_it():
     v3_ids = {s["id"] for s in _scenarios(V3)}
     assert v2_ids < v3_ids
     assert v3_ids - v2_ids == {
+        "checkout_bad_config_deploy",
         "checkout_exporter_down_no_service_fault",
         "inventory_slow_queries_with_checkout_blind_spot",
         "payment_outage_with_checkout_telemetry_gap",

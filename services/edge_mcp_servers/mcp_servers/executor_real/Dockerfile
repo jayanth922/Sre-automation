@@ -3,17 +3,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps + kubectl (used by rollback_deployment)
+# curl for the healthcheck. No kubectl: every tool, rollback included, goes
+# through the Kubernetes API client.
 RUN apt-get update && apt-get install -y curl \
-    && curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-    && install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl \
-    && rm -f kubectl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY mcp_servers/executor_real/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY mcp_servers/executor_real/guardrails.py .
+COPY mcp_servers/executor_real/rollout.py .
 COPY mcp_servers/executor_real/server.py .
 COPY mcp_auth.py .
 COPY relay_credentials.py .

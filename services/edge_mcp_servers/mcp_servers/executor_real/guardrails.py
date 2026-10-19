@@ -30,9 +30,14 @@ ALLOWED_ACTIONS = {
     "patch_deployment_env",
     "recreate_pod",
     # Read-only. Allow-listed like the rest so the envelope stays one list, but
-    # it mutates nothing — see get_deployment_config in server.py.
+    # they mutate nothing — see get_deployment_config and get_rollout_state in
+    # server.py.
     "get_deployment_config",
+    "get_rollout_state",
 }
+
+# A pod-template-hash: the identity a rollback names its target by.
+_TEMPLATE_HASH_RE = re.compile(r"^[a-z0-9]{1,63}$")
 
 # Environment variables whose *name* says they carry a credential. The agent
 # rewrites runtime behaviour (feature flags, fault-injection toggles, log
@@ -153,4 +158,27 @@ def guardrail_check(action: str, namespace: str, params: Dict[str, Any] | None =
     if action == "patch_deployment_env":
         return check_env_payload(params.get("env"))
 
+    if action == "rollback":
+        return check_rollback_binding(
+            params.get("to_template_hash"), params.get("expected_template_hash")
+        )
+
+    return True, "ok"
+
+
+def check_rollback_binding(to_hash: Any, expected_hash: Any) -> Tuple[bool, str]:
+    """A rollback must name its target and the template it replaces, by hash.
+
+    A relative rollback ("the previous revision") is refused outright: what it
+    restores depends on every write since it was approved, so neither the
+    approver nor a retry can know what it will do.
+    """
+    for label, value in (("to_template_hash", to_hash), ("expected_template_hash", expected_hash)):
+        if not isinstance(value, str) or not _TEMPLATE_HASH_RE.match(value):
+            return False, (
+                f"rollback requires {label} (a pod-template-hash); a relative "
+                "rollback to 'the previous revision' is not supported"
+            )
+    if to_hash == expected_hash:
+        return False, "rollback target and expected template are the same; nothing to roll back"
     return True, "ok"

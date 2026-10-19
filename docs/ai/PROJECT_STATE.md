@@ -1,14 +1,24 @@
 # Project state
 
 ## Project objective
-Make Sentinel a truthful, tenant-isolated, reproducible and cost-conscious SRE
-agent. Deterministic policy and durable state — not model prose — control
-writes, approvals, status transitions and operator-facing claims.
+Sentinel: a small-scale SRE agent built to production quality — one a senior
+SRE would let act on a live cluster. Truthful, tenant-isolated, reproducible
+and cost-conscious. Deterministic policy and durable state — not model prose —
+control writes, approvals, status transitions and operator-facing claims.
 
 ## Current milestone
-1. **Demo rehearsal** (`docs/DEMO.md`, Act 1 `payment_provider_outage`) —
-   key, routing and Slack ready; waiting on the user's launch.
-2. **Calibrated judge for `causal_chain` / `evidence_support`** — free phase.
+**Production-quality roadmap** (DECISIONS.md, 2026-10-19), in order:
+1. **Safe actions**: explicit, precondition-checked, idempotent remediation;
+   approval bound to the plan and the observed state. Rollback done (branch
+   `safe-rollback`, unpushed).
+2. **Spend and noise rails**: per-incident and daily $ caps, kill switch,
+   follow-on alerts grouped into the open incident. ← next
+3. **$0 full-path dry run** in CI (stubbed/replayed model): inject → alert →
+   approval → rollback → verify.
+4. Act 1 rehearsal 3 (paid, ~$1.50–2.00), then the live demo.
+5. Error-budget burn-rate paging; the agent's own SLOs and dashboard.
+6. Reproducible delivery: CI-built images, no `docker cp`.
+7. Judge calibration (`causal_chain`/`evidence_support`); replay evals gate CI.
 Standing rule: batch every open fix, verify offline, then spend.
 
 ## Current architecture and invariants
@@ -17,99 +27,83 @@ Standing rule: batch every open fix, verify offline, then spend.
 - `mutation_gateway.authorize_and_execute()` is the sole tenant, policy,
   idempotency and audit boundary. `policy_gate.decide` verdicts cannot be
   appealed; bans are judged from measured state, never the planner's risk.
-- Severity has two values (439a7e7): reported `measured_severity` vs
-  `policy_severity` (uncalibrated round-up) read by the gate. See DECISIONS.md.
 - Recovery is the scenario's Prometheus probe, never incident status.
-- **Runbooks are the only fixes (b5f774d, `RUNBOOK_ONLY_REMEDIATION`,
-  default on).** `runbook_authority` passes a plan only if one branch of a
-  reviewed runbook listing the alert names every mutating action's executor
-  tool; otherwise it escalates with `runbook_gap`. No applicable runbook
-  means the model is never asked. `RB-AUTO` pages are drafts.
-- Each Notion runbook's `Alert Name` property must list every alert its body
-  covers (search ranks on properties only).
-- Slack is the action surface; the console observes and configures. A
-  cluster's Settings LLM key overrides `ANTHROPIC_API_KEY` in `.env`.
-- A cluster with dynamic routing on has no static model (e75cb39):
-  `resolve_llm` ignores a stored one, create/update clear it, the console
-  hides the picker. Tiers: protected `model_router._ANTHROPIC_TIER_DEFAULTS`
-  (haiku-4-5 / sonnet-5 / opus-5).
-- Any new artifact field needs a round-trip test through the real producer
-  and consumer.
+- **Runbooks are the only fixes** (`RUNBOOK_ONLY_REMEDIATION`, default on):
+  a plan passes only if one reviewed runbook branch names every mutating
+  action's executor tool; otherwise `runbook_gap` escalation.
+- **Rollbacks are bound** (`rollback_binding.py`): a graph node after
+  `severity_telemetry` reads the executor's `get_rollout_state` and writes the
+  target and expected pod-template hashes into the plan, so the approval hash
+  covers them. Unbound → BLOCKED. Before the idempotency claim the gateway
+  re-reads: on target → no-write EXECUTED; off the expected template →
+  `state_drift`, manual review. The edge re-reads and CAS-patches. Target =
+  newest differing revision that predates the current software.
+- Slack is the action surface; the console observes and configures.
+- Fault adapters (`evals/benchmarks/fault_adapter.py`): `/admin/config`
+  faults are in-memory; `k8s_deployment_env_v1` rolls out a real revision
+  that only a rollback clears.
+- Bench: alert posts at the probe's first failing reading
+  (`BENCH_FAULT_VISIBLE_SEC`); `awaiting_approval` ends a trial unless
+  `BENCH_AWAIT_HUMAN_APPROVAL=1` (demo mode, own arm and fingerprint); every
+  campaign ends with a quiesce (`BENCH_QUIESCE_SEC`=420).
+- New artifact fields need a producer→consumer round-trip test.
 
 ## Completed or verified work
-- v2 benchmark (22 scenarios, oracles, structured grading, paired stats,
-  release gate); two paid campaigns, both NOT_DEMONSTRATED. Do not quote
-  #70's MTTR.
-- PR #57 (merged): calibration review-set builder, transcript store, judge
-  design (`evals/benchmarks/graders/CALIBRATION_DESIGN.md`), demo script,
-  runbook-only remediation. Live Notion runbooks match
-  `examples/meridian/runbooks/`.
-- Review set rebuilt 2026-10-16 (`reports/judge-calibration/`, 25 cases, 143
-  transcripts incl. 29 K8s prescans). Never label `superseded-2026-10-01/`.
-- Locator 11 PASS / 0 FAIL / 14 UNCHECKABLE; 96 perturbed copies;
-  `judge_view` leak-free (`CALIBRATION_DESIGN.md` §2–4).
-- PR #58 (merged, 7483411): no static model when routed; migration
-  `b8c9d0e1f2a3` cleared `kind-meridian`'s model; live picks checked.
-- PR #59 (merged, 8c997ed): `nl_query` routes; an AST test keeps LLM
-  construction in the router modules. `.env` has no `ANTHROPIC_MODEL`.
-- meridian-shop master `7bcfb45`: the Codespace's 3 commits, rebased onto
-  `cefa745` and pushed 2026-10-17.
+- v2 benchmark (22 scenarios) and two paid campaigns, both NOT_DEMONSTRATED.
+  Do not quote #70's MTTR.
+- PRs #57–#60 merged. Review set: 25 cases in `reports/judge-calibration/`;
+  never label `superseded-2026-10-01/`.
+- Unpushed: `act1-bad-config-deploy` (deploy adapter, alert-on-visible,
+  human-approval wait), then `safe-rollback` on top of it.
+- Act 1 rehearsals 2026-10-18 ($1.19, $1.37), both UNRESOLVED on harness bugs
+  now fixed; #2 reached a correct Branch E rollback proposal.
 
 ## Active problem
-- **Rehearsal**: `.env` key works (user keeps it); Slack bot `meridian` is
-  valid and in `C0C0KA474LC` (`#all-meridian`).
-- **No run can grade better than `INCOMPLETE`**:
-  `structured_grading._semantic_criterion` is a shape check with no judge.
+Gaps found 2026-10-19 (targeted search, not a full audit):
+- No LLM spend cap found in `src/sre_agent`; only stopping the API halts spend.
+- Other mutations (restart, scale, env/limits patch) have no observed-state
+  precondition yet; their displayed inverse is still a relative undo.
+- No run grades better than `INCOMPLETE`: `_semantic_criterion` has no judge.
 
 ## Relevant files
-- `src/sre_agent/{runbook_authority,graph_builder,approval_flow,policy_gate,
-  mutation_gateway}.py`, `docs/DEMO.md`.
-- `evals/benchmarks/{sre_bench,calibration_cases,transcript_store,
-  evidence_locator,perturbations,judge_view}.py`.
-- `infra/local/docker-compose.yaml` (project `platform`).
-- Meridian repo `/workspaces/meridian-shop-deploy` (local master keeps the
-  3 commits' pre-rebase SHAs).
+- Rollback: `src/sre_agent/{rollback_binding,executor,mutation_gateway}.py`,
+  `services/edge_mcp_servers/mcp_servers/executor_real/{rollout,server}.py`,
+  `tests/test_{safe_rollback,executor_rollout}.py`.
+- Bench: `evals/benchmarks/{sre_bench,fault_adapter}.py`,
+  `evals/benchmarks/datasets/v3/`, `docs/DEMO.md`.
 
 ## Verification commands and latest results
-- Work happens on Codespace `cuddly-winner-659v67gv695hrxjw`; after a restart
-  run `scripts/dev/codespace_boot.sh`. It has no git credentials: push via a
-  git bundle from the Mac. Its `/workspaces/Sre-automation` checkout has
-  files copied in (sha256-checked) from e75cb39, PR #59 and the watcher
-  change. Eval modules run
-  from `/home/vscode/judge-run/evals`. Container Python is `uv run python`.
-- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2721 passed,
-  6 skipped (2026-10-17, PR #59); release gate `NOT_REQUIRED`; dashboard
-  `tsc --noEmit` 0 errors. API and worker rebuilt ≈20:00Z.
+- `.venv/bin/python -m pytest -p no:cacheprovider -q` → 2795 passed,
+  6 skipped (2026-10-19, branch `safe-rollback`).
+- Codespace `cuddly-winner-659v67gv695hrxjw` idle-shuts down; after a restart
+  run `scripts/dev/codespace_boot.sh`, wait ≥5 min before injecting. Push via
+  a git bundle from the Mac. Its checkout has a9d3ab5's bench.
 - Rebuild: `docker compose -p platform -f infra/local/docker-compose.yaml
   build temporal-worker sre-agent-api dashboard`, then `up -d --no-build
-  --no-deps --force-recreate` the same three. The API runs `alembic upgrade
-  head` on start. API health: `/ping` on 8080.
-- Single trial: the `docs/DEMO.md` command (timeout 2700s; 300s is below
-  the recovery floor), secrets from `/home/vscode/bench.env`. SIGINT does not
-  stop a trial early.
-- Edge MCP: `docker compose -p edge_mcp_servers` from `services/edge_mcp_servers`.
+  --no-deps --force-recreate`.
 
 ## Known blockers or risks
-- Budget: no paid run without explicit approval; price every run first.
-  ≈$11.60 spent through Run 9. Calibration campaign (~$40+) not authorized.
-- FAST (haiku-4-5) is untested in a paid run. `sonnet-4-5` (ladder only)
-  retires 2026-11-30; haiku-4-5 may be deprecated any time (`haiku-5-5`).
-- 3 of 22 scenarios need deploy/rollback evidence no injection creates.
+- Budget: no paid run without explicit approval; price first. ≈$16.60 spent
+  through 2026-10-18. Calibration campaign (~$40+) not authorized.
+- `sre-agent-api` and `sre-temporal-worker` are stopped; with the API up, any
+  alert opens a paid investigation.
+- FAST (haiku-4-5) untested in a paid run; `sonnet-4-5` retires 2026-11-30.
+- The executor edge image must be rebuilt and redeployed (new `rollout.py`,
+  `get_rollout_state`, kubectl removed); until then every rollback is blocked
+  before approval. Untested against a real apiserver.
 - Never stage `.agents/`, `.env.*` backups or `dashboard/`; never `git add -A`.
-  Leave meridian's staged `checkout-service/app.py`, `.last_deployed_sha` and
-  `.local-baseline-restore.md` alone. Wait ≥5 min after cluster changes
-  before injecting.
-- `watch_meridian_deploy.sh` is opt-in (`MERIDIAN_WATCHER_ENABLED=1`): it
-  `reset --hard`s to GitHub master, which still has `4ed89b2`/`7a6e223`
-  (checkout ~84% 5xx), wiping the healthy-checkout restore.
-- kube-state-metrics' ClusterRole can list/watch secrets (faithful to live).
+  Leave meridian's staged restore files alone.
 
 ## Next bounded task
-1. User launches Act 1 (~$1.00–1.50, stop at $2). Leave
-   `BENCH_AUTO_APPROVE` unset to rehearse the Slack approval click.
-2. On the user's "push", commit the watcher opt-in change and open its PR.
-3. User: hand-label the 25 rebuilt cases (two blind passes ≥48h apart),
-   adjudicate, freeze.
-4. Free, in a fresh session: judge harness + `CALIBRATION_DESIGN.md` §5
-   metrics on the judge views (locator FAIL decides evidence_support;
-   over-budget views abstain), verified on a stub judge. Then price a pass.
+**Roadmap step 2: spend and noise rails** (free, offline). Start by finding
+the LLM call choke point(s). Acceptance:
+- Every model call is metered to its incident and the UTC day; a call that
+  would cross the per-incident or daily cap is refused, and the incident
+  escalates showing the spend.
+- A kill switch stops new investigations and model calls without stopping
+  the API.
+- An alert for a service with an open incident joins it instead of opening a
+  new paid investigation (the cascade-alert spend).
+- Tests: cap hit mid-investigation, daily cap, kill switch, grouped alert.
+Push only on the user's word. User: hand-label the 25 judge cases (two blind
+passes ≥48h apart).

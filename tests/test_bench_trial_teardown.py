@@ -336,3 +336,67 @@ def test_undeclared_fingerprint_makes_no_request(runner, monkeypatch):
     client = _FakeClient()
     _verify(runner, client)
     assert client.get_calls == []
+
+
+# ------------------------------------------------- human approval (2026-10-18)
+
+
+def test_awaiting_approval_ends_an_unattended_trial(runner, monkeypatch):
+    """Unaided runs measure whether the agent stops to ask; it did, so stop."""
+    monkeypatch.setattr(runner, "AWAIT_HUMAN_APPROVAL", False)
+    tracker = _tracker(runner, _probe(runner, require_failure_observation=True))
+    latest, _approvals, observed = _drive_poll_loop(
+        runner,
+        monkeypatch,
+        tracker=tracker,
+        values=[0.6] * 80,
+        statuses=["investigating"] * 3 + ["awaiting_approval"] * 80,
+    )
+
+    assert latest["status"] == "awaiting_approval"
+    assert len(observed) <= 7
+
+
+def test_trial_waits_for_a_human_decision(runner, monkeypatch):
+    """Rehearsal 2 tore down 30s after the Slack request, before anyone clicked."""
+    monkeypatch.setattr(runner, "AWAIT_HUMAN_APPROVAL", True)
+    tracker = _tracker(runner, _probe(runner, require_failure_observation=True))
+    latest, approvals, observed = _drive_poll_loop(
+        runner,
+        monkeypatch,
+        tracker=tracker,
+        values=[0.6] * 30 + [0.02] * 10,
+        statuses=["investigating"] * 3
+        + ["awaiting_approval"] * 24
+        + ["remediation_in_progress"] * 20,
+    )
+
+    assert len(observed) > 27, "the trial ended while the approval was still pending"
+    assert tracker.recovered_at is not None
+    assert latest["status"] == "remediation_in_progress"
+    assert approvals == 0, "a human approval is not a harness approval"
+
+
+def test_unanswered_approval_runs_to_the_incident_timeout(runner, monkeypatch):
+    monkeypatch.setattr(runner, "AWAIT_HUMAN_APPROVAL", True)
+    tracker = _tracker(runner, _probe(runner, require_failure_observation=True))
+    latest, _approvals, observed = _drive_poll_loop(
+        runner,
+        monkeypatch,
+        tracker=tracker,
+        values=[0.6] * 80,
+        statuses=["investigating"] * 3 + ["awaiting_approval"] * 80,
+    )
+
+    # TIMEOUT_SEC 300 / POLL_INTERVAL_SEC 5.
+    assert len(observed) == 60
+    assert latest["status"] == "awaiting_approval"
+
+
+def test_human_approval_runs_are_their_own_arm(runner, monkeypatch):
+    monkeypatch.setattr(runner, "CONFIG_FINGERPRINT", "")
+    monkeypatch.setattr(runner, "AWAIT_HUMAN_APPROVAL", False)
+    unattended = runner._confidence_fingerprint()
+    monkeypatch.setattr(runner, "AWAIT_HUMAN_APPROVAL", True)
+
+    assert runner._confidence_fingerprint() != unattended

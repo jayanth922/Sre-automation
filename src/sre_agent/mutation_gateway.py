@@ -23,14 +23,23 @@ from .executor import (
     ExecutionMode,
     ExecutionResult,
     Executor,
+    _structured_payload,
     build_command,
     build_rollback_command,
+    live_resource_name,
     live_tool_for_action,
     missing_capability_reason,
 )
 from .policy_gate import AutonomyDecision, decide
 from .redis_state_store import get_state_store
+from .rollback_binding import bound_rollback
 from .severity_engine import Severity
+
+# Rejections that leave nothing written but the plan's premise broken: the
+# deployment is not in the state a rollback was approved against, or cannot be
+# shown to be. Later actions were planned on that state too, so the caller
+# stops the plan for a human rather than carrying on.
+ESCALATING_REJECTIONS = frozenset({"state_drift", "rollout_state_unavailable"})
 
 
 class MutationRejected(PermissionError):
@@ -172,7 +181,8 @@ def _verify_scope(action: Any, context: ExecutionContext) -> None:
         # can execute anyway sends the operator chasing the wrong problem.
         if live_tool_for_action(action) is None:
             raise MutationRejected(
-                "unsupported_action", missing_capability_reason(action_type)
+                "unsupported_action",
+                missing_capability_reason(action_type, getattr(action, "parameters", None)),
             )
         try:
             assert_action_namespace(action, context)
@@ -284,6 +294,96 @@ async def _persist_audit_event(
         await db.commit()
 
 
+async def _rollback_precondition(
+    action: Any,
+    tool_caller: Optional[Callable[[str, Dict[str, Any]], Any]],
+    executor: Executor,
+    decision: str,
+) -> Optional[ExecutionResult]:
+    """Re-read the deployment a bound rollback was approved against.
+
+    Returns a no-write success when the deployment is already on the approved
+    target — a second approval, or a retry after the first run succeeded.
+    Returns None when it is still on the template the approval expected, so
+    the rollback may proceed. Anything else raises: the approver saw a state
+    that no longer exists. Runs before the idempotency claim, so a failed read
+    is retry-safe and a refusal leaves no claim behind.
+    """
+    params = getattr(action, "parameters", None) or {}
+    binding = bound_rollback(params)
+    if binding is None:  # `_verify_scope` refuses this first; never undo blindly
+        raise MutationRejected(
+            "unsupported_action", missing_capability_reason("rollback", params)
+        )
+    name = live_resource_name(getattr(action, "target", ""))
+    namespace = str(params.get("namespace") or "").strip()
+    if binding["deployment"] != name or binding["namespace"] != namespace:
+        raise MutationRejected(
+            "scope_mismatch",
+            f"The rollback was bound to deployment/{binding['deployment']} in "
+            f"'{binding['namespace']}', not deployment/{name} in '{namespace}'",
+        )
+    to_hash = binding["to_template_hash"]
+    expected = binding["expected_template_hash"]
+    if tool_caller is None:
+        raise MutationRejected(
+            "rollout_state_unavailable",
+            "No executor tool_caller is configured to re-read the deployment",
+        )
+
+    payload = _structured_payload(
+        await tool_caller("get_rollout_state", {"name": name, "namespace": namespace})
+    )
+    if not payload or str(payload.get("status") or "").upper() != "OK":
+        detail = json.dumps(payload, sort_keys=True, default=str) if payload else "no response"
+        raise MutationRejected(
+            "rollout_state_unavailable",
+            f"deployment/{name}'s rollout history could not be re-read, so the "
+            f"rollback's precondition is unverified; nothing was written: {detail[:300]}",
+        )
+    current = payload.get("current_template_hash")
+    if current == to_hash:
+        command = build_command(action)
+        return ExecutionResult(
+            action_type="rollback",
+            target=str(getattr(action, "target", "")),
+            command=command,
+            mode=ExecutionMode.LIVE,
+            status="EXECUTED",
+            audit=executor._audit(action, command, decision, ExecutionMode.LIVE),
+            rollback_command=build_rollback_command(action),
+            detail=(
+                f"no write: deployment/{name} is already on the approved target "
+                f"template {to_hash}; nothing was changed"
+            ),
+        )
+    if payload.get("paused"):
+        raise MutationRejected(
+            "state_drift",
+            f"deployment/{name}'s rollout was paused after the rollback was "
+            "approved; nothing was written",
+        )
+    if current != expected:
+        seen = (
+            f"template {current}"
+            if current
+            else "a template no ReplicaSet matches yet (a rollout is in progress)"
+        )
+        raise MutationRejected(
+            "state_drift",
+            f"deployment/{name} was approved for rollback from template {expected} "
+            f"to {to_hash}, but it is now on {seen}; nothing was written",
+        )
+    hashes = {r.get("template_hash") for r in payload.get("revisions") or [] if isinstance(r, dict)}
+    if to_hash not in hashes:
+        raise MutationRejected(
+            "state_drift",
+            f"deployment/{name}'s revision history no longer holds the approved "
+            f"target template {to_hash}; nothing was written",
+        )
+    return None
+
+
 async def _authorize_and_execute_unclassified(
     action: Any,
     gate_decision: Any,
@@ -350,6 +450,18 @@ async def _authorize_and_execute_unclassified(
             raise MutationRejected(
                 "invalid_idempotency_key", "A non-empty idempotency key is required"
             )
+        executor = Executor(
+            actor=str(_field(gate_decision, "actor", "sre-agent") or "sre-agent"),
+            incident_id=_field(gate_decision, "incident_id"),
+        )
+        decision = "approved" if approved else fresh.decision.value
+        if str(getattr(action, "action_type", "")).lower() == "rollback":
+            settled = await _rollback_precondition(action, tool_caller, executor, decision)
+            if settled is not None:
+                # Nothing was claimed or written; an audit failure here is
+                # still pre-claim, and a retry re-reads the same settled state.
+                await _persist_audit_event(execution_context, settled, approved=approved)
+                return settled
         # From this point onward an exception cannot prove whether the atomic
         # claim was installed. Retrying could therefore turn a missing action
         # into a misleading duplicate, even before the external call begins.
@@ -369,14 +481,10 @@ async def _authorize_and_execute_unclassified(
                 detail="Duplicate mutation short-circuited by its idempotency claim.",
             )
 
-        executor = Executor(
-            actor=str(_field(gate_decision, "actor", "sre-agent") or "sre-agent"),
-            incident_id=_field(gate_decision, "incident_id"),
-        )
         failure_phase["value"] = "dispatch_started"
         result = await executor._aexecute_unchecked(
             action,
-            "approved" if approved else fresh.decision.value,
+            decision,
             dry_run=False,
             tool_caller=tool_caller,
             github_caller=github_caller,
@@ -388,6 +496,11 @@ async def _authorize_and_execute_unclassified(
                 "Live execution completed but its AuditEvent could not be persisted; "
                 "the idempotency claim remains active"
             ) from exc
+        if result.remote_status == "STATE_DRIFT":
+            # The executor re-read the deployment after the check above and
+            # found it moved: it wrote nothing, and the refusal is the same
+            # one the gateway would have made a moment later.
+            raise MutationRejected("state_drift", result.detail)
         return result
 
 

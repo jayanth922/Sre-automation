@@ -2106,3 +2106,142 @@ candidate sets are identical and the semantic path would collapse into a no-op
 — deleting the feature rather than calibrating it. Its purpose is to reach a
 skill whose wording matches when the failure-class keywords miss, and that
 requires cosine to admit something `match_score` rejects.
+
+## A deploy fault is a real rollout, and the bench quiesces its own aftermath
+
+**Decision.** `checkout_bad_config_deploy` (v3 dev) injects through a new
+adapter, `k8s_deployment_env_v1`: `kubectl set env` rolls out a new
+checkout-service revision with `ERROR_RATE=0.6`, and only `rollback` is
+allowed. After every campaign, `sre_bench._quiesce_campaign` resolves the
+incidents the campaign opened and cancels their live jobs until Prometheus
+shows no pending or firing alerts, bounded by `BENCH_QUIESCE_SEC` (420).
+
+**Reason.** Every `/admin/config` fault lives in process memory, so a restart
+clears it and no scenario could tell rollback from restart, or need a deploy
+to be found at all. The 2026-10-17 rehearsal also showed that cascade incidents
+keep spending after a trial exits ($1.00 of $2.44), and the earlier decision
+"External alert recovery closes remediation authority, not investigation"
+deliberately leaves those investigations running.
+
+**Consequences.** The adapter refuses to inject unless the env reads exactly
+the declared baseline, restores the original strings (a no-op after the
+agent's rollback, verified live 2026-10-18 with no new revision), and only
+touches allowed namespaces. A restart before the rollback makes `rollout undo`
+return to the faulty revision; that is the agent's failure and the trial
+should fail. A campaign now takes up to 7 minutes longer to exit. The
+scenario lives in v3 dev rather than its own dataset because the loader
+requires all three splits.
+
+**Rejected alternative.** Cancelling investigations when Alertmanager clears an
+alert. It would reverse the earlier decision for a benchmark-only problem; the
+bench owns its aftermath instead.
+
+## The bench posts a scenario's alert only once its probe reads failing
+
+**Decision.** After injecting, a trial polls the scenario's recovery probe and
+posts the alert at the first failing reading (`_await_fault_visible`,
+`BENCH_FAULT_VISIBLE_SEC`=360), with that reading's time as `startsAt`. The
+trial clock still starts at injection. Negative controls, unarmed probes and
+unhealthy baselines post at injection as before. A fault that never reads
+failing within the budget fails the stimulus and no alert is posted.
+
+**Reason.** The 2026-10-18 Act 1 rehearsal posted at injection. The agent's
+Step 1 probe, a five-minute rate, read 0.146 against 0.45 with only 90 seconds
+of fault in its window, and the runbook's Branch A correctly closed the
+incident with no action (UNRESOLVED, $1.19). Prometheus fired the real alert
+about four minutes later. No real rule can fire on a sub-threshold reading,
+so the early post tested a situation production never produces. The `startsAt`
+also preceded the rollout it was caused by, which inverted the causal order.
+
+**Consequences.** Trials take 3–4 minutes longer before the incident opens.
+Past campaigns posted at injection, so their sub-threshold closures are not
+comparable with runs after this change.
+
+**Rejected alternative.** Telling the runbook to re-measure when the onset is
+under five minutes old. It changes the agent's procedure to compensate for a
+harness artifact, and production alerts already arrive after their window
+fills.
+
+## A human-approved trial is its own mode, and waits for the human
+
+**Decision.** `BENCH_AWAIT_HUMAN_APPROVAL=1` stops `awaiting_approval` from
+counting as terminal, so the trial polls through a Slack decision up to the
+incident timeout. Such trials carry the `human_approval_mode` category and a
+distinct confidence fingerprint. Default off; the demo command sets it.
+
+**Reason.** Act 1 rehearsal 2 (2026-10-18, $1.37) reached a correct Branch E
+rollback proposal, then the bench treated `awaiting_approval` as the end of
+the trial, restored the fault after 30 seconds and closed the incident before
+anyone could approve. Treating it as terminal is right for unattended runs,
+which measure whether the agent stops to ask.
+
+**Consequences.** Unaided, harness-approved and human-approved runs are three
+arms that must not be pooled. A human-mode trial nobody answers runs the full
+incident timeout. Approving a request after teardown is unsafe: `rollout undo`
+from the restored revision returns to the faulty one.
+
+**Rejected alternative.** Making `BENCH_AUTO_APPROVE` the demo mode. It would
+skip the Slack approval the demo exists to show.
+
+## Production quality before more paid rehearsals (2026-10-19)
+
+**Decision.** The project's bar is a small-scale system a senior SRE would let
+act on a live cluster. Work proceeds in this order: (1) safe actions, meaning
+explicit, precondition-checked, idempotent remediation with the approval bound
+to the plan and the observed state; (2) spend and noise limits; (3) a $0
+full-path dry run in CI; (4) Act 1 rehearsal 3; (5) burn-rate paging and the
+agent's own SLOs; (6) CI-built images; (7) judge calibration and replay evals
+as a CI gate.
+
+**Reason.** The decision core (one mutation gateway, an unappealable policy
+gate, runbook-only fixes, probe-verified recovery) already meets that bar. The
+gaps are around it. The executor runs a relative `rollout undo` and ignores
+the planned revision, so what the approver sees is not what runs. No spend cap
+exists. Both paid rehearsals failed on harness bugs a free full-path run would
+have caught.
+
+**Consequences.** Rehearsal 3 waits for steps 1–3 and then exercises the
+rollback code that stays. Remediation contracts change: a rollback carries its
+target and the state it expects to replace, and execution refuses on drift.
+Every paid run after step 3 confirms the system instead of finding bugs in it.
+
+**Rejected alternative.** Running rehearsal 3 now ($1.50–2.00). It would
+validate the `rollout undo` path that step 1 replaces.
+
+## Rollbacks are bound to template hashes and preconditioned (2026-10-19)
+
+**Decision.** A rollback names the ReplicaSet it restores and the one it
+expects to replace, both by pod-template-hash. A deterministic graph node
+(`rollback_binding.py`, after `severity_telemetry`) reads the executor's
+`get_rollout_state` and writes them into `parameters.rollback_binding`,
+replacing anything the planner wrote. The approval hash covers the binding,
+and the request shows both templates and the exact command
+(`sentinel rollback … --to-template=X --expect-template=Y`). At execution the
+gateway re-reads before the idempotency claim. On the target, it returns
+EXECUTED with a "no write" detail. On the expected template, it lets the edge
+roll back: the edge re-reads and patches the template with a resourceVersion
+precondition. Anything else, including a restart since approval, is refused as
+`state_drift`: the action is marked for manual review and the plan stops. The
+target is the newest revision whose fingerprint differs from the current
+software's and whose ReplicaSet predates the oldest one running it.
+
+**Reason.** `rollout undo` is relative to the last write. A retry, a second
+approval or an earlier restart each moved "previous", and the approver never
+saw the revision that ran. Revision numbers cannot pick the target either: a
+rollback renumbers the template it restores, so "highest other revision"
+rolls forward onto the fault. Creation times are never renumbered.
+
+**Consequences.** An unbound rollback (unreadable history, an earlier template
+write in the same plan, a paused rollout, undated ReplicaSets) is BLOCKED
+with its reason. It is never offered for approval. An executor edge image
+without `get_rollout_state` blocks every rollback until it is rebuilt. That
+image no longer ships kubectl. The edge needs `list` on replicasets. A
+restart counts as drift, which is strict on purpose. The direct
+(non-Temporal) act path now stops on manual review too. Runbook authority
+matches on tool identity (`executor_tool_for_action`), not live capability,
+so an unbound rollback is reported as blocked rather than as a runbook gap.
+
+**Rejected alternatives.** A new `NO_OP` execution status, which every status
+consumer would need to learn. Binding by revision number, which is
+renumbered. Comparing fingerprints at execution, which would let a rollback
+run over a restart nobody approved.

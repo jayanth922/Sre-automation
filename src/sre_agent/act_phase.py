@@ -51,10 +51,16 @@ from .executor import (
     NON_MUTATING_ACTIONS,
     NOTIFY_ONLY_ACTIONS,
     Executor,
+    build_command,
     live_tool_for_action,
     missing_capability_reason,
 )
-from .mutation_gateway import MutationGateContext, MutationRejected, authorize_and_execute
+from .mutation_gateway import (
+    ESCALATING_REJECTIONS,
+    MutationGateContext,
+    MutationRejected,
+    authorize_and_execute,
+)
 from .policy_gate import (
     AutonomyDecision,
     decide_plan,
@@ -782,7 +788,7 @@ def build_act_report(
         if rep["action_type"].lower() in EXECUTOR_TOOL_MAP and live_tool_for_action(action) is None:
             blocked_no_capability += 1
             rep["decision"] = AutonomyDecision.BLOCKED.value
-            rep["reason"] = missing_capability_reason(rep["action_type"].lower())
+            rep["reason"] = missing_capability_reason(rep["action_type"].lower(), params)
             action_reports.append(rep)
             continue
 
@@ -805,6 +811,10 @@ def build_act_report(
             rep["audit_hash"] = result.audit.get("content_hash")
             rep["rollback_command"] = result.rollback_command
             executed.append(rep)
+        elif rep["action_type"].lower() == "rollback":
+            # A held rollback shows the approver the exact command that will
+            # run, bound hashes and all; the approval hash covers it.
+            rep["command"] = build_command(action)
         action_reports.append(rep)
 
     scope_note = (
@@ -970,14 +980,18 @@ async def execute_autonomous_live(
         approved=approved,
         context=context,
     ):
-        results.append(
-            await execute_live_action_request(
-                request,
-                tool_caller,
-                github_caller=github_caller,
-                context=context,
-            )
+        result = await execute_live_action_request(
+            request,
+            tool_caller,
+            github_caller=github_caller,
+            context=context,
         )
+        results.append(result)
+        if result.get("manual_review_required"):
+            # As the durable workflow does: an unknown outcome or a drifted
+            # deployment invalidates the premise the rest of the plan was
+            # approved on, so nothing after it runs without a human.
+            break
     return results
 
 
@@ -1198,7 +1212,7 @@ async def execute_live_action_request(
             exc.code,
             exc.detail,
         )
-        return {
+        refused = {
             "action_type": action_payload.get("action_type"),
             "target": action_payload.get("target"),
             "status": "REFUSED",
@@ -1206,6 +1220,12 @@ async def execute_live_action_request(
             "detail": f"{exc.code}: {exc.detail}",
             "rejection_code": exc.code,
         }
+        if exc.code in ESCALATING_REJECTIONS:
+            # Nothing was written, but the deployment is not in the state the
+            # rollback was approved against (or could not be shown to be).
+            # Later actions were planned on that state too; stop for a human.
+            refused.update(failure_class=exc.code, manual_review_required=True)
+        return refused
     result = {
         "action_type": res.action_type,
         "target": res.target,

@@ -83,6 +83,19 @@ class FakeAction:
     rollback_plan: Optional[str] = None
 
 
+def _bound(deployment: str, namespace: str = "demo-app") -> Dict[str, Any]:
+    """A rollback's parameters once `rollback_binding` has read its history."""
+    return {
+        "namespace": namespace,
+        "rollback_binding": {
+            "deployment": deployment,
+            "namespace": namespace,
+            "to_template_hash": "aaa111",
+            "expected_template_hash": "bbb222",
+        },
+    }
+
+
 @dataclass
 class FakePlan:
     actions: List[FakeAction]
@@ -176,7 +189,7 @@ def test_self_reported_confidence_alone_cannot_authorize_dry_run():
 
 def test_critical_incident_requires_approval():
     alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
-    plan = FakePlan([FakeAction("rollback", "checkout-service", {"namespace": "demo-app"})],
+    plan = FakePlan([FakeAction("rollback", "checkout-service", _bound("checkout-service"))],
                     risk_level="high")
     # Even without fabricating rates from the critical label, measured outage
     # signals keep the plan behind approval.
@@ -232,7 +245,7 @@ def test_mixed_plan_executes_autonomous_holds_the_rest():
     alert = FakeAlert("warning", {"service": "inventory-service", "namespace": "demo-app"})
     plan = FakePlan([
         FakeAction("restart", "inventory-service", {"namespace": "demo-app"}),
-        FakeAction("rollback", "inventory-service", {"namespace": "demo-app"}),
+        FakeAction("rollback", "inventory-service", _bound("inventory-service")),
     ])
     report = _build(_state(alert, plan))
     # One autonomous (restart), one held (a production rollback) → plan needs approval.
@@ -369,7 +382,7 @@ def test_extract_signals_uses_measured_metrics_from_agent_results():
 def test_critical_incident_with_measured_outage_requires_approval():
     alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
     plan = FakePlan(
-        [FakeAction("rollback", "checkout-service", {"namespace": "demo-app"})],
+        [FakeAction("rollback", "checkout-service", _bound("checkout-service"))],
         risk_level="high",
     )
     state = _state(
@@ -530,7 +543,7 @@ def test_approved_live_applies_held_but_never_blocked_actions():
 def test_apply_skill_learning_records_then_proposes():
     store = InMemorySkillStore()
     alert = FakeAlert("critical", {"service": "checkout-service", "namespace": "demo-app"})
-    plan = FakePlan([FakeAction("rollback", "checkout-service", {"namespace": "demo-app"},
+    plan = FakePlan([FakeAction("rollback", "checkout-service", _bound("checkout-service"),
                                 rollback_plan="redeploy")], risk_level="high")
 
     # Incident 1: dry-run executed list alone must not become a successful skill.
@@ -934,7 +947,7 @@ def test_a_diagnosed_provider_outage_blocks_restart_and_rollback_but_keeps_the_p
     )
     plan = FakePlan([
         FakeAction("restart", "payment-service", {"namespace": "demo-app"}),
-        FakeAction("rollback", "payment-service", {"namespace": "demo-app"}),
+        FakeAction("rollback", "payment-service", _bound("payment-service")),
         FakeAction("escalate", "payment-service", {"namespace": "demo-app"}),
     ])
     state = _state(alert, plan)

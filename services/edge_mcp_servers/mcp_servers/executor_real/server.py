@@ -32,7 +32,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -40,6 +39,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from mcp.server.fastmcp import FastMCP
 
+import rollout
 from guardrails import allowed_namespaces, guardrail_check
 
 logging.basicConfig(
@@ -417,42 +417,140 @@ async def patch_deployment_env(
                            "reason": e.reason}, separators=(",", ":"))
 
 
-@mcp.tool()
-async def rollback_deployment(name: str, namespace: str = "demo-app", dry_run: bool = True) -> str:
-    """Roll a deployment back to its previous revision (`kubectl rollout undo`).
+async def _read_rollout(api: client.AppsV1Api, name: str, namespace: str):
+    """The Deployment and its ReplicaSets as the apiserver's raw JSON.
 
-    Dry-run returns the intended command without executing, since `rollout undo`
-    server-side dry-run support is version-dependent.
+    Raw, not the client's models: the rollback writes a ReplicaSet's template
+    back verbatim, and a model round-trip silently drops any field this client
+    version does not know.
     """
-    allowed, reason = guardrail_check("rollback", namespace)
+    dep_resp = await asyncio.to_thread(
+        api.read_namespaced_deployment, name, namespace, _preload_content=False
+    )
+    deployment = json.loads(dep_resp.data)
+    rs_resp = await asyncio.to_thread(
+        api.list_namespaced_replica_set,
+        namespace,
+        label_selector=rollout.selector_string(deployment),
+        _preload_content=False,
+    )
+    return deployment, json.loads(rs_resp.data).get("items") or []
+
+
+@mcp.tool()
+async def get_rollout_state(name: str, namespace: str = "demo-app") -> str:
+    """Read a deployment's revision history: each ReplicaSet's template hash,
+    revision, images, and which one the deployment currently runs.
+
+    Read-only — the evidence a rollback is bound to. A rollback names its
+    target by pod-template-hash (revision numbers renumber on every rollback)
+    and the template it expects to replace; both come from this read.
+    """
+    allowed, reason = guardrail_check("get_rollout_state", namespace)
+    if not allowed:
+        return _refused("get_rollout_state", namespace, reason)
+
+    api = _apps_api()
+    if not api:
+        return _refused("get_rollout_state", namespace, "Kubernetes client unavailable")
+
+    kubectl = f"kubectl rollout history deployment/{name} -n {namespace}"
+    try:
+        deployment, replica_sets = await _read_rollout(api, name, namespace)
+    except ApiException as e:
+        return json.dumps({"tool": "get_rollout_state", "status": "ERROR",
+                           "kubectl_equivalent": kubectl, "code": e.status,
+                           "reason": e.reason}, separators=(",", ":"))
+
+    return json.dumps({
+        "tool": "get_rollout_state", "name": name, "namespace": namespace,
+        **rollout.rollout_state(deployment, replica_sets),
+        "mutated": False, "kubectl_equivalent": kubectl, "status": "OK",
+    }, separators=(",", ":"))
+
+
+# A write that lost a race re-reads and re-decides; after this many losses the
+# deployment is changing faster than a precondition can be checked.
+_ROLLBACK_ATTEMPTS = 3
+
+
+@mcp.tool()
+async def rollback_deployment(
+    name: str,
+    to_template_hash: str,
+    expected_template_hash: str,
+    namespace: str = "demo-app",
+    dry_run: bool = True,
+) -> str:
+    """Roll a deployment back to the ReplicaSet with ``to_template_hash``,
+    only if it is still on ``expected_template_hash``.
+
+    Re-reads the deployment first. Already on the target: nothing is written
+    and the result says so. On the expected template: the target's template is
+    written back with a compare-and-swap on resourceVersion. Anything else is
+    refused as state drift — the deployment is not in the state the rollback
+    was approved against. Dry-run validates the write server-side
+    (``dryRun=All``) without persisting it.
+    """
+    allowed, reason = guardrail_check(
+        "rollback",
+        namespace,
+        {"to_template_hash": to_template_hash, "expected_template_hash": expected_template_hash},
+    )
     if not allowed:
         return _refused("rollback", namespace, reason)
 
-    kubectl = f"kubectl rollout undo deployment/{name} -n {namespace}"
-    if dry_run:
-        return json.dumps({
-            "tool": "rollback", "name": name, "namespace": namespace,
-            "dry_run": True, "applied": False,
-            "kubectl_equivalent": kubectl,
-            "status": "DRY_RUN", "detail": "Would run the command; not executed.",
-        }, separators=(",", ":"))
+    api = _apps_api()
+    if not api:
+        return _refused("rollback", namespace, "Kubernetes client unavailable")
 
+    kubectl = rollout.rollback_command(name, namespace, to_template_hash, expected_template_hash)
+    base = {
+        "tool": "rollback", "name": name, "namespace": namespace, "dry_run": dry_run,
+        "to_template_hash": to_template_hash,
+        "expected_template_hash": expected_template_hash,
+        "kubectl_equivalent": kubectl,
+    }
     try:
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            ["kubectl", "rollout", "undo", f"deployment/{name}", "-n", namespace],
-            capture_output=True, text=True, timeout=60,
-        )
-        return json.dumps({
-            "tool": "rollback", "name": name, "namespace": namespace,
-            "dry_run": False, "applied": proc.returncode == 0,
-            "kubectl_equivalent": kubectl,
-            "status": "OK" if proc.returncode == 0 else "ERROR",
-            "stdout": proc.stdout.strip(), "stderr": proc.stderr.strip(),
-        }, separators=(",", ":"))
-    except Exception as e:
-        return json.dumps({"tool": "rollback", "status": "ERROR",
-                           "kubectl_equivalent": kubectl, "error": str(e)}, separators=(",", ":"))
+        for _ in range(_ROLLBACK_ATTEMPTS):
+            deployment, replica_sets = await _read_rollout(api, name, namespace)
+            verdict, why = rollout.classify_rollback(
+                deployment, replica_sets, to_template_hash, expected_template_hash
+            )
+            if verdict == rollout.ALREADY_AT_TARGET:
+                return json.dumps({**base, "status": "ALREADY_AT_TARGET", "applied": False,
+                                   "mutated": False, "detail": why}, separators=(",", ":"))
+            if verdict != rollout.APPLY:
+                state = rollout.rollout_state(deployment, replica_sets)
+                return json.dumps({**base, "status": "STATE_DRIFT", "applied": False,
+                                   "refusal_code": "state_drift", "drift": verdict,
+                                   "reason": why,
+                                   "current_template_hash": state["current_template_hash"]},
+                                  separators=(",", ":"))
+            target = rollout.find_replica_set(deployment, replica_sets, to_template_hash)
+            try:
+                await asyncio.to_thread(
+                    api.patch_namespaced_deployment, name, namespace,
+                    rollout.rollback_patch(deployment, target), **_dry_run_kwarg(dry_run),
+                )
+            except ApiException as e:
+                # 422 is the resourceVersion `test` failing (and 409 a plain
+                # conflict): the object moved after the read. Decide again on
+                # the new object rather than writing over what changed.
+                if e.status in (409, 422):
+                    continue
+                raise
+            return json.dumps({**base, "status": "DRY_RUN" if dry_run else "OK",
+                               "applied": not dry_run,
+                               "from_template_hash": expected_template_hash,
+                               "detail": why}, separators=(",", ":"))
+        return json.dumps({**base, "status": "ERROR",
+                           "reason": f"the deployment kept changing; gave up after "
+                                     f"{_ROLLBACK_ATTEMPTS} attempts without writing"},
+                          separators=(",", ":"))
+    except ApiException as e:
+        return json.dumps({**base, "status": "ERROR", "code": e.status, "reason": e.reason},
+                          separators=(",", ":"))
 
 
 @mcp.tool()

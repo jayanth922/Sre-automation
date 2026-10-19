@@ -40,9 +40,32 @@ def test_build_command_scale_uses_replicas():
     assert "-n demo-app" in cmd
 
 
-def test_build_command_rollback():
+_BINDING = {
+    "deployment": "checkout-service",
+    "namespace": "demo-app",
+    "to_template_hash": "aaa111",
+    "expected_template_hash": "bbb222",
+}
+
+
+def test_build_command_rollback_names_both_templates():
+    action = FakeAction("rollback", parameters={"namespace": "demo-app", "rollback_binding": _BINDING})
+    assert build_command(action) == (
+        "sentinel rollback deployment/checkout-service -n demo-app "
+        "--to-template=aaa111 --expect-template=bbb222"
+    )
+    # Its inverse swaps the two, and so carries the same kind of precondition.
+    assert build_rollback_command(action) == (
+        "sentinel rollback deployment/checkout-service -n demo-app "
+        "--to-template=bbb222 --expect-template=aaa111"
+    )
+
+
+def test_an_unbound_rollback_never_renders_an_undo():
     cmd = build_command(FakeAction("rollback"))
-    assert cmd == "kubectl rollout undo deployment/checkout-service -n default"
+    assert "rollout undo" not in cmd
+    assert cmd.startswith("#")
+    assert build_rollback_command(FakeAction("rollback")) is None
 
 
 def test_build_command_revert_commit_mentions_sha():
@@ -339,11 +362,21 @@ def test_patch_without_resource_limits_has_no_live_tool():
 def test_actions_backed_by_their_own_tool_are_unaffected():
     assert live_tool_for_action(FakeAction("restart")) == "restart_deployment"
     assert live_tool_for_action(FakeAction("scale", parameters={"replicas": 3})) == "scale_deployment"
-    assert live_tool_for_action(FakeAction("rollback")) == "rollback_deployment"
+    bound = FakeAction("rollback", parameters={"rollback_binding": _BINDING})
+    assert live_tool_for_action(bound) == "rollback_deployment"
     assert live_tool_for_action(FakeAction("recreate_pod")) == "recreate_pod"
     # Notify-only and code-change actions are other dispatch families entirely.
     assert live_tool_for_action(FakeAction("escalate")) is None
     assert live_tool_for_action(FakeAction("revert_commit")) is None
+
+
+def test_an_unbound_rollback_has_no_live_tool():
+    """No binding, no tool: "undo to whatever is previous" is not a capability."""
+    assert live_tool_for_action(FakeAction("rollback")) is None
+    unbound = FakeAction("rollback", parameters={"rollback_binding": {"unbound_reason": "x"}})
+    assert live_tool_for_action(unbound) is None
+    same = FakeAction("rollback", parameters={"rollback_binding": {**_BINDING, "to_template_hash": "bbb222"}})
+    assert live_tool_for_action(same) is None
 
 
 def test_uncapable_config_change_is_refused_by_name_not_sent_to_the_tool():

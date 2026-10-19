@@ -65,8 +65,18 @@ def test_an_action_in_no_dispatch_map_is_reported_as_unexecutable():
 
 
 def test_kubernetes_mutations_are_cluster_changes():
-    for action_type in ("restart", "scale", "rollback", "recreate_pod"):
+    for action_type in ("restart", "scale", "recreate_pod"):
         assert approval_effect(action_type) == EFFECT_CLUSTER_CHANGE, action_type
+
+
+def test_a_rollback_changes_the_cluster_only_once_it_is_bound():
+    """Unbound, approving a rollback runs nothing: the gateway refuses it."""
+    bound = {"rollback_binding": {
+        "deployment": "checkout-service", "namespace": "demo-app",
+        "to_template_hash": "aaa111", "expected_template_hash": "bbb222"}}
+    assert approval_effect("rollback", bound) == EFFECT_CLUSTER_CHANGE
+    assert approval_effect("rollback") == EFFECT_NO_CAPABILITY
+    assert approval_effect("rollback", {"rollback_binding": {"unbound_reason": "x"}}) == EFFECT_NO_CAPABILITY
 
 
 def test_github_actions_change_the_repository_not_the_cluster():
